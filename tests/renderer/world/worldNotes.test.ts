@@ -12,9 +12,10 @@ describe('worldNotes: what the pane says about the files a world maps', () => {
     expect(filesNotice({ filesListed: 50000 })).toBeNull()
     expect(filesNotice({ provisional: true })).toBe(provisionalNotice())
     expect(filesNotice({ provisional: false } as never)).toBeNull()
-    expect(filesNotice({ provisional: true, filesUnreadable: 1, filesRead: 2, filesListed: 3 })).toBe(
-      `${provisionalNotice()} ${unreadableNotice(1)} ${readCappedNotice(3, 2)}`
-    )
+    // A first map says only that it is still reading: no cap note with a count the first map can't know (I3).
+    expect(filesNotice({ provisional: true, filesUnreadable: 1, filesRead: 2, filesListed: 3, filesCapped: 4, nestedCapped: 5 })).toBe(provisionalNotice())
+    // The complete world says the cap with its true read count.
+    expect(filesNotice({ filesUnreadable: 1, filesRead: 2, filesListed: 3 })).toBe(`${unreadableNotice(1)} ${readCappedNotice(3, 2)}`)
     expect(isFilesNotice(readCappedNotice(50000, 20000))).toBe(true)
     expect(isFilesNotice(provisionalNotice())).toBe(true)
     expect(isFilesNotice(`${provisionalNotice()} ${readCappedNotice(3, 2)}`)).toBe(true)

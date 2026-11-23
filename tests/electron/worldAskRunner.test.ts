@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { agentMissingMessage, createAskRunner, DEFAULT_PREP_TIMEOUT_MS } from '../../src/main/world/askRunner'
+import { agentMissingMessage, createAskRunner, DEFAULT_COMPILE_WAIT_MS, DEFAULT_PREP_TIMEOUT_MS } from '../../src/main/world/askRunner'
 import type { AskRequest, WorldDoc } from '../../src/shared/world/types'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import { ISOLATION_SETUP_FAILED } from '../../src/main/readOnlyIsolation'
@@ -15,7 +15,7 @@ const okRes = (output: string): ExecResult => ({ ok: true, output, primerChars: 
 
 function setup(
   exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number,
-  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer' | 'prepTimeoutMs' | 'log'>> = {}
+  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer' | 'prepTimeoutMs' | 'log' | 'compileWaitMs'>> = {}
 ) {
   const execFn = vi.fn(exec)
   const client = {
@@ -523,6 +523,43 @@ describe('createAskRunner', () => {
       })
       expect(await runner.ask(REQ)).toMatchObject({ ok: false, cancelled: true })
       expect(execFn).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('a project whose first world is still compiling (fix round 1, I1)', () => {
+    it('the ask waits for the compile and answers from the world it saved', async () => {
+      const { runner, client, execFn } = setup(async () => okRes('{"text":"ok"}'))
+      let done!: () => void
+      const whenCompiled = vi.fn(() => new Promise<void>((r) => { done = r }))
+      Object.assign(client, { whenCompiled })
+      client.get.mockResolvedValueOnce(null)
+      const p = runner.ask(REQ)
+      await vi.waitFor(() => expect(whenCompiled).toHaveBeenCalledWith('C:/repo'))
+      expect(execFn).not.toHaveBeenCalled()
+      done()
+      expect(await p).toMatchObject({ askId: 'a1', ok: true })
+      expect(client.get).toHaveBeenCalledTimes(2)
+      expect(client.get).toHaveBeenLastCalledWith('C:/repo', { refresh: false })
+    })
+
+    it('a compile that saved nothing leaves the project not mapped; one that runs past the wait is a load failure', async () => {
+      const { runner, client, execFn } = setup(async () => okRes('x'), null, undefined, undefined, { compileWaitMs: 5 })
+      Object.assign(client, { whenCompiled: vi.fn(async () => undefined) })
+      expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: 'This project has not been mapped yet.' })
+      Object.assign(client, { whenCompiled: vi.fn(() => new Promise<void>(() => undefined)) })
+      expect(await runner.ask({ ...REQ, askId: 'a2' })).toEqual({ askId: 'a2', ok: false, error: "Lumopolis couldn't load this project's map. Try again." })
+      expect(execFn).not.toHaveBeenCalled()
+    })
+
+    it('the wait is the compile call limit by default, and a cancel ends it at once', async () => {
+      expect(DEFAULT_COMPILE_WAIT_MS).toBe(600_000)
+      const { runner, client } = setup(async () => okRes('x'), null)
+      Object.assign(client, { whenCompiled: vi.fn(() => new Promise<void>(() => undefined)) })
+      const p = runner.ask(REQ)
+      await vi.waitFor(() => expect(client.get).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 5))
+      runner.cancel('a1')
+      expect(await p).toEqual({ askId: 'a1', ok: false, error: 'cancelled', cancelled: true })
     })
   })
 

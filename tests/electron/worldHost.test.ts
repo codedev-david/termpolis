@@ -2353,7 +2353,7 @@ describe('fileSnapshot', () => {
     expect((h.last() as { result: GraphSnapshot }).result.files).toEqual(['link/evil.ts', 'src/a.ts'])
   })
 
-  it('snapshotFromFiles keeps only safe, indexable, readable source files, once each', async () => {
+  it('snapshotFromFiles keeps only safe, indexable, readable source files, once each (one too long to scan stays, with no imports)', async () => {
     const texts: Record<string, string | null> = {
       '/r/src/a.ts': "import x from './b'\n",
       '/r/src/b.ts': 'export const b = 1\n',
@@ -2384,7 +2384,8 @@ describe('fileSnapshot', () => {
       'src/throws.ts'
     ]
     const got = await snapshotFromFiles('\\r\\', { read, listFiles: async () => listed })
-    expect(got).toEqual({ root: '/r', files: ['src/a.ts', 'src/b.ts'], symbols: [], callEdges: [], fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [] } })
+    // An oversized file is a part with no imports, as a file past the read cap is (fix round 1, M8).
+    expect(got).toEqual({ root: '/r', files: ['src/a.ts', 'src/b.ts', 'src/big.ts'], symbols: [], callEdges: [], fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [], 'src/big.ts': [] } })
     expect(read.mock.calls.map((c) => c[0]).sort()).toEqual(['/r/src/a.ts', '/r/src/b.ts', '/r/src/big.ts', '/r/src/empty.ts', '/r/src/null.ts', '/r/src/throws.ts'])
     // A listing that fails lists nothing.
     const failing = await snapshotFromFiles('/r', {

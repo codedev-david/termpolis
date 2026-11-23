@@ -270,11 +270,12 @@ export function registerWorldIpc(
       }
     }
 
+  // The pane's get: it may draw the first map from the listing while the first world is compiled (WP4a).
   ipc.handle('world:get', handler(async (root) => {
     try { asker?.warm?.(root) } catch { /* readying the asker never fails an open */ }
     let aliasKeys: string[] | void = undefined
     try { aliasKeys = await asker?.prepare?.(root) } catch { /* nor does readying its annotations */ }
-    const doc = await client.get(root)
+    const doc = await client.get(root, { provisional: true })
     // WP5 fix I5: the root's older keys go with the world (never saved), so the pane copies its saved views from them.
     return doc && Array.isArray(aliasKeys) && aliasKeys.length > 0 ? { ...doc, aliasKeys } : doc
   }))

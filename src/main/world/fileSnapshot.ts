@@ -25,7 +25,8 @@ import { readRootIgnore } from './rootIgnore'
 import { configEnv, inheritedEnv, loginConfig, loginEnv } from './gitLogin'
 import { NO_GIT_MESSAGE, nodeExecFile } from './gitSource'
 
-/** Files longer than this are left out, as the code graph's sweep leaves them out (512 KB of source). */
+/** Files longer than this are not scanned for imports, as the code graph's sweep leaves them out (512 KB of source):
+ *  such a file is still a part, with no imports, as a file past the read cap is (fix round 1, M8). */
 export const MAX_SNAPSHOT_FILE_CHARS = 512 * 1024
 /** The most `git ls-files` output read (64 MiB, the code ingest's own limit). */
 export const MAX_LIST_BYTES = 64 * 1024 * 1024
@@ -238,7 +239,12 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
   await eachLimit(toRead, deps.concurrency ?? READ_CONCURRENCY, async (rel, i) => {
     const content = await deps.read(`${base}/${rel}`).catch(() => null)
     deps.onRead?.(++done, toRead.length)
-    if (content === null || content.length > MAX_SNAPSHOT_FILE_CHARS) return
+    if (content === null) return
+    // Too long to scan: shown like a file past the read cap, with no imports.
+    if (content.length > MAX_SNAPSHOT_FILE_CHARS) {
+      found[i] = []
+      return
+    }
     deps.onText?.(rel, content)
     const ex = extractFile(rel, content)
     if (ex) found[i] = ex.imports

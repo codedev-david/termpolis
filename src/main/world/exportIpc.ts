@@ -166,7 +166,8 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
     }
     if (!shortString(root, MAX_PATH) || !win32.isAbsolute(root)) return WORLD_REQUIRED
     const doc = await deps.getWorld(root)
-    if (!doc) return NO_SAVED_WORLD
+    // A first map drawn from the listing is not a saved map: nothing is exported until the complete world is (I1).
+    if (!doc || doc.provisional === true) return NO_SAVED_WORLD
     return { doc, ctx: ctxOf(root), title: await titleOf({ root, designKey: null }), design: false }
   }
 

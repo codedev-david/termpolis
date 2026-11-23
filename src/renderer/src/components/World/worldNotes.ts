@@ -4,7 +4,7 @@
 // UTF-8 leave it carrying filesUnreadable, the source files skipped for it; a listing of more files than a map reads
 // (main/world/readCap.ts) leaves it carrying filesRead and filesListed; a first map drawn from the listing while the
 // files are still being read is provisional; a stored world written by a newer Termpolis, opened read-only, is
-// savedByNewer. The pane says them all, in one note.
+// savedByNewer. The pane says them all, in one note; a first map says only that.
 
 const CAPPED_START = 'Showing the first '
 const NESTED_START = 'The repositories inside this folder hold more than '
@@ -59,9 +59,10 @@ interface FilesNoteDoc {
 
 /** The world's files note, or null when it has nothing to say. */
 export function filesNotice(doc: FilesNoteDoc | null): string | null {
+  // A first map says only that it is still reading: how many files were read is known once the complete world is.
+  if (doc && doc.provisional === true) return provisionalNotice()
   const parts: string[] = []
   if (doc && doc.savedByNewer === true) parts.push(savedByNewerNotice())
-  if (doc && doc.provisional === true) parts.push(provisionalNotice())
   if (doc && doc.filesCapped !== undefined && doc.filesCapped > 0) parts.push(cappedNotice(doc.filesCapped))
   if (doc && doc.nestedCapped !== undefined && doc.nestedCapped > 0) parts.push(nestedCappedNotice(doc.nestedCapped))
   if (doc && doc.filesUnreadable !== undefined && doc.filesUnreadable > 0) parts.push(unreadableNotice(doc.filesUnreadable))

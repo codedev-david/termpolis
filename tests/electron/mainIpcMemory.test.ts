@@ -4117,7 +4117,8 @@ describe('Lumopolis world wiring in index.ts', () => {
 
   it('registers world:get / world:compile / world:relayout over the world client', async () => {
     expect(await invoke('world:get', { root: '/repos/x' })).toEqual({ success: true, data: null })
-    expect(world.client.get).toHaveBeenCalledWith('/repos/x')
+    // The pane's get may be answered with a first map (WP4a fix round 1, I1).
+    expect(world.client.get).toHaveBeenCalledWith('/repos/x', { provisional: true })
     expect(await invoke('world:compile', { root: '/repos/x' })).toEqual({ success: true, data: { projectKey: 'k' } })
     expect(await invoke('world:relayout', { root: '/repos/x' })).toEqual({ success: true, data: { projectKey: 'k' } })
     expect(world.client.relayout).toHaveBeenCalledWith('/repos/x')

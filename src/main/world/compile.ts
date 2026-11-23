@@ -24,7 +24,7 @@ import { mergeAnnotations } from './annotations'
 import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
-import { BUILDINGS_PER_BATCH, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
+import { BUILDINGS_PER_BATCH, codeLabels, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
@@ -631,6 +631,60 @@ function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<Wor
   }
 }
 
+/**
+ * The first map of a big listing (WP4a): its files grouped from their paths alone, named by the code and laid out,
+ * with nothing read and no lines, test runs, chips, tours or notes. It is drawn while the files are read and the full
+ * compile runs behind it from its positions, so it builds only what the pane draws: the grouping is garbage as soon
+ * as it returns (fix round 1, I5: the world process holds one listing's grouping at a time, not a compile's).
+ */
+export function firstMap(paths: GraphSnapshot, projectKey: string, head: { head: string; dirty: boolean }, at: number): WorldDoc {
+  const g = groupProject(paths, [])
+  const labels = codeLabels(g)
+  const districts: District[] = [...g.districts]
+    .sort((a, z) => cmp(a.id, z.id))
+    .map((d, i) => ({ id: d.id, name: d.name, subtitle: '', hue: Math.round((i * 137.508) % 360), members: d.members, nameState: 'observed' }))
+  const buildings: Building[] = g.buildings.map((b) => {
+    const l = labels.buildings[b.id]
+    return {
+      id: b.id,
+      districtId: b.districtId,
+      name: l.name,
+      techLabel: l.techLabel,
+      process: b.process,
+      floors: l.floors,
+      stack: [],
+      how: [],
+      why: [],
+      status: 'gap',
+      members: b.members,
+      claims: [],
+      nameState: 'observed',
+      growth: b.growth
+    }
+  })
+  const processes = Object.fromEntries(
+    [...new Set(buildings.map((b) => b.process).filter(Boolean))].sort().map((p) => [p, { label: p, color: colorOf(p) }])
+  )
+  return {
+    version: 1,
+    projectKey,
+    generatedAt: at,
+    sourceRevision: { head: head.head, dirty: head.dirty },
+    districts,
+    buildings,
+    edges: [],
+    externals: [],
+    glossary: { ...BUILTIN_GLOSSARY },
+    cargo: {},
+    processes,
+    tours: [],
+    layout: layoutWorld(g, null),
+    runtimeNames: {},
+    layers: { plan: [] },
+    provisional: true
+  }
+}
+
 export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {
   let { previous } = input
   let { snap } = input
@@ -677,6 +731,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     if (entry) entries.set(f, entry)
     if (prior && entry !== prior.files[f]) differs.add(f)
   })
+  // Of the capped set, the files whose text was read (an unreadable or oversized one was not): fix round 1, M7.
+  const readCount = traced === null ? 0 : files.reduce((n, f) => (traced.has(f) && entries.has(f) ? n + 1 : n), 0)
   const bounds: Boundary[] = []
   const names = new Map<string, string[]>()
   const scanned = new Map<string, string[]>()
@@ -828,7 +884,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     layers: { plan: [] },
     labelTokens: labels.tokens,
     ...filesNotes(snap, root, files.length),
-    ...(traced !== null ? { filesRead: traced.size, filesListed: files.length } : {})
+    ...(traced !== null ? { filesRead: readCount, filesListed: files.length } : {})
   }
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, renameClaims(await deps.annotations(), renames)) : doc

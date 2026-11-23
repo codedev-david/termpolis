@@ -133,9 +133,13 @@ describe('world source discovery over the scenario fixtures (real git, real disk
     expect(await snapshotFiles(dir)).toEqual(['src/main.ts'])
   })
 
-  it('twenty-mb-file: the 20 MB file is left out and the rest is mapped', async () => {
+  it('twenty-mb-file: the 20 MB file is a part with no imports (never scanned), as a file past the read cap is', async () => {
     const dir = await scenario('twenty-mb-file')
-    expect(await snapshotFiles(dir)).toEqual(['src/small.ts'])
+    // One rule for a file the map doesn't scan, read or not (fix round 1, M8): it stays, so the first map drawn from
+    // the listing and the full world show the same parts.
+    const snap = await snapshotFromFiles(dir, { read })
+    expect(snap.files).toEqual(['src/big.ts', 'src/small.ts'])
+    expect(snap.fileImports['src/big.ts']).toEqual([])
   }, 120_000)
 
   it('huge stays opt-in, and case-twins needs a case-sensitive file system', async () => {

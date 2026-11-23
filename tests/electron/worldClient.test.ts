@@ -1527,6 +1527,40 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
     await flush()
     expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get'])
   })
+
+  it('the pane asks for a first map; every other get asks for the stored world only (fix round 1, I1)', async () => {
+    const { client, spawned } = setup({}, (x) => {
+      x.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: null })
+    })
+    expect(await client.get(ROOT, { provisional: true })).toBeNull()
+    expect(await client.get(ROOT, { refresh: false })).toBeNull()
+    expect(spawned[0].calls().map((c) => c.args)).toEqual([[KEY, { provisional: true }], [KEY]])
+  })
+
+  it('a compile that ends without a world tells the pane why; one that saves a world says nothing more (fix round 1, I2)', async () => {
+    let fail: unknown = null
+    const { client, spawned } = setup({ snapshot: async () => { if (fail !== null && fail !== 'host') throw fail; return SNAP } }, (x) => {
+      x.reply = (m) => (m.fn === 'compile' && fail === 'host' ? { kind: 'result', id: m.id, ok: false, error: { message: 'disk full' } } : { kind: 'result', id: m.id, ok: true, result: DOC })
+    })
+    const updated: unknown[] = []
+    client.onUpdated((e) => updated.push(e))
+    await client.compile(ROOT)
+    await flush()
+    expect(updated).toEqual([])
+    fail = 'host'
+    await expect(client.compile(ROOT)).rejects.toThrow('disk full')
+    fail = 'no listing'
+    await expect(client.relayout(ROOT)).rejects.toBe('no listing')
+    await flush()
+    expect(updated).toEqual([
+      { root: ROOT, projectKey: KEY, error: 'disk full' },
+      { root: ROOT, projectKey: KEY, error: 'no listing' }
+    ])
+    // The host's own push of a failed run carries its error through; junk in its place is left out.
+    spawned[0].emit({ kind: 'updated', projectKey: KEY, error: 'store said no' })
+    spawned[0].emit({ kind: 'updated', projectKey: KEY, error: 7 })
+    expect(updated.slice(2)).toEqual([{ root: ROOT, projectKey: KEY, error: 'store said no' }, { root: ROOT, projectKey: KEY }])
+  })
 })
 
 describe('WPA: an Ask that is cancelled lets go of its world step', () => {

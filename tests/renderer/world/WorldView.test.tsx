@@ -758,6 +758,63 @@ describe('WorldView', () => {
       }
     })
 
+    it('puts the notice slot in the free area: beside the legend and an open card, and above the ask bar under a card in a narrow pane (fix round 1, I4)', async () => {
+      const stage = { w: 1000, h: 800 }
+      const seen: Array<() => void> = []
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { seen.push(cb) }
+        observe(): void {}
+        disconnect(): void {}
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? stage.w : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? stage.h : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-ask-slot' ? 40 : this.dataset.testid === 'world-card' ? 300 : 0
+      })
+      const slot = (): HTMLElement => {
+        let el = screen.getByTestId('world-notice') as HTMLElement
+        while (el.style.zIndex !== '4') el = el.parentElement as HTMLElement
+        return el
+      }
+      try {
+        bridge({ worldGet: vi.fn(async () => ok({ ...minimal(), filesCapped: 20000 })) })
+        await mount({ askSlot: () => <input aria-label="ask" /> })
+        // Wide, no card: across the top, between the left edge and the legend.
+        expect(slot().style.top).toBe('12px')
+        expect(slot().style.bottom).toBe('')
+        const wide = parseFloat(slot().style.left)
+        expect(wide).toBeGreaterThan(12)
+        expect(wide).toBeLessThan(500)
+        // A card opens: the slot moves right of it, still at the top.
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        expect(slot().style.top).toBe('12px')
+        expect(parseFloat(slot().style.left)).toBeGreaterThan(wide)
+        // A narrow pane has no room beside the card: the slot sits above the ask bar, under the card.
+        stage.w = 416
+        act(() => { for (const cb of seen) cb() })
+        expect(slot().style.top).toBe('')
+        expect(slot().style.bottom).toBe('64px')
+        expect(slot().style.left).toBe('208px')
+        expect(slot().style.maxWidth).toBe('392px')
+      } finally {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('centres the notice slot in the pane until the stage is measured', async () => {
+      bridge({ worldGet: vi.fn(async () => ok({ ...minimal(), filesCapped: 20000 })) })
+      await mount()
+      let el = screen.getByTestId('world-notice') as HTMLElement
+      while (el.style.zIndex !== '4') el = el.parentElement as HTMLElement
+      expect(el.style.left).toBe('50%')
+      expect(el.style.top).toBe('12px')
+    })
+
     it('reads the box once where there is no ResizeObserver', async () => {
       const had = 'ResizeObserver' in globalThis
       const saved = (globalThis as any).ResizeObserver
@@ -2266,6 +2323,89 @@ describe('WorldView export', () => {
       await settle()
       expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
       expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+      m.unmount()
+    }
+  })
+
+  it('a first map from the listing offers no Export, and an export asked for waits for the complete world (fix round 1, I1)', async () => {
+    const first = { ...minimal(), provisional: true }
+    const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(first)) }))
+    const m = await mountWith()
+    expect(viewer().load).toHaveBeenLastCalledWith(first)
+    expect(screen.queryByTestId('world-export')).toBeNull()
+    await m.again({ exportRequest: { kind: 'world', seq: 1 } })
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    expect(b.api.worldExportInfo).not.toHaveBeenCalled()
+    b.api.worldGet.mockResolvedValue(ok(minimal()))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+  })
+
+  it('a pane opened on a first map hears how its run ended: a failure shows the error and Try again (fix round 1, I2)', async () => {
+    const first = { ...minimal(), provisional: true }
+    const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(first)) }))
+    await mountWith()
+    expect(b.api.worldCompile).not.toHaveBeenCalled()
+    b.api.worldGet.mockResolvedValue(ok(null))
+    // Another world's failure is not ours.
+    await b.updated({ root: '/other', projectKey: 'other', error: 'disk full' })
+    await settle()
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    await b.updated({ root: '/repo', projectKey: 'k', error: 'disk full' })
+    await settle()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('disk full')
+    expect(screen.queryByTestId('world-export')).toBeNull()
+    // Try again maps the project afresh.
+    b.api.worldCompile.mockResolvedValue(ok(minimal()))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await settle()
+    expect(b.api.worldCompile).toHaveBeenCalledWith('/repo')
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument()
+  })
+
+  it('a failure pushed while a saved world is shown, or after one was saved, changes nothing (fix round 1, I2)', async () => {
+    const saved = minimal()
+    const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(saved)) }))
+    await mountWith()
+    await b.updated({ root: '/repo', projectKey: 'k', error: 'store said no' })
+    await settle()
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    cleanup()
+    // On a first map, but the world was saved by the time the pane asks: the pane shows it.
+    const first = { ...minimal(), provisional: true }
+    const c = bridge(exportApi({ worldGet: vi.fn(async () => ok(first)) }))
+    await mountWith()
+    c.api.worldGet.mockResolvedValue(ok(saved))
+    await c.updated({ root: '/repo', projectKey: 'k', error: 'late' })
+    await settle()
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument()
+    cleanup()
+    // A get that fails as the failure lands still shows the failure.
+    const d = bridge(exportApi({ worldGet: vi.fn(async () => ok(first)) }))
+    await mountWith()
+    d.api.worldGet.mockResolvedValue(fail('host down'))
+    await d.updated({ root: '/repo', projectKey: 'k', error: 'compile stopped' })
+    await settle()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('compile stopped')
+  })
+
+  it('a first map drawn while this pane compiles goes when the compile fails or throws (fix round 1, I2)', async () => {
+    for (const end of ['fail', 'throw'] as const) {
+      const compile = deferred<Res<WorldDoc>>()
+      const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(() => compile.promise) }))
+      const m = await mountWith()
+      b.api.worldGet.mockResolvedValue(ok({ ...minimal(), provisional: true }))
+      await b.updated({ root: '/repo', projectKey: 'k' })
+      await settle()
+      expect(screen.getByTestId('world-notice')).toBeInTheDocument()
+      await act(async () => { if (end === 'throw') compile.reject(new Error('down')); else compile.resolve(fail('no source files found')) })
+      await settle()
+      expect(screen.getByTestId('world-error')).toHaveTextContent(end === 'throw' ? 'down' : 'no source files found')
+      expect(screen.queryByTestId('world-notice')).toBeNull()
       m.unmount()
     }
   })

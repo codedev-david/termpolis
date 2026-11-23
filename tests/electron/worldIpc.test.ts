@@ -178,6 +178,8 @@ describe('registerWorldIpc', () => {
     const { invoke, client } = setup()
     expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
     expect(await invoke('world:get', { root: 'C:/none' })).toEqual({ success: true, data: null })
+    // The pane's get may be answered with the first map drawn from the listing (fix round 1, I1).
+    expect(client.get).toHaveBeenCalledWith('C:/repo', { provisional: true })
     expect(await invoke('world:compile', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
     expect(await invoke('world:relayout', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
     expect(client.relayout).toHaveBeenCalledWith('C:/repo')

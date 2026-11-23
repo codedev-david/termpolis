@@ -983,11 +983,17 @@ function merge(into: Labels, r: Labels, district: string | null): void {
 /** A part with no how and no why claim: its card says only what the code says. */
 const bare = (x: { how: Claim[]; why: Claim[] }): boolean => x.how.length === 0 && x.why.length === 0
 
-export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
+/** The labels the code alone gives: each district's folder name, each part's own name and floors, each line's kinds. */
+export function codeLabels(g: Grouping): Labels {
   const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   for (const d of g.districts) labels.districts[d.id] = { name: d.name, subtitle: '' }
   for (const b of g.buildings) labels.buildings[b.id] = fallbackBuilding(b)
   for (const e of g.edges) labels.edges[edgeId(e)] = fallbackEdge(e)
+  return labels
+}
+
+export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
+  const labels = codeLabels(g)
   const llm = deps.llm
   if (!llm) return labels
 

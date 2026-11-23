@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
+import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { compileWorldStaged, scanFile, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
@@ -74,6 +75,20 @@ describe('readCap', () => {
     await eachLimit([], 4, none)
     expect(none).not.toHaveBeenCalled()
     await expect(eachLimit([1, 2, 3], 2, async (n) => { if (n === 2) throw new Error('boom') })).rejects.toThrow('boom')
+  })
+
+  it('eachLimit: after a rejection no item starts; the other workers only finish the one they hold (fix round 1, M9)', async () => {
+    const started: number[] = []
+    const items = Array.from({ length: 50 }, (_, i) => i)
+    const run = eachLimit(items, 4, async (n) => {
+      started.push(n)
+      await new Promise((r) => setTimeout(r, n === 1 ? 1 : 10))
+      if (n === 1) throw new Error('read failed')
+    })
+    await expect(run).rejects.toThrow('read failed')
+    // Let the three items still held finish: none starts another.
+    await new Promise((r) => setTimeout(r, 40))
+    expect(started).toEqual([0, 1, 2, 3])
   })
 })
 
@@ -211,6 +226,17 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     const next = await compile(again, { cache: out.cache, changed: [] }, snapOf(files))
     expect(again.sources).toEqual([])
     expect(next.doc.filesRead).toBe(MAP_FILE_CAP)
+    // Only a read that found text counts: an unreadable or oversized file in the read set was chosen, not read (M7).
+    const gaps = deps({
+      readSource: async (p) => {
+        const rel = p.slice(ROOT.length + 1)
+        if (rel === files[0]) return null
+        return rel === files[1] ? 'x'.repeat(MAX_DETECT_FILE_CHARS + 1) : 'export const x = 1\n'
+      }
+    })
+    const holes = await compile(gaps, {}, snapOf(files))
+    expect(holes.doc.filesRead).toBe(MAP_FILE_CAP - 2)
+    expect(holes.doc.filesListed).toBe(MAP_FILE_CAP + 3)
     const small = await compile(deps())
     expect(small.doc).not.toHaveProperty('filesRead')
     expect(small.doc).not.toHaveProperty('filesListed')

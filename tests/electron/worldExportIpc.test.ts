@@ -217,6 +217,11 @@ describe('world:export-info', () => {
     expect(await call('world:export-info', args)).toEqual(err(message))
   })
 
+  it('a first map drawn from the listing is not a saved world: nothing is exported from it (fix round 1, I1)', async () => {
+    const { call } = setup({ getWorld: vi.fn(async () => ({ ...shopWorld(), provisional: true })) })
+    expect(await call('world:export-info', { root: ROOT })).toEqual(err(NO_SAVED_WORLD))
+  })
+
   it('answers a fixed sentence when the world cannot be read', async () => {
     const { call } = setup({ getWorld: vi.fn(async () => { throw new Error('EIO raw detail') }) })
     const res = await call('world:export-info', { root: ROOT })

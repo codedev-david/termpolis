@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
+import { firstMap } from '../../src/main/world/compile'
 import { NO_GIT_MESSAGE } from '../../src/main/world/gitSource'
 import type { StageCache } from '../../src/main/world/stageCache'
 import { createWorldHost, PRESCAN_TTL_MS, type WorldHostDeps, type WorldHostRequest, type WorldHostResponse } from '../../src/main/world/worldHost'
@@ -83,11 +84,21 @@ function setup(over: WorldHostDeps = {}) {
   const progress = (key = 'k1'): Progress[] => out.filter((m): m is Progress => m.kind === 'progress' && m.projectKey === key)
   const updated = (key = 'k1'): number => out.filter((m) => m.kind === 'updated' && m.projectKey === key).length
   const init = () => host.handle({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
-  return { out, docs, state, readSource, host, call, progress, updated, init }
+  /** The pane's get, which may be answered with a first map (fix round 1, I1: no other get is). */
+  const pane = (key = 'k1'): Promise<WorldDoc> => call<WorldDoc>('get', key, { provisional: true })
+  /** The errors pushed with `updated` for `key` (a run that ended with no world while its first map was up). */
+  const failures = (key = 'k1'): string[] =>
+    out.flatMap((m) => (m.kind === 'updated' && m.projectKey === key && typeof m.error === 'string' ? [m.error] : []))
+  return { out, docs, state, readSource, host, call, progress, updated, init, pane, failures }
 }
 
-const until = async (ok: () => boolean): Promise<void> => {
-  for (let i = 0; i < 400 && !ok(); i++) await new Promise((r) => setTimeout(r, 5))
+/** Waits for `ok`, and fails the test when it never comes, within the first map's own 15 s budget (fix round 1, M11). */
+const until = async (ok: () => boolean, ms = 15_000): Promise<void> => {
+  const end = Date.now() + ms
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`until: still not true after ${ms} ms`)
+    await new Promise((r) => setTimeout(r, 5))
+  }
 }
 
 const early = (head: unknown = HEAD, projectKey: unknown = 'k1') => ({ projectKey, head })
@@ -102,9 +113,12 @@ describe('the first map of a big project (WP4a)', () => {
     await until(() => h.updated() === 1)
     // Drawn while every read still waits: a first map from the paths alone.
     expect(h.updated()).toBe(1)
-    const first = await h.call<WorldDoc>('get', 'k1')
+    const first = await h.pane()
     expect(first.provisional).toBe(true)
     expect(first.sourceRevision).toEqual(HEAD)
+    // Only the pane is shown a first map: Export's and Ask's get find no world yet (fix round 1, I1).
+    expect(await h.call('get', 'k1')).toBeNull()
+    expect(await h.call('get', 'k1', { provisional: 'yes' })).toBeNull()
     expect(first.buildings.flatMap((b) => b.members).sort()).toEqual(FILES)
     expect(first.edges).toEqual([])
     reads.open()
@@ -160,10 +174,11 @@ describe('the first map of a big project (WP4a)', () => {
     await h.init()
     await h.call('snapshotFromFiles', '/r', early('junk'))
     await until(() => h.updated() === 1)
-    expect((await h.call<WorldDoc>('get', 'k1')).sourceRevision).toEqual({ head: '', dirty: false })
+    expect((await h.pane()).sourceRevision).toEqual({ head: '', dirty: false })
 
-    // The first map's own store read waits while the run's compile saves a world: then nothing is drawn.
-    const late = setup()
+    // The first map's own store read waits while the run's compile (which stops waiting for it) saves a world: then
+    // nothing is drawn.
+    const late = setup({ firstMapWaitMs: 5 })
     await late.init()
     const held = gate()
     let holding = true
@@ -256,7 +271,7 @@ describe('the first map of a big project (WP4a)', () => {
     const compiling = h.call<WorldDoc>('compile', 'k1', snap, HEAD)
     await new Promise((r) => setTimeout(r, 20))
     h.state.clock += PRESCAN_TTL_MS * 10
-    expect((await h.call<WorldDoc>('get', 'k1')).provisional).toBe(true)
+    expect((await h.pane()).provisional).toBe(true)
     globs.open()
     expect(await compiling).not.toHaveProperty('provisional')
 
@@ -264,10 +279,10 @@ describe('the first map of a big project (WP4a)', () => {
     await lost.init()
     await lost.call('snapshotFromFiles', '/r', early())
     await until(() => lost.updated() === 1)
-    expect((await lost.call<WorldDoc>('get', 'k1')).provisional).toBe(true)
+    expect((await lost.pane()).provisional).toBe(true)
     lost.state.clock += PRESCAN_TTL_MS + 1
-    expect(await lost.call('get', 'k1')).toBeNull()
-    expect(await lost.call('get', 'k1')).toBeNull()
+    expect(await lost.pane()).toBeNull()
+    expect(await lost.pane()).toBeNull()
 
     const failed = setup()
     await failed.init()
@@ -275,7 +290,165 @@ describe('the first map of a big project (WP4a)', () => {
     await until(() => failed.updated() === 1)
     failed.state.saveFails = true
     await expect(failed.call('compile', 'k1', s, HEAD)).rejects.toThrow('disk full')
-    expect(await failed.call('get', 'k1')).toBeNull()
+    expect(await failed.pane()).toBeNull()
+    // The pane is told the run ended with no world, and why, so it shows the error and Try again (fix round 1, I2).
+    expect(failed.failures()).toEqual(['disk full'])
+    // A run that fails with no first map up says nothing more than its own rejection.
+    const again = await failed.call<GraphSnapshot>('snapshotFromFiles', '/r')
+    await expect(failed.call('compile', 'k1', again, HEAD)).rejects.toThrow('disk full')
+    expect(failed.failures()).toEqual(['disk full'])
+    // A thrown value that is not an Error is said as text.
+    const odd = setup()
+    await odd.init()
+    const o = await odd.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    await until(() => odd.updated() === 1)
+    odd.state.loadHook = () => {
+      throw 'store said no'
+    }
+    await expect(odd.call('compile', 'k1', o, HEAD)).rejects.toThrow()
+    expect(odd.failures()).toEqual(['store said no'])
+  })
+
+  it('a snapshot that fails after its first map is drawn drops that map and tells the pane why (fix round 1, M2)', async () => {
+    const many = Array.from({ length: 100 }, (_, i) => `src/f${String(i).padStart(3, '0')}.ts`)
+    const reads = gate()
+    let throwNow = false
+    // The first reads wait; once the first map is up the next read throws outright (a read that rejects only reads
+    // as absent), which ends the snapshot.
+    const readSource = vi.fn((p: string): Promise<string | null> => {
+      if (throwNow) throw new Error('disk gone')
+      return reads.wait.then(() => (p.endsWith('.ts') ? 'export const x = 1\n' : null))
+    })
+    const h = setup({ listFiles: async () => many, readSource })
+    await h.init()
+    const snapshot = h.call('snapshotFromFiles', '/r', early())
+    const failed = expect(snapshot).rejects.toThrow('disk gone')
+    await until(() => h.updated() === 1)
+    expect((await h.pane()).provisional).toBe(true)
+    throwNow = true
+    reads.open()
+    await failed
+    expect(await h.pane()).toBeNull()
+    expect(h.failures()).toEqual(['disk gone'])
+    // No read starts after the first that threw (eachLimit stops, fix round 1 M9): the 32 that waited, and at most
+    // one more for each of the 32 workers as they finish.
+    expect(readSource.mock.calls.length).toBeLessThanOrEqual(64)
+    expect(readSource.mock.calls.length).toBeLessThan(many.length)
+  })
+
+  it('a second snapshot for a run already going neither lowers its progress nor draws a second first map (fix round 1, M1)', async () => {
+    const globs = gate()
+    let holdGlob = false
+    const h = setup({ glob: async () => (holdGlob ? (await globs.wait, []) : []) })
+    await h.init()
+    const snap = await h.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    await until(() => h.updated() === 1)
+    // Shown and not yet compiled: another snapshot draws nothing new.
+    await h.call('snapshotFromFiles', '/r', early())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(h.updated()).toBe(1)
+    holdGlob = true
+    const compiling = h.call<WorldDoc>('compile', 'k1', snap, HEAD)
+    await new Promise((r) => setTimeout(r, 20))
+    const before = Math.max(...h.progress().map((p) => p.pct))
+    const at = h.progress().length
+    // While the compile runs: the snapshot's own percentages never go below where the run got to.
+    await h.call('snapshotFromFiles', '/r', early())
+    expect(h.progress().length).toBeGreaterThan(at)
+    for (const p of h.progress().slice(at)) expect(p.pct).toBeGreaterThanOrEqual(before)
+    globs.open()
+    await compiling
+    expect(h.updated()).toBe(2)
+  })
+
+  it('a compile waits for the first map still being drawn and starts from its positions; one that waits too long starts without it (fix round 1, M4)', async () => {
+    const h = setup()
+    await h.init()
+    // The first map's store read is held, so the snapshot (and the compile's call) finish before the map is drawn.
+    const held = gate()
+    let holding = true
+    h.state.loadHook = () => (holding ? ((holding = false), held.wait) : undefined)
+    const snap = await h.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    const compiling = h.call<WorldDoc>('compile', 'k1', snap, HEAD)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(h.updated()).toBe(0)
+    held.open()
+    const doc = await compiling
+    // The first map was drawn while the compile waited, then replaced.
+    expect(h.updated()).toBe(2)
+    expect(h.out.find((m) => m.kind === 'updated')).toEqual({ kind: 'updated', projectKey: 'k1' })
+    expect(doc).not.toHaveProperty('provisional')
+
+    const slow = setup({ firstMapWaitMs: 5 })
+    await slow.init()
+    const stuck = gate()
+    let hold = true
+    slow.state.loadHook = () => (hold ? ((hold = false), stuck.wait) : undefined)
+    const s = await slow.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    // The compile gives up waiting and makes the world; the first map, drawn after the run ended, is never shown.
+    const got = await slow.call<WorldDoc>('compile', 'k1', s, HEAD)
+    expect(got).not.toHaveProperty('provisional')
+    stuck.open()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(slow.updated()).toBe(1)
+    expect(await slow.pane()).toEqual(got)
+  })
+
+  it('a run whose compile never came stops counting: its progress and first map go once its scans would (fix round 1, M5)', async () => {
+    const h = setup()
+    await h.init()
+    await h.call('snapshotFromFiles', '/r', early())
+    await until(() => h.updated() === 1)
+    // Inside the time a compile has to come, a later snapshot keeps it.
+    await h.call('snapshotFromFiles', '/other')
+    expect((await h.pane()).provisional).toBe(true)
+    h.state.clock += PRESCAN_TTL_MS + 1
+    // Past it, any later snapshot sweeps it: the first map is gone, and a new run starts its progress from 0.
+    await h.call('snapshotFromFiles', '/other')
+    expect(await h.pane()).toBeNull()
+    const at = h.progress().length
+    await h.call('snapshotFromFiles', '/r', early())
+    expect(h.progress()[at]).toMatchObject({ stage: 'structure', pct: 0 })
+    // A fresh first map is drawn for the new run.
+    await until(() => h.updated() === 2)
+    expect((await h.pane()).provisional).toBe(true)
+  })
+
+  it("a watcher's compile never takes the scans a snapshot made for a person's run (fix round 1, M6)", async () => {
+    const h = setup({ debounceMs: 1 })
+    await h.init()
+    const snap0 = await h.call<GraphSnapshot>('snapshotFromFiles', '/r')
+    await h.call('compile', 'k1', snap0, HEAD)
+    // A person's run snapshots the folder; before its compile, a watched change recompiles.
+    const snap = await h.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    h.readSource.mockClear()
+    const saved = h.updated()
+    await h.call('notifyChanged', 'k1', snap, HEAD, ['src/lib/util.ts'])
+    await until(() => h.updated() > saved)
+    // The watcher read for itself...
+    expect(h.readSource).toHaveBeenCalled()
+    h.readSource.mockClear()
+    // ...and the person's compile still finds its own scans: no file read again.
+    await h.call('compile', 'k1', snap, HEAD)
+    expect(h.readSource).not.toHaveBeenCalled()
+    // Scans a snapshot made for no run are a watcher's to take: the compile after it finds none and reads for itself.
+    const plain = await h.call<GraphSnapshot>('snapshotFromFiles', '/r')
+    const n = h.updated()
+    await h.call('notifyChanged', 'k1', plain, HEAD, ['src/lib/util.ts'])
+    await until(() => h.updated() > n)
+    h.readSource.mockClear()
+    await h.call('compile', 'k1', plain, HEAD)
+    expect(h.readSource).toHaveBeenCalled()
+  })
+
+  it('firstMap: the listing grouped and laid out, named by the code, with the processes its folders run in and nothing read', () => {
+    const files = ['src/main/index.ts', 'src/main/ipc.ts', 'src/renderer/app.tsx', 'src/renderer/view.tsx', 'docs/notes.ts']
+    const doc = firstMap({ root: '/r', files, fileImports: {}, symbols: [], callEdges: [] } as unknown as GraphSnapshot, 'k1', { head: 'h', dirty: true }, 7)
+    expect(doc).toMatchObject({ projectKey: 'k1', generatedAt: 7, sourceRevision: { head: 'h', dirty: true }, provisional: true, edges: [], tours: [] })
+    expect(doc.buildings.flatMap((b) => b.members).sort()).toEqual([...files].sort())
+    expect(Object.keys(doc.processes).sort()).toEqual(['main', 'renderer'])
+    expect(doc.buildings.every((b) => b.status === 'gap' && b.nameState === 'observed')).toBe(true)
+    for (const b of doc.buildings) expect(doc.layout.positions[b.id]).toHaveLength(3)
   })
 
   it('integration: a 3,000-file folder on disk is drawn before its files are read, and well inside the budgets', async () => {
@@ -302,7 +475,7 @@ export const v = ${i}
     const snap = await h.call<GraphSnapshot>('snapshotFromFiles', root, early())
     snapAt = Date.now() - t0
     await until(() => firstAt > 0)
-    const first = await h.call<WorldDoc>('get', 'k1')
+    const first = await h.pane()
     expect(first.provisional).toBe(true)
     expect(first.buildings.flatMap((b) => b.members)).toHaveLength(FOLDERS * PER)
     const doc = await h.call<WorldDoc>('compile', 'k1', snap, HEAD)

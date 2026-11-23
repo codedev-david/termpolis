@@ -129,7 +129,8 @@ export interface WorldReadResult {
 /** A compile stage's progress, pushed while a world compiles. `root` is the folder the renderer asked about. */
 export interface WorldProgressEvent { root: string; projectKey: string; stage: string; pct: number }
 /** A stored world changed after files changed (the watcher's recompile finished). */
-export interface WorldUpdatedEvent { root: string; projectKey: string }
+/** A world was saved; with `error`, the run that drew a first map ended without one (the pane shows the error). */
+export interface WorldUpdatedEvent { root: string; projectKey: string; error?: string }
 
 // ---- Lumopolis ask (renderer <-> main): one question about the world, answered by the user's agent ----
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string; /** The model id for the Lumopolis agent; absent means the CLI's own default. */ model?: string; /** The design proposal on show (an id in doc.layers.plan); main looks it up and adds it to the question. */ proposalId?: string }

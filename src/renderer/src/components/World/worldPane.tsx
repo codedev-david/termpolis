@@ -135,6 +135,33 @@ export function cardMeetsLegend(width: number, legend: number): boolean {
   return width > 0 && CARD_INSET_PX + Math.min(CARD_WIDTH_PX, width - CARD_INSET_PX * 2) + CARD_CLEARANCE_PX > width - legend
 }
 
+/** The narrowest the notice's row beside an open card gets before the notice moves to a band above the ask bar: the
+ *  room cardMaxHeight keeps beside a card in a wide pane, so the notice goes below the card only where that card is
+ *  capped short (a narrow pane). */
+export const NOTICE_MIN_PX = CARD_MIN_FREE_PX
+
+/** Where the notice slot goes, in the stage's own (zoomed) pixels: centred at `center`, at most `width` wide, at `top`
+ *  from the top or, below a card, at `bottom` from the bottom. */
+export interface NoticeBox { center: number; width: number; top?: number; bottom?: number }
+
+/**
+ * The notice's place in the free area of a stage `width` wide (fix round 1, I4): never over the legend, drawn
+ * `legend` pixels from the right edge (LEGEND_RESERVE open, LEGEND_CHIP_RESERVE as a chip, 0 when not shown), nor over
+ * an open card (`card`) at the top left. Its row at the top runs from the left edge, or from beside the card, to the
+ * legend; where the card leaves less than NOTICE_MIN_PX beside it the notice goes to a band just above the ask bar
+ * (`ask` pixels from the bottom: askReserve, which already keeps a clearance), where the narrow pane's capped card
+ * (cardMaxHeight) leaves the city room. Null until the stage is measured.
+ */
+export function noticeBox(width: number, legend: number, card: boolean, ask: number): NoticeBox | null {
+  if (!(width > 0)) return null
+  const right = width - (legend > 0 ? legend : CARD_INSET_PX)
+  const box = (left: number): { center: number; width: number } => ({ center: (left + right) / 2, width: Math.max(0, right - left) })
+  if (!card) return { ...box(CARD_INSET_PX), top: CARD_INSET_PX }
+  const beside = CARD_INSET_PX + Math.min(CARD_WIDTH_PX, width - CARD_INSET_PX * 2) + CARD_INSET_PX
+  if (right - beside >= NOTICE_MIN_PX) return { ...box(beside), top: CARD_INSET_PX }
+  return { ...box(CARD_INSET_PX), bottom: Math.max(CARD_INSET_PX, ask) }
+}
+
 /** Where the pane lies over the terminals' column when the row is too narrow for both (null: beside them). */
 export interface WorldPaneOverlay { left: number }
 

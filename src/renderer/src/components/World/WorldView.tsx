@@ -28,7 +28,7 @@
 // (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
 // without guessing at the 3D scene. Off in every normal run.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { worldTitle } from '../../../../shared/world/worldTitle'
@@ -52,7 +52,7 @@ import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
 import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveFrom, legendReserveScaled, WorldLegend } from './WorldLegend'
-import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
+import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, noticeBox, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import { tourCard } from '../../world/engine/cards'
@@ -388,7 +388,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           setMapping(false)
           // The compile is over, whatever it ended with: its last progress is not a run still going.
           setProgress(null)
-          if (!c.success) { setError(c.error); return }
+          // A first map drawn while it ran goes with it: the error and its Try again show, never that map for good.
+          if (!c.success) { setDoc((d) => (d && d.provisional === true ? null : d)); setError(c.error); return }
           setDoc(c.data)
           // The terminal's project was just mapped: it joins the recent worlds now, not only when it is
           // mapped from the home. A folder main refuses (not a project) stays off the list, silently.
@@ -398,6 +399,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .catch((e: unknown) => {
         if (!live) return
         setMapping(false)
+        setDoc((d) => (d && d.provisional === true ? null : d))
         setError(messageOf(e))
       })
     return () => { live = false }
@@ -439,13 +441,28 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       if (!mine(e) || at === null) return
       // A saved world ends the run that made it; a run that goes on reports its progress again.
       setProgress(null)
+      // The run that drew the first map ended without a world (it failed, or the world process stopped).
+      const failed = typeof e.error === 'string' ? e.error : null
       window.termpolis.worldGet(at).then(
         (res) => {
-          if (!res.success || !res.data || rootRef.current !== at) return
+          if (rootRef.current !== at) return
+          const got = res.success ? res.data : null
+          if (failed !== null) {
+            // Only a pane still on a first map (or on none) hears of it: one showing a saved world keeps it as it is.
+            const shown = docRef.current
+            if (shown !== null && shown.provisional !== true) return
+            if (got === null || got.provisional === true) {
+              setDoc(null)
+              setMapping(false)
+              setError(failed)
+              return
+            }
+          }
+          if (got === null) return
           // Loading a world stops the answer's tour, so it waits until the answer is over.
-          if (askBusyRef.current) { heldDocRef.current = res.data; return }
+          if (askBusyRef.current) { heldDocRef.current = got; return }
           setError(null)
-          setDoc(res.data)
+          setDoc(got)
         },
         () => undefined,
       )
@@ -815,6 +832,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // named by its title in the recent worlds, and so is a cloned repository: its folder is named by a hash.
   // Main titles an export the same way (shared/world/worldTitle.ts), so the page and the pane never differ.
   const home = world.kind === 'home'
+  // The notice slot sits in the free area: beside the legend and the open card, or above the ask bar below a card in a
+  // narrow pane (noticeBox), in the slot's zoomed pixels. Centred in the pane until the stage is measured.
+  const legendShown = webgl && !shows2d && doc !== null && !home && !legendAside
+  const noticeSpot = noticeBox(stageSize[0] / scale, legendShown ? (legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE) : 0, card !== null, below / scale)
+  const noticeAt: CSSProperties = noticeSpot === null
+    ? { top: 12, left: '50%', maxWidth: 'calc(100% - 24px)' }
+    : { left: noticeSpot.center, width: 'max-content', maxWidth: noticeSpot.width, ...(noticeSpot.top !== undefined ? { top: noticeSpot.top } : { bottom: noticeSpot.bottom }) }
   const projectName = worldTitle(entries, { root: worldRoot, designKey })
   const worldKey = worldRoot ?? designKey
   // The canvas's text alternative names the project shown.
@@ -880,7 +904,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       if (openedAs !== asked.world) { setPendingExport(null); return }
       asked.key = worldKey
     } else if (worldKey !== null && worldKey !== asked.key) { setPendingExport(null); return }
-    if (!doc || worldKey === null) return
+    // A first map from the listing is not the world yet: the ask waits for the complete one (fix round 1, I1).
+    if (!doc || doc.provisional === true || worldKey === null) return
     setPendingExport(null)
     // The palette has closed: take the focus, so Esc reaches the dialog. A dropped ask leaves the focus alone.
     if (openExportRef.current(pendingExport)) (dialogRef.current as HTMLDivElement).focus()
@@ -927,7 +952,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         relayoutDisabled={worldRoot === null || !doc || busy}
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
-        onExport={doc && worldKey !== null ? openExport : undefined}
+        onExport={doc && doc.provisional !== true && worldKey !== null ? openExport : undefined}
         onBuildIt={designKey !== null && buildIt && doc ? openBuildIt : undefined}
         dialogOpen={dialogOpen}
         bookmarks={bookmarks}
@@ -977,7 +1002,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {webgl && !shows2d && doc && !home && !legendAside && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
+        {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"
@@ -1004,7 +1029,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           </div>
         )}
         {(repoUpdate || busy || notice || saved || recompileShown) && (
-          <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', maxWidth: 'calc(100% - 24px)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
+          <div style={{ position: 'absolute', ...noticeAt, transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (
               <SignInNeededNotice
                 host={repoUpdate.host}

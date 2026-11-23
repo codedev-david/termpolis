@@ -245,7 +245,11 @@ class Heap<T> {
     while (i > 0) {
       const p = (i - 1) >> 1
       if (!this.before(a[i], a[p])) break
-      ;[a[i], a[p]] = [a[p], a[i]]
+      // A swap through a local, not a destructuring: that allocates an array per step, and a big grouping takes
+      // hundreds of thousands of steps (WP4a: the first map of a 50,000-file listing).
+      const x = a[i]
+      a[i] = a[p]
+      a[p] = x
       i = p
     }
   }
@@ -264,7 +268,9 @@ class Heap<T> {
         if (l < a.length && this.before(a[l], a[m])) m = l
         if (r < a.length && this.before(a[r], a[m])) m = r
         if (m === i) break
-        ;[a[i], a[m]] = [a[m], a[i]]
+        const x = a[i]
+        a[i] = a[m]
+        a[m] = x
         i = m
       }
     }
@@ -796,15 +802,23 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     live--
     bSize[t] += bSize[b]
     bMin[t] = Math.min(bMin[t], bMin[b])
-    for (const [k, c] of bStems[b]) bStems[t].set(k, (bStems[t].get(k) ?? 0) + c)
-    bTop[t] = topOf(bStems[t])
-    for (const [k, w] of bAdj[b]) {
+    // Counts in t only grow, so its largest is the old one or a count this merge raised: no pass over all of t's
+    // stems per merge, which made a big flat folder's grouping quadratic in garbage (WP4a fix round 1, I5).
+    const into = bStems[t]
+    let top = bTop[t]
+    bStems[b].forEach((c, k) => {
+      const v = (into.get(k) ?? 0) + c
+      into.set(k, v)
+      if (v > top) top = v
+    })
+    bTop[t] = top
+    bAdj[b].forEach((w, k) => {
       bAdj[k].delete(b)
       if (k !== t) {
         bump(bAdj[t], k, w)
         bump(bAdj[k], t, w)
       }
-    }
+    })
     bAdj[b].clear()
     heap.push([key(t), t, bStamp[t]])
   }

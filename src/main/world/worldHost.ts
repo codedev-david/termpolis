@@ -21,7 +21,7 @@ import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
-import { compileWorld, compileWorldStaged, createRecompileScheduler, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
+import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
 import type { StageCache, StageFile } from './stageCache'
 import type { TestRun } from './testStatus'
@@ -128,7 +128,9 @@ export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError 
 export interface WorldOkMsg { kind: 'result'; id: number; ok: true; result: unknown }
 export interface WorldErrMsg { kind: 'result'; id: number; ok: false; error: SerializedError }
 export interface WorldProgressMsg { kind: 'progress'; projectKey: string; stage: string; pct: number }
-export interface WorldUpdatedMsg { kind: 'updated'; projectKey: string }
+/** A world was saved (or, with `error`, the run that drew a first map ended without one: the pane drops that map and
+ *  shows the error, fix round 1 I2). */
+export interface WorldUpdatedMsg { kind: 'updated'; projectKey: string; error?: string }
 export interface WorldLlmMsg { kind: 'llm'; id: number; projectKey: string; prompt: string }
 /** The host stopped waiting for a labelling request (its limit passed): main drops it, and never starts it if it still waits. */
 export interface WorldLlmCancelMsg { kind: 'llm-cancel'; id: number }
@@ -430,6 +432,8 @@ export interface WorldHostDeps {
   onLabelRunEnd?: (projectKey: string) => void
   /** The fewest files a listing needs for a first map drawn from it (default PROVISIONAL_MIN_FILES). */
   provisionalMinFiles?: number
+  /** How long a compile waits for its first map still being drawn (default FIRST_MAP_WAIT_MS). */
+  firstMapWaitMs?: number
 }
 
 /**
@@ -441,6 +445,8 @@ export const PROVISIONAL_MIN_FILES = 2000
 export const PRESCAN_TTL_MS = 120_000
 /** The most folders whose snapshot scans are kept at once (each is taken by the compile that follows it). */
 const MAX_PRESCANS = 4
+/** How long a compile waits for its first map still being drawn before it starts without it (M4). */
+export const FIRST_MAP_WAIT_MS = 10_000
 
 const slashRoot = (root: string): string => root.replace(/\\/g, '/').replace(/\/+$/, '')
 
@@ -533,14 +539,18 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
   const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
+  const firstMapWait = deps.firstMapWaitMs ?? FIRST_MAP_WAIT_MS
   /**
    * Per folder (the snapshot's root): the scans made from the text the snapshot read, so the compile after it reads
    * no file a second time (WP4a). Taken by that compile; one older than PRESCAN_TTL_MS is not used.
    */
-  const prescans = new Map<string, { at: number; scans: Map<string, StageFile | null> }>()
-  const takePrescan = (root: string): Map<string, StageFile | null> | undefined => {
+  const prescans = new Map<string, { at: number; scans: Map<string, StageFile | null>; forRun: boolean }>()
+  /** A watcher's compile (`run` false) never takes the scans a snapshot made for a person's run: those are that
+   *  run's, and a file edited since would be scanned from its old text (fix round 1, M6). */
+  const takePrescan = (root: string, run = true): Map<string, StageFile | null> | undefined => {
     const k = slashRoot(root)
     const p = prescans.get(k)
+    if (p && p.forRun && !run) return undefined
     prescans.delete(k)
     return p && now() - p.at <= PRESCAN_TTL_MS ? p.scans : undefined
   }
@@ -553,6 +563,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const provisional = new Map<string, { doc: WorldDoc; at: number }>()
   /** Projects whose compile call is running in the host. */
   const running = new Set<string>()
+  /** Per project: the first map being drawn now, which its compile waits for (bounded) before it starts (M4). */
+  const drawing = new Map<string, Promise<void>>()
+  /** Per project: when a person's run's snapshot ended, so a run whose compile never came stops counting (M5). */
+  const snapAt = new Map<string, number>()
   /**
    * Per project: the highest progress posted in the run a person started (its snapshot, then its compile), so the
    * pane's percentage only ever rises while that run goes on.
@@ -832,25 +846,48 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   }
 
   /**
-   * The first map of a world not compiled yet, from its listing alone (WP4a): every file a part, no file read, no
-   * test runs, labels from the label cache. Kept in memory and pushed as `updated`, so the pane draws it while the
-   * files are read; the full compile starts from its positions and replaces it. Nothing is drawn when a world is
-   * already stored or the run ended first. A failure here leaves only the full compile.
+   * The first map of a world not compiled yet, from its listing alone (WP4a): every file a part, grouped by its path,
+   * named by the code (firstMap: nothing read, no lines, no test runs, no model, no label cache). Kept in memory and
+   * pushed as `updated`, so the pane draws it while the files are read; the full compile starts from its positions
+   * and replaces it. Nothing is drawn when a world is already stored or the run ended first. A failure here leaves
+   * only the full compile.
    */
-  const drawFirst = async (st: HostState, key: string, paths: GraphSnapshot, head: WorldHead): Promise<void> => {
-    try {
-      if (await st.store.load(key)) return
-      // Nothing is read: every file's scan is null (no boundaries, no imports), no test report is globbed, no runs are
-      // asked of main, no progress is posted (the reads report it), and labels come from the cache alone (no model).
-      const d = depsFor(st, key, paths, null)
-      const quiet: CompileDeps = { readFile: d.readFile, readSource: d.readSource, glob: async () => [], label: d.label, now, scanned: () => null, annotations: d.annotations }
-      const out = await compile({ snap: paths, projectKey: key, head, previous: null }, quiet)
-      // The run ended first (its compile saved a world, or the snapshot failed): nothing to draw.
-      if (!runPct.has(key)) return
-      provisional.set(key, { doc: { ...out.doc, provisional: true }, at: now() })
-      post({ kind: 'updated', projectKey: key })
-    } catch (e) {
-      console.warn('[world] first map from the listing failed:', e)
+  const drawFirst = (st: HostState, key: string, paths: GraphSnapshot, head: WorldHead): void => {
+    const run = (async (): Promise<void> => {
+      try {
+        if (await st.store.load(key)) return
+        const doc = firstMap(paths, key, head, now())
+        // The run ended first (its compile saved a world, or the snapshot failed): nothing to draw.
+        if (!runPct.has(key)) return
+        provisional.set(key, { doc, at: now() })
+        post({ kind: 'updated', projectKey: key })
+      } catch (e) {
+        console.warn('[world] first map from the listing failed:', e)
+      } finally {
+        drawing.delete(key)
+      }
+    })()
+    drawing.set(key, run)
+  }
+
+  /**
+   * The run ended without a world while its first map was up: the map goes, and the pane is told why, so it shows the
+   * error and its Try again rather than the first map for good (fix round 1, I2).
+   */
+  const dropFirst = (key: string, e: unknown): void => {
+    if (!provisional.delete(key)) return
+    post({ kind: 'updated', projectKey: key, error: e instanceof Error ? e.message : String(e) })
+  }
+
+  /** Drops what a run whose compile never came left behind: its progress and its first map, after PRESCAN_TTL_MS (M5). */
+  const sweepRuns = (): void => {
+    const at = now()
+    for (const [k, t] of snapAt) {
+      // A compile that came took its key out (and a snapshot made while one runs never puts it in).
+      if (at - t <= PRESCAN_TTL_MS) continue
+      snapAt.delete(k)
+      runPct.delete(k)
+      provisional.delete(k)
     }
   }
 
@@ -880,7 +917,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
               missed = true
               return null
             }
-            const out = await compile(input, withPrescan(depsFor(st, key, cur.snap, labelled ? cacheOnly : null), takePrescan(cur.snap.root)))
+            const out = await compile(input, withPrescan(depsFor(st, key, cur.snap, labelled ? cacheOnly : null), takePrescan(cur.snap.root, false)))
             const from = { snap: cur.snap, head: cur.head, ...planArg(cur.plan) }
             await saveCompiled(st, key, out, from)
             st.checked.add(key)
@@ -915,7 +952,15 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const scans = takePrescan(snap.root)
         runPct.set(key, scans ? runPct.get(key) ?? 0 : 0)
         running.add(key)
+        snapAt.delete(key)
         try {
+          // A first map still being drawn is waited for (bounded), so this run starts from where its parts are drawn.
+          const pending = drawing.get(key)
+          if (pending) {
+            let timer: ReturnType<typeof setTimeout> | undefined
+            await Promise.race([pending, new Promise<void>((r) => (timer = setTimeout(r, firstMapWait)))])
+            clearTimeout(timer)
+          }
           // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
           // the same seed) and the next layout round (so the window knows the parts moved on purpose);
           // everything else compile carries from previous still carries.
@@ -925,33 +970,38 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
               ? { ...stored, layout: { seed: stored.layout.seed, positions: {}, round: (stored.layout.round ?? 0) + 1 } }
               : stored
           // A first map drawn from the listing: the full world starts from where its parts were drawn.
-          const drawn = previous === null ? provisional.get(key)?.doc : undefined
+          const drawn = previous === null ? provisional.get(key)?.doc.layout : undefined
           // With a stored stage cache every file is read but only one whose text changed is scanned again; a file the
           // snapshot just read is scanned from that text, never read twice.
           const cache = await stagesOf(st, key)
           st.checked.delete(key)
-          const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn.layout } : {}) }
+          const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn } : {}) }
           const out = await compile(input, withPrescan(depsFor(st, key, snap, labelled ? cacheOnly : null), scans))
           // The run's own progress is over: a label run after it reports from its own start.
           runPct.delete(key)
-          provisional.delete(key)
           await saveCompiled(st, key, out, { snap, head, ...plan })
+          // Saved and pushed: the first map has been replaced.
+          provisional.delete(key)
           // Every file was read and checked, and the stages saved: watcher runs may trust them now.
           st.checked.add(key)
           if (missed) labelLater(st, key, out.doc, { snap, head, ...plan }, out.cache)
           return out.doc
+        } catch (e) {
+          dropFirst(key, e)
+          throw e
         } finally {
           running.delete(key)
           runPct.delete(key)
-          provisional.delete(key)
         }
       })
     },
-    // The stored world; before the first one is saved, the first map drawn from the listing (drawFirst), if any.
-    get: async (projectKey: unknown) => {
+    // The stored world; before the first one is saved, and only for the pane (`provisional`), the first map drawn
+    // from the listing (drawFirst), if any. Export and Ask never see a first map (fix round 1, I1).
+    get: async (projectKey: unknown, opts?: { provisional?: unknown }) => {
       const key = needKey(projectKey)
       const stored = await st.store.load(key)
       if (stored) return stored
+      if (opts?.provisional !== true) return null
       const drawn = provisional.get(key)
       // A first map whose compile never came (the call that asked for it failed before it) is dropped.
       if (drawn && !running.has(key) && now() - drawn.at > PRESCAN_TTL_MS) provisional.delete(key)
@@ -1010,8 +1060,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
       const scans = new Map<string, StageFile | null>()
       let shown = 0
+      sweepRuns()
       if (early !== null) {
-        runPct.set(early, 0)
+        // A run already going for this project keeps its percentage: a second snapshot never takes it back (M1).
+        runPct.set(early, runPct.get(early) ?? 0)
         postProgress(early, 'structure', 0)
       }
       try {
@@ -1022,7 +1074,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           ...(early !== null
             ? {
                 onListed: (paths: GraphSnapshot) => {
-                  if (paths.files.length >= provisionalMin) void drawFirst(st, early, paths, head)
+                  // One first map per run: none while one is drawn, shown or its compile runs (M1).
+                  if (paths.files.length < provisionalMin || drawing.has(early) || provisional.has(early) || running.has(early)) return
+                  drawFirst(st, early, paths, head)
                 },
                 onRead: (done: number, total: number) => {
                   const pct = 5 + Math.floor((35 * done) / total)
@@ -1035,11 +1089,15 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const at = now()
         for (const [k, p] of prescans) if (at - p.at > PRESCAN_TTL_MS) prescans.delete(k)
         prescans.delete(slashRoot(root))
-        prescans.set(slashRoot(root), { at, scans })
+        prescans.set(slashRoot(root), { at, scans, forRun: early !== null })
+        if (early !== null && !running.has(early)) snapAt.set(early, at)
         while (prescans.size > MAX_PRESCANS) prescans.delete(prescans.keys().next().value as string)
         return snap
       } catch (e) {
-        if (early !== null) runPct.delete(early)
+        if (early !== null && !running.has(early)) {
+          runPct.delete(early)
+          dropFirst(early, e)
+        }
         throw e
       }
     },

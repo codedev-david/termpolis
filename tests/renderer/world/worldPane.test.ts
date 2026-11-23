@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import {
-  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_READABLE_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneOverlays, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_READABLE_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, noticeBox, NOTICE_MIN_PX, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneOverlays, worldPaneStyle, useWorldPaneWidth,
   UiScaleContext, useUiScale, useUiZoom,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
@@ -334,5 +334,63 @@ describe('the pane scale', () => {
     const at = (s: number) => ({ children }: { children: ReactNode }) => createElement(UiScaleContext.Provider, { value: s }, children)
     expect(renderHook(() => useUiZoom(), { wrapper: at(1) }).result.current).toEqual({})
     expect(renderHook(() => useUiZoom(), { wrapper: at(1.5) }).result.current).toEqual({ zoom: 1.5 })
+  })
+})
+
+describe('noticeBox: the notice sits in the free area, clear of the legend and the card (fix round 1, I4)', () => {
+  /** The notice's horizontal span at `width` max-content (or its box's width when narrower). */
+  const span = (b: { center: number; width: number }, w: number): [number, number] => {
+    const half = Math.min(w, b.width) / 2
+    return [b.center - half, b.center + half]
+  }
+  const LEGEND_OPEN = 244
+  const CHIP = 108
+  it('is null until the stage is measured', () => {
+    expect(noticeBox(0, 0, false, 0)).toBeNull()
+  })
+  it('without a card or legend: the width of the pane less its edges, centred, at the top', () => {
+    expect(noticeBox(800, 0, false, 0)).toEqual({ center: 400, width: 776, top: CARD_INSET_PX })
+  })
+  it('beside the legend: between the left edge and the legend', () => {
+    const b = noticeBox(800, LEGEND_OPEN, false, 0)!
+    expect(b).toEqual({ center: (12 + 800 - LEGEND_OPEN) / 2, width: 800 - LEGEND_OPEN - 12, top: 12 })
+    const [, r] = span(b, 10_000)
+    expect(r).toBeLessThanOrEqual(800 - LEGEND_OPEN)
+  })
+  it('beside an open card where the row leaves room: right of the card, left of the legend', () => {
+    const b = noticeBox(1200, LEGEND_OPEN, true, 60)!
+    const [l, r] = span(b, 10_000)
+    expect(l).toBeGreaterThanOrEqual(CARD_INSET_PX + CARD_WIDTH_PX + CARD_INSET_PX)
+    expect(r).toBeLessThanOrEqual(1200 - LEGEND_OPEN)
+    expect(b.top).toBe(CARD_INSET_PX)
+    expect(b.width).toBeGreaterThanOrEqual(NOTICE_MIN_PX)
+  })
+  it('in a pane too narrow beside the card: a band above the ask bar, clear of the legend', () => {
+    const b = noticeBox(416, 0, true, 70)!
+    expect(b).toEqual({ center: 208, width: 392, bottom: 70 })
+    const c = noticeBox(560, CHIP, true, 0)!
+    expect(c.bottom).toBe(CARD_INSET_PX)
+    expect(span(c, 10_000)[1]).toBeLessThanOrEqual(560 - CHIP)
+  })
+  it('never has a negative width', () => {
+    expect(noticeBox(100, LEGEND_OPEN, false, 0)!.width).toBe(0)
+  })
+  it('at the responsive sizes, the notice never meets the open legend or the card', () => {
+    // Pane widths in pane pixels (the stage over its scale): 416 px dragged, a 1280x800@2x laptop's default 40% (512),
+    // 768x1024 (the pane over the terminals, 768) and 5K's default (2048 at scale 2: 1024).
+    for (const w of [416, 480, 512, 640, 768, 1024, 1366]) {
+      for (const card of [false, true]) {
+        for (const legend of [0, CHIP, LEGEND_OPEN]) {
+          // The legend steps aside where the card would meet it (cardMeetsLegend), as the pane does.
+          const shown = legend > 0 && !(card && cardMeetsLegend(w, legend)) ? legend : 0
+          const b = noticeBox(w, shown, card, 64)!
+          const [l, r] = span(b, 10_000)
+          if (shown > 0) expect(r, `${w} ${card} ${legend}`).toBeLessThanOrEqual(w - shown + 0.001)
+          if (card && b.top !== undefined) expect(l, `${w} card`).toBeGreaterThanOrEqual(CARD_INSET_PX + Math.min(CARD_WIDTH_PX, w - 24) + CARD_INSET_PX)
+          expect(l).toBeGreaterThanOrEqual(CARD_INSET_PX - 0.001)
+          expect(r).toBeLessThanOrEqual(w - CARD_INSET_PX + 0.001)
+        }
+      }
+    }
   })
 })

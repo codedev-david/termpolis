@@ -18,13 +18,20 @@ import { MAP_FILE_CAP } from '../repoFileList'
  */
 export const READ_CONCURRENCY = 32
 
-/** Runs `fn` over `items`, at most `limit` at a time, in order of start. A rejection rejects the whole run. */
+/** Runs `fn` over `items`, at most `limit` at a time, in order of start. A rejection rejects the whole run, and no
+ *  item starts after it: the other workers only finish the item they hold (fix round 1, M9). */
 export async function eachLimit<T>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
   let next = 0
+  let stopped = false
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    while (!stopped && next < items.length) {
       const i = next++
-      await fn(items[i], i)
+      try {
+        await fn(items[i], i)
+      } catch (e) {
+        stopped = true
+        throw e
+      }
     }
   }
   const workers: Promise<void>[] = []
@@ -49,23 +56,20 @@ const folderOf = (file: string): string => (file.includes('/') ? file.slice(0, f
  * (folders and names in code-point order), so a cut anywhere leaves every folder some files.
  */
 export function readOrder(files: readonly string[]): string[] {
-  const rank = new Map<string, number>()
   const seen = new Map<string, number>()
-  // The default sort is code-point (UTF-16 unit) order.
-  const sorted = [...new Set(files)].sort()
-  for (const f of sorted) {
-    const at = `${readTier(f)}\n${folderOf(f)}`
+  // The default sort is code-point (UTF-16 unit) order. Each file's key (tier, rank in its folder, folder) is worked
+  // out once, not again in every comparison (fix round 1, M10).
+  const keyed = [...new Set(files)].sort().map((f): [number, number, string, string] => {
+    const tier = readTier(f)
+    const folder = folderOf(f)
+    const at = `${tier}\n${folder}`
     const n = seen.get(at) ?? 0
     seen.set(at, n + 1)
-    rank.set(f, n)
-  }
-  const key = (f: string): [number, number, string] => [readTier(f), rank.get(f) as number, folderOf(f)]
-  // Two files of one tier and rank are never in one folder (a folder ranks its files 0, 1, 2...), so the folder decides.
-  return sorted.sort((a, b) => {
-    const x = key(a)
-    const y = key(b)
-    return x[0] - y[0] || x[1] - y[1] || (x[2] < y[2] ? -1 : 1)
+    return [tier, n, folder, f]
   })
+  // Two files of one tier and rank are never in one folder (a folder ranks its files 0, 1, 2...), so the folder decides.
+  keyed.sort((x, y) => x[0] - y[0] || x[1] - y[1] || (x[2] < y[2] ? -1 : 1))
+  return keyed.map((k) => k[3])
 }
 
 /** The files a compile reads when `files` holds more than `cap`: the first `cap` in read order. Null when all are read. */

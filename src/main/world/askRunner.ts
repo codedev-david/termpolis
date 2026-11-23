@@ -14,7 +14,7 @@ import type { WorldClient } from './worldClient'
 export interface AskRunnerDeps {
   exec: (req: ExecRequest, deps: ExecDeps) => Promise<ExecResult>
   execDeps: ExecDeps
-  client: Pick<WorldClient, 'get' | 'read'>
+  client: Pick<WorldClient, 'get' | 'read'> & Partial<Pick<WorldClient, 'whenCompiled'>>
   /** The agent every ask runs on (the Lumopolis agent setting). */
   agent(): ExecAgent
   /** The environment (and, for Codex, the proxy base URL) a run in `cwd` gets. A failure here never blocks a question. */
@@ -25,6 +25,10 @@ export interface AskRunnerDeps {
   timeoutMs?: number
   /** How long loading the stored world may take before the ask gives up. Default 15 s. */
   getTimeoutMs?: number
+  /** How long an ask on a project whose first world is still compiling waits for it before it gives up (the client's
+   *  whenCompiled; its first map from the listing is never asked about, fix round 1 I1). Default the compile's own
+   *  call limit, DEFAULT_COMPILE_WAIT_MS. */
+  compileWaitMs?: number
   /** How long each step between the world and the agent (the matches, the run environment, the memory primer) may take
    *  before the ask goes on without it. Default DEFAULT_PREP_TIMEOUT_MS. */
   prepTimeoutMs?: number
@@ -50,6 +54,8 @@ const NOT_MAPPED = 'This project has not been mapped yet.'
 /** Shown for any failure to load the stored world (host down, restarting or too slow): never the raw error. */
 export const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
 export const DEFAULT_GET_TIMEOUT_MS = 15_000
+/** The longest an ask waits for a first world being compiled: the world process's own call limit for a compile. */
+export const DEFAULT_COMPILE_WAIT_MS = 600_000
 /** Each step before the agent gets this long: a memory primer has taken over 100 s on a busy machine, and a question
  *  must not sit at Thinking… for it. A step that runs out is left out, as one that fails is. */
 export const DEFAULT_PREP_TIMEOUT_MS = 10_000
@@ -127,7 +133,14 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       let doc: WorldDoc | null
       try {
         // No background refresh from here: a refreshed world landing mid-answer would wipe the answer.
-        doc = await bounded((signal) => deps.client.get(root, { refresh: false, signal }), deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS, ctl.signal, 'loading the map', log)
+        const getMs = deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS
+        doc = await bounded((signal) => deps.client.get(root, { refresh: false, signal }), getMs, ctl.signal, 'loading the map', log)
+        // No world saved yet while one is being compiled (its first map may be on screen): the ask waits for it.
+        const whenCompiled = deps.client.whenCompiled
+        if (!doc && whenCompiled) {
+          await bounded(() => whenCompiled(root), deps.compileWaitMs ?? DEFAULT_COMPILE_WAIT_MS, ctl.signal, 'waiting for the map', log)
+          doc = await bounded((signal) => deps.client.get(root, { refresh: false, signal }), getMs, ctl.signal, 'loading the map', log)
+        }
       } catch (err) {
         if (ctl.signal.aborted) return cancelled()
         // A limit that ran out was logged by bounded; a host that failed says how, so a retry has a reason on record.

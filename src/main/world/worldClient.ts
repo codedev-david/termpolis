@@ -83,6 +83,9 @@ export interface WorldGetOptions {
   refresh?: boolean
   /** The caller gave up (a cancelled Ask): the call is let go of and rejects with an AbortError. */
   signal?: AbortSignal
+  /** True only for the pane: before the first world is saved, the first map drawn from the listing is returned too.
+   *  Export and Ask never ask for it, so they never take an unfinished map for the project's (fix round 1, I1). */
+  provisional?: boolean
 }
 
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000
@@ -332,7 +335,7 @@ export function createWorldClient(
         emit(progressSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, stage: m.stage, pct: m.pct })
         return
       case 'updated':
-        emit(updatedSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey })
+        emit(updatedSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, ...(typeof m.error === 'string' ? { error: m.error } : {}) })
         return
       case 'llm':
         void answerLlm(tr, m.id, m.projectKey, m.prompt)
@@ -492,7 +495,13 @@ export function createWorldClient(
       runs.delete(run)
       if (runs.size === 0 && inFlight.get(key) === runs) inFlight.delete(key)
     }
-    run.then(done, done)
+    // A compile that ended without a world (the host failed it, stopped, or the call ran out) is pushed with its
+    // error, so a pane showing the first map from the listing, or one opened while it ran, hears how it ended (I2).
+    const failed = (e: unknown): void => {
+      done()
+      emit(updatedSubs, { root, projectKey: key, error: e instanceof Error ? e.message : String(e) })
+    }
+    run.then(done, failed)
     return run
   }
 
@@ -542,7 +551,7 @@ export function createWorldClient(
     async get(root: string, opts: WorldGetOptions = {}): Promise<WorldDoc | null> {
       // The pane's get is a person opening the world; Ask's (no refresh) only reads it.
       const key = keyOf(root, opts.refresh !== false)
-      const doc = await call<WorldDoc | null>('get', [key], undefined, opts.signal)
+      const doc = await call<WorldDoc | null>('get', opts.provisional === true ? [key, { provisional: true }] : [key], undefined, opts.signal)
       // A first map drawn from the listing: the compile that drew it is still running, so nothing is refreshed.
       if (doc && doc.provisional !== true) {
         known.add(key)

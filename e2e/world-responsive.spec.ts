@@ -372,6 +372,29 @@ async function openCard(): Promise<boolean> {
   return false
 }
 
+/** Clicks the first district slab found on a grid across the stage (from the overview a big city's district is one
+ *  slab, and a click on it frames its buildings); false when none is under the bare canvas. */
+async function intoDistrict(): Promise<boolean> {
+  const at = await page.evaluate(() => {
+    const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
+    const host = document.querySelector('[data-testid="world-canvas-host"]')
+    if (!probe || !host) return null
+    const r = host.getBoundingClientRect()
+    for (let row = 4; row <= 44; row++) {
+      for (let col = 4; col <= 44; col++) {
+        const x = r.left + (r.width * col) / 48
+        const y = r.top + (r.height * row) / 48
+        const el = document.elementFromPoint(x, y)
+        if (el && host.contains(el) && probe.pickAt(x, y)?.kind === 'district') return { x, y }
+      }
+    }
+    return null
+  })
+  if (!at) return false
+  await page.mouse.click(at.x, at.y)
+  return true
+}
+
 async function closeCard(): Promise<void> {
   const card = page.locator('[data-testid="world-card"]')
   if (await card.isVisible()) {
@@ -483,6 +506,29 @@ async function toolbarLayout(): Promise<{ rows: number; closeBeside: boolean }> 
     return { rows: rows.length, closeBeside: rows.length > 0 && mid >= rows[0].top && mid <= rows[0].bottom }
   })
 }
+
+/** How many square pixels of the boxes of `a` and `b` lie on each other (0 when either is not on screen). */
+async function overlapOf(a: string, b: string): Promise<number> {
+  return page.evaluate(([sa, sb]) => {
+    const x = document.querySelector(sa)
+    const y = document.querySelector(sb)
+    if (!x || !y) return 0
+    const p = x.getBoundingClientRect()
+    const q = y.getBoundingClientRect()
+    return Math.max(0, Math.min(p.right, q.right) - Math.max(p.left, q.left)) * Math.max(0, Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top))
+  }, [a, b] as const)
+}
+
+/** The layouts the notice is checked at (fix round 1, I4): the 416 px pane it covered the legend in at 1280x800@2x,
+ *  that size's default pane, a tablet and 5K. The macOS reduced run keeps to the MacBook size. */
+const NOTICE_LAYOUTS: Array<{ v: Viewport; width: number | null }> = [
+  { name: '1280x800@2x', width: 416 },
+  { name: '1280x800@2x', width: null },
+  { name: '768x1024', width: null },
+  { name: '5120x2880', width: null },
+]
+  .filter((l) => process.env.RESPONSIVE_REDUCED !== '1' || l.name === '1280x800@2x')
+  .map((l) => ({ v: VIEWPORTS.find((x) => x.name === l.name) as Viewport, width: l.width }))
 
 /** How many square pixels of the open card and the legend (its button or its panel) lie on each other. */
 async function cardOnLegend(): Promise<number> {
@@ -1099,6 +1145,67 @@ test.describe.serial('Lumopolis at every screen size', () => {
       } finally {
         fs.writeFileSync(memoryLockFile, '')
       }
+    }
+  })
+
+  test("a folder past the map's cap: its files note keeps clear of the legend, open or shut, and of a card", async () => {
+    // Fix round 1, I4: the notice slot is laid out in the free area (noticeBox). A folder of more files than a map
+    // walks keeps its "Showing the first …" note up on the complete world, so it can be measured at leisure.
+    test.setTimeout(1_800_000)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-responsive-capped-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'capped', version: '1.0.0' }))
+      for (let f = 0; f < 81; f++) {
+        const folder = path.join(dir, 'src', `f${String(f).padStart(2, '0')}`)
+        fs.mkdirSync(folder, { recursive: true })
+        await Promise.all(Array.from({ length: 250 }, (_, i) => fs.promises.writeFile(path.join(folder, `m${i}.ts`), `export const v${i} = ${i}\n`)))
+      }
+      const mapped = await page.evaluate(
+        (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
+        dir,
+      )
+      expect(mapped.error ?? '').toBe('')
+      await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+      await expect(page.locator(PANE)).toBeVisible({ timeout: 60_000 })
+      const note = page.locator('[data-testid="world-notice"]', { hasText: 'Showing the first ' })
+      await expect(note).toBeVisible({ timeout: 600_000 })
+      await settled(600_000)
+      const NOTE = '[data-testid="world-notice"]'
+      for (const { v, width } of NOTICE_LAYOUTS) {
+        const at = await layoutAt(v, width)
+        if (!at) continue
+        await settled()
+        const { tag, name } = at
+        await expect(note).toBeVisible()
+        const toggle = page.locator('[data-testid="world-legend-toggle"]')
+        for (let pass = 0; pass < 2; pass++) {
+          const state = `legend ${(await toggle.getAttribute('aria-expanded')) === 'true' ? 'open' : 'shut'} at ${tag}`
+          await glideDone(state)
+          expect.soft(await overlapOf(NOTE, '[data-testid="world-legend"]'), `the notice leaves the legend clear, ${state}`).toBe(0)
+          await check(`notice, ${state}`)
+          await shoot(`app-notice-${name}-${pass}`)
+          await click(toggle)
+        }
+        // A card open over the city, with the legend as it opens by default: the notice clears both. A city this big
+        // shows its districts as slabs from the overview, so a district is stepped into (a click on its slab) first.
+        let opened = await openCard()
+        if (!opened && (await intoDistrict())) {
+          await glideDone(`district at ${tag}`)
+          opened = await openCard()
+        }
+        expect.soft(opened, `a building's card opened at ${tag}`).toBe(true)
+        await glideDone(`card at ${tag}`)
+        await expect(note).toBeVisible()
+        expect.soft(await overlapOf(NOTE, '[data-testid="world-card"]'), `the notice leaves the card clear at ${tag}`).toBe(0)
+        expect.soft(await overlapOf(NOTE, '[data-testid="world-legend"]'), `the notice leaves the legend clear with a card open at ${tag}`).toBe(0)
+        await check(`notice with a card at ${tag}`)
+        // Inside a district of thousands of parts, a 5K frame drawn in software takes longer than a capture may: the
+        // card's measures above are the check there, and the picture is taken at the smaller sizes.
+        if (v.width * v.height <= 3840 * 2160) await shoot(`app-notice-card-${name}`)
+        await closeCard()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 
