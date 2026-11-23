@@ -9,7 +9,7 @@
 // with cwd at the repository would run a `git.exe` planted in it. Neither program runs if it lies inside the repository.
 
 import { binInside } from '../binPath'
-import { guardGitArgs } from '../gitSafety'
+import { guardGitArgs, guardGitEnv } from '../gitSafety'
 import type { TestRun } from './testStatus'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
@@ -47,8 +47,8 @@ export interface RunsDeps {
   gitBin: () => Promise<string | null>
   /** Resolves links, so a program reached through a junction into the repository still counts as inside it. */
   realpath: (p: string) => Promise<string>
-  /** Runs a command off the main thread, never throwing. */
-  exec: (bin: string, args: string[], opts: { cwd: string; timeout: number }) => Promise<ExecOutcome>
+  /** Runs a command off the main thread, never throwing. `addEnv` is added to the child's environment. */
+  exec: (bin: string, args: string[], opts: { cwd: string; timeout: number; addEnv?: Record<string, string> }) => Promise<ExecOutcome>
   now: () => number
 }
 
@@ -95,8 +95,13 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
 
   const run = async (gitBin: string, root: string, args: string[]): Promise<string | null> => {
     // Every git here only reads: the read-only prefix keeps the repository's own config from running a program
-    // (diff-tree runs core.fsmonitor without it). gitSafety.ts has the rules.
-    const out = await d.exec(gitBin, guardGitArgs(args, process.platform === 'win32'), { cwd: root, timeout: GIT_TIMEOUT_MS })
+    // (diff-tree runs core.fsmonitor without it), and GIT_NO_LAZY_FETCH keeps a partial clone from fetching a missing
+    // object through a transport program the repository names. gitSafety.ts has the rules.
+    const out = await d.exec(gitBin, guardGitArgs(args, process.platform === 'win32'), {
+      cwd: root,
+      timeout: GIT_TIMEOUT_MS,
+      addEnv: guardGitEnv(args)
+    })
     return out.error ? null : out.stdout.trim()
   }
 

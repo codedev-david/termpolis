@@ -12,6 +12,10 @@
 //   log.showSignature, format.pretty with %G, + gpg.program   log, show
 //   a submodule's own config    status and diff ask each submodule for its dirty state with a child git
 //   diff.submodule=diff         diff, show, log -p run a child diff in each changed submodule, under ITS diff.external
+//   a partial clone's promisor  any read that needs a missing object (diff, show, log -p, blame, cat-file, …) starts
+//     remote: core.sshCommand,  `git fetch` from the promisor remote, and the fetch runs the program the repository
+//     remote.<x>.uploadpack,    names for its transport (and allows that transport back on with protocol.*.allow)
+//     core.gitProxy
 //
 // git clone never carries `.git/config` or hooks, and safe.directory does not help on Windows (an extracted folder
 // is owned by the person who extracted it), so the read commands themselves have to switch those programs off.
@@ -30,6 +34,10 @@
 //   driver the repository's own config defines (scope local or worktree, includes counted as the file that includes
 //   them) is set back to the person's own value for it, or to none (filterOverrides). A global driver such as
 //   git-lfs's keeps working: only the repository's definitions are replaced.
+// - Every read also carries noTransportFlags (protocol.allow=never, and never for each transport by name, so a
+//   repository's own protocol.<x>.allow=always loses) and guardGitEnv's GIT_NO_LAZY_FETCH=1: the variable stops the
+//   lazy fetch on git 2.44 and later, and the flags stop it on any git, since the fetch cannot open a transport.
+//   A read of a missing object then fails, as it would offline, and runs nothing.
 // - A command that writes (add, commit, checkout, reset, apply, pull, push, …) is left exactly as the person's git
 //   would run it, filters, hooks and the login helper included. Blanking a clean filter on `add` would commit raw
 //   content into a git-lfs repository.
@@ -67,15 +75,34 @@ export const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set([
 /** Read subcommands that can run a clean filter: they need the repository's filter drivers read first. */
 export const FILTER_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff'])
 
+/** Every transport git knows by name. A read sets each to never, so the repository's own protocol.<x>.allow cannot
+ *  turn one back on (the per-transport key wins over protocol.allow, and the command line wins over the repository). */
+const TRANSPORTS = ['ext', 'file', 'ssh', 'git', 'http', 'https', 'ftp', 'ftps']
+
+/** No transport at all for a read: a partial clone's lazy fetch, on a git too old for GIT_NO_LAZY_FETCH, fails before
+ *  it starts core.sshCommand, remote.<x>.uploadpack or core.gitProxy. */
+export function noTransportFlags(): string[] {
+  return ['-c', 'protocol.allow=never', ...TRANSPORTS.flatMap((p) => ['-c', `protocol.${p}.allow=never`])]
+}
+
 /** The read-only prefix for `sub`: no fsmonitor program, no hooks (except for rev-parse, see the header), no
- *  signature check, and git's own default log format (a repository's format.pretty can ask for %G, which runs gpg). */
+ *  signature check, git's own default log format (a repository's format.pretty can ask for %G, which runs gpg), and
+ *  no transport (noTransportFlags). */
 export function readOnlyPrefix(sub: string, isWindows: boolean): string[] {
   return [
     '-c', 'core.fsmonitor=false',
     ...(sub === 'rev-parse' ? [] : ['-c', `core.hooksPath=${nullDevice(isWindows)}`]),
     '-c', 'log.showSignature=false',
-    '-c', 'format.pretty=medium'
+    '-c', 'format.pretty=medium',
+    ...noTransportFlags()
   ]
+}
+
+/** The environment variables a run of `args` adds to git's: for a read, GIT_NO_LAZY_FETCH=1 (git 2.44 and later
+ *  never fetch a missing object from a partial clone's promisor remote); for a write, none. */
+export function guardGitEnv(args: readonly string[]): Record<string, string> {
+  const sub = gitSubcommand(args)
+  return sub !== null && MUTATING_SUBCOMMANDS.has(sub.name) ? {} : { GIT_NO_LAZY_FETCH: '1' }
 }
 
 /** The flags a read of `sub` adds after the subcommand. */

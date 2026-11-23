@@ -6,7 +6,10 @@
  *     `git` handed to a call). Everything else starts git through safeGitAsync (gitCommand.ts) or cachedGit
  *     (gitCache.ts, which calls safeGitAsync), where guardGitArgs puts the read-only prefix on every read.
  *  2. Inside those files, every spawn of git hands it an argument list built by guardGitArgs or filterScanArgs, or
- *     one that starts with the world host's safetyFlags. A bare list fails.
+ *     one that starts with the world host's safetyFlags. A bare list fails. A spawn of a guardGitArgs or filterScanArgs
+ *     list also hands guardGitEnv's variables (GIT_NO_LAZY_FETCH) in its options, and a seam that only passes a list
+ *     through passes them on, so a partial clone missing an object never starts a fetch. (The safetyFlags lists, the
+ *     world host's ls-files, rev-parse and config, load no object and so cannot fetch one.)
  *  3. No string in src/main asks git for an external diff, a textconv, a signature check (`--show-signature`, `%G`
  *     in a format), or switches fsmonitor or hooks back on.
  *  4. Every literal git command the code writes is run through guardGitArgs here, as safeGitAsync would: a read
@@ -163,6 +166,45 @@ function unguardedSpawns(s: Source): string[] {
   return out
 }
 
+/** Whether `opts`, the options handed with a guarded list, carry guardGitEnv's variables. */
+function carriesReadEnv(s: Source, opts: ts.Expression | undefined): boolean {
+  if (opts === undefined) return false
+  if (/\bguardGitEnv\(/.test(opts.getText(s.sf))) return true
+  return ts.isIdentifier(opts) && new RegExp(`\\b${opts.text}\\s*=\\s*guardGitEnv\\(`).test(s.text)
+}
+
+/** Whether a pass-through seam also forwards its caller's options (`{ cwd: o.cwd }`): then the caller's environment
+ *  must go through too. A seam that builds its own options (a timeout of its own) is not a git seam's options. */
+function forwardsOptions(call: ts.CallExpression): boolean {
+  const opts = call.arguments[2]
+  if (opts === undefined) return false
+  for (let n: ts.Node | undefined = call.parent; n; n = n.parent) {
+    if (ts.isFunctionLike(n)) {
+      const third = n.parameters[2]
+      if (third === undefined || !ts.isIdentifier(third.name)) return false
+      return new RegExp(`\\b${third.name.text}\\.`).test(opts.getText())
+    }
+  }
+  return false
+}
+
+/** Rule 2, the environment: spawns of a guarded list without GIT_NO_LAZY_FETCH, and pass-through seams that drop it. */
+function spawnsWithoutReadEnv(s: Source): string[] {
+  const out: string[] = []
+  walk(s.sf, (n) => {
+    if (!ts.isCallExpression(n) || n.arguments.length < 2) return
+    const [bin, argv, opts] = n.arguments
+    const spawner = SPAWNERS.has(calleeName(n))
+    const isGit = (ts.isIdentifier(bin) && (bin.text === 'gitBin' || (GIT_BIN_NAMES.has(bin.text) && spawner)))
+    if (!isGit) return
+    const built = (ts.isCallExpression(argv) && ['guardGitArgs', 'filterScanArgs'].includes(calleeName(argv))) ||
+      (ts.isIdentifier(argv) && new RegExp(`\\b${argv.text}\\s*=\\s*(guardGitArgs|filterScanArgs)\\(`).test(s.text))
+    const bad = passThrough(n) ? forwardsOptions(n) && !/\baddEnv\b/.test(opts!.getText(s.sf)) : built && !carriesReadEnv(s, opts)
+    if (bad) out.push(`${s.rel}:${lineOf(s, n)} ${n.getText(s.sf).slice(0, 120)}`)
+  })
+  return out
+}
+
 /** Rule 3: strings that would turn back on what the read-only prefix and display flags switch off. */
 const FORBIDDEN: Array<[string, RegExp]> = [
   ['external diff', /^--ext-diff$/],
@@ -247,9 +289,13 @@ describe('git safety guard: who may start git', () => {
     expect(SOURCES.filter((s) => namesGitBinary(s).length > 0).flatMap(unguardedSpawns)).toEqual([])
   })
 
+  it('every spawn of a guarded list carries GIT_NO_LAZY_FETCH, and every pass-through seam hands it on', () => {
+    expect(SOURCES.filter((s) => namesGitBinary(s).length > 0).flatMap(spawnsWithoutReadEnv)).toEqual([])
+  })
+
   it('safeGitAsync puts every argument list through guardGitArgs, and cachedGit goes through safeGitAsync', () => {
     const cmd = SOURCES.find((s) => s.rel === 'src/main/gitCommand.ts')!
-    expect(cmd.text).toMatch(/execOffThread\(bin, guardGitArgs\(args, isWindows, overrides\)/)
+    expect(cmd.text).toMatch(/execOffThread\(bin, guardGitArgs\(args, isWindows, overrides\), \{[^}]*addEnv: guardGitEnv\(args\)/)
     const cache = SOURCES.find((s) => s.rel === 'src/main/gitCache.ts')!
     expect(cache.text).toMatch(/safeGitAsync\(args, opts\)/)
     expect(namesGitBinary(cache)).toEqual([])
@@ -329,6 +375,22 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
       'src/main/world/worldRuns.ts:9', 'src/main/world/worldRuns.ts:10', 'src/main/world/worldRuns.ts:14', 'src/main/world/worldRuns.ts:15'
     ])
     expect(unguardedSpawns(parse('src/main/world/fileSnapshot.ts', 'exec(bin, args, {})'))).toEqual([])
+  })
+
+  it('a guarded spawn without GIT_NO_LAZY_FETCH, or a seam that drops it, is caught', () => {
+    const s = parse('src/main/world/worldRuns.ts', [
+      "d.exec(gitBin, guardGitArgs(args, true), { cwd })",
+      "d.exec(gitBin, guardGitArgs(args, true), { cwd, addEnv: guardGitEnv(args) })",
+      "const scanArgs = filterScanArgs(a, true); execOffThread(bin, scanArgs, { cwd })",
+      "const env = guardGitEnv(a); execOffThread(bin, guardGitArgs(a, true), env)",
+      'const exec = async (bin, args, o) => execCaptureOffThread(bin, args, { cwd: o.cwd })',
+      'const exec2 = async (bin, args, o) => execCaptureOffThread(bin, args, { cwd: o.cwd, addEnv: o.addEnv })',
+      "deps.execFile(gitBin, [...safetyFlags(true), 'ls-files'], {})",
+      'execOffThread(bin, guardGitArgs(a, true))'
+    ].join('\n'))
+    expect(spawnsWithoutReadEnv(s).map((h) => h.split(' ')[0])).toEqual([
+      'src/main/world/worldRuns.ts:1', 'src/main/world/worldRuns.ts:3', 'src/main/world/worldRuns.ts:5', 'src/main/world/worldRuns.ts:8'
+    ])
   })
 
   it('the forbidden strings are seen in plain and template strings', () => {

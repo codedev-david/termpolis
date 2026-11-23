@@ -125,6 +125,18 @@ describe('runExec — argv form', () => {
     expect(lastExecFileOpts()).toMatchObject({ cwd: '/repo', env: { PATH: '/usr/bin' } })
   })
 
+  it('adds addEnv to the given env, or to its own environment, rather than replacing it', () => {
+    void runExec('git', [], { env: { PATH: '/usr/bin' }, addEnv: { GIT_NO_LAZY_FETCH: '1' } })
+    expect(lastExecFileOpts().env).toEqual({ PATH: '/usr/bin', GIT_NO_LAZY_FETCH: '1' })
+    process.env.TP_PROC_HOST_KEEP = 'kept'
+    try {
+      void runExec('git', [], { addEnv: { GIT_NO_LAZY_FETCH: '1' } })
+      expect(lastExecFileOpts().env).toMatchObject({ TP_PROC_HOST_KEEP: 'kept', GIT_NO_LAZY_FETCH: '1' })
+    } finally {
+      delete process.env.TP_PROC_HOST_KEEP
+    }
+  })
+
   it('coerces a null/undefined stream to the empty string, so callers never see null', async () => {
     H.execFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: ExecFileCb) =>
       cb(null, null as unknown as string, undefined as unknown as string))

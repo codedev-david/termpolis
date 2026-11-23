@@ -46,6 +46,9 @@ export interface ProcOptions {
   timeout?: number
   maxBuffer?: number
   env?: Record<string, string | undefined>
+  /** Variables added to the child's environment (`env`, or else the runner's own), not a replacement for it: a git
+   *  read adds GIT_NO_LAZY_FETCH and keeps everything else, the host's GIT_OPTIONAL_LOCKS=0 included. */
+  addEnv?: Record<string, string>
   /** argv form only: written to the child's stdin, which is then ended. For text that must not sit
    *  on a command line (process command lines are visible to every endpoint scanner), such as a
    *  prompt carrying repository source. Without it stdin is left as before. */
@@ -101,7 +104,7 @@ function baseOptions(opts: ProcOptions): {
     timeout: opts.timeout ?? DEFAULT_TIMEOUT,
     maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
     windowsHide: true,
-    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.env || opts.addEnv ? { env: { ...(opts.env ?? process.env), ...opts.addEnv } } : {}),
   }
 }
 

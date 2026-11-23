@@ -370,8 +370,67 @@ const VECTORS: Vector[] = [
     },
     control: (dir) => git(dir, ['diff', '--no-ext-diff', '--no-textconv'], true),
     expect: ['subdiff-external']
+  },
+  {
+    name: 'partial clone: a missing object fetched through core.sshCommand, the repository allowing ssh back on',
+    plant: () => partialClone('lazy-ssh', (dir) => {
+      git(dir, ['config', 'remote.origin.url', 'ssh://planted.invalid/x'])
+      git(dir, ['config', 'core.sshCommand', runs(plantProgram('lazy-ssh'))])
+      git(dir, ['config', 'protocol.ssh.allow', 'always'])
+    }),
+    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    expect: ['lazy-ssh']
+  },
+  {
+    name: 'partial clone: a missing object fetched through remote.<name>.uploadpack, the repository allowing file back on',
+    plant: () => partialClone('lazy-uploadpack', (dir) => {
+      git(dir, ['config', 'remote.origin.url', `file://${slash(join(base, 'nowhere'))}`])
+      git(dir, ['config', 'remote.origin.uploadpack', runs(plantProgram('lazy-uploadpack'))])
+      git(dir, ['config', 'protocol.file.allow', 'always'])
+    }),
+    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    expect: ['lazy-uploadpack']
+  },
+  {
+    name: 'partial clone: a missing object fetched through core.gitProxy, the repository allowing every protocol back on',
+    plant: () => partialClone('lazy-gitproxy', (dir) => {
+      git(dir, ['config', 'remote.origin.url', 'git://planted.invalid/x'])
+      // core.gitProxy is started directly, not through sh: the path as it is, no quotes.
+      git(dir, ['config', 'core.gitProxy', slash(plantProgram('lazy-gitproxy'))])
+      git(dir, ['config', 'protocol.allow', 'always'])
+      git(dir, ['config', 'protocol.git.allow', 'always'])
+    }),
+    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    expect: ['lazy-gitproxy']
   }
 ]
+
+/**
+ * A partial clone (as `git clone --filter=blob:none` leaves one) whose promisor remote is reached through a program
+ * the repository's own config names, with the blobs of HEAD's and HEAD~1's a.txt missing: a read that needs either
+ * starts `git fetch` from that remote, and the fetch runs the program. a.txt is staged and changed again on top.
+ */
+function partialClone(name: string, configure: (dir: string) => void): { dir: string; file: string; redirty: () => void } {
+  const dir = newRepo(name)
+  writeFileSync(join(dir, 'a.txt'), 'alpha\nbeta\ngamma\n')
+  git(dir, ['commit', '-q', '-am', 'second'])
+  writeFileSync(join(dir, 'a.txt'), 'alpha\nBETA\ngamma\ndelta\n')
+  git(dir, ['add', 'a.txt'])
+  writeFileSync(join(dir, 'a.txt'), 'alpha\nBETA\ngamma\ndelta\nepsilon\n')
+  for (const rev of ['HEAD~1:a.txt', 'HEAD:a.txt']) {
+    const oid = git(dir, ['rev-parse', rev]).trim()
+    const file = join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2))
+    // git writes loose objects read-only, and Windows will not unlink a read-only file.
+    chmodSync(file, 0o644)
+    rmSync(file)
+  }
+  git(dir, ['config', 'core.repositoryformatversion', '1'])
+  git(dir, ['config', 'extensions.partialClone', 'origin'])
+  git(dir, ['config', 'remote.origin.promisor', 'true'])
+  git(dir, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'])
+  configure(dir)
+  return { dir, file: 'a.txt', redirty: () => undefined }
+}
 
 /** Rewrites HEAD as a commit carrying a (fake) PGP signature, so log/show ask gpg.program to verify it. */
 function signHead(dir: string): void {

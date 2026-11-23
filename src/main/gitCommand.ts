@@ -11,7 +11,7 @@
 import { getExtendedPathAsync } from './agentPaths'
 import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
-import { filterOverrides, filterScanArgs, guardGitArgs, needsFilterScan } from './gitSafety'
+import { filterOverrides, filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan } from './gitSafety'
 
 export interface GitOptions {
   cwd: string
@@ -56,6 +56,8 @@ export async function safeGitAsync(args: string[], opts: GitOptions): Promise<st
       cwd: opts.cwd,
       timeout: opts.timeout ?? 10000,
       maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+      // GIT_NO_LAZY_FETCH for a read: a partial clone missing an object never starts a fetch (gitSafety.ts).
+      addEnv: guardGitEnv(args),
     })
   } catch (e) {
     // `code` still means what it always meant: the string 'ENOENT' when the binary was not found, a number when
@@ -83,7 +85,7 @@ function repoFilterOverrides(bin: string, args: string[], opts: GitOptions, isWi
   const now = Date.now()
   const hit = filterScans.get(key)
   if (hit && now - hit.at < FILTER_SCAN_TTL_MS) return hit.value
-  const value = execOffThread(bin, scanArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024 })
+  const value = execOffThread(bin, scanArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024, addEnv: guardGitEnv(scanArgs) })
     .catch((e: unknown) => {
       if ((e as { code?: unknown } | null)?.code === 1) return ''
       throw e

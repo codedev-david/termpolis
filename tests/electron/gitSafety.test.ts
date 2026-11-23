@@ -9,14 +9,18 @@ import {
   filterScanArgs,
   gitSubcommand,
   guardGitArgs,
+  guardGitEnv,
   needsFilterScan,
   nullDevice,
   readOnlyPrefix,
   safetyFlags
 } from '../../src/main/gitSafety'
 
-const PREFIX_WIN = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium']
-const PREFIX_POSIX = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium']
+/** Every transport off, the blanket key and each protocol by name (a repository's `protocol.ssh.allow=always` beats the
+ *  blanket key, and only a per-protocol key from the command line beats that). */
+const NO_TRANSPORT = ['-c', 'protocol.allow=never', ...['ext', 'file', 'ssh', 'git', 'http', 'https', 'ftp', 'ftps'].flatMap((p) => ['-c', `protocol.${p}.allow=never`])]
+const PREFIX_WIN = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium', ...NO_TRANSPORT]
+const PREFIX_POSIX = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium', ...NO_TRANSPORT]
 
 describe('nullDevice and safetyFlags', () => {
   it('points hooks at the null device of the platform', () => {
@@ -37,7 +41,23 @@ describe('readOnlyPrefix', () => {
   })
 
   it('rev-parse keeps the hooks folder, so `rev-parse --git-path hooks` still names the real one', () => {
-    expect(readOnlyPrefix('rev-parse', true)).toEqual(['-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium'])
+    expect(readOnlyPrefix('rev-parse', true)).toEqual(['-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium', ...NO_TRANSPORT])
+  })
+
+  it('switches every transport off, so a partial clone missing an object cannot start a fetch through a program its config names', () => {
+    for (const sub of ['status', 'diff', 'show', 'rev-parse', 'config']) expect(readOnlyPrefix(sub, false).slice(-NO_TRANSPORT.length)).toEqual(NO_TRANSPORT)
+  })
+})
+
+describe('guardGitEnv', () => {
+  it('a read gets GIT_NO_LAZY_FETCH, so a missing object is an error, never a fetch (git 2.44+; older git ignores it)', () => {
+    expect(guardGitEnv(['status', '--porcelain'])).toEqual({ GIT_NO_LAZY_FETCH: '1' })
+    expect(guardGitEnv(['-C', '/r', 'show', 'HEAD'])).toEqual({ GIT_NO_LAZY_FETCH: '1' })
+    expect(guardGitEnv(['--version'])).toEqual({ GIT_NO_LAZY_FETCH: '1' })
+  })
+
+  it('a write keeps lazy fetch: it runs exactly as the person’s git would', () => {
+    for (const sub of MUTATING_SUBCOMMANDS) expect(guardGitEnv([sub, 'x'])).toEqual({})
   })
 })
 
@@ -112,7 +132,7 @@ describe('guardGitArgs', () => {
 
   it('a prefix pair the caller already gave with the same value is not repeated (case of the key ignored)', () => {
     expect(guardGitArgs(['-c', 'Core.FSMonitor=false', 'log'], true)).toEqual([
-      '-c', 'Core.FSMonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium',
+      '-c', 'Core.FSMonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium', ...NO_TRANSPORT,
       'log', '--no-ext-diff', '--no-textconv', '--submodule=short'
     ])
     // A dangling `-c` and a pair with no `=` are passed through and never match.
