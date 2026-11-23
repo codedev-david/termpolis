@@ -251,6 +251,12 @@ const isArr = (v: unknown): v is unknown[] => Array.isArray(v)
 const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr)
 const cap = (s: string, n: number): string => s.trim().slice(0, n)
 
+/** Internal dots in filenames and numbers have no following space. Skip common abbreviations too. */
+function firstSentence(s: string): string {
+  const end = /(?:(?<!\b(?:e\.g|i\.e|Mr|Mrs|Ms|Dr|Prof))\.|[!?])[.!?]*["'”’)\]]*(?=\s|$)/i.exec(s)
+  return end ? s.slice(0, end.index + end[0].length) : s
+}
+
 /**
  * At most `n` characters, cut at the last word boundary with an ellipsis, so a legend line never ends
  * mid-word; one word longer than the limit is cut at it. Text that fits is kept whole.
@@ -302,7 +308,7 @@ function claimsFrom(o: Json, key: string, evidenceOf: ReadonlyMap<string, Eviden
     const itemEvidence = own(item, 'evidence')
     if (!isStr(itemText) || !isStrArr(itemEvidence)) throw new Reject()
     const labels = [...new Set(itemEvidence)]
-    const text = cap(itemText, MAX_CLAIM_TEXT)
+    const text = cap(firstSentence(itemText), MAX_CLAIM_TEXT)
     // A claim citing nothing, or anything outside this batch, is dropped.
     if (labels.length === 0 || text === '' || labels.some((l) => !evidenceOf.has(l))) continue
     out.push({ text, state: 'inferred', evidence: labels.slice(0, MAX_EVIDENCE).map((l) => ({ ...(evidenceOf.get(l) as Evidence) })) })
@@ -326,7 +332,7 @@ function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Ev
 function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>, fit: (s: string, n: number) => string = cap): string | undefined {
   const v = own(raw, 'value')
   if (!isStr(v) || v.trim() === '' || citations(raw, ev).length === 0) return undefined
-  return fit(v, max)
+  return fit(firstSentence(v), max)
 }
 
 function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): string[] | undefined {
@@ -337,7 +343,7 @@ function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): str
 
 function shortList(v: string[]): string[] {
   return v
-    .map((x) => x.trim())
+    .map((x) => firstSentence(x).trim())
     .filter((x) => x !== '' && x.length <= MAX_ITEM)
     .slice(0, MAX_LIST)
 }
@@ -360,14 +366,19 @@ function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, E
     const why = claimsFrom(raw, 'why', ev)
     if (why) out.why = why
     const floors = field(raw, 'floors', isArr)
-    if (floors) {
-      const own = new Set(b.members)
-      out.floors = floors.slice(0, MAX_FLOORS).map((f): Floor => {
-        if (!isObj(f) || !isStr(f.name) || !isStrArr(f.tech) || !isStrArr(f.members) || f.members.some((m) => !own.has(m))) {
+    if (floors?.length) {
+      const buildingMembers = new Set(b.members)
+      const namedFloors = floors.slice(0, MAX_FLOORS).map((f): Floor | null => {
+        if (!isObj(f)) throw new Reject()
+        const members = own(f, 'members')
+        if (!isStrArr(members) || members.some((m) => !buildingMembers.has(m))) {
           throw new Reject()
         }
-        return { name: cap(f.name, MAX_NAME), tech: shortList(f.tech), members: f.members }
+        const name = citedText(f, 'name', MAX_NAME, ev)
+        return name === undefined ? null : { name, tech: citedList(f, 'tech', ev) ?? [], members }
       })
+      // Keep the full file-derived layout if any proposed floor lacks a cited name.
+      if (namedFloors.every((f): f is Floor => f !== null)) out.floors = namedFloors
     }
     return out as Partial<BuildingLabel>
   } catch {

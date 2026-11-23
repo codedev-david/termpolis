@@ -197,6 +197,57 @@ describe('labelWorld', () => {
     expect(l.buildings.a.how.map((c) => c.text)).toEqual(['good'])
   })
 
+  it('keeps only one sentence per citation and preserves periods within abbreviations and identifiers', async () => {
+    const reply = JSON.stringify({
+      district: { subtitle: F('CSV support. Extra claim.') },
+      buildings: {
+        a: {
+          how: [
+            { text: 'Parses CSV. Encrypts every record.', evidence: ['E1'] },
+            { text: 'Reads, e.g. CSV with index.ts at v1.5.2. Then encrypts.', evidence: ['E1'] },
+            { text: 'Reads at a rate of 1.5! then encrypts.', evidence: ['E1'] }
+          ],
+          stack: F(['Node.js. Extra claim.'])
+        }
+      },
+      glossary: { CSV: F('Comma-separated values. Extra claim.') }
+    })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+    expect(l.buildings.a.how.map((c) => c.text)).toEqual([
+      'Parses CSV.',
+      'Reads, e.g. CSV with index.ts at v1.5.2.',
+      'Reads at a rate of 1.5!'
+    ])
+    expect(l.districts.d1.subtitle).toBe('CSV support.')
+    expect(l.buildings.a.stack).toEqual(['Node.js.'])
+    expect(l.glossary.CSV).toBe('Comma-separated values.')
+  })
+
+  it.each(['Uncited floor', F('Unknown citation', ['E99']), F(5)])('keeps code-derived floors when the model floor name is %j', async (name) => {
+    const reply = JSON.stringify({
+      buildings: {
+        a: {
+          name: F('Cited building'),
+          floors: [{ name, tech: ['Uncited tech'], members: ['src/a/one.ts'] }]
+        }
+      }
+    })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+    expect(l.buildings.a.name).toBe('Cited building')
+    expect(l.buildings.a.floors).toEqual([
+      { name: 'one', tech: [], members: ['src/a/one.ts'] },
+      { name: 'two', tech: [], members: ['src/a/two.ts'] }
+    ])
+  })
+
+  it('drops uncited floor tech while retaining a cited floor name', async () => {
+    const reply = JSON.stringify({
+      buildings: { a: { floors: [{ name: F('CSV parser. Extra claim.'), tech: ['Uncited tech'], members: ['src/a/one.ts', 'src/a/two.ts'] }] } }
+    })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+    expect(l.buildings.a.floors).toEqual([{ name: 'CSV parser.', tech: [], members: ['src/a/one.ts', 'src/a/two.ts'] }])
+  })
+
   it('caps claims and lengths', async () => {
     const many = Array.from({ length: 9 }, (_, i) => ({ text: `c${i}`, evidence: ['E1'] }))
     const reply = JSON.stringify({
@@ -251,10 +302,8 @@ describe('labelWorld', () => {
     ['entity not an object', 'oops'],
     ['floors not an array', { floors: 'x' }],
     ['floor not an object', { floors: [5] }],
-    ['floor name not a string', { floors: [{ name: 1, tech: [], members: [] }] }],
-    ['floor tech wrong', { floors: [{ name: 'f', tech: 'x', members: [] }] }],
-    ['floor members wrong', { floors: [{ name: 'f', tech: [], members: 'x' }] }],
-    ['floor member not in building', { floors: [{ name: 'f', tech: [], members: ['nope.ts'] }] }]
+    ['floor members wrong', { floors: [{ name: F('f'), members: 'x' }] }],
+    ['floor member not in building', { floors: [{ name: F('f'), members: ['nope.ts'] }] }]
   ])('building with %s falls back entirely', async (_n, raw) => {
     const reply = JSON.stringify({ buildings: { a: typeof raw === 'string' ? raw : { name: F('Model Name'), ...raw } } })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
@@ -272,7 +321,7 @@ describe('labelWorld', () => {
     const reply = JSON.stringify({
       district: { name: F(' '), subtitle: F('sub') },
       buildings: {
-        a: { name: F(' '), techLabel: F(''), stack: F(['x', ' ']), floors: [{ name: 'Core', tech: ['ts'], members: ['src/a/one.ts'] }] }
+        a: { name: F(' '), techLabel: F(''), stack: F(['x', ' ']), floors: [{ name: F('Core'), tech: F(['ts']), members: ['src/a/one.ts'] }] }
       },
       edges: { [e]: { cargo: F('c'), rate: F('2/s'), tech: F(['http', ' ']), why: [{ text: 'y', evidence: ['E2'] }], label: F(' ') } },
       glossary: { '': F('x'), t: F(''), u: 5 }
@@ -834,7 +883,7 @@ describe('fix round 1', () => {
     const e = edgeId({ from: 'a', to: 'b' })
     const items = [...Array.from({ length: 12 }, (_, i) => `i${i}`), 'z'.repeat(41)]
     const reply = JSON.stringify({
-      buildings: { a: { stack: F(items), floors: [{ name: 'f', tech: items, members: ['src/a/one.ts'] }] } },
+      buildings: { a: { stack: F(items), floors: [{ name: F('f'), tech: F(items), members: ['src/a/one.ts'] }] } },
       edges: { [e]: { tech: F(['y'.repeat(41), ...items]), cargo: F('c'.repeat(90)) } }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
@@ -1669,8 +1718,8 @@ describe('caveat 1 fix round 1', () => {
       const refs = refsIn(p)
       for (let i = 4; i < 14; i++) expect(refs).toEqual(expect.arrayContaining([`src/a/in${i}.ts:10`, `src/a/out${i}.ts:20`]))
       expect(refs).toHaveLength(20)
-      // Measured at 19,145 command chars: well under the cap, with room for longer names (label.ts LINES_PER_BATCH).
-      expect(promptCommandChars(p)).toBe(19_145)
+      // Measured at 19,203 command chars: well under the cap, with room for longer names (label.ts LINES_PER_BATCH).
+      expect(promptCommandChars(p)).toBe(19_203)
       for (let i = 4; i < 14; i++) expect(l.edges[`e-a--t${String(i).padStart(2, '0')}`].how).toHaveLength(1)
     } finally {
       info.mockRestore()

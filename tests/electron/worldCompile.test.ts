@@ -391,6 +391,25 @@ describe('compileWorld', () => {
     expect(doc.edges.find((e) => e.id === importEdge)?.label).toBe('Hands the view its data')
   })
 
+  it('a scoped compile resets the touched district name and subtitle to the code defaults', async () => {
+    const defaults = await compileFixture()
+    const previous = await compileFixture({
+      label: labelDeps({
+        llm: async () => JSON.stringify({
+          district: { name: F('Billing API'), subtitle: F('Processes invoices') },
+          buildings: { [VIEW]: { how: [{ text: 'Renders invoices.', evidence: ['E1'] }] } }
+        })
+      })
+    })
+    const districtId = previous.buildings.find((b) => b.id === VIEW)?.districtId
+    const district = (doc: WorldDoc) => doc.districts.find((d) => d.id === districtId)
+    expect(district(previous)).toMatchObject({ name: 'Billing API', subtitle: 'Processes invoices', nameState: 'inferred' })
+
+    const doc = await compileFixture({}, previous, ['src/renderer/view.ts'])
+    expect(district(doc)).toEqual(district(defaults))
+    expect(doc.districts.filter((d) => d.id !== districtId)).toEqual(previous.districts.filter((d) => d.id !== districtId))
+  })
+
   it('changed: a district or edge the previous doc lacks gets the code-derived label', async () => {
     const fresh = await compileFixture()
     const prev: WorldDoc = JSON.parse(JSON.stringify(fresh))
@@ -496,7 +515,7 @@ describe('compileWorld', () => {
         district: { name: F('Main side'), subtitle: F('the Electron main process') },
         buildings: {
           [MAIN]: {
-            floors: [{ name: 'entry', tech: ['Electron', 'IPC', 'Nope'], members: ['src/main/index.ts'] }],
+            floors: [{ name: F('entry'), tech: F(['Electron', 'IPC', 'Nope']), members: ['src/main/index.ts'] }],
             stack: F(['Electron'])
           }
         },

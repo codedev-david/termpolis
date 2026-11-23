@@ -131,13 +131,13 @@ export function buildLabelPrompt(batch: LabelBatch, fit: PromptFit = FULL_FIT): 
     '  "district": { "name": F, "subtitle": F },',
     '  "buildings": { "<building id>": { "name": F, "techLabel": F, "stack": { "value": string[], "evidence": ["E1"] },',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E2"] }],',
-    '    "floors": [{ "name": string, "tech": string[], "members": string[] }] } },',
+    '    "floors": [{ "name": F, "tech": { "value": string[], "evidence": ["E1"] }, "members": string[] }] } },',
     '  "edges": { "<edge id>": { "label": F, "tech": { "value": string[], "evidence": ["E1"] }, "cargo": F, "rate": F,',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E1"] }] } },',
     '  "glossary": { "<term>": F }',
     '}',
     'where F is { "value": string, "evidence": ["E1"] }.',
-    'Rules: every field marked F, and every claim in how and why, must cite at least one excerpt label from the list above in "evidence". Cite only what an excerpt supports. A field or claim with no valid label is discarded and the name taken from the code is kept. A name you choose yourself instead of the one given must cite the excerpt that justifies it. Use only the ids listed above. Floor members must be files of that building.'
+    'Rules: every field with "evidence" (including F) must cite at least one excerpt label from the list above. Use at most one sentence per text value or claim. Cite only what an excerpt supports. A field or claim with no valid label is discarded and the name taken from the code is kept. A name you choose yourself instead of the one given must cite the excerpt that justifies it. Use only the ids listed above. Floor members must be files of that building.'
   )
   return lines.join('\n')
 }

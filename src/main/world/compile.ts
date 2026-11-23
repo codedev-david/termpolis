@@ -244,7 +244,8 @@ function edgeFromPrevious(e: WorldEdge): EdgeLabel {
  * (a member changed, the member set differs from the previous doc's, or the building is new), each
  * in its own district so it costs one model batch, plus the edges touching them (an incoming edge
  * rides with its to building). Everything else reuses the previous doc's labels by id, falling back
- * to code-derived labels.
+ * to code-derived labels. Touched districts use code-derived labels because the synthetic
+ * batches only describe individual buildings.
  */
 /**
  * The buildings a change touches: a member changed, the member set differs from the previous doc's (a
@@ -267,6 +268,7 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
   const subB = touchedBuildings(g, previous, changed)
   const ids = new Set(subB.map((b) => b.id))
+  const touchedDistricts = new Set(subB.map((b) => b.districtId))
   const dName = new Map(g.districts.map((d) => [d.id, d.name]))
   const own = (b: GroupBuilding): string => `${b.districtId}/${b.id}`
   const touches = (e: { from: string; to: string }): boolean => ids.has(e.from) || ids.has(e.to)
@@ -281,7 +283,7 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   const prevE = new Map(previous.edges.map((e) => [e.id, e]))
   for (const d of g.districts) {
     const p = prevD.get(d.id)
-    if (p) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
+    if (p && !touchedDistricts.has(d.id)) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
   }
   // Every untouched building has a previous twin with the same members (a new one is touched).
   for (const b of g.buildings) {
