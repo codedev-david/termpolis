@@ -35,7 +35,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -934,7 +934,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
         // The answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
         // machine, so the wait is the app's own limits: 15 s to load the world, 10 s for each of the matches, the run
         // environment and the memory primer (which took over 100 s here before it had a limit), and 90 s for the agent.
-        const ASK_MS = 15_000 + 3 * 10_000 + 90_000
+        // The ask runner's own worst case (map load, three steps, the agent), plus slack for handing back and drawing the answer.
+        const ASK_MS = 15_000 + 3 * 10_000 + 90_000 + 30_000
         const answer = page.locator('[data-testid="world-answer"]')
         const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
         // Retry is pressed only for the map that could not be read (askRunner's MAP_FAILED), as a person would; any
@@ -991,9 +992,12 @@ test.describe.serial('Lumopolis at every screen size', () => {
     expect(clickedZoomed, 'a zoomed button was clicked with the mouse').toBe(RUN.some((v) => uiScale(v.width, v.height) > 1))
   })
 
-  test('an answer made while memory is locked says so, and fits with that note at 768x1024 and 5120x2880 (WPA fix M8)', async () => {
+  test('an answer made while memory is locked says so, and fits with that note at 768x1024 and the largest size the run checks (WPA fix M8)', async () => {
     test.setTimeout(1_800_000)
-    const sizes = VIEWPORTS.filter((v) => v.name === '768x1024' || v.name === '5120x2880')
+    // A reduced run (the macOS CI job, which renders in software) checks its own largest size, 1440x900@2x, instead of 5K:
+    // a software-drawn 5120x2880 world starves the runner's few cores, as the reduced run's own header says. Every other run checks 5K.
+    const big = process.env.RESPONSIVE_REDUCED === '1' ? REDUCED_SPLIT_AT : '5120x2880'
+    const sizes = VIEWPORTS.filter((v) => v.name === '768x1024' || v.name === big)
     expect(sizes).toHaveLength(2)
     if (!(await page.locator(PANE).isVisible())) {
       // Run on its own (the world test before it opens the world, and leaves it open).
@@ -1020,7 +1024,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
         seedEvidence()
         await askBox.fill('How does the memory search work?')
         await askBox.press('Enter')
-        const ASK_MS = 15_000 + 3 * 10_000 + 90_000
+        // The ask runner's own worst case (map load, three steps, the agent), plus slack for handing back and drawing the answer.
+        const ASK_MS = 15_000 + 3 * 10_000 + 90_000 + 30_000
         const answer = page.locator('[data-testid="world-answer"]')
         const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
         for (let retries = 0; ; retries++) {
