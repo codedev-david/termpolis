@@ -337,7 +337,7 @@ import { resolveExportAssets } from './world/export'
 import { lumopolisNonce, registerLumopolisIpc } from './world/lumopolisOpen'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
-import { createAnnotationStore, withAnnotations } from './world/annotations'
+import { adoptAnnotationAliases, createAnnotationStore, withAnnotations } from './world/annotations'
 import { createSourceRegistry } from './world/sources'
 import { testPickedFolder, testSavePath } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
@@ -642,7 +642,7 @@ async function reflectOnTask(
 import { buildContextPrimer, type PrimerRecent, type PrimerSearch } from './contextPrimer'
 import { createPrimerCache } from './primerCache'
 import { createAskPrimer, createAskPrimerWarm, lockAwareBuild, trackWrittenProjects } from './askPrimer'
-import { expandShortPath } from './projectKey'
+import { expandShortPath, projectKeyAliases } from './projectKey'
 import type { HostLaneName } from './hostLane'
 import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
@@ -2860,6 +2860,8 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
     client: worldClient,
   }),
   warm: (root) => { void askPrimerWarm(root) },
+  // WPA fix M2: a root whose key WPA changed (a Git Bash or WSL spelling) brings the annotations made under its older key along.
+  prepare: async (root) => { await adoptAnnotationAliases(worldUserData, graphKeyForRoot(root), projectKeyAliases(root).slice(1)) },
 }, worldDesigner, {
   registry: worldSources,
   designs: worldDesignStore,

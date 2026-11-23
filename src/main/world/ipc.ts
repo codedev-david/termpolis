@@ -92,6 +92,8 @@ export interface WorldAsker {
   cancel(askId: string): void
   /** WPA: a world was opened, so an ask may follow: get ready (the memory primer) without being waited on. */
   warm?(root: string): void
+  /** Readies what the world keeps for this root before it is read (WPA fix M2: annotations under an older key). Never fails an open. */
+  prepare?(root: string): Promise<void>
 }
 
 const MAX_QUESTION = 4000
@@ -261,8 +263,9 @@ export function registerWorldIpc(
       }
     }
 
-  ipc.handle('world:get', handler((root) => {
+  ipc.handle('world:get', handler(async (root) => {
     try { asker?.warm?.(root) } catch { /* readying the asker never fails an open */ }
+    try { await asker?.prepare?.(root) } catch { /* nor does readying its annotations */ }
     return client.get(root)
   }))
   ipc.handle('world:compile', handler((root) => client.compile(root)))

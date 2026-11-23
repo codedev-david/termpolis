@@ -3,7 +3,7 @@
 // sha256 of the world key (any key is safe as a file name), written atomically with async fs. A file
 // that does not parse reads as empty and the next add overwrites it.
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { access, constants as fsConstants, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
@@ -66,10 +66,39 @@ function cleanFile(parsed: unknown): Record<string, Claim[]> {
   return out
 }
 
+const annotationsFolder = (dir: string): string => join(dir, 'world', 'annotations')
+const annotationsFileOf = (dir: string, key: string): string => join(annotationsFolder(dir), `${createHash('sha256').update(key).digest('hex')}.json`)
+
+/**
+ * WPA fix M2: a world key is its root's project key, and WPA gave a few spellings of a folder (Git Bash `/c/...`, Cygwin, WSL
+ * `/mnt/c/...`, doubled separators) the canonical key instead of their own. A normal Windows root keeps its key, so this is a
+ * no-op for it. For a root whose key changed, the annotations a person made under one of its older keys are copied to the new
+ * key the first time the world opens (the first older key that has a file wins). Never overwrites a file the new key already has,
+ * never deletes the old one, never throws. Resolves with the older key it copied from, or null.
+ */
+export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[]): Promise<string | null> {
+  const others = aliasKeys.filter((k) => k && k !== key)
+  if (!key || others.length === 0) return null
+  const target = annotationsFileOf(dir, key)
+  const exists = (f: string): Promise<boolean> => access(f).then(() => true, () => false)
+  if (await exists(target)) return null
+  for (const old of others) {
+    const source = annotationsFileOf(dir, old)
+    if (!(await exists(source))) continue
+    try {
+      await copyFile(source, target, fsConstants.COPYFILE_EXCL)
+      return old
+    } catch {
+      return null // the new key got its own file meanwhile, or the copy could not be made: the old file stays as it was
+    }
+  }
+  return null
+}
+
 export function createAnnotationStore(dir: string): AnnotationStore {
-  const folder = join(dir, 'world', 'annotations')
+  const folder = annotationsFolder(dir)
   const lock = createKeyedLock()
-  const fileOf = (key: string): string => join(folder, `${createHash('sha256').update(key).digest('hex')}.json`)
+  const fileOf = (key: string): string => annotationsFileOf(dir, key)
 
   const read = async (key: string): Promise<Record<string, Claim[]>> => {
     let text: string

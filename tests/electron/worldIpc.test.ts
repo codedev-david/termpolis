@@ -194,6 +194,19 @@ describe('registerWorldIpc', () => {
     expect(warm).toHaveBeenCalledTimes(2)
   })
 
+  it('opening a world readies its annotations first (WPA fix M2): the read waits for prepare, and a failing prepare is ignored', async () => {
+    const order: string[] = []
+    const prepare = vi.fn(async () => { order.push('prepare') })
+    const asker: WorldAsker = { ask: vi.fn(), cancel: vi.fn(), prepare }
+    const { invoke, client } = setup(() => null, fakeSettings(), asker)
+    ;(client.get as ReturnType<typeof vi.fn>).mockImplementation(async () => { order.push('get'); return DOC })
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
+    expect(prepare).toHaveBeenCalledWith('C:/repo')
+    expect(order).toEqual(['prepare', 'get'])
+    prepare.mockRejectedValueOnce(new Error('disk'))
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
+  })
+
   it('handlers return err() shapes for a missing root or a failure', async () => {
     const { invoke, client } = setup()
     for (const args of [undefined, null, 'C:/repo', {}, { root: '   ' }, { root: 5 }]) {

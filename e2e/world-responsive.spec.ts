@@ -7,7 +7,9 @@
  *
  * States: the home and its dialogs (Design something new, Open a git repository…, Use a token), a loaded world in
  * 3D with the legend both ways, a building's card, the toolbar's More menu where the pane folds it, the 2D map, an
- * Ask answer, the Export and Document dialogs, and the Build it dialog of a design. Every state is saved as a PNG
+ * Ask answer, the Export and Document dialogs, and the Build it dialog of a design; and an Ask answer made while memory
+ * says it is locked, with the note that says so, at 768x1024 and 5120x2880 (WPA fix M8: the memory process runs behind
+ * e2e/mocks/memory-host-lockable.mjs, the real one with a lock switch). Every state is saved as a PNG
  * (RESPONSIVE_SHOTS, default test-results/responsive-shots) for the contact sheet.
  *
  * Sizes: the blocking run checks BLOCKING_VIEWPORTS (768x1024, 1366x768, 1920x1080, 3840x2160) at the pane's
@@ -33,7 +35,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -72,6 +74,8 @@ let app: ElectronApplication
 let page: Page
 let cdp: CDPSession
 let userDataDir: string
+/** The memory process's lock switch (e2e/mocks/memory-host-lockable.mjs): the word `locked` in it makes the memory say it is locked. */
+let memoryLockFile: string
 let shimDir: string
 let shims: Record<string, string>
 let current: Viewport | null = null
@@ -87,6 +91,7 @@ test.beforeAll(async () => {
     JSON.stringify({ terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs' }),
   )
   fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false }))
+  memoryLockFile = path.join(userDataDir, 'test-memory-lock')
   // The Ask's agent is mock-claude (see world-ask.spec.ts for why Windows needs the .ps1).
   shims = e2eShimEnv('world-responsive')
   shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-responsive-shim-'))
@@ -136,6 +141,10 @@ exit $LASTEXITCODE
       MOCK_CLAUDE_WORLD_ANSWER: '1',
       MOCK_CLAUDE_ANSWER_PARAGRAPH: '1',
       MOCK_CLAUDE_REPLY_DELAY_MS: '300',
+      // The real memory process behind a switch that can make it say it is locked (WPA fix M8, the last world test).
+      TERMPOLIS_TEST_MEMORY_HOST_PATH: path.resolve('e2e', 'mocks', 'memory-host-lockable.mjs'),
+      TERMPOLIS_TEST_MEMORY_REAL_HOST: path.resolve('out', 'main', 'memoryHost.js'),
+      TERMPOLIS_TEST_MEMORY_LOCK_FILE: memoryLockFile,
     },
   })
   page = await app.firstWindow()
@@ -980,6 +989,67 @@ test.describe.serial('Lumopolis at every screen size', () => {
       }
     }
     expect(clickedZoomed, 'a zoomed button was clicked with the mouse').toBe(RUN.some((v) => uiScale(v.width, v.height) > 1))
+  })
+
+  test('an answer made while memory is locked says so, and fits with that note at 768x1024 and 5120x2880 (WPA fix M8)', async () => {
+    test.setTimeout(1_800_000)
+    const sizes = VIEWPORTS.filter((v) => v.name === '768x1024' || v.name === '5120x2880')
+    expect(sizes).toHaveLength(2)
+    if (!(await page.locator(PANE).isVisible())) {
+      // Run on its own (the world test before it opens the world, and leaves it open).
+      await setViewport(sizes[0])
+      await createTerminal('Repo', path.resolve('.'))
+      await openPane()
+    }
+    await settled(180_000)
+    if (await provisional(path.resolve('.'))) {
+      await expect.poll(() => provisional(path.resolve('.')), { timeout: 240_000 }).toBe(false)
+      await settled(180_000)
+    }
+    fs.writeFileSync(memoryLockFile, 'locked')
+    try {
+      // The store only locks by reloading, which tells main the memory changed and drops the Ask's cached primers. The switch
+      // above reloads nothing, so a delete (of nothing) stands in for that: every delete crosses the same change boundary.
+      await page.evaluate(() => (window as unknown as { termpolis: { memoryDelete: (id: string) => Promise<unknown> } }).termpolis.memoryDelete('wpa-m8-no-such-note'))
+      for (const v of sizes) {
+        const at = await layoutAt(v, null)
+        expect(at, `the pane opens at its default width at ${v.name}`).not.toBeNull()
+        if (!at) continue
+        await settled()
+        const askBox = page.getByPlaceholder('Ask about this project…')
+        seedEvidence()
+        await askBox.fill('How does the memory search work?')
+        await askBox.press('Enter')
+        const ASK_MS = 15_000 + 3 * 10_000 + 90_000
+        const answer = page.locator('[data-testid="world-answer"]')
+        const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
+        for (let retries = 0; ; retries++) {
+          await expect(answer.or(alert).first()).toBeVisible({ timeout: ASK_MS })
+          if (await answer.isVisible()) break
+          expect((await alert.first().textContent()) ?? '', `the ask at ${at.tag} failed`).toContain(MAP_FAILED)
+          expect(retries, `the map was read for the ask at ${at.tag}`).toBeLessThan(3)
+          await click(alert.first().getByRole('button', { name: 'Retry' }))
+        }
+        // The answer says it was made without the project memory, and why (askPrimer: the store is locked).
+        const note = page.locator('[data-testid="world-answer-memory"]')
+        await expect(note).toHaveText('Answered without project memory (memory is locked).', { timeout: 10_000 })
+        // The note lies inside the answer panel, whole: not cut off at its edge, and nothing scrolls across.
+        const box = await note.evaluate((el) => {
+          const panel = el.closest('[data-testid="world-answer"]') as HTMLElement
+          const r = el.getBoundingClientRect()
+          const p = panel.getBoundingClientRect()
+          return { inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.width > 0 && r.height > 0, wide: el.scrollWidth <= el.clientWidth + 1, across: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 }
+        })
+        expect.soft(box, `the locked note fits in the answer at ${at.tag}`).toEqual({ inside: true, wide: true, across: true })
+        await check(`answer with the locked note at ${at.tag}`)
+        await shoot(`app-answer-locked-${at.name}`)
+        await click(page.getByRole('button', { name: 'Close answer' }))
+        await expect(answer).toHaveCount(0)
+        await closeCard()
+      }
+    } finally {
+      fs.writeFileSync(memoryLockFile, '')
+    }
   })
 
   test("a design's Build it dialog fits at every size and width", async () => {
