@@ -368,12 +368,18 @@ export function medianFont(r: AuditResult): number {
  * streaming answer).
  */
 export async function layoutSignature(root: string | null): Promise<string> {
-  // Two frames first (a second at most, should the page not be drawing), so every sample follows a drawn frame: a page
-  // that has yet to draw since a resize does not read as settled.
-  await new Promise<void>((resolve) => {
-    const done = setTimeout(resolve, 1000)
-    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve() }))
+  // Two frames first, so every sample follows a drawn frame: a page that has yet to draw since a resize does not read as
+  // settled. A sample whose frames did not come is never equal to another. The wait used to give up after a second and
+  // sample anyway, and a 5K window drawn in software can go longer than that between two frames (after an answer
+  // rebuilds the map's names and opens a card): samples with no frame between them matched, so the pane read as settled
+  // with the names not yet placed (all at the label layer's corner) and the card not yet capped above the answer, which
+  // the audit then reported (world-responsive's empty-note answer at 5120x2880). Five seconds at most, then the sample
+  // says so; `steady` waits on.
+  const drew = await new Promise<boolean>((resolve) => {
+    const done = setTimeout(() => resolve(false), 5000)
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve(true) }))
   })
+  if (!drew) return `no frame ${performance.now()}`
   const top = root ? document.querySelector(root) : document.body
   if (!top) return 'none'
   let h = 0
@@ -478,7 +484,7 @@ export async function steady(page: Evaluates, root: string | null = null, timeou
   while (Date.now() < end) {
     await new Promise((resolve) => setTimeout(resolve, STEADY_EVERY_MS))
     const now = await page.evaluate(layoutSignature, root)
-    log?.push(`${Date.now() - start}ms ${now === last ? 'same' : 'moved'}`)
+    log?.push(`${Date.now() - start}ms ${now.startsWith('no frame') ? 'no frame' : now === last ? 'same' : 'moved'}`)
     if (log && now !== last && log.length === 3) log.push(`moving then: ${(await page.evaluate(movers, root)).join('; ') || 'nothing'}`)
     same = now === last ? same + 1 : 0
     if (same >= STEADY_SAMPLES - 1) return true
