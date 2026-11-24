@@ -22,7 +22,6 @@
 // and pushes world:export-progress { exportId, step, done, total } while an export runs. A smart export that can't
 // use the model answers err(...) with `keywordOnly: true`: the renderer can offer the same export with keyword Ask.
 // A world that fails its checks answers the plain sentence; the validator's text goes to the app log only.
-import { randomBytes } from 'node:crypto'
 import { join, posix, win32 } from 'node:path'
 import { err, ok } from '../ipcResult'
 import type { SanitizeContext } from '../../shared/world/exportSanitize'
@@ -129,7 +128,6 @@ export function defaultSaveName(title: string, kind: 'world' | 'document'): stri
 }
 
 /** How many numbered names (` (2)` to ` (100)`) a save tries before it takes a random one. */
-const MAX_NUMBERED = 100
 
 const field = (args: unknown, name: string): unknown => (args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined)
 const shortString = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim() !== '' && v.length <= max
@@ -184,21 +182,14 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
   /**
    * The chosen path, ending in .html (in any letter case) so Open always opens a web page. A name ending in .html is
    * the dialog's own, and the dialog asked before replacing it. `.html` added here makes a name the dialog never saw
-   * (a Linux dialog adds no extension), so it never replaces a file: an existing one gets ` (2)`, ` (3)`, … up to
-   * MAX_NUMBERED, then a random name. A file exists when stat answers; one made between this check and the rename
-   * is the one race left.
+   * (a Linux dialog adds no extension): `newName` has the write claim a free name then (export.ts claimName), so it
+   * never replaces a file.
    */
-  const asHtml = async (chosen: string): Promise<string> => {
-    if (/\.html$/i.test(chosen)) return chosen
-    for (let n = 1; n <= MAX_NUMBERED; n++) {
-      const p = n === 1 ? `${chosen}.html` : `${chosen} (${n}).html`
-      if (!(await deps.fs.stat(p).then(() => true, () => false))) return p
-    }
-    return `${chosen} (${randomBytes(6).toString('hex')}).html`
-  }
+  const asHtml = (chosen: string): { target: string; newName: boolean } =>
+    /\.html$/i.test(chosen) ? { target: chosen, newName: false } : { target: `${chosen}.html`, newName: true }
 
   /** The save dialog (or the test run's answer), opened at `<Documents>/<name>`: the path ending in .html, or null. */
-  const pickTarget = async (name: string): Promise<string | null> => {
+  const pickTarget = async (name: string): Promise<{ target: string; newName: boolean } | null> => {
     const test = await deps.testSave?.()
     const chosen = test !== undefined ? test : await deps.saveDialog(join(saveFolder(), name))
     return chosen === null ? null : asHtml(chosen)
@@ -274,10 +265,10 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
       if (smart && 'missing' in found) return keywordOnly(NO_MODEL)
       // A cancel while the world loaded never opens the dialog; one while the dialog was open reads and writes nothing.
       if (controller.signal.aborted) return ok({ cancelled: true })
-      const target = await pickTarget(defaultSaveName(world.title, 'world'))
-      if (target === null || controller.signal.aborted) return ok({ cancelled: true })
+      const picked = await pickTarget(defaultSaveName(world.title, 'world'))
+      if (picked === null || controller.signal.aborted) return ok({ cancelled: true })
       const result = await exportWorld(
-        { doc: world.doc, ctx: world.ctx, title: world.title, smart, ...(proposalId !== undefined ? { proposalId } : {}), target, exportedOn: localDay(now()) },
+        { doc: world.doc, ctx: world.ctx, title: world.title, smart, ...(proposalId !== undefined ? { proposalId } : {}), ...picked, exportedOn: localDay(now()) },
         { assets: found.assets, embed: deps.embed, fs: deps.fs, signal: controller.signal, progress: (p) => progress(exportId, p) },
       )
       if (result.ok) return saved(result.path, result.bytes)
@@ -316,10 +307,10 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
       if (controller.signal.aborted) return ok({ cancelled: true })
       // The person's title, else the world's own; writeDocument sanitises it either way.
       const name = title.trim() || world.title
-      const target = await pickTarget(defaultSaveName(name, 'document'))
-      if (target === null || controller.signal.aborted) return ok({ cancelled: true })
+      const picked = await pickTarget(defaultSaveName(name, 'document'))
+      if (picked === null || controller.signal.aborted) return ok({ cancelled: true })
       const result = await writeDocument(
-        { doc: world.doc, ctx: world.ctx, title: name, ...(typeof picturePng === 'string' ? { picturePng } : {}), target, generatedOn: localDay(now()) },
+        { doc: world.doc, ctx: world.ctx, title: name, ...(typeof picturePng === 'string' ? { picturePng } : {}), ...picked, generatedOn: localDay(now()) },
         deps.fs,
         controller.signal,
       )

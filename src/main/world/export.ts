@@ -93,13 +93,17 @@ export function describedShare(doc: WorldDoc): { buildings: number; lines: numbe
 export type ExportStep = 'prepare' | 'index' | 'write'
 export interface ExportProgress { step: ExportStep; done: number; total: number }
 
-/** What to export. `title` is the project's name as the person sees it: the page title and header use it. */
-export interface ExportRequest { doc: WorldDoc; ctx: SanitizeContext; title: string; smart: boolean; proposalId?: string; target: string; exportedOn: string }
+/**
+ * What to export. `title` is the project's name as the person sees it: the page title and header use it. `newName`
+ * marks a `target` whose `.html` Termpolis added after the dialog (writeAtomically never replaces a file there).
+ */
+export interface ExportRequest { doc: WorldDoc; ctx: SanitizeContext; title: string; smart: boolean; proposalId?: string; target: string; newName?: boolean; exportedOn: string }
 
 /** The file operations the export uses: node:fs/promises fits. */
 export interface ExportFs {
   readFile(path: string): Promise<Uint8Array>
-  writeFile(path: string, data: string | Uint8Array): Promise<void>
+  /** `flag: 'wx'` creates the file only when no file has the name (EEXIST otherwise). */
+  writeFile(path: string, data: string | Uint8Array, opts?: { flag: 'wx' }): Promise<void>
   rename(from: string, to: string): Promise<void>
   rm(path: string, opts: { force: boolean }): Promise<void>
   stat(path: string): Promise<{ size: number }>
@@ -285,27 +289,57 @@ const partName = (target: string): string => `${target}.part-${randomBytes(6).to
 
 const removeQuietly = (fs: ExportFs, path: string): Promise<void> => fs.rm(path, { force: true }).catch(() => undefined)
 
+/** How many numbered names (`x.html`, `x (2).html`, …) a new name tries before a random one. */
+export const MAX_NUMBERED = 100
+
+/**
+ * Claims a name for a `target` whose `.html` Termpolis added (`<stem>.html`): the first of `<stem>.html`,
+ * `<stem> (2).html` … `(MAX_NUMBERED).html`, then `<stem> (<random>).html`, that no file has, created empty with
+ * `wx` so the check holds until the rename replaces that empty file. Only EEXIST moves on to the next name; any
+ * other error, or a random name taken too, is thrown (writeError words it).
+ */
+async function claimName(fs: ExportFs, target: string): Promise<string> {
+  const stem = target.slice(0, -'.html'.length)
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? target : n <= MAX_NUMBERED ? `${stem} (${n}).html` : `${stem} (${randomBytes(6).toString('hex')}).html`
+    try {
+      await fs.writeFile(name, '', { flag: 'wx' })
+      return name
+    } catch (e) {
+      if (errCode(e) !== 'EEXIST' || n > MAX_NUMBERED) throw e
+    }
+  }
+}
+
 /**
  * Writes `data` to `part`, then renames it to `target`. On a failure, or a cancel before the rename, the .part is
  * removed and `target` is left as it was. The size is the written file's, or the data's when it cannot be read.
+ * With `newName` the target is a name the dialog never saw, so no file there is replaced: claimName picks the name
+ * when the file is written, not when the dialog closed, and two saves of one name (or a file another program made
+ * meanwhile) each keep their own file.
  */
-async function writeAtomically(fs: ExportFs, part: string, target: string, data: string, signal?: AbortSignal): Promise<ExportResult> {
+async function writeAtomically(fs: ExportFs, part: string, target: string, data: string, signal?: AbortSignal, newName = false): Promise<ExportResult> {
   if (signal?.aborted) return { ok: false, error: CANCELLED, cancelled: true }
   let phase: 'write' | 'rename' = 'write'
+  let path = target
+  let claimed: string | null = null
   try {
     await fs.writeFile(part, data)
+    if (newName && !signal?.aborted) path = claimed = await claimName(fs, target)
     if (signal?.aborted) {
       await removeQuietly(fs, part)
+      if (claimed !== null) await removeQuietly(fs, claimed)
       return { ok: false, error: CANCELLED, cancelled: true }
     }
     phase = 'rename'
-    await fs.rename(part, target)
+    await fs.rename(part, path)
   } catch (e) {
     await removeQuietly(fs, part)
+    if (claimed !== null) await removeQuietly(fs, claimed)
     return { ok: false, error: writeError(e, phase) }
   }
-  const bytes = await fs.stat(target).then((s) => s.size, () => Buffer.byteLength(data, 'utf8'))
-  return { ok: true, path: target, bytes }
+  const bytes = await fs.stat(path).then((s) => s.size, () => Buffer.byteLength(data, 'utf8'))
+  return { ok: true, path, bytes }
 }
 
 /** A failure reading one of the export's own files. */
@@ -409,7 +443,7 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
   } catch {
     return { ok: false, error: NO_RUNTIME }
   }
-  const result = await writeAtomically(fs, part, req.target, html, signal)
+  const result = await writeAtomically(fs, part, req.target, html, signal, req.newName)
   if (result.ok) progress({ step: 'write', done: 1, total: 1 })
   return result
 }
@@ -421,7 +455,7 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
  * the rename leaves no file.
  */
 export async function writeDocument(
-  req: { doc: WorldDoc; ctx: SanitizeContext; title: string; picturePng?: string; target: string; generatedOn: string },
+  req: { doc: WorldDoc; ctx: SanitizeContext; title: string; picturePng?: string; target: string; newName?: boolean; generatedOn: string },
   fs: ExportFs,
   signal?: AbortSignal,
 ): Promise<ExportResult> {
@@ -430,5 +464,5 @@ export async function writeDocument(
   const doc = sanitizeWorld(checked.doc, req.ctx)
   const title = sanitizeText(req.title, req.ctx)
   const model = buildDocumentation(doc, { title, picture: req.picturePng !== undefined, generatedOn: req.generatedOn })
-  return writeAtomically(fs, partName(req.target), req.target, renderDocumentation(model, doc, req.picturePng), signal)
+  return writeAtomically(fs, partName(req.target), req.target, renderDocumentation(model, doc, req.picturePng), signal, req.newName)
 }

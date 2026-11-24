@@ -10,7 +10,7 @@ import {
   ALREADY_RUNNING, DOCUMENT_FAILED, EXPORT_FAILED, KEYWORD_ONLY, NO_SAVED_WORLD, NOT_EXPORTABLE, NOT_EXPORTED, OPEN_FAILED, WHOLE_DESIGN, WORLD_REQUIRED,
   defaultSaveName, registerWorldExportIpc, type WorldExportDeps,
 } from '../../src/main/world/exportIpc'
-import { describedShare, estimateExportBytes, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, NOT_DOCUMENTABLE, type ExportAssets, type ExportFs } from '../../src/main/world/export'
+import { describedShare, estimateExportBytes, FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, NOT_DOCUMENTABLE, type ExportAssets, type ExportFs } from '../../src/main/world/export'
 import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { ok, err } from '../../src/main/ipcResult'
 import type { WorldDoc, WorldEntry } from '../../src/shared/world/types'
@@ -60,8 +60,9 @@ function memFs(over: { write?: Error } = {}) {
       if (!f) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       return f
     }),
-    writeFile: vi.fn(async (p: string, data: string | Uint8Array) => {
+    writeFile: vi.fn(async (p: string, data: string | Uint8Array, opts?: { flag: 'wx' }) => {
       if (over.write) throw over.write
+      if (opts?.flag === 'wx' && written.has(p)) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
       written.set(p, typeof data === 'string' ? data : Buffer.from(data).toString('utf8'))
     }),
     rename: vi.fn(async (from: string, to: string) => {
@@ -318,6 +319,84 @@ describe('world:export', () => {
     const doc = setup({ mem: docMem, platform: 'linux', saveDialog: vi.fn(async () => '/home/ann/guide') })
     expect((await doc.call('world:document', { root: ROOT, title: 'Shop' })).data.path).toBe('/home/ann/guide (2).html')
     expect(docMem.written.get('/home/ann/guide.html')).toBe('theirs')
+  })
+
+  it('claims the free name when the file is written: two saves of one extensionless name both keep their own file', async () => {
+    const mem = memFs()
+    const { call, deps } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    // Both dialogs close before either file is written, so both saw notes.html free.
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    let waiting = 0
+    deps.embed = vi.fn(async (texts: string[]) => { if (++waiting === 2) release(); await gate; return texts.map(vector) })
+    const [a, b] = await Promise.all([
+      call('world:export', { exportId: 'x1', root: ROOT, smart: true }),
+      call('world:export', { exportId: 'x2', root: CLONE, smart: true }),
+    ])
+    expect(deps.embed).toHaveBeenCalledTimes(2)
+    expect([a.data.path, b.data.path].sort()).toEqual(['D:\\out\\notes (2).html', 'D:\\out\\notes.html'])
+    expect([...mem.written.keys()].sort()).toEqual(['D:\\out\\notes (2).html', 'D:\\out\\notes.html'])
+    // Each file is its own world's page, written whole: neither replaced the other.
+    expect(mem.written.get(a.data.path)).not.toBe(mem.written.get(b.data.path))
+    for (const p of [a.data.path, b.data.path]) expect(mem.written.get(p)).toMatch(/<\/html>\s*$/)
+    // An export and a documentation save of one name too.
+    const both = memFs()
+    const pair = setup({ mem: both, testSave: vi.fn(async () => 'D:\\out\\guide') })
+    const [page, docs] = await Promise.all([
+      pair.call('world:export', { exportId: 'x3', root: ROOT, smart: false }),
+      pair.call('world:document', { root: ROOT, title: 'Shop' }),
+    ])
+    expect([page.data.path, docs.data.path].sort()).toEqual(['D:\\out\\guide (2).html', 'D:\\out\\guide.html'])
+  })
+
+  it('never replaces a file another program made under that name while the export ran', async () => {
+    const mem = memFs()
+    const { call, deps } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    deps.embed = vi.fn(async (texts: string[]) => { mem.written.set('D:\\out\\notes.html', 'theirs'); return texts.map(vector) })
+    expect((await call('world:export', { exportId: 'x1', root: ROOT, smart: true })).data.path).toBe('D:\\out\\notes (2).html')
+    expect(mem.written.get('D:\\out\\notes.html')).toBe('theirs')
+  })
+
+  it('counts a name as taken only when it exists: any other error fails the save, and nothing is left behind', async () => {
+    const mem = memFs()
+    const write = mem.fs.writeFile
+    mem.fs.writeFile = vi.fn(async (p: string, d: string | Uint8Array, o?: { flag: 'wx' }) => {
+      if (o?.flag === 'wx') throw Object.assign(new Error(`EACCES: open '${p}'`), { code: 'EACCES' })
+      return write(p, d, o)
+    })
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toEqual(err(NO_ACCESS))
+    expect(mem.written.size).toBe(0)
+    // A random name taken too after a hundred numbered ones: the save fails, and no taken file changes.
+    const full = memFs()
+    const fullWrite = full.fs.writeFile
+    full.fs.writeFile = vi.fn(async (p: string, d: string | Uint8Array, o?: { flag: 'wx' }) => {
+      if (o?.flag === 'wx') throw Object.assign(new Error(`EEXIST: open '${p}'`), { code: 'EEXIST' })
+      return fullWrite(p, d, o)
+    })
+    const taken = setup({ mem: full, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const res = await taken.call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(res).toEqual(err("Termpolis couldn't save the file (EEXIST)."))
+    expect(full.fs.writeFile).toHaveBeenCalledTimes(102)
+    expect(full.written.size).toBe(0)
+  })
+
+  it('removes the name it claimed when the rename fails or the save is cancelled while it claims', async () => {
+    const mem = memFs()
+    mem.fs.rename = vi.fn(async () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }) })
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toEqual(err(FILE_IN_USE))
+    expect(mem.written.size).toBe(0)
+    const cancel = memFs()
+    const write = cancel.fs.writeFile
+    const cancelling = setup({ mem: cancel, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    cancel.fs.writeFile = vi.fn(async (p: string, d: string | Uint8Array, o?: { flag: 'wx' }) => {
+      await write(p, d, o)
+      if (o?.flag === 'wx') await cancelling.call('world:export-cancel', { exportId: 'x1' })
+    })
+    expect(await cancelling.call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toEqual(ok({ cancelled: true }))
+    expect(cancel.written.size).toBe(0)
+    expect(cancel.fs.rename).not.toHaveBeenCalled()
   })
 
   it('replaces a .html name the dialog approved (the dialog asked first)', async () => {
