@@ -815,6 +815,50 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe('a key x\\Users\\dev stays')
   })
 
+  it('ends a known folder only where its name ends, so a short or longer name beside it never shows', () => {
+    const cases: Array<[string, string]> = [
+      // An 8.3 short name of the home folder, JSON-escaped and plain, with and without its drive.
+      ['{"cwd":"\\\\Users\\\\DEV~1\\\\x"}', `{"cwd":"${OUTSIDE}/x"}`],
+      ['{"cwd":"C:\\\\Users\\\\DEV~1\\\\x"}', `{"cwd":"${OUTSIDE}/x"}`],
+      ['see \\Users\\DEV~1\\x now', `see ${OUTSIDE}/x now`],
+      ['see C:\\Users\\DEV~1\\x now', `see ${OUTSIDE}/x now`],
+      ['see /c/Users/DEV~1/x now', `see ${OUTSIDE}/x now`],
+      ['cwd:\\\\?\\C:\\Users\\DEV~1\\x', `cwd:${OUTSIDE}/x`],
+      ['see C:\\Users\\DEV~1, then', `see ${OUTSIDE}, then`],
+      ['see C:\\Users\\DEV~1\\x\\..\\ now', `see ${OUTSIDE}/x now`],
+      ['see C:\\Users\\DEV~1\\DEV~1 now', `see ${OUTSIDE} now`],
+      // Another folder beside it whose name runs on with a sign.
+      ['see C:\\Users\\dev+old\\y now', `see ${OUTSIDE}/y now`],
+      // A known folder still ends before sentence and list punctuation.
+      ['see C:\\Users\\dev, then', `see ${OUTSIDE}, then`],
+      ['see C:\\Users\\dev. Then', `see ${OUTSIDE}. Then`],
+      ['(see C:\\Users\\dev)', `(see ${OUTSIDE})`],
+    ]
+    for (const [text, want] of cases) {
+      const out = sanitizeText(text, win)
+      expect(out).toBe(want)
+      expect(out.toLowerCase()).not.toContain('dev')
+    }
+    // A name running on with a name character is another folder, left to the revealing pass.
+    const macDev: SanitizeContext = { root: '/Users/dev/repo', home: '/Users/dev', userData: '/Users/dev/Library/Application Support/Termpolis' }
+    expect(sanitizeText('it serves /api/users/devices', macDev)).toBe('it serves /api/users/devices')
+    expect(sanitizeText('see /home/dev2/x now', posix)).toBe(`see ${OUTSIDE}/x now`)
+  })
+
+  it('never shows the home folder\'s own name as the basename of a path outside the project', () => {
+    expect(relativePath('\\\\host\\home\\dev', posix)).toBe(OUTSIDE)
+    expect(sanitizeText('see \\\\host\\home\\dev now', posix)).toBe(`see ${OUTSIDE} now`)
+    expect(sanitizeText('x \\\\host\\home\\DEV:12', posix)).toBe(`x ${OUTSIDE}:12`)
+    expect(sanitizeText('{"cwd":"\\\\Users\\\\dev"}', win)).toBe(`{"cwd":"${OUTSIDE}"}`)
+    expect(sanitizeText('PATH=\\\\Users\\\\dev:/bin', win)).toBe(`PATH=${OUTSIDE}:/bin`)
+    // A longer name, or the same name inside the project, is shown as before.
+    expect(relativePath('/srv/dev.txt', posix)).toBe(`${OUTSIDE}/dev.txt`)
+    expect(relativePath('/srv/dev2', posix)).toBe(`${OUTSIDE}/dev2`)
+    expect(relativePath('/home/dev/repo/dev', posix)).toBe('dev')
+    // A home folder with no name of its own (a drive root) hides nothing.
+    expect(relativePath('/srv/x', { root: null, home: '/', userData: '/data' })).toBe(`${OUTSIDE}/x`)
+  })
+
   it('lets no traversal through on Windows either', () => {
     expect(relativePath('..\\..\\etc\\passwd', win)).toBe(`${OUTSIDE}/passwd`)
     expect(relativePath('src\\..\\..\\x.ts', win)).toBe(`${OUTSIDE}/x.ts`)

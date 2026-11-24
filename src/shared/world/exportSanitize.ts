@@ -164,9 +164,20 @@ function resolveRelative(segments: string[]): string {
 /**
  * A path as the export may show it: relative to the project root with forward slashes, or `<outside the project>/`
  * and its basename. The home and userData folders themselves become `<outside the project>` alone, so the account
- * name never shows. `~` stands for the home folder; `~user` is another account's, so it is outside.
+ * name never shows. `~` stands for the home folder; `~user` is another account's, so it is outside. Nor is a
+ * basename that is the home folder's own name shown, in any case and whatever follows it that is not a name
+ * character (`:12`): a folder of that name elsewhere (on another host, or a path read some other way) is
+ * `<outside the project>` alone too.
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
+  const read = placedPath(p, ctx)
+  const named = `${OUTSIDE}/${baseName(norm(ctx.home).split('/'))}`
+  const after = read.slice(named.length)
+  return named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after) ? OUTSIDE + after : read
+}
+
+/** relativePath before the home folder's name is taken out. */
+function placedPath(p: string, ctx: SanitizeContext): string {
   // Every path is first read as Windows would write it, a backslash being a separator. If that reading roots it
   // (`\home\dev\x`) or climbs out (`..\x`, `a\..\..\x`), it is outside on any platform. Only a path that stays
   // in the project that way keeps its backslashes as name characters, on Linux and macOS.
@@ -237,6 +248,9 @@ function baseSource(base: string): string {
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */
 const redact = (text: string): string => redactSecrets(text).replace(/<redacted(?:-[a-z]+)?>/g, '[redacted]')
 
+/** Where a known folder's last name ends (knownPattern). */
+const FOLDER_END = `(?=$|[\\s\\\\/"'\`,;:!?)\\]}<>|]|\\.(?![\\w.-]))`
+
 /** Punctuation that ends a sentence, not a path. */
 const TRAILING = /[.,;:!?)\]}]+$/
 
@@ -245,9 +259,11 @@ function knownPattern(ctx: SanitizeContext): RegExp {
   const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
     .sort((a, b) => norm(b).length - norm(a).length).map(baseSource)
   // A `file:` URL of a known folder is taken whole. `(?!)` never matches, so with no folder known the pass changes
-  // nothing. A folder ends at a whole name: not followed by a name character, nor by a dot that starts one (a dot
-  // ending the sentence is fine).
-  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?![\\w-]|\\.[\\w.-])((?:[\\\\/]${REST})?)`, 'gi')
+  // nothing. A folder ends at a whole name: at a separator, whitespace, a quote, the end of the text, or punctuation
+  // that ends a sentence or a list (a dot only when no name follows it). A name running on with something other than
+  // a letter, digit, `_`, `-` or a dot (an 8.3 short name `ANN~1`, `ann+x`) is a folder beside it, taken whole as
+  // group 2. One running on with a name character is another folder, left to the revealing pass.
+  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?:${FOLDER_END}|(?![\\w.-])([^\\s\\\\/"'<>|]+?)${FOLDER_END})((?:[\\\\/]${REST})?)`, 'gi')
 }
 
 /** sanitizeText for one context, its patterns built once (a world holds thousands of strings). */
@@ -256,8 +272,13 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
   const revealing = new RegExp(REVEALING_PATH, 'gi')
   const rewrite = (path: string, tail: string): string => relativePath(path.slice(0, path.length - tail.length), ctx) + tail
   // A known folder named alone keeps its last character; a path running on drops the punctuation ending a sentence.
-  const knownHit = (_m: string, base: string, rest: string): string =>
-    rewrite(base + rest, rest ? (TRAILING.exec(rest) ?? [''])[0] : '')
+  // A folder beside a known one is outside the project, and its name is never shown, not even as the basename.
+  const knownHit = (_m: string, base: string, beside: string | undefined, rest: string): string => {
+    const tail = rest ? (TRAILING.exec(rest) ?? [''])[0] : ''
+    if (!beside) return rewrite(base + rest, tail)
+    const out = rewrite(base + beside + rest, tail)
+    return out.toLowerCase().includes(beside.toLowerCase()) ? OUTSIDE + tail : out
+  }
   const revealingHit = (m: string): string => rewrite(m, (TRAILING.exec(m) ?? [''])[0])
   // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
   return (text) => redact(text).replace(known, knownHit).replace(revealing, revealingHit)
