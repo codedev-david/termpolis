@@ -530,6 +530,17 @@ describe('codeGraphExtract', () => {
       for (const s of empty) within(() => expect(extractFile('m.go', s)!.imports).toEqual([]))
     })
 
+    it('Go: a method receiver closes within four lines; unclosed `func (` lines stay linear up to 512 KB', () => {
+      const src = J('package m', 'func Plain() {', '}', 'func (s *Server) Handle(w http.ResponseWriter) {', '}', 'func (Server)  Bare() {}', 'func\tTabbed() {}', 'func (s *S[T]) Gen() {}')
+      expect(show('m.go', src).s).toEqual([['Plain', 'function', 2, 3], ['Handle', 'function', 4, 5], ['Bare', 'function', 6, 6], ['Tabbed', 'function', 7, 7], ['Gen', 'function', 8, 8]])
+      // A receiver split over lines is read as before (from its `func` line), up to four lines; past that it names nothing.
+      expect(show('m.go', 'func (\n\ts *Server,\n) Handle() {}\nfunc (a\nb) Far() {}').s).toEqual([['Handle', 'function', 1, 1], ['Far', 'function', 4, 4]])
+      expect(show('m.go', 'func (\n\ta,\n\tb,\n) Four() {}\nfunc (\n\ta,\n\tb,\n\tc,\n) Five() {}').s).toEqual([['Four', 'function', 1, 1]])
+      for (const line of ['func (\n', 'func (a\n', 'func  (a b\n']) {
+        linear((n) => expect(extractFile('m.go', line.repeat(Math.floor(n / line.length)))!.symbols).toEqual([]), 128 * 1024, line)
+      }
+    })
+
     it('Rust: `pub(...)` visibility closes on its line; an open `pub(` per line stays linear', () => {
       const src = J('pub(crate) fn a() {}', 'pub(super) async fn b() {}', 'pub fn c() {}', 'fn d() {}', 'pub(in crate::x) struct S;', 'pub(crate) trait T {}', 'use crate::x::y;')
       expect(show('m.rs', src)).toEqual({

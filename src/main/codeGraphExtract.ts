@@ -381,7 +381,9 @@ const GO: LangRules = {
   lang: 'go',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/gm },
+    // The receiver closes within four lines: `[^)]*` ran from every `func (` to the next `)`, so thousands of unclosed
+    // ones each read on to the end of the file (half a minute at 512 KB). A line is read by at most the four heads above.
+    { kind: 'function', re: /^func\s+(?:\([^)\n]*(?:\n[^)\n]*){0,3}\)\s*)?([A-Za-z_]\w*)/gm },
     { kind: 'struct', re: /^type\s+([A-Za-z_]\w*)\s+struct\b/gm },
     { kind: 'interface', re: /^type\s+([A-Za-z_]\w*)\s+interface\b/gm },
   ],
