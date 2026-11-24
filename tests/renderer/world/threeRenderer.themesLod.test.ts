@@ -182,6 +182,14 @@ describe('threeRenderer level of detail', () => {
     expect(fogSlab.opacity).toBeCloseTo(PALETTE.neon.fillOpacity * 0.6)
     expect((slabs[1].material as THREE.MeshStandardMaterial).depthWrite).toBe(false)
     expect(fogSlab.customProgramCacheKey()).toBe('lw-slab')
+    // Every slab's fill steps back in depth, so its outline and seams (on its faces) never z-fight with it (T12).
+    for (const s of slabs) {
+      const sm = s.material as THREE.MeshStandardMaterial
+      expect([sm.polygonOffset, sm.polygonOffsetFactor, sm.polygonOffsetUnits]).toEqual([true, 1, 1])
+    }
+    for (const l of world.children.filter((c) => c instanceof THREE.LineSegments) as THREE.LineSegments[]) {
+      expect((l.material as THREE.LineBasicMaterial).polygonOffset).toBe(false) // the lines keep their true depth
+    }
     const sh = { uniforms: {}, vertexShader: '', fragmentShader: '#include <common>\n#include <color_fragment>\n#include <emissivemap_fragment>' }
     fogSlab.onBeforeCompile(sh as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer)
     expect(sh.fragmentShader).not.toContain('#include <color_fragment>')

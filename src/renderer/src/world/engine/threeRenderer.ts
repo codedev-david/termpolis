@@ -1290,6 +1290,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const m = trackBase(new THREE.MeshStandardMaterial({
         color: extras.fill, emissive: 0xffffff, emissiveIntensity: 1, metalness: 0.5, roughness: 0.3, transparent: true,
         opacity: look === 'fog' ? extras.fillOpacity * 0.6 : extras.fillOpacity, depthWrite: writesDepth(true, 1, fading),
+        // The outline and the seams lie on the slab's own faces: its fill steps back in depth so they win the depth
+        // test instead of flickering through it (a polygon offset moves faces only, never lines).
+        polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
       }))
       m.onBeforeCompile = (sh) => {
         sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', '').replace('#include <emissivemap_fragment>', EMISSIVE_TINT)
