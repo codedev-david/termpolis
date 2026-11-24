@@ -24,7 +24,7 @@ import { mergeAnnotations } from './annotations'
 import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
-import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
+import { BUILDINGS_PER_BATCH, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
@@ -288,10 +288,17 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   const subB = touchedBuildings(g, previous, changed)
   const ids = new Set(subB.map((b) => b.id))
   const asked = new Set(subB.map((b) => b.districtId))
-  const prevMembers = new Map<string, string[]>()
-  for (const b of previous.buildings) prevMembers.set(b.districtId, [...(prevMembers.get(b.districtId) ?? []), b.id])
-  const idsKey = (list: string[]): string => JSON.stringify([...list].sort())
-  const reset = new Set(g.districts.filter((d) => idsKey(d.members) !== idsKey(prevMembers.get(d.id) ?? [])).map((d) => d.id))
+  const prevD = new Map(previous.districts.map((d) => [d.id, d]))
+  // A district is named by its first batch alone, its first BUILDINGS_PER_BATCH buildings in grouping order
+  // (planBatches), so it is asked again only when that batch changed: a building in it was touched, or it holds
+  // other buildings now. Then it is asked with exactly that batch, as a full compile asks it.
+  const firstBatch = (list: readonly { id: string; districtId: string }[], id: string): string[] =>
+    list.filter((b) => b.districtId === id).slice(0, BUILDINGS_PER_BATCH).map((b) => b.id)
+  const changedFirst = (id: string): boolean => {
+    const now = firstBatch(g.buildings, id)
+    return !prevD.has(id) || now.some((b) => ids.has(b)) || JSON.stringify(now) !== JSON.stringify(firstBatch(previous.buildings, id))
+  }
+  const rename = new Set(g.districts.map((d) => d.id).filter(changedFirst))
   const touches = (e: { from: string; to: string }): boolean => ids.has(e.from) || ids.has(e.to)
   const sub: Grouping = {
     districts: g.districts.filter((d) => asked.has(d.id)).map((d) => ({ ...d, members: d.members.filter((id) => ids.has(id)) })),
@@ -300,12 +307,11 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   }
   const fresh = await labelWorld(sub, { ...deps, part: (id) => g.buildings.find((b) => b.id === id) })
   const labels = await labelWorld(g, { ...deps, llm: null })
-  const prevD = new Map(previous.districts.map((d) => [d.id, d]))
+  const named = rename.size > 0 ? await labelWorld(g, { ...deps, firstBatchOf: rename }) : labels
   const prevE = new Map(previous.edges.map((e) => [e.id, e]))
   for (const d of g.districts) {
     const p = prevD.get(d.id)
-    if (asked.has(d.id)) labels.districts[d.id] = fresh.districts[d.id]
-    else if (p && !reset.has(d.id)) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
+    labels.districts[d.id] = rename.has(d.id) ? named.districts[d.id] : { name: (p as District).name, subtitle: (p as District).subtitle }
   }
   // Every untouched building has a previous twin with the same members (a new one is touched).
   for (const b of g.buildings) {
@@ -317,8 +323,8 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     if (touches(e)) labels.edges[id] = fresh.edges[id]
     else if (p) labels.edges[id] = edgeFromPrevious(p)
   }
-  labels.glossary = { ...previous.glossary, ...fresh.glossary }
-  labels.tokens = fresh.tokens
+  labels.glossary = { ...previous.glossary, ...named.glossary, ...fresh.glossary }
+  labels.tokens = fresh.tokens + named.tokens
   return labels
 }
 

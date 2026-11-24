@@ -74,6 +74,11 @@ export interface LabelDeps {
   /** True once the world was removed: the pass asks nothing more, and a call cut short by the removal is neither a
    *  quick failure nor asked again. Optional (never stopped). */
   stopped?: () => boolean
+  /** A scoped re-label's district names: only these districts' first batches are asked, built from the whole
+   *  grouping exactly as a full pass builds them (same buildings, lines and prompt, so the same cached reply). No
+   *  other batch is asked, and of the second chances only the one that can still name the district. Optional
+   *  (every batch is asked). */
+  firstBatchOf?: ReadonlySet<string>
 }
 
 export const DEFAULT_MAX_EXCERPT_CHARS = 1200
@@ -985,7 +990,8 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const llm = deps.llm
   if (!llm) return labels
 
-  const plan = planBatches(g)
+  const only = deps.firstBatchOf
+  const plan = planBatches(g).filter((p) => !only || (p.first && only.has(p.district.id)))
   const isStopped = deps.stopped
   const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, stopped: () => isStopped?.() === true }
   const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, pass))
@@ -993,15 +999,21 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
   results.forEach((r, i) => merge(labels, r, plan[i].first ? plan[i].district.id : null))
   const parts = new Map(g.buildings.map((b) => [b.id, b]))
-  const again = halted(pass) ? [] : plan.flatMap((p, i) => secondChance(p, results[i], parts))
+  // A scoped naming pass asks again only the batch that can still name the district (its first building alone):
+  // a full pass names it the same way, and every other second chance would describe parts the caller drops.
+  const again = halted(pass) ? [] : plan.flatMap((p, i) => secondChance(p, results[i], parts)).filter((p) => !only || p.first)
   const second = await pool(again, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, pass, true))
   second.forEach((r, i) => merge(labels, r, again[i].first ? again[i].district.id : null))
   // One line per pass, so a run can show how much of the map is described.
-  const left = g.buildings.filter((b) => bare(labels.buildings[b.id])).length
-  const leftLines = g.edges.filter((e) => bare(labels.edges[edgeId(e)])).length
+  // A scoped naming pass counts only what its first batches carried.
+  const counted = <T>(all: T[], of: (p: Planned) => T[]): T[] => (only ? [...new Set(plan.flatMap(of))] : all)
+  const buildings = counted(g.buildings, (p) => p.buildings)
+  const edges = counted(g.edges, (p) => p.edges)
+  const left = buildings.filter((b) => bare(labels.buildings[b.id])).length
+  const leftLines = edges.filter((e) => bare(labels.edges[edgeId(e)])).length
   const stopped = pass.stopped() ? '; the world was removed, the rest was not asked' : noModel(pass) ? '; no model reachable, the rest was not asked' : ''
   console.info(
-    `[world label] left undescribed: ${left} of ${g.buildings.length} buildings, ${leftLines} of ${g.edges.length} lines (${again.length - pass.repeats} batches asked a second time${stopped})`
+    `[world label] left undescribed: ${left} of ${buildings.length} buildings, ${leftLines} of ${edges.length} lines (${again.length - pass.repeats} batches asked a second time${stopped})`
   )
   return labels
 }

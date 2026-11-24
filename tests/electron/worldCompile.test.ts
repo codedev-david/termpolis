@@ -321,7 +321,9 @@ describe('compileWorld', () => {
     expect((await compileFixture()).labelTokens).toBe(0)
     llm.mockClear()
     const again = await compileFixture({ label: labelDeps({ llm }) }, first, ['src/renderer/view.ts'])
-    expect(llm).toHaveBeenCalledTimes(1)
+    // The view's batch, then its district's first batch, which holds the view, and that batch's first building alone
+    // (the reply described none).
+    expect(llm).toHaveBeenCalledTimes(3)
     expect(again.labelTokens).toBe(cost())
   })
 
@@ -352,7 +354,8 @@ describe('compileWorld', () => {
     })
     const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['src/renderer/view.ts'])
     expectValid(doc)
-    expect(llm).toHaveBeenCalledTimes(1)
+    // The view's batch, and its district's first batch, which holds the view, for the district's name.
+    expect(llm).toHaveBeenCalledTimes(2)
     const byId = new Map(doc.buildings.map((b) => [b.id, b]))
     expect(byId.get(VIEW)?.name).toBe('View Layer')
     expect(byId.get(VIEW)?.stack).toEqual(['TypeScript'])
@@ -411,8 +414,8 @@ describe('compileWorld', () => {
     expect(doc.districts.filter((d) => d.id !== districtId)).toEqual(previous.districts.filter((d) => d.id !== districtId))
   })
 
-  // Review 1 (I4): the touched buildings are batched under their real district, so its first batch names it again.
-  it('a scoped compile asks a touched district its name again, in the batch of its touched buildings', async () => {
+  // Review 2 (NI2): a district is named by its full-compile first batch, so a scoped compile asks that batch again.
+  it('a scoped compile asks a touched district its name again, in its full-compile first batch', async () => {
     const previous = await compileFixture()
     const districtId = previous.buildings.find((b) => b.id === VIEW)?.districtId as string
     const llm = vi.fn(async (prompt: string) =>
@@ -422,25 +425,113 @@ describe('compileWorld', () => {
     )
     const doc = await compileFixture({ label: labelDeps({ llm }) }, previous, ['src/renderer/view.ts'])
     expectValid(doc)
-    expect(llm.mock.calls.filter(([p]) => p.includes(`DISTRICT "${districtId}"`)).length).toBeGreaterThan(0)
+    // The untouched renderer is in the district's first batch, so the batch that names it lists it too.
+    expect(llm.mock.calls.filter(([p]) => p.includes(`DISTRICT "${districtId}"`) && p.includes(`- "${RENDERER}"`) && p.includes(`- "${VIEW}"`))).toHaveLength(1)
     expect(llm.mock.calls.every(([p]) => !p.includes(`DISTRICT "${districtId}/`))).toBe(true)
     expect(doc.districts.find((d) => d.id === districtId)).toMatchObject({ name: 'View District', subtitle: 'Draws the window.', nameState: 'inferred' })
     expect(doc.buildings.find((b) => b.id === VIEW)?.name).toBe('View Layer')
     expect(doc.districts.filter((d) => d.id !== districtId)).toEqual(previous.districts.filter((d) => d.id !== districtId))
   })
 
-  it('a scoped compile resets a district that only lost a building to its code-derived label, asking nothing', async () => {
-    const fresh = await compileFixture()
-    const prev: WorldDoc = JSON.parse(JSON.stringify(fresh))
-    const main = prev.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]
-    prev.buildings.push({ ...main, id: 'b-gone', name: 'Gone', members: ['src/main/gone.ts'], floors: [] })
-    for (const d of prev.districts) Object.assign(d, { name: `old ${d.id}`, subtitle: 'old' })
-    const llm = vi.fn(async () => '{}')
-    const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['src/main/gone.ts'])
-    expect(llm).not.toHaveBeenCalled()
-    const district = (d: WorldDoc, id: string) => d.districts.find((x) => x.id === id)
-    expect(district(doc, 'd-src-main')).toEqual(district(fresh, 'd-src-main'))
-    expect(district(doc, 'd-src-renderer')).toMatchObject({ name: 'old d-src-renderer', subtitle: 'old' })
+  describe('scoped compile: district names (review 2, NI2)', () => {
+    // One district of five buildings: its first batch is alpha, beta and delta (grouping order), so gamma and epsilon are outside it.
+    const CORE_NAMES = ['alpha', 'beta', 'gamma', 'delta', 'epsilon']
+    const CORE: Record<string, string> = Object.fromEntries(
+      CORE_NAMES.flatMap((n) => [
+        [`src/core/${n}/index.ts`, `import './util'\nexport const ${n} = 1\n`],
+        [`src/core/${n}/util.ts`, 'export const u = 1\n']
+      ])
+    )
+    const CORE_IMPORTS = Object.fromEntries(CORE_NAMES.map((n) => [`src/core/${n}/index.ts`, ['./util']]))
+    const CORE_ID = 'd-src-core'
+    const FIRST = ['alpha', 'beta', 'delta']
+    const compileCore = (over: Partial<CompileDeps> = {}, previous: WorldDoc | null = null, changed?: string[]): Promise<WorldDoc> =>
+      compileWorld({ snap: snapOf(CORE, CORE_IMPORTS), projectKey: 'demo', head: HEAD, previous, changed }, mkDeps(CORE, over))
+    const rows = (prompt: string): RegExpMatchArray[] => [...(prompt.split('\nBUILDINGS\n')[1] ?? '').matchAll(/^- "([^"]+)": "([^"]+)"$/gm)]
+    const listed = (prompt: string): string[] => rows(prompt).map((m) => m[2])
+    // A model that names the district from the buildings its batch lists, as one citing their excerpts would, and
+    // describes each of them (a building left out is asked again alone, and that batch could name the district).
+    const namer = () =>
+      vi.fn(async (prompt: string) => {
+        const names = listed(prompt)
+        const buildings = Object.fromEntries(rows(prompt).map((m) => [m[1], { name: F(`The ${m[2]}`) }]))
+        return JSON.stringify({ district: { name: F(`Core of ${names.join(' ')}`), subtitle: F(`Holds ${names.join(' ')}.`) }, buildings })
+      })
+    const core = (doc: WorldDoc) => doc.districts.find((d) => d.id === CORE_ID)
+    const building = (n: string, members: string[]) => ({ id: `b-src-core-${n}`, name: n, members })
+
+    it('the fixture district is named from its first batch by a full compile', async () => {
+      const llm = namer()
+      const doc = await compileCore({ label: labelDeps({ llm }) })
+      expect(doc.buildings.filter((b) => b.districtId === CORE_ID).map((b) => b.id)).toEqual(['alpha', 'beta', 'delta', 'epsilon', 'gamma'].map((n) => `b-src-core-${n}`))
+      expect(core(doc)).toMatchObject({ name: 'Core of alpha beta delta', subtitle: 'Holds alpha beta delta.' })
+      expect(llm).toHaveBeenCalledTimes(2)
+    })
+
+    it.each(CORE_NAMES.flatMap((n) => [`src/core/${n}/index.ts`, `src/core/${n}/util.ts`]))('editing %s gives the district the name Re-layout gives it', async (file) => {
+      const relayout = await compileCore({ label: labelDeps({ llm: namer() }) })
+      const llm = namer()
+      const doc = await compileCore({ label: labelDeps({ llm }) }, relayout, [file])
+      expect(core(doc)).toEqual(core(relayout))
+      const inFirst = FIRST.some((n) => file.startsWith(`src/core/${n}/`))
+      // The edited building's own batch, and the first batch again only when the edit is in it.
+      expect(llm.mock.calls.map(([p]) => listed(p))).toEqual([[file.split('/')[2]], ...(inFirst ? [FIRST] : [])])
+    })
+
+    it('an edit outside the first batch keeps the previous name, asking no batch for it', async () => {
+      const prev: WorldDoc = JSON.parse(JSON.stringify(await compileCore({ label: labelDeps({ llm: namer() }) })))
+      Object.assign(core(prev) as object, { name: 'Kept Core', subtitle: 'Kept subtitle.' })
+      for (const file of ['src/core/gamma/util.ts', 'src/core/epsilon/index.ts']) {
+        const llm = namer()
+        const doc = await compileCore({ label: labelDeps({ llm }) }, prev, [file])
+        expect(core(doc)).toMatchObject({ name: 'Kept Core', subtitle: 'Kept subtitle.', nameState: 'inferred' })
+        expect(llm).toHaveBeenCalledTimes(1)
+      }
+    })
+
+    it('an edit in the first batch asks exactly that batch, untouched buildings and all, and takes its name', async () => {
+      const previous = await compileCore()
+      expect(core(previous)?.name).toBe('core')
+      const llm = namer()
+      const doc = await compileCore({ label: labelDeps({ llm }) }, previous, ['src/core/beta/util.ts'])
+      expect(core(doc)).toMatchObject({ name: 'Core of alpha beta delta', subtitle: 'Holds alpha beta delta.', nameState: 'inferred' })
+      expect(llm.mock.calls.map(([p]) => listed(p))).toEqual([['beta'], FIRST])
+    })
+
+    it('a district that lost a building outside its first batch keeps its previous name, asking nothing', async () => {
+      const prev: WorldDoc = JSON.parse(JSON.stringify(await compileCore({ label: labelDeps({ llm: namer() }) })))
+      const gamma = prev.buildings.find((b) => b.id === 'b-src-core-gamma') as WorldDoc['buildings'][number]
+      prev.buildings.push({ ...gamma, ...building('zeta', ['src/core/zeta/index.ts']) })
+      Object.assign(core(prev) as object, { name: 'Kept Core' })
+      const llm = namer()
+      const doc = await compileCore({ label: labelDeps({ llm }) }, prev, ['src/core/zeta/index.ts'])
+      expect(llm).not.toHaveBeenCalled()
+      expect(core(doc)?.name).toBe('Kept Core')
+    })
+
+    it('a district that lost a first-batch building is asked again with its new first batch', async () => {
+      const relayout = await compileCore({ label: labelDeps({ llm: namer() }) })
+      const prev: WorldDoc = JSON.parse(JSON.stringify(relayout))
+      const alpha = prev.buildings.find((b) => b.id === 'b-src-core-alpha') as WorldDoc['buildings'][number]
+      prev.buildings.splice(prev.buildings.indexOf(alpha), 0, { ...alpha, ...building('aaa', ['src/core/aaa/index.ts']) })
+      Object.assign(core(prev) as object, { name: 'Core of aaa alpha beta', subtitle: 'Holds aaa alpha beta.' })
+      const llm = namer()
+      const doc = await compileCore({ label: labelDeps({ llm }) }, prev, ['src/core/aaa/index.ts'])
+      expect(llm.mock.calls.map(([p]) => listed(p))).toEqual([FIRST])
+      expect(core(doc)).toEqual(core(relayout))
+    })
+
+    it('a scoped compile shares the first batch prompt, and so its cached name, with Re-layout', async () => {
+      const store = new Map<string, string>()
+      const cache = { get: async (h: string) => store.get(h) ?? null, set: async (h: string, v: string) => void store.set(h, v) }
+      const previous = await compileCore()
+      const scoped = await compileCore({ label: labelDeps({ llm: namer(), cache }) }, previous, ['src/core/alpha/index.ts'])
+      const llm = namer()
+      const relayout = await compileCore({ label: labelDeps({ llm, cache }) })
+      expect(core(relayout)).toEqual(core(scoped))
+      // Only the batch the scoped compile never asked (epsilon and gamma) goes to the model.
+      expect(llm.mock.calls.map(([p]) => listed(p))).toEqual([['epsilon', 'gamma']])
+    })
   })
 
   it('changed: a district or edge the previous doc lacks gets the code-derived label', async () => {
@@ -454,7 +545,10 @@ describe('compileWorld', () => {
     const llm = vi.fn(async () => '{}')
     const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['.env.production'])
     expectValid(doc)
-    expect(llm).toHaveBeenCalledTimes(1)
+    // The changed building's batch, its district's first batch (it is in it), and the new district's first batch and
+    // that batch's first building alone (the reply described it not). The root's first building alone is the
+    // root's first batch again, so it is not sent twice.
+    expect(llm).toHaveBeenCalledTimes(4)
     const names = new Map(doc.districts.map((d) => [d.id, d.name]))
     expect(names.get('d-src-main')).toBe(fresh.districts[1].name)
     expect(names.get('d-src-renderer')).toBe('old d-src-renderer')
