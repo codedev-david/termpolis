@@ -6,8 +6,10 @@ import * as gitSourceModule from '../../src/main/world/gitSource'
 import {
   AUTH_MESSAGE,
   CANCELLED_MESSAGE,
+  HOST_KEY_MESSAGE,
   NO_GIT_MESSAGE,
   SSH_AUTH_MESSAGE,
+  UNREACHABLE_MESSAGE,
   VERSION_FAILED_MESSAGE,
   cloneArgs,
   cloneKey,
@@ -247,15 +249,25 @@ describe('cloneRepo login modes', () => {
 
   it('ssh sign-in failures keep the ssh message and no needsLogin', async () => {
     for (const url of ['git@github.com:o/r.git', 'ssh://git@github.com/o/r.git']) {
-      for (const line of ['git@github.com: Permission denied (publickey).', 'Host key verification failed.']) {
-        const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr: line }), config: { stdout: 'credential.helper\nmanager\0' } })
-        expect(await cloneRepo(url, undefined, deps)).toEqual({ ok: false, error: SSH_AUTH_MESSAGE })
-        expect(of('--list')).toHaveLength(0)
-      }
+      const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr: 'git@github.com: Permission denied (publickey).' }), config: { stdout: 'credential.helper\nmanager\0' } })
+      expect(await cloneRepo(url, undefined, deps)).toEqual({ ok: false, error: SSH_AUTH_MESSAGE })
+      expect(of('--list')).toHaveLength(0)
     }
     expect(SSH_AUTH_MESSAGE).toBe(
       "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
     )
+  })
+
+  it('an unknown or changed ssh host key gets its own remedy, not the ssh-key one, and no needsLogin', async () => {
+    // What ssh prints for an unknown host under BatchMode, then git's own line.
+    const stderr = "Cloning into 'x'...\nNo ED25519 host key is known for github.com and you have requested strict checking.\nHost key verification failed.\nfatal: Could not read from remote repository."
+    for (const url of ['git@github.com:o/r.git', 'ssh://git@github.com/o/r.git']) {
+      const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
+      expect(await cloneRepo(url, undefined, deps)).toEqual({ ok: false, error: HOST_KEY_MESSAGE, detail: 'fatal: Could not read from remote repository.' })
+      expect(of('--list')).toHaveLength(0)
+    }
+    expect(HOST_KEY_MESSAGE).toBe("This computer doesn't trust that server's ssh host key yet. Connect to it once with ssh in a terminal, then try again.")
+    expect(UNREACHABLE_MESSAGE).toBe("Lumopolis couldn't reach that repository. Check the address and your connection, then try again.")
   })
 
   it('an interactive machine run that still fails returns needsLogin once and runs git once', async () => {
@@ -307,14 +319,14 @@ describe('cloneRepo login modes', () => {
     for (const stderr of NOT_FOUND) {
       const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
       const r = await cloneRepo(HTTPS, undefined, deps, { mode: 'none' })
-      expect(r).toEqual({ ok: false, error: expect.stringMatching(/^Couldn't reach that repository: /) })
+      expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: expect.any(String) })
       expect(r).not.toHaveProperty('needsLogin')
       expect(of('--list')).toHaveLength(0)
     }
     // ssh is the ssh agent's business in every mode.
     const ssh = fakeDeps({ step: () => ({ code: 128, stderr: 'ERROR: Repository not found.\nfatal: Could not read from remote repository.' }) })
     const r = await cloneRepo('git@github.com:o/r.git', undefined, ssh.deps, { mode: 'machine', interactive: true })
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/^Couldn't reach that repository: /) })
+    expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: expect.any(String) })
     expect(r).not.toHaveProperty('needsLogin')
   })
 
@@ -529,14 +541,14 @@ describe('cloneRepo token runs', () => {
     const shown = fakeDeps({ step: () => ({ code: 128, stderr: repeats[0] }) })
     expect(await cloneRepo(HTTPS, undefined, shown.deps, TOKEN_RUN)).toEqual({
       ok: false,
-      error: "Couldn't reach that repository: fatal: unable to access 'https://github.com/o/r.git/': server said [hidden] twice [hidden]"
+      error: UNREACHABLE_MESSAGE, detail: "fatal: unable to access 'https://github.com/o/r.git/': server said [hidden] twice [hidden]"
     })
     // A git that could not be started, with the value in the error it threw.
     const thrown = fakeDeps()
     const inner = thrown.deps.execFile
     thrown.deps.execFile = async (c, args, o) => (args.includes('clone') ? Promise.reject(new Error(`spawn failed near ${TOKEN}`)) : inner(c, args, o))
     const t = await cloneRepo(HTTPS, undefined, thrown.deps, TOKEN_RUN)
-    expect(t).toEqual({ ok: false, error: "Couldn't reach that repository: spawn failed near [hidden]" })
+    expect(t).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "spawn failed near [hidden]" })
     // Anything else that fails mid-run rejects without the value too.
     const sweep = fakeDeps({}, { listDir: async () => Promise.reject(new Error(`cannot list ${TOKEN}`)) })
     const err = await cloneRepo(HTTPS, undefined, sweep.deps, TOKEN_RUN).then(

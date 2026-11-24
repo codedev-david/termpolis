@@ -16,6 +16,7 @@ import {
   NO_GIT_MESSAGE,
   TIMEOUT_MESSAGE,
   TOO_BIG_MESSAGE,
+  UNREACHABLE_MESSAGE,
   cloneArgs,
   cloneKey,
   cloneRepo,
@@ -302,7 +303,7 @@ describe('cloneRepo', () => {
     expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_ASKPASS', 'SSH_ASKPASS']))
   })
 
-  it('a 404 shows git\'s own error line, not "Cloning into", and leaves nothing at root', async () => {
+  it('a 404 shows the fixed headline with git\'s own error line (not "Cloning into") as its detail, and leaves nothing at root', async () => {
     const stderr = [
       "Cloning into 'C:\\Users\\x\\world\\repos\\abc.tmp-r1'...",
       'remote: Repository not found.',
@@ -310,7 +311,7 @@ describe('cloneRepo', () => {
     ].join('\n')
     const { deps, rm, rename, mark } = mkDeps({ execFile: async () => ({ code: 128, stderr }) })
     const r = await cloneRepo(URL1, undefined, deps)
-    expect(r).toEqual({ ok: false, error: "Couldn't reach that repository: remote: Repository not found." })
+    expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "remote: Repository not found." })
     expect(rm).toHaveBeenLastCalledWith(WORK)
     expect(rename).not.toHaveBeenCalled()
     expect(mark).not.toHaveBeenCalled()
@@ -321,7 +322,6 @@ describe('cloneRepo', () => {
       "fatal: could not read Username for 'https://user:pw@github.com': terminal prompts disabled",
       "remote: Invalid username or token. fatal: Authentication failed for 'https://github.com/a/b.git/'",
       'git@github.com: Permission denied (publickey).',
-      'Host key verification failed.',
       'remote: Access denied'
     ]) {
       const { deps, rm } = mkDeps({ execFile: async () => ({ code: 128, stderr: `Cloning into 'x'...\n${line}` }) })
@@ -467,13 +467,13 @@ describe('cloneRepo', () => {
 
   it('without a fatal/error/remote line the first line is used; empty stderr and a rejecting execFile still clean up', async () => {
     const plain = mkDeps({ execFile: async () => ({ code: 1, stderr: '\nsomething odd\nmore' }) })
-    expect(await cloneRepo(URL1, undefined, plain.deps)).toEqual({ ok: false, error: "Couldn't reach that repository: something odd" })
+    expect(await cloneRepo(URL1, undefined, plain.deps)).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "something odd" })
     const a = mkDeps({ execFile: async () => ({ code: 1, stderr: '' }) })
-    expect(await cloneRepo(URL1, undefined, a.deps)).toEqual({ ok: false, error: "Couldn't reach that repository: no details" })
+    expect(await cloneRepo(URL1, undefined, a.deps)).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "no details" })
     const b = mkDeps({ execFile: async () => Promise.reject(new Error('spawn git ENOENT')) })
-    expect(await cloneRepo(URL1, undefined, b.deps)).toEqual({ ok: false, error: "Couldn't reach that repository: spawn git ENOENT" })
+    expect(await cloneRepo(URL1, undefined, b.deps)).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "spawn git ENOENT" })
     const c = mkDeps({ execFile: async () => Promise.reject('boom') })
-    expect(await cloneRepo(URL1, undefined, c.deps)).toEqual({ ok: false, error: "Couldn't reach that repository: boom" })
+    expect(await cloneRepo(URL1, undefined, c.deps)).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "boom" })
     expect(c.rm).toHaveBeenLastCalledWith(WORK)
   })
 
@@ -621,7 +621,7 @@ describe('cloneRepo', () => {
         return { code: args.includes('fetch') ? 1 : 0, stderr: 'fatal: offline' }
       }
     })
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: "Couldn't reach that repository: fatal: offline" })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "fatal: offline" })
     expect(calls).toHaveLength(1)
     expect(calls[0]).toContain('HEAD')
     expect(rm).not.toHaveBeenCalled()
@@ -654,22 +654,23 @@ describe('cloneRepo', () => {
     expect(rename).not.toHaveBeenCalled()
   })
 
-  it('a cancel that arrives before git starts still stops it', async () => {
+  it('a cancel that arrives before git starts starts no clone at all', async () => {
     const ctl = new AbortController()
-    let seen: AbortSignal | undefined
-    const { deps } = mkDeps({
+    const started: string[][] = []
+    const { deps, rm } = mkDeps({
       signal: ctl.signal,
       exists: async () => {
         ctl.abort()
         return false
       },
-      execFile: async (_c, _a, o) => {
-        seen = o.signal
+      execFile: async (_c, a) => {
+        started.push(a)
         return { code: 143, stderr: '' }
       }
     })
     expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
-    expect(seen?.aborted).toBe(true)
+    expect(started).toEqual([])
+    expect(rm).toHaveBeenLastCalledWith(WORK)
   })
 
   it('an rm failure while cancelling or capping never rejects', async () => {
@@ -739,6 +740,155 @@ describe('cloneRepo', () => {
     expect(r.rm).toHaveBeenLastCalledWith(WORK)
     // the only folder ever removed or renamed onto is under repos/, and root was only cleared up front
     expect(r.rm.mock.calls.map((c) => c[0])).toEqual([ROOT, WORK])
+  })
+})
+
+describe('cancelling an update of a saved clone keeps the clone', () => {
+  const isReset = (a: string[]): boolean => a.includes('reset')
+  /** Update deps whose HEAD reads go through `head` (mkDeps answers them on its own otherwise). */
+  function updateDeps(ctl: AbortController, over: Partial<CloneDeps>, head?: (n: number, o: Parameters<ExecFn>[2]) => Promise<{ code: number; stderr: string; stdout?: string }>) {
+    const removeLock = vi.fn(async (_p: string) => undefined)
+    const m = mkDeps({ signal: ctl.signal, exists: async () => true, removeLock, ...over })
+    const inner = m.deps.execFile
+    // every fetch and reset started, whichever execFile answers it
+    const calls: { args: string[] }[] = []
+    let reads = 0
+    m.deps.execFile = async (cmd, args, opts) => {
+      if (args.includes('rev-parse')) return head ? head(++reads, opts) : inner(cmd, args, opts)
+      if (!args.includes('--version')) calls.push({ args })
+      return inner(cmd, args, opts)
+    }
+    return { ...m, calls, removeLock }
+  }
+  /** The checkout and its marker are never removed: no folder under the clone is deleted. */
+  const keptRoot = (rm: ReturnType<typeof vi.fn>): void => {
+    expect(rm).not.toHaveBeenCalled()
+  }
+
+  it('a cancel during the HEAD read before the fetch returns Cancelled, keeps the clone and runs no fetch', async () => {
+    const ctl = new AbortController()
+    const { deps, rm, calls } = updateDeps(ctl, {}, async (_n, o) => {
+      ctl.abort()
+      expect(o.signal?.aborted).toBe(true)
+      return { code: 143, stderr: 'terminated' }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    keptRoot(rm)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a cancel during the fetch stops the fetch, keeps the clone and never starts the reset', async () => {
+    const ctl = new AbortController()
+    const { deps, rm, calls } = updateDeps(ctl, {
+      execFile: (_c, _a, o) =>
+        new Promise((resolve) => {
+          o.signal?.addEventListener('abort', () => resolve({ code: 143, stderr: 'terminated' }))
+          ctl.abort()
+        })
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    keptRoot(rm)
+    expect(calls.map((c) => c.args.includes('fetch'))).toEqual([true])
+  })
+
+  it('a cancel between the fetch and the reset never starts the reset', async () => {
+    const ctl = new AbortController()
+    const { deps, rm, calls } = updateDeps(ctl, {
+      execFile: async () => {
+        ctl.abort()
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    keptRoot(rm)
+    expect(calls.some((c) => isReset(c.args))).toBe(false)
+  })
+
+  it('a cancel during the reset lets the reset finish (no half tree), then returns Cancelled and keeps the clone', async () => {
+    const ctl = new AbortController()
+    let resetSignal: AbortSignal | undefined
+    const { deps, rm, calls } = updateDeps(ctl, {
+      execFile: async (_c, args, o) => {
+        if (!isReset(args)) return { code: 0, stderr: '' }
+        resetSignal = o.signal
+        ctl.abort()
+        // the cancel does not reach the reset: git is left to finish writing the tree
+        expect(o.signal?.aborted).toBe(false)
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    keptRoot(rm)
+    expect(calls.filter((c) => isReset(c.args))).toHaveLength(1)
+    expect(resetSignal?.aborted).toBe(false)
+  })
+
+  it('the size cap still stops a reset, and the deadline still bounds it', async () => {
+    const ctl = new AbortController()
+    let t = 0
+    const timeouts: number[] = []
+    const { deps, rm } = updateDeps(ctl, {
+      dirSize: async () => 9,
+      maxBytes: 5,
+      pollMs: 5,
+      now: () => t,
+      execFile: (_c, args, o) => {
+        timeouts.push(o.timeout)
+        if (!isReset(args)) {
+          t += 100_000
+          return Promise.resolve({ code: 0, stderr: '' })
+        }
+        return new Promise((resolve) => o.signal?.addEventListener('abort', () => resolve({ code: 143, stderr: 'terminated' })))
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: TOO_BIG_MESSAGE })
+    expect(rm).toHaveBeenCalledWith(ROOT)
+    expect(timeouts).toEqual([CLONE_TIMEOUT_MS, CLONE_TIMEOUT_MS - 100_000])
+  })
+
+  it('a cancel after the last step (during the HEAD read after the reset) returns Cancelled and keeps the clone', async () => {
+    const ctl = new AbortController()
+    const { deps, rm, calls } = updateDeps(ctl, {}, async (n) => {
+      if (n === 2) ctl.abort()
+      return { code: 0, stderr: '', stdout: 'abc\n' }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    keptRoot(rm)
+    expect(calls.filter((c) => isReset(c.args))).toHaveLength(1)
+  })
+
+  it('an update first clears a stale shallow.lock and index.lock that a killed fetch left; a first clone does not', async () => {
+    const order: string[] = []
+    const removeLock = vi.fn(async (p: string) => {
+      order.push(`rm ${p}`)
+    })
+    const m = mkDeps({
+      exists: async () => true,
+      removeLock,
+      execFile: async (_c, args) => {
+        order.push(args.includes('fetch') ? 'fetch' : 'reset')
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, m.deps)).toMatchObject({ ok: true })
+    expect(order).toEqual([`rm ${join(ROOT, '.git', 'shallow.lock')}`, `rm ${join(ROOT, '.git', 'index.lock')}`, 'fetch', 'reset'])
+    // a lock that cannot be removed is left to git, which then says so itself
+    const stuck = mkDeps({ exists: async () => true, removeLock: vi.fn(async () => Promise.reject(new Error('EBUSY'))) })
+    expect(await cloneRepo(URL1, undefined, stuck.deps)).toMatchObject({ ok: true })
+    const first = vi.fn(async (_p: string) => undefined)
+    expect(await cloneRepo(URL1, undefined, mkDeps({ removeLock: first }).deps)).toMatchObject({ ok: true })
+    expect(first).not.toHaveBeenCalled()
+  })
+
+  it('a first clone cancelled after its rename does not answer ok, and leaves nothing behind', async () => {
+    const ctl = new AbortController()
+    const rename = vi.fn(async (_a: string, _b: string) => {
+      ctl.abort()
+    })
+    const { deps, rm } = mkDeps({ signal: ctl.signal, rename })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    expect(rename).toHaveBeenCalledWith(WORK, ROOT)
+    expect(rm).toHaveBeenLastCalledWith(ROOT)
   })
 })
 
@@ -825,6 +975,50 @@ describe('cloneRepo with the real fs defaults', () => {
     await rm(join(root, '.git', CLONE_MARKER))
     await cloneRepo(URL1, undefined, deps)
     expect(gitCalls[gitCalls.length - 1]).toContain('clone')
+  })
+
+  it('a cancelled update leaves the saved checkout and its marker on disk, and the next update clears the locks the killed fetch left', async () => {
+    const reposDir = join(base, 'world', 'repos')
+    const root = join(reposDir, HASH)
+    const git = join(root, '.git')
+    await mkdir(git, { recursive: true })
+    await writeFile(join(git, CLONE_MARKER), '')
+    await writeFile(join(root, 'README.md'), 'saved')
+    const ctl = new AbortController()
+    const gitCalls: string[][] = []
+    const base0: Omit<CloneDeps, 'execFile'> = { gitBin: async () => GIT, baseDir: base, dirSize: dirSizeOf, rm: removeDir, isWindows: false }
+    const killed: CloneDeps = {
+      ...base0,
+      signal: ctl.signal,
+      execFile: async (_c, args, o) => {
+        if (args.includes('--version')) return VERSION_OK
+        if (args.includes('rev-parse')) return { code: 0, stderr: '', stdout: 'abc\n' }
+        gitCalls.push(args)
+        // a fetch killed half way leaves its lock files behind
+        await writeFile(join(git, 'shallow.lock'), '')
+        await writeFile(join(git, 'index.lock'), '')
+        return new Promise((resolve) => {
+          o.signal?.addEventListener('abort', () => resolve({ code: 143, stderr: 'terminated' }))
+          ctl.abort()
+        })
+      }
+    }
+    expect(await cloneRepo(URL1, undefined, killed)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    expect(await pathExists(join(git, CLONE_MARKER))).toBe(true)
+    expect(await readFile(join(root, 'README.md'), 'utf8')).toBe('saved')
+    expect(gitCalls.map((a) => a.includes('fetch'))).toEqual([true])
+
+    const seen: boolean[] = []
+    const next: CloneDeps = {
+      ...base0,
+      execFile: async (_c, args) => {
+        if (args.includes('--version')) return VERSION_OK
+        if (args.includes('fetch')) seen.push(await pathExists(join(git, 'shallow.lock')), await pathExists(join(git, 'index.lock')))
+        return { code: 0, stderr: '', stdout: args.includes('rev-parse') ? 'abc\n' : undefined }
+      }
+    }
+    expect(await cloneRepo(URL1, undefined, next)).toEqual({ ok: true, root, changed: false })
+    expect(seen).toEqual([false, false])
   })
 })
 

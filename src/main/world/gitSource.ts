@@ -50,6 +50,10 @@ export const AUTH_MESSAGE = 'That repository needs you to sign in. Sign in with 
 export const VERSION_FAILED_MESSAGE = "Lumopolis couldn't run git to check its version. Try again in a moment."
 export const SSH_AUTH_MESSAGE =
   "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
+/** Ssh refused the server's host key (unknown or changed): no ssh key or sign-in fixes that. PENDING SIGN-OFF. */
+export const HOST_KEY_MESSAGE = "This computer doesn't trust that server's ssh host key yet. Connect to it once with ssh in a terminal, then try again."
+/** Any other failure. Git's own line goes in the result's `detail`, never in the headline. PENDING SIGN-OFF. */
+export const UNREACHABLE_MESSAGE = "Lumopolis couldn't reach that repository. Check the address and your connection, then try again."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'
 
@@ -82,7 +86,9 @@ const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned
 /** What git's own messages say when a host wanted a login it was not given. Git 2.46 and newer, told
  *  credential.interactive=false (a no-login or background run), skip the prompt and say "unable to get
  *  password from user" instead of "terminal prompts disabled". */
-const AUTH_RE = /terminal prompts disabled|could not read (username|password)|unable to get password from user|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
+const AUTH_RE = /terminal prompts disabled|could not read (username|password)|unable to get password from user|authentication failed|permission denied \(publickey|access denied|invalid username or/i
+/** What ssh says, as its last word, when the server's host key is not one it knows (or has changed). */
+const HOST_KEY_RE = /host key verification failed/i
 
 export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boolean = process.platform === 'win32'): string[] {
   return [
@@ -144,8 +150,11 @@ export interface CloneDeps {
   sleep?: (ms: number) => Promise<void>
   /** A random suffix for the temporary folder (default: 4 random bytes as hex). */
   random?: () => string
-  /** Cancels the clone: git is stopped and the folder removed. */
+  /** Cancels the run. A first clone stops git and removes its temp folder; an update of a saved clone
+   *  stops its HEAD read or fetch but lets a reset finish, and keeps the checkout. */
   signal?: AbortSignal
+  /** Removes a lock file a killed git left in a saved clone's .git (default: fs rm, missing is fine). */
+  removeLock?: (p: string) => Promise<void>
   /** The environment git inherits (default: process.env). */
   env?: NodeJS.ProcessEnv
   /** How often the size is checked (default SIZE_POLL_MS). */
@@ -335,7 +344,9 @@ function checkGitVersion(deps: CloneDeps, gitBin: string, env: Record<string, st
   return check
 }
 
-export type CloneResult = { ok: true; root: string; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }
+/** A failure's `error` is the line to show; `detail`, when there is one, is git's own (redacted) line for a
+ *  Details disclosure. */
+export type CloneResult = { ok: true; root: string; changed: boolean } | { ok: false; error: string; detail?: string; needsLogin?: NeedsLogin }
 
 /**
  * Clones `url` (or updates the clone made earlier) under `<baseDir>/world/repos`. `run` says how git may
@@ -343,8 +354,8 @@ export type CloneResult = { ok: true; root: string; changed: boolean } | { ok: f
  * clone, and for an update only when HEAD moved (or could not be read).
  *
  * A token run is refused before git starts when the askpass is not shipped, the URL is not https (a token
- * is only ever sent over https) or the token cannot be one. Its returned error, and anything it throws,
- * has every copy of the token hidden.
+ * is only ever sent over https) or the token cannot be one. Its returned error and detail, and anything it
+ * throws, have every copy of the token hidden.
  */
 export async function cloneRepo(url: string, ref: string | undefined, deps: CloneDeps, run: LoginRun = { mode: 'none' }): Promise<CloneResult> {
   if (run.mode !== 'token') return cloneOnce(url, ref, deps, run)
@@ -354,7 +365,8 @@ export async function cloneRepo(url: string, ref: string | undefined, deps: Clon
   const value = token.value
   try {
     const r = await cloneOnce(url, ref, deps, { mode: 'token', value })
-    return r.ok ? r : { ...r, error: hideValue(r.error, value) }
+    if (r.ok) return r
+    return r.detail === undefined ? { ...r, error: hideValue(r.error, value) } : { ...r, error: hideValue(r.error, value), detail: hideValue(r.detail, value) }
   } catch (e) {
     throw new Error(hideValue(e instanceof Error ? e.message : String(e), value))
   }
@@ -413,6 +425,11 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
       if (name.startsWith(`${hash}.tmp-`)) await rmq(join(reposDir, name))
     }
     if (!(await rmq(root))) return { ok: false, error: CLEAR_MESSAGE }
+  } else {
+    // A fetch or reset killed by a cancel can leave these behind, and git then refuses every later update.
+    // Nothing else writes this clone: runClone runs one job per hash at a time.
+    const removeLock = deps.removeLock ?? ((p: string) => fsp.rm(p, { force: true }))
+    for (const lock of ['shallow.lock', 'index.lock']) await removeLock(join(root, '.git', lock)).catch(() => undefined)
   }
   // A new clone is made beside its final place and renamed into it on success, so a partial clone never sits at root.
   const work = updating ? root : `${root}.tmp-${(deps.random ?? randomSuffix)()}`
@@ -438,6 +455,10 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   const onAbort = (): void => ctl.abort()
   ext?.addEventListener('abort', onAbort)
   if (ext?.aborted) ctl.abort()
+  // The update's reset rewrites the saved checkout's files: a cancel never stops it half way (that would
+  // leave a half tree), so it listens only to the size cap; the deadline still bounds it by its timeout.
+  const capCtl = new AbortController()
+  const isReset = (step: number): boolean => updating && step === 1
   let tooBig = false
   let busy = false
   const timer = setInterval(() => {
@@ -449,6 +470,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
         if (n > maxBytes) {
           tooBig = true
           ctl.abort()
+          capCtl.abort()
         }
       })
       .catch(() => undefined)
@@ -463,6 +485,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   let failure = ''
   let timedOut = false
   let auth = false
+  let hostKey = false
   let notFound = false
   let failedStep = -1
   /** The clone's HEAD commit, or null when it cannot be read in the time left. */
@@ -479,6 +502,8 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   try {
     if (updating) headBefore = await readHead()
     for (const [step, { args, env: stepEnv }] of commands.entries()) {
+      // A cancel or cap hit between steps starts nothing more (above all, not the reset).
+      if (ctl.signal.aborted) break
       const left = deadline - now()
       if (left <= 0) {
         timedOut = true
@@ -486,12 +511,13 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
         break
       }
       const r = await deps
-        .execFile(gitBin, args, { env: stepEnv, timeout: left, signal: ctl.signal })
+        .execFile(gitBin, args, { env: stepEnv, timeout: left, signal: isReset(step) ? capCtl.signal : ctl.signal })
         .catch((e: unknown) => ({ code: 1, stderr: e instanceof Error ? e.message : String(e) }))
       if (r.code !== 0) {
         failedStep = step
         timedOut = now() >= deadline
         auth = AUTH_RE.test(r.stderr)
+        hostKey = HOST_KEY_RE.test(r.stderr)
         notFound = NOT_FOUND_RE.test(r.stderr)
         failure = firstLine(r.stderr)
         break
@@ -509,7 +535,9 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     return { ok: false, error: TOO_BIG_MESSAGE }
   }
   if (ext?.aborted) {
-    await rmq(work)
+    // A first clone drops its temp folder. An update keeps the saved checkout: a cancel stopped only the
+    // HEAD read or the fetch (neither touches the files), or it let the reset finish.
+    if (!updating) await rmq(work)
     return { ok: false, error: CANCELLED_MESSAGE }
   }
   if (timedOut) {
@@ -524,7 +552,8 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     // "Not found" after a sign-in means that account can't see it; with no login it is just not there (a typo
     // must never ask for a sign-in), and over ssh it is the ssh agent's business.
     const unseen = notFound && run.mode !== 'none' && host !== null
-    if (!auth && !unseen) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
+    if (hostKey) return { ok: false, error: HOST_KEY_MESSAGE, detail: failure }
+    if (!auth && !unseen) return { ok: false, error: UNREACHABLE_MESSAGE, detail: failure }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
     // A token that git refused, or that cannot see the repository, is one that did not open it. A signed-in
@@ -540,8 +569,14 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
       await rmq(work)
       return { ok: false, error: FINISH_MESSAGE }
     }
+    // A cancel that came while the clone was being saved still wins: no ok, and nothing left behind.
+    if (ext?.aborted) {
+      await rmq(root)
+      return { ok: false, error: CANCELLED_MESSAGE }
+    }
     return { ok: true, root, changed: true }
   }
   const headAfter = await readHead()
+  if (ext?.aborted) return { ok: false, error: CANCELLED_MESSAGE }
   return { ok: true, root, changed: headBefore === null || headAfter === null || headBefore !== headAfter }
 }
