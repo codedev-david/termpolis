@@ -43,7 +43,9 @@ export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptySt
 }
 
 function MappingProgress({ progress }: { progress: { stage: string; pct: number } | null }): JSX.Element {
-  const pct = progress ? Math.max(0, Math.min(100, Math.round(progress.pct))) : 0
+  // The bar takes the exact value (reads report twentieths of a point), the text and the reader a whole percent.
+  const exact = progress ? Math.max(0, Math.min(100, progress.pct)) : 0
+  const pct = Math.round(exact)
   return (
     <div className="w-72 max-w-full flex flex-col gap-2" data-testid="world-mapping">
       <p className="text-sm">Mapping your project&hellip;</p>
@@ -55,7 +57,7 @@ function MappingProgress({ progress }: { progress: { stage: string; pct: number 
         aria-valuenow={pct}
         className="h-1.5 w-full rounded bg-[#3c3c3c] overflow-hidden"
       >
-        <div className="h-full bg-[#4fc1ff] transition-[width] duration-300" style={{ width: `${pct}%` }} />
+        <div className="h-full bg-[#4fc1ff] transition-[width] duration-300" style={{ width: `${exact}%` }} />
       </div>
       <p className="text-xs text-[#9ca3af]" data-testid="world-progress-text">
         {progress ? `${pct}% · ${progress.stage}` : 'Starting…'}

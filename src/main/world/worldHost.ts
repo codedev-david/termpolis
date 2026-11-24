@@ -21,7 +21,7 @@ import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
-import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
+import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, readPct, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
 import type { StageCache, StageFile } from './stageCache'
 import { RUNS_WAIT_MS, type TestRun } from './testStatus'
@@ -1101,7 +1101,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
                   drawFirst(st, early, paths, head)
                 },
                 onRead: (done: number, total: number) => {
-                  const pct = 5 + Math.floor((35 * done) / total)
+                  const pct = readPct(done, total)
                   if (pct > shown) postProgress(early, 'boundaries', (shown = pct))
                 }
               }

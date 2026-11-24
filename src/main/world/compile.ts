@@ -126,6 +126,12 @@ const OTEL_ENV = /^[ \t]*(?:export[ \t]+)?OTEL_SERVICE_NAME[ \t]*=[ \t]*['"]?([^
 
 const cmp = (a: string, b: string): number => Number(a > b) - Number(a < b)
 const round2 = (v: number): number => Math.round(v * 100) / 100
+/**
+ * Progress for `done` of `total` reads, 5 to 40, in twentieths of a point: at most 700 reports a pass, and a big
+ * folder read slowly (20,000 files at a dozen a second) still moves the bar every few seconds instead of holding one
+ * whole percent for most of a minute (fix round 3). Used by the snapshot's reads and the compile's.
+ */
+export const readPct = (done: number, total: number): number => 5 + Math.floor((700 * done) / total) / 20
 const baseName = (p: string): string => p.slice(p.lastIndexOf('/') + 1)
 
 function hash(s: string, seed = 2166136261): number {
@@ -774,7 +780,7 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
       const text = await safeRead(readSource, `${root}/${f}`)
       got[i] = before && text !== null && before.hash === contentHash(text) ? before : scanFile(f, text)
     }
-    const pct = 5 + Math.floor((35 * ++done) / toRead.length)
+    const pct = readPct(++done, toRead.length)
     if (pct > shown) progress('boundaries', (shown = pct))
   })
   toRead.forEach((f, i) => {

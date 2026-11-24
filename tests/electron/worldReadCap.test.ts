@@ -252,7 +252,7 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     const running = compile(d)
     // Let the reads finish and the compile reach the status stage.
     for (let i = 0; i < 50 && !d.pcts.some(([s]) => s === 'status'); i++) await vi.advanceTimersByTimeAsync(1)
-    expect(d.pcts.filter(([s]) => s === 'boundaries').map(([, p]) => p)).toEqual([5, 13, 22, 31, 40])
+    expect(d.pcts.filter(([s]) => s === 'boundaries').map(([, p]) => p)).toEqual([5, 13.75, 22.5, 31.25, 40])
     expect(d.pcts[d.pcts.length - 1]).toEqual(['status', 55])
     await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
     // A fraction of a point a beat: the 8 points to 63 last as long as the longest wait for main's runs.

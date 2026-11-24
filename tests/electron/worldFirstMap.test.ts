@@ -262,15 +262,28 @@ describe('the first map of a big project (WP4a)', () => {
     expect(g.progress()[at].pct).toBeLessThan(40)
   })
 
-  it('a big listing moves the bar only when a read moves the percentage', async () => {
+  it('a big listing moves the bar only when a read moves the percentage, in twentieths of a point (fix round 3)', async () => {
     const many = Array.from({ length: 200 }, (_, i) => `src/f${String(i).padStart(3, '0')}.ts`)
     const h = setup({ listFiles: async () => many, provisionalMinFiles: 1000 })
     await h.init()
     await h.call('snapshotFromFiles', '/r', early())
     const boundaries = h.progress().filter((p) => p.stage === 'boundaries').map((p) => p.pct)
-    expect(boundaries).toEqual(Array.from({ length: 36 }, (_, i) => i + 5))
+    // 200 reads: every read moves it (0.175 of a point, so a twentieth step or more), and it ends at 40.
+    expect(boundaries).toHaveLength(200)
+    expect(boundaries[0]).toBe(5.15)
+    expect(boundaries[boundaries.length - 1]).toBe(40)
+    for (let i = 1; i < boundaries.length; i++) expect(boundaries[i]).toBeGreaterThan(boundaries[i - 1])
     expect(h.updated()).toBe(0)
-  })
+    // 20,000 reads post 5 at the first read, then 700 times: one every 28 or 29 reads, not one a whole point (571 reads).
+    const huge = Array.from({ length: 20_000 }, (_, i) => `src/d${i % 50}/f${i}.ts`)
+    const big = setup({ listFiles: async () => huge, provisionalMinFiles: 100_000 })
+    await big.init()
+    await big.call('snapshotFromFiles', '/big', early())
+    const steps = big.progress().filter((p) => p.stage === 'boundaries').map((p) => p.pct)
+    expect(steps).toHaveLength(701)
+    expect(steps.slice(0, 3)).toEqual([5, 5.05, 5.1])
+    expect(steps[steps.length - 1]).toBe(40)
+  }, 60_000)
 
   it('a folder whose snapshot no compile took keeps its scans for a while: then they go, and only the last few folders are kept', async () => {
     const h = setup()
