@@ -60,7 +60,7 @@ test('1. App launches with all agents detected', async () => {
 })
 
 test('2. Open Swarm Dashboard', async () => {
-  await page.keyboard.press('Control+Shift+S')
+  await page.keyboard.press('ControlOrMeta+Shift+S')
   await page.waitForTimeout(1000)
   await ss('02-dashboard')
   await expect(page.locator('text=Swarm Dashboard').first()).toBeVisible()
@@ -134,7 +134,7 @@ test('10. Agents tab is removed from dashboard', async () => {
   // Ensure dashboard is open
   const dashboardVisible = await page.locator('text=Swarm Dashboard').first().isVisible().catch(() => false)
   if (!dashboardVisible) {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(1000)
   }
   // Agents tab no longer exists — conductor (claude --dangerously-skip-permissions)
@@ -156,7 +156,7 @@ test('12. Clear swarm - shows confirmation', async () => {
   // Ensure dashboard is open
   const dashboardVisible = await page.locator('text=Swarm Dashboard').first().isVisible().catch(() => false)
   if (!dashboardVisible) {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(1000)
   }
   const clearBtn = page.locator('button:has-text("Clear")').first()

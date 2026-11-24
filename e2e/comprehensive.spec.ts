@@ -376,7 +376,7 @@ test.describe.serial('6. Command Palette', () => {
     // and TerminalPane does not forward it the way it forwards Ctrl+Shift+F. The palette
     // hotkey is a window-level binding, so blur before pressing it. See app.spec.ts.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     await page.waitForTimeout(500)
     const input = page.locator('input[placeholder*="command"]').first()
     await expect(input).toBeVisible()
@@ -670,14 +670,14 @@ test.describe.serial('13. Workspace Info', () => {
 
 test.describe.serial('14. Keyboard Shortcuts', () => {
   test('14.1 Ctrl+K opens command palette', async () => {
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     await page.waitForTimeout(500)
     await expect(page.locator('input[placeholder*="command"]').first()).toBeVisible()
     await esc()
   })
 
   test('14.2 Ctrl+Shift+P opens prompts', async () => {
-    await page.keyboard.press('Control+Shift+P')
+    await page.keyboard.press('ControlOrMeta+Shift+P')
     await page.waitForTimeout(500)
     // Ctrl+Shift+P may still open prompt templates or may have been repurposed
     const templates = page.locator('text=Fix Tests').first()
@@ -688,7 +688,7 @@ test.describe.serial('14. Keyboard Shortcuts', () => {
   })
 
   test('14.3 Ctrl+B toggles sidebar', async () => {
-    await page.keyboard.press('Control+b')
+    await page.keyboard.press('ControlOrMeta+b')
     await page.waitForTimeout(400)
     // Sidebar should be collapsed
     const expand = page.locator('button[title="Expand sidebar"]')
@@ -696,7 +696,7 @@ test.describe.serial('14. Keyboard Shortcuts', () => {
 
     if (collapsed) {
       // Expand back
-      await page.keyboard.press('Control+b')
+      await page.keyboard.press('ControlOrMeta+b')
       await page.waitForTimeout(400)
     }
     await ss('14.3-sidebar-toggle')

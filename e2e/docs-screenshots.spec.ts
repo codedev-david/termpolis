@@ -339,8 +339,8 @@ test('capture all docs screenshots', async () => {
   await safeWait(400)
 
   // 11 â€” Command palette. App listens for `e.key === 'k'` (lowercase); Playwright
-  // would send 'K' for 'Control+K', so pass the key lowercase explicitly.
-  await pressIf('Control+k')
+  // would send 'K' for 'ControlOrMeta+K', so pass the key lowercase explicitly.
+  await pressIf('ControlOrMeta+k')
   await page.locator('input[placeholder="Type a command..."]').first()
     .waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
   await safeWait(400)
@@ -356,7 +356,7 @@ test('capture all docs screenshots', async () => {
 
   // 12 â€” Prompt templates (Ctrl+Shift+P). Scope the wait to the modal H2 â€” the
   // StatusBar also renders the text "Prompt Templates", which broke text waits.
-  await pressIf('Control+Shift+P')
+  await pressIf('ControlOrMeta+Shift+P')
   await page.locator('h2:text-is("Prompt Templates")').first()
     .waitFor({ state: 'visible', timeout: 2500 }).catch(() => {})
   await safeWait(400)
@@ -380,21 +380,21 @@ test('capture all docs screenshots', async () => {
   await closeModals()
 
   // 14 â€” Context panel (right-hand file tree)
-  await pressIf('Control+Shift+E')
+  await pressIf('ControlOrMeta+Shift+E')
   await safeWait(700)
   await ss('14-context-panel')
-  await pressIf('Control+Shift+E')
+  await pressIf('ControlOrMeta+Shift+E')
   await safeWait(300)
 
   // 15 â€” History search
-  await pressIf('Control+Shift+H')
+  await pressIf('ControlOrMeta+Shift+H')
   await safeWait(600)
   await ss('15-history-search')
   await pressIf('Escape')
   await safeWait(300)
 
   // 16 â€” Conversation search
-  await pressIf('Control+Shift+I')
+  await pressIf('ControlOrMeta+Shift+I')
   await safeWait(600)
   await ss('16-conversation-search')
   await pressIf('Escape')
@@ -411,7 +411,7 @@ test('capture all docs screenshots', async () => {
   // 18 â€” Swarm Dashboard with "Clear Swarm" confirmation modal open. This gives
   // a visually distinct first dashboard capture (showing a documentable
   // feature â€” stopping a swarm) before we switch tabs.
-  await pressIf('Control+Shift+S')
+  await pressIf('ControlOrMeta+Shift+S')
   await page.locator('h2:text-is("Swarm Dashboard")').first()
     .waitFor({ state: 'visible', timeout: 4000 }).catch(() => {})
   await safeWait(400)
@@ -469,10 +469,10 @@ test('capture all docs screenshots', async () => {
   await safeWait(500)
 
   // 23 â€” Activity feed (Ctrl+Shift+A per App.tsx registration)
-  await pressIf('Control+Shift+A')
+  await pressIf('ControlOrMeta+Shift+A')
   await safeWait(800)
   await ss('23-activity-feed')
-  await pressIf('Control+Shift+A')
+  await pressIf('ControlOrMeta+Shift+A')
   await safeWait(300)
 
   // 24 â€” Status bar: a full-window shot is indistinguishable from the plain tab
@@ -494,11 +494,11 @@ test('capture all docs screenshots', async () => {
   // 25 â€” Final state: collapse the sidebar via Ctrl+B (if bound) for a
   // clean zoomed-out terminal frame that differs from 24's status-bar hover.
   try { await page.mouse.move(400, 400) } catch {}
-  await pressIf('Control+B')
+  await pressIf('ControlOrMeta+B')
   await safeWait(500)
   await ss('25-final-state')
   // Restore sidebar for cleanup
-  await pressIf('Control+B')
+  await pressIf('ControlOrMeta+B')
   await safeWait(200)
 
   // ---------------------------------------------------------------------
@@ -590,23 +590,23 @@ test('capture all docs screenshots', async () => {
   await safeWait(300)
 
   // 32 â€” Live observability: Context Pins (Ctrl+Shift+B per Help modal).
-  await pressIf('Control+Shift+B')
+  await pressIf('ControlOrMeta+Shift+B')
   await safeWait(700)
   await ss('32-context-pins')
-  await pressIf('Control+Shift+B')
+  await pressIf('ControlOrMeta+Shift+B')
   await safeWait(300)
 
   // 33 â€” Live observability: Redundancy (Ctrl+Shift+D).
-  await pressIf('Control+Shift+D')
+  await pressIf('ControlOrMeta+Shift+D')
   await safeWait(700)
   await ss('33-redundancy')
-  await pressIf('Control+Shift+D')
+  await pressIf('ControlOrMeta+Shift+D')
   await safeWait(300)
 
   // 34 â€” Live observability: Efficiency (Ctrl+Shift+Y).
-  await pressIf('Control+Shift+Y')
+  await pressIf('ControlOrMeta+Shift+Y')
   await safeWait(700)
   await ss('34-efficiency')
-  await pressIf('Control+Shift+Y')
+  await pressIf('ControlOrMeta+Shift+Y')
   await safeWait(300)
 })

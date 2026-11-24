@@ -180,7 +180,7 @@ test.describe.serial('First-run with zero agents installed', () => {
 
   test('closing swarm dashboard returns us to a working UI', async () => {
     // Try the Ctrl+Shift+S toggle that App.tsx wires to setShowSwarmDashboard
-    await page.keyboard.press('Control+Shift+S').catch(() => {})
+    await page.keyboard.press('ControlOrMeta+Shift+S').catch(() => {})
     await page.waitForTimeout(500)
     // Welcome should still be there — nothing below it got broken
     await expect(page.locator('h1:has-text("Welcome to Termpolis")')).toBeVisible({ timeout: 5000 })

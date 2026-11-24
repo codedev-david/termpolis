@@ -333,7 +333,7 @@ test.describe.serial('Swarm Integration', () => {
   })
 
   test('7. Swarm dashboard opens with Tasks and Messages tabs (no Agents tab)', async () => {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })
@@ -376,7 +376,7 @@ test.describe.serial('Swarm Integration', () => {
     })
 
     // Open dashboard and go to Tasks tab
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
     await clickDashboardTab('Tasks')
 
@@ -506,7 +506,7 @@ test.describe.serial('Swarm Integration', () => {
 
   test('15. Clear swarm -- tasks and messages are emptied', async () => {
     // Open dashboard
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     // Verify there are tasks and messages before clearing

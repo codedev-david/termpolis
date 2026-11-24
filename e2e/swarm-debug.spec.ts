@@ -64,7 +64,7 @@ test('1. App launches and shows welcome screen', async () => {
 })
 
 test('2. Open Swarm Dashboard via Ctrl+Shift+S', async () => {
-  await page.keyboard.press('Control+Shift+S')
+  await page.keyboard.press('ControlOrMeta+Shift+S')
   await page.waitForTimeout(1000)
   await ss('02-swarm-dashboard')
 

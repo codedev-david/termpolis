@@ -196,7 +196,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     const marker = 'zz_copy_plain_71'
     await selectMarkerLine(marker)
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__')) // prove freshness
-    await page.keyboard.press('Control+Shift+C') // reserved plain-Copy hotkey
+    await page.keyboard.press('ControlOrMeta+Shift+C') // reserved plain-Copy hotkey
     await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
   })
 
@@ -213,7 +213,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     const marker = 'zz_copy_teams_73'
     await selectMarkerLine(marker)
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__cleared__'))
-    await page.keyboard.press('Control+Shift+K') // reserved Copy-for-Teams/Slack hotkey
+    await page.keyboard.press('ControlOrMeta+Shift+K') // reserved Copy-for-Teams/Slack hotkey
     // Message form reflows wrapped lines (no hard returns) but preserves the token.
     await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
   })
@@ -296,7 +296,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
 
     // Clear terminal (Ctrl+Shift+X) wipes the pane with a full reset. It has to put the agent's
     // modes back, or pastes go in raw again until the agent happens to re-send them.
-    await page.keyboard.press('Control+Shift+X')
+    await page.keyboard.press('ControlOrMeta+Shift+X')
     await page.waitForTimeout(500)
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('four\r\nfive'))
     const beforeClearPaste = (await writes()).length

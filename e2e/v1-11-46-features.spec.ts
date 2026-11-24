@@ -129,7 +129,7 @@ test.describe.serial('v1.11.46 UX features', () => {
   })
 
   test('5. Ctrl+/ opens settings on the Keybindings tab (shortcuts hotkey)', async () => {
-    await page.keyboard.press('Control+/')
+    await page.keyboard.press('ControlOrMeta+/')
     await page.waitForTimeout(800)
     // Settings tabs are rendered when settings is open
     const tabsContainer = page.locator('[data-testid="settings-tabs"]')

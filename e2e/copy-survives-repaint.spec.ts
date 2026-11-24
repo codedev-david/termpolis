@@ -177,7 +177,7 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     // --- sanity: the drag really does select the marker (the keyboard path reads it LIVE) ---
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__NOTHING__'))
     await drag()
-    await page.keyboard.press('Control+Shift+C')
+    await page.keyboard.press('ControlOrMeta+Shift+C')
     await page.waitForTimeout(400)
     const viaKeyboard = await app.evaluate(async ({ clipboard }) => clipboard.readText())
     expect(
@@ -202,7 +202,7 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     // buffer selection survives it. The reserved Copy hotkey reads that live selection, so the
     // user's INTENT to copy still lands on the clipboard even after 12s of in-place rewriting —
     // a hotkey must never be less capable than the keyboard shortcut printed next to it.
-    await page.keyboard.press('Control+Shift+C')
+    await page.keyboard.press('ControlOrMeta+Shift+C')
 
     await expect.poll(
       async () => app.evaluate(async ({ clipboard }) => clipboard.readText()),

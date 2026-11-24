@@ -118,7 +118,7 @@ test.afterAll(async () => {
 test.describe.serial('Swarm launch command shape', () => {
   test('1. Trigger the full swarm launch flow through the UI', async () => {
     // Open dashboard
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await expect(page.locator('text=Swarm Dashboard').first()).toBeVisible({ timeout: 10000 })
 
     // Click Start Swarm — the TERMPOLIS_TEST_PROJECT_CWD env bypasses the native picker

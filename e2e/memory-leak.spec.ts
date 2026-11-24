@@ -233,7 +233,7 @@ test.describe.serial('Memory Leak Detection', () => {
 
     // Open/close swarm dashboard 10 times via Ctrl+Shift+S
     for (let i = 0; i < 10; i++) {
-      await page.keyboard.press('Control+Shift+S')
+      await page.keyboard.press('ControlOrMeta+Shift+S')
       await page.waitForTimeout(800)
 
       // Verify it opened
@@ -242,7 +242,7 @@ test.describe.serial('Memory Leak Detection', () => {
 
       // Close it
       if (isOpen) {
-        await page.keyboard.press('Control+Shift+S')
+        await page.keyboard.press('ControlOrMeta+Shift+S')
         await page.waitForTimeout(800)
       }
     }

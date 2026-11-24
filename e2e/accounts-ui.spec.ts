@@ -63,7 +63,7 @@ test.afterAll(async () => {
 })
 
 async function paletteOffers(text: string): Promise<boolean> {
-  await page.keyboard.press('Control+k')
+  await page.keyboard.press('ControlOrMeta+k')
   const input = page.locator('input[placeholder="Type a command..."]')
   await expect(input).toBeVisible({ timeout: 10_000 })
   await input.fill('switch account')

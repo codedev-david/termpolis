@@ -70,7 +70,7 @@ const closeBtn = () => page.locator('button[aria-label="Close memory panel"]')
 
 test.describe.serial('Memory panel', () => {
   test('1. Ctrl+Shift+M opens the Memory panel with its controls', async () => {
-    await page.keyboard.press('Control+Shift+M')
+    await page.keyboard.press('ControlOrMeta+Shift+M')
     await page.waitForTimeout(800)
 
     await expect(queryInput()).toBeVisible()
@@ -84,7 +84,7 @@ test.describe.serial('Memory panel', () => {
   })
 
   test('2. the Command Palette lists a Memory command', async () => {
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     await page.waitForTimeout(400)
     const input = page.locator('input[placeholder="Type a command..."]')
     await expect(input).toBeVisible()
@@ -100,7 +100,7 @@ test.describe.serial('Memory panel', () => {
   })
 
   test('3. panel controls respond — inject-primer warns without a query (no crash)', async () => {
-    await page.keyboard.press('Control+Shift+M')
+    await page.keyboard.press('ControlOrMeta+Shift+M')
     await page.waitForTimeout(600)
     await expect(queryInput()).toBeVisible()
 

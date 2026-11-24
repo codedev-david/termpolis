@@ -335,7 +335,7 @@ test.describe.serial('Stress Tests', () => {
   test('7. swarm dashboard spam: open and close 10 times', async () => {
     for (let i = 0; i < 10; i++) {
       // Open swarm dashboard with Ctrl+Shift+S
-      await page.keyboard.press('Control+Shift+S')
+      await page.keyboard.press('ControlOrMeta+Shift+S')
       await page.waitForTimeout(300)
 
       // Close with Escape
@@ -357,7 +357,7 @@ test.describe.serial('Stress Tests', () => {
   test('8. command palette spam: open and close 10 times', async () => {
     for (let i = 0; i < 10; i++) {
       // Open command palette with Ctrl+K
-      await page.keyboard.press('Control+K')
+      await page.keyboard.press('ControlOrMeta+K')
       await page.waitForTimeout(300)
 
       // Close with Escape

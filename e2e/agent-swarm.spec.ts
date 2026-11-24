@@ -77,7 +77,7 @@ test.describe.serial('Agent Swarm', () => {
   // ---- SECTION 1: SWARM DASHBOARD OVERLAY ----
 
   test('1. Ctrl+Shift+S opens swarm dashboard overlay', async () => {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     const dashboard = page.locator('text=Swarm Dashboard')
@@ -238,7 +238,7 @@ test.describe.serial('Agent Swarm', () => {
     await page.waitForTimeout(300)
 
     // Open swarm dashboard via Ctrl+Shift+S
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=Swarm Dashboard')).toBeVisible({ timeout: 3000 })

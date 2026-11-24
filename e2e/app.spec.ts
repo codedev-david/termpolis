@@ -216,7 +216,7 @@ test('Command Palette opens with Ctrl+K', async () => {
   // this one. Whether the terminal happened to be focused is what made this test pass
   // or fail depending on which test ran before it; blur explicitly instead.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-  await page.keyboard.press('Control+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await page.waitForTimeout(500)
 
   // Should see the search input
@@ -281,7 +281,7 @@ test.skip('Swarm Dashboard modal opens', async () => {
   await page.waitForTimeout(300)
 
   // Use keyboard shortcut instead of clicking button (more reliable)
-  await page.keyboard.press('Control+Shift+s')
+  await page.keyboard.press('ControlOrMeta+Shift+s')
   await page.waitForTimeout(1000)
 
   // Should show dashboard content

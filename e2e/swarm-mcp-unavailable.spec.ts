@@ -102,7 +102,7 @@ test.afterAll(async () => {
 
 test.describe.serial('Swarm detects MCP-unavailable bypass', () => {
   test('1. Launch the swarm with a bypassed conductor', async () => {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await expect(page.locator('text=Swarm Dashboard').first()).toBeVisible({ timeout: 10000 })
 
     const dashboard = page.locator('.fixed').filter({ hasText: 'Swarm Dashboard' }).first()

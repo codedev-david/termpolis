@@ -29,7 +29,7 @@ test.afterAll(async () => {
 
 /** Helper: open the command palette via Ctrl+K */
 async function openPalette() {
-  await page.keyboard.press('Control+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await page.waitForTimeout(500)
 }
 

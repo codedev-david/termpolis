@@ -110,7 +110,7 @@ test.describe.serial('In-terminal find bar', () => {
 
     // The keybinding opens the find bar (the TerminalPane wiring).
     await xterm.focus()
-    await page.keyboard.press('Control+Shift+F')
+    await page.keyboard.press('ControlOrMeta+Shift+F')
     const bar = page.locator('[data-testid="terminal-search"]')
     await expect(bar).toBeVisible({ timeout: 5000 })
 

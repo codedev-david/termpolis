@@ -258,7 +258,7 @@ test('19 - close settings returns to terminal', async () => {
 
 test('20 - command palette opens with Ctrl+K', async () => {
   await closeAnyModal()
-  await page.keyboard.press('Control+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await page.waitForTimeout(500)
 
   const input = page.locator('input[placeholder*="command"]').first()
@@ -270,7 +270,7 @@ test('20 - command palette opens with Ctrl+K', async () => {
 })
 
 test('21 - command palette filters on typing', async () => {
-  await page.keyboard.press('Control+k')
+  await page.keyboard.press('ControlOrMeta+k')
   await page.waitForTimeout(500)
 
   const input = page.locator('input[placeholder*="command"]').first()

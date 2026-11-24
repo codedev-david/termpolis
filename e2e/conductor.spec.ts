@@ -91,7 +91,7 @@ test.describe.serial('Conductor Wizard', () => {
   // ---- SECTION 1: WIZARD UI TESTS (PREPARING STEP) ----
 
   test('1. Ctrl+Shift+S opens swarm dashboard', async () => {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     const dashboard = page.locator('text=Swarm Dashboard')
@@ -160,7 +160,7 @@ test.describe.serial('Conductor Wizard', () => {
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
 
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await page.waitForTimeout(500)
 
     // Inject a describe step UI by finding the React root and rendering a mock
@@ -303,7 +303,7 @@ test.describe.serial('Conductor Wizard', () => {
     // Ensure dashboard is open
     const dashboardVisible = await page.locator('text=Swarm Dashboard').isVisible().catch(() => false)
     if (!dashboardVisible) {
-      await page.keyboard.press('Control+Shift+S')
+      await page.keyboard.press('ControlOrMeta+Shift+S')
       await page.waitForTimeout(500)
     }
 

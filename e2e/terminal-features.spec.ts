@@ -280,7 +280,7 @@ test.describe.serial('Terminal Features', () => {
   })
 
   test('13. command history search: Ctrl+Shift+H opens search modal', async () => {
-    await page.keyboard.press('Control+Shift+H')
+    await page.keyboard.press('ControlOrMeta+Shift+H')
     await page.waitForTimeout(500)
 
     // The history search modal should appear with a search input
@@ -293,7 +293,7 @@ test.describe.serial('Terminal Features', () => {
   })
 
   test('14. command palette: Ctrl+K opens palette overlay', async () => {
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     await page.waitForTimeout(500)
 
     // The command palette should appear with "Type a command..." placeholder

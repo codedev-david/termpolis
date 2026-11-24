@@ -212,7 +212,7 @@ test.describe.serial('UI screens show visible results', () => {
 
   test('5. Prompt Templates palette shows built-in templates', async () => {
     await closeOverlays()
-    await page.keyboard.press('Control+Shift+P')
+    await page.keyboard.press('ControlOrMeta+Shift+P')
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=/Prompt Templates/i').first()).toBeVisible({ timeout: 5000 })
@@ -248,7 +248,7 @@ test.describe.serial('UI screens show visible results', () => {
     expect(seeded?.ok, `context pin seed via IPC: ${seeded?.err ?? 'unknown error'}`).toBe(true)
 
     // Context pins panel is Ctrl+Shift+B (see App.tsx keybinding handler).
-    await page.keyboard.press('Control+Shift+B')
+    await page.keyboard.press('ControlOrMeta+Shift+B')
     await page.waitForTimeout(500)
 
     await expect(page.locator('text=/Pinned Context/i').first()).toBeVisible({ timeout: 5000 })
@@ -314,7 +314,7 @@ test.describe.serial('UI screens show visible results', () => {
       if (t2?.data?.id) await api.updateTask(t2.data.id, 'in_progress')
     })
 
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await expect(page.locator('text=Swarm Dashboard').first()).toBeVisible({ timeout: 10000 })
 
     // Task titles must render on-screen. If either is missing, the

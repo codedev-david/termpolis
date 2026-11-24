@@ -242,7 +242,7 @@ test.describe.serial('Chrome smoke', () => {
   })
 
   test('6. Command palette: Ctrl+K open and Escape close', async () => {
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     await page.waitForTimeout(400)
     const paletteVisible = await page
       .locator('input[placeholder="Type a command..."]')

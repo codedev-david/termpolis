@@ -131,7 +131,7 @@ test.describe.serial('1. Startup and IPC surface', () => {
 
 test.describe.serial('2. Activity Feed', () => {
   test('2.1 Ctrl+Shift+A opens the activity feed', async () => {
-    await openShortcut('Control+Shift+A')
+    await openShortcut('ControlOrMeta+Shift+A')
     await expect(page.getByTestId('activity-feed')).toBeVisible({ timeout: 3000 })
     await ss('02-activity-feed-open')
   })
@@ -178,14 +178,14 @@ test.describe.serial('2. Activity Feed', () => {
   })
 
   test('2.7 Ctrl+Shift+A toggles the feed back on', async () => {
-    await openShortcut('Control+Shift+A')
+    await openShortcut('ControlOrMeta+Shift+A')
     await expect(page.getByTestId('activity-feed')).toBeVisible()
   })
 
   test('2.8 Feed stays consistent after repeated toggles', async () => {
     // Start visible (from 2.7). Toggle 4 times → back to visible.
     for (let i = 0; i < 4; i++) {
-      await openShortcut('Control+Shift+A')
+      await openShortcut('ControlOrMeta+Shift+A')
       await page.waitForTimeout(150)
     }
     await expect(page.getByTestId('activity-feed')).toBeVisible()
@@ -199,7 +199,7 @@ test.describe.serial('2. Activity Feed', () => {
 
 test.describe.serial('3. Redundancy Panel', () => {
   test('3.1 Ctrl+Shift+D opens the redundancy panel', async () => {
-    await openShortcut('Control+Shift+D')
+    await openShortcut('ControlOrMeta+Shift+D')
     await expect(page.getByTestId('redundancy-panel')).toBeVisible({ timeout: 3000 })
     await ss('03-redundancy-open')
   })
@@ -232,7 +232,7 @@ test.describe.serial('3. Redundancy Panel', () => {
   })
 
   test('3.6 Ctrl+Shift+D toggles back on', async () => {
-    await openShortcut('Control+Shift+D')
+    await openShortcut('ControlOrMeta+Shift+D')
     await expect(page.getByTestId('redundancy-panel')).toBeVisible()
     await closeViaX('redundancy-panel')
   })
@@ -244,7 +244,7 @@ test.describe.serial('3. Redundancy Panel', () => {
 
 test.describe.serial('4. Efficiency Panel', () => {
   test('4.1 Ctrl+Shift+Y opens the efficiency panel', async () => {
-    await openShortcut('Control+Shift+Y')
+    await openShortcut('ControlOrMeta+Shift+Y')
     await expect(page.getByTestId('efficiency-panel')).toBeVisible({ timeout: 3000 })
     await ss('04-efficiency-open')
   })
@@ -268,7 +268,7 @@ test.describe.serial('4. Efficiency Panel', () => {
   })
 
   test('4.5 Ctrl+Shift+Y toggles back on and off', async () => {
-    await openShortcut('Control+Shift+Y')
+    await openShortcut('ControlOrMeta+Shift+Y')
     await expect(page.getByTestId('efficiency-panel')).toBeVisible()
     await closeViaX('efficiency-panel')
   })
@@ -663,15 +663,15 @@ test.describe.serial('10. Transcript watcher IPC', () => {
 
 test.describe.serial('11. Stacked panels do not interfere', () => {
   test('11.1 Activity feed + redundancy panel can both be visible', async () => {
-    await openShortcut('Control+Shift+A')
-    await openShortcut('Control+Shift+D')
+    await openShortcut('ControlOrMeta+Shift+A')
+    await openShortcut('ControlOrMeta+Shift+D')
     await expect(page.getByTestId('activity-feed')).toBeVisible()
     await expect(page.getByTestId('redundancy-panel')).toBeVisible()
     await ss('11-stacked-activity-redundancy')
   })
 
   test('11.2 Activity + redundancy + efficiency — all three visible', async () => {
-    await openShortcut('Control+Shift+Y')
+    await openShortcut('ControlOrMeta+Shift+Y')
     await expect(page.getByTestId('activity-feed')).toBeVisible()
     await expect(page.getByTestId('redundancy-panel')).toBeVisible()
     await expect(page.getByTestId('efficiency-panel')).toBeVisible()

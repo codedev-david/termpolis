@@ -189,7 +189,7 @@ test.describe.serial('Swarm End-to-End', () => {
   })
 
   test('2. Open Swarm Dashboard via Ctrl+Shift+S', async () => {
-    await page.keyboard.press('Control+Shift+S')
+    await page.keyboard.press('ControlOrMeta+Shift+S')
     await expect(page.locator('text=Swarm Dashboard').first()).toBeVisible({ timeout: 5000 })
     await ss('02-dashboard-open')
   })
