@@ -167,7 +167,9 @@ describe('a labelling exec with tree, on real processes', () => {
     // execFile ends only the direct child here, and the answer drops the group from every list that
     // could still end it, so a grandchild holding the pipes lived on with nothing left to end it.
     const pidFile = join(dir, `pids-${++seq}.json`)
-    const r = await execCaptureOffThread(process.execPath, [flooder, pidFile], { tree: true, timeout: 60_000, maxBuffer: 1000 })
+    // Half the test's own limit: a stand-in that never floods fails through the run's own timeout,
+    // which ends the tree and reads as a timeout below, not through vitest's.
+    const r = await execCaptureOffThread(process.execPath, [flooder, pidFile], { tree: true, timeout: 30_000, maxBuffer: 1000 })
     const { labeller, grandchild } = JSON.parse(readFileSync(pidFile, 'utf8')) as { labeller: number; grandchild: number }
     unverified.add(labeller)
     unverified.add(grandchild)
