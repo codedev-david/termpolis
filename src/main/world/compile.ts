@@ -359,13 +359,14 @@ const seenIn = (refs: string[]): Claim[] =>
     .map((r): Claim => ({ text: 'Seen in code', state: 'observed', evidence: r.slice(0, MAX_SEEN).map((ref): Evidence => ({ kind: 'file', ref })) }))
 
 /** Where a line shows in the code: its boundaries (file:line), else the files whose imports reach the other end. */
-function seenInCode(e: Grouping['edges'][number], g: Grouping, snap: GraphSnapshot): Claim[] {
+/** `files` is the snapshot's file set, made once for all the edges: one per edge cost a 50k-entry set each on a big
+ *  project (WP4a fix round 4). */
+function seenInCode(e: Grouping['edges'][number], g: Grouping, snap: GraphSnapshot, files: () => ReadonlySet<string>): Claim[] {
   if (e.via.length > 0) return seenIn(e.via.map((v) => `${v.file}:${v.line}`))
-  const files = new Set(snap.files)
   const target = new Set((g.buildings.find((b) => b.id === e.to) as GroupBuilding).members)
   const importers = (g.buildings.find((b) => b.id === e.from) as GroupBuilding).members.filter((m) =>
     (snap.fileImports[m] ?? []).some((spec) => {
-      const r = resolveImport(m, spec, files)
+      const r = resolveImport(m, spec, files())
       return r !== null && target.has(r)
     })
   )
@@ -896,11 +897,13 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     }
   })
   // A line whose reverse the code also makes runs both ways: both lines say so and keep their ids.
+  let fileSet: ReadonlySet<string> | undefined
+  const filesOf = (): ReadonlySet<string> => (fileSet ??= new Set(snap.files))
   const edges: WorldEdge[] = markTwoWay([
     ...g.edges.map((e): WorldEdge => {
       const id = edgeId(e)
       const l = labels.edges[id]
-      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: chips(l.tech), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap) }
+      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: chips(l.tech), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap, filesOf) }
     }),
     ...ext.edges
   ]).sort((a, z) => cmp(a.id, z.id))
