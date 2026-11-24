@@ -244,10 +244,17 @@ export function useUiZoom(): CSSProperties {
   return s === 1 ? {} : { zoom: s }
 }
 
-export function WorldPaneOpening({ width, overlay = null }: { width: number; overlay?: WorldPaneOverlay | null }): JSX.Element {
+export function WorldPaneOpening({ width, overlay, onClose }: {
+  width: number
+  overlay: WorldPaneOverlay | null
+  onClose: () => void
+}): JSX.Element {
   return (
     <div data-testid="world-view-opening" style={worldPaneStyle(WORLD_OPENING_BACKGROUND, width, overlay)}>
-      <div role="status" style={{ margin: 'auto', fontSize: 14, color: '#9ca3af' }}>Opening Lumopolis…</div>
+      <div className="m-auto flex flex-col items-center gap-3 p-4 text-center">
+        <div role="status" className="text-sm text-[#9ca3af]">Opening Lumopolis…</div>
+        <button type="button" className="rounded bg-[#3c3c3c] px-3 py-1.5 text-xs hover:bg-[#4c4c4c]" onClick={onClose}>Close</button>
+      </div>
     </div>
   )
 }

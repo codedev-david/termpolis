@@ -16,7 +16,7 @@ const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTe
 const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
 const Memory = lazy(() => import('./components/Memory/Memory').then(m => ({ default: m.Memory })))
 // Lumopolis (world view): its own chunk, so the engine and Three.js load only when it opens.
-const WorldView = lazy(() => import('./components/World').then(m => ({ default: m.WorldView })))
+const loadWorldView = () => import('./components/World').then(m => ({ default: m.WorldView }))
 const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
 const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
 const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
@@ -29,7 +29,8 @@ const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/Swarm
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
 const AppLogModal = lazy(() => import('./components/AppLogModal/AppLogModal').then(m => ({ default: m.AppLogModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
-import { useWorldPaneWidth, WorldPaneOpening } from './components/World/worldPane'
+import { useWorldPaneWidth } from './components/World/worldPane'
+import { WorldPaneBoundary } from './components/World/WorldPaneBoundary'
 import { WorldPaneDivider } from './components/World/WorldPaneDivider'
 import { useWorldPane } from './components/World/worldOpen'
 import { LumopolisNotice } from './components/World/LumopolisNotice'
@@ -1254,18 +1255,17 @@ export default function App() {
             // engine and Three.js) loads.
             <>
               {!worldOverlay && <WorldPaneDivider onDrag={onWorldDrag} width={worldWidth} min={worldMin} max={worldMax} />}
-              <Suspense fallback={<WorldPaneOpening width={worldWidth} overlay={worldOverlay} />}>
-                <WorldView
-                  root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
-                  request={worldPane.request}
-                  width={worldWidth}
-                  overlay={worldOverlay}
-                  onClose={worldPane.close}
-                  askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
-                  buildIt={worldBuildIt}
-                  exportRequest={worldExportRequest}
-                />
-              </Suspense>
+              <WorldPaneBoundary
+                load={loadWorldView}
+                root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+                request={worldPane.request}
+                width={worldWidth}
+                overlay={worldOverlay}
+                onClose={worldPane.close}
+                askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
+                buildIt={worldBuildIt}
+                exportRequest={worldExportRequest}
+              />
             </>
           )}
         </Suspense>
