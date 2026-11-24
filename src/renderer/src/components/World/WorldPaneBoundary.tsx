@@ -23,6 +23,11 @@ export class WorldPaneBoundary extends Component<Props, State> {
     return { failed: true }
   }
 
+  componentDidUpdate(prev: Props): void {
+    // A pane stuck on "couldn't open" tries again when another world or terminal is asked for.
+    if (this.state.failed && (prev.request !== this.props.request || prev.root !== this.props.root)) this.retry()
+  }
+
   private retry = (): void => {
     // React caches rejections on the lazy component, so each retry needs a fresh one.
     this.setState({ failed: false, View: lazy(this.props.load) })

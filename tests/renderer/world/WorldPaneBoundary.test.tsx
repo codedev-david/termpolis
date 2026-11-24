@@ -48,6 +48,28 @@ describe('WorldPaneBoundary', () => {
     expect(load).toHaveBeenCalledTimes(2)
   })
 
+  it('tries again by itself when the request or the terminal changes while it shows the error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const load = vi.fn()
+      .mockRejectedValueOnce(new Error('chunk unavailable'))
+      .mockResolvedValueOnce({ default: () => <div>World map</div> })
+    const { rerender } = render(<WorldPaneBoundary {...props} onClose={vi.fn()} load={load} />)
+    await screen.findByRole('alert')
+    rerender(<WorldPaneBoundary {...props} request={{ folder: '/other', seq: 1 }} onClose={vi.fn()} load={load} />)
+    expect(await screen.findByText('World map')).toBeVisible()
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    const broken = vi.fn().mockRejectedValue(new Error('down'))
+    const second = render(<WorldPaneBoundary {...props} onClose={vi.fn()} load={broken} />)
+    await screen.findAllByRole('alert')
+    second.rerender(<WorldPaneBoundary {...props} root="/next" onClose={vi.fn()} load={broken} />)
+    await act(async () => {})
+    expect(broken).toHaveBeenCalledTimes(2)
+    second.rerender(<WorldPaneBoundary {...props} root="/next" width={300} onClose={vi.fn()} load={broken} />)
+    await act(async () => {})
+    expect(broken).toHaveBeenCalledTimes(2)
+  })
+
   it('calls close while the view is still loading', async () => {
     const onClose = vi.fn()
     await act(async () => {

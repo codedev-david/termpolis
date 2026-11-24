@@ -136,7 +136,7 @@ describe('worldPane', () => {
 
   it('opens in the Neon background, the theme the pane starts in', () => {
     expect(WORLD_OPENING_BACKGROUND).toBe(THEMES.neon.background)
-    render(<WorldPaneOpening width={500} />)
+    render(<WorldPaneOpening width={500} overlay={null} onClose={() => {}} />)
     expect(screen.getByTestId('world-view-opening')).toHaveStyle({ width: '500px', background: '#03050a' })
     expect(screen.getByRole('status')).toHaveTextContent('Opening Lumopolis…')
   })
