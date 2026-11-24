@@ -41,7 +41,9 @@
 // (`cwd:\\host\home\<account>`) loses the letter before the colon (`cw<outside the project>`), though nothing of it
 // shows. A known folder percent-encoded twice (`%252Fhome%252Fann`) keeps its words, and a `+` reads as a space only
 // in a percent-encoded known folder or as the account's own folder below its parent (`Users/Ann+Lee`), so
-// `Ann++Lee`, `+Ann+Lee` and `Ann%2BLee` keep theirs.
+// `Ann++Lee`, `+Ann+Lee` and `Ann%2BLee` keep theirs. The hashed short name Windows gives a folder once several
+// share a head (`DA1F2B~1`, its first 2 letters, 4 hex digits from a hash of the long name, then `~N`) is not
+// read: the hash cannot be worked out from the name, so it keeps its words, though it shows only those 2 letters.
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
