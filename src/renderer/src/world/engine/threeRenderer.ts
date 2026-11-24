@@ -213,13 +213,22 @@ const LINE_CLEAR = 0.45
  * When no near, clear view of a line shows both its ends, the close-up looks again from more sides
  * (LINE_TURNS degrees off straight across the line), lower as well as higher (LINE_WIDE_LIFTS, each
  * from every side before the next), and further out (each LINE_BACK_STEP times the last, up to the
- * controls' reach, while no end is hidden behind something) until both ends show.
+ * controls' reach, in at most LINE_BACK_MOST looks: longer steps where the reach is far) until both
+ * ends show. Every one of these looks is tried (at most 5 x 6 x 8): a view that shows both ends is
+ * never missed for want of time, and the cost of a click stays bounded however tall or busy the city.
  */
 const LINE_TURNS = [0, 180, 45, -45, 135, -135]
 const LINE_WIDE_LIFTS = [0.45, ...LINE_LIFTS]
 const LINE_BACK_STEP = 1.3
-/** The most click tests (rays) the wider look may spend on a line's ends: a click stays quick. */
-const LINE_RAY_BUDGET = 150
+const LINE_BACK_MOST = 8
+/**
+ * How many floors below the top a line's close-up probes on each end building (lineProbes), spread
+ * down its height, besides the top floor and the roof's corners: a 40-floor end costs no more clicks
+ * to test than a 4-floor one.
+ */
+const LINE_LOW_PROBES = 3
+/** How many triangles of a pick shape share one ball in a line close-up's test of what stands in front of an end (chunksOf). */
+const PICK_CHUNK = 12
 /** How far inside the free part of the view (pixels) a line's end must show: not on a panel's edge. */
 const END_INSET_PX = 12
 /**
@@ -1588,10 +1597,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * way to the target. A camera skimming the roofs of a busy district passes `insideAny` yet shows
    * nothing but the walls next to it, or the underside of the lines passing just over it.
    */
-  function clearOf(eye: THREE.Vector3, target: THREE.Vector3, skip: EdgeRec): boolean {
+  function clearOf(eye: THREE.Vector3, target: THREE.Vector3, skip: EdgeRec, balls: Map<EdgeRec, THREE.Sphere>): boolean {
     const need = eye.distanceTo(target) * LINE_CLEAR
     for (const e of edges.values()) {
-      if (e !== skip && e.path.some((p) => p.distanceTo(eye) < need)) return false
+      // A line whose bounds stay `need` away has no point nearer: only a line near the eye is walked point by point.
+      if (e !== skip && (balls.get(e) as THREE.Sphere).distanceToPoint(eye) < need && e.path.some((p) => p.distanceTo(eye) < need)) return false
     }
     for (const n of nodes.values()) {
       const g = n.group.position
@@ -1606,18 +1616,122 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** A camera for trying a framing before the camera flies there: the view's picture with the card open. */
   const scout = new THREE.PerspectiveCamera(BASE_FOV, 1, camera.near, camera.far)
   const scoutPt = new THREE.Vector3()
-  /** The click tests left for the line being framed (LINE_RAY_BUDGET); the first, nearer looks spend none of it. */
-  const rays = { left: Infinity }
+  /** A line's end as its close-up tests it: the building or orb, its probe points (lineProbes) and a ball holding them all. */
+  interface LineEnd { node: NodeRec; probes: THREE.Vector3[]; ball: THREE.Sphere }
   /**
-   * How many of `ends` show nowhere from `eye` looking at `target`, with the card open. An end shows
-   * where one of its probe points (probePoints) lies END_INSET_PX or more inside the part of the
-   * view the panels leave free, and a click there picks that end (rayHit), not a tower or a line in
-   * front of it: the promise of a line's close-up, both ends in view beside the card. `why.blocked` tells whether an
-   * end was hidden by what stands in front of it (it lies in the free area, but no click there picks it).
+   * Balls round each pick shape's triangles, PICK_CHUNK of them a ball ([x, y, z, radius] each, in the shape's own
+   * space), kept for as long as the shape: a line's long pick tube is then near a sight line only where one of its
+   * stretches is, not wherever its one big bounding ball reaches (most of a busy city's lines).
    */
-  function endsHidden(ends: NodeRec[], eye: THREE.Vector3, target: THREE.Vector3, why?: { blocked: boolean }): number {
-    // Every look answers for itself: an end left out of the free area says nothing about what stands in front.
-    if (why) why.blocked = false
+  const chunkBalls = new WeakMap<THREE.BufferGeometry, Float64Array>()
+  function chunksOf(geo: THREE.BufferGeometry): Float64Array {
+    const known = chunkBalls.get(geo)
+    if (known) return known
+    const at = geo.getAttribute('position')
+    const ix = geo.getIndex() as THREE.BufferAttribute // every pick shape (a box, a sphere, a tube) is indexed
+    const corners = ix.count
+    const tris = Math.ceil(corners / 3 / PICK_CHUNK)
+    if (tris === 1) {
+      // A floor's box: its own bounding ball (worked out once: the shape is kept).
+      geo.computeBoundingSphere()
+      const b = geo.boundingSphere as THREE.Sphere
+      const one = new Float64Array([b.center.x, b.center.y, b.center.z, b.radius])
+      chunkBalls.set(geo, one)
+      return one
+    }
+    const out = new Float64Array(tris * 4)
+    const pts: THREE.Vector3[] = []
+    for (let k = 0; k < tris; k++) {
+      pts.length = 0
+      for (let c = k * PICK_CHUNK * 3; c < Math.min(corners, (k + 1) * PICK_CHUNK * 3); c++) {
+        pts.push(new THREE.Vector3().fromBufferAttribute(at, ix.getX(c)))
+      }
+      pickBall.setFromPoints(pts)
+      out.set([pickBall.center.x, pickBall.center.y, pickBall.center.z, pickBall.radius], k * 4)
+    }
+    chunkBalls.set(geo, out)
+    return out
+  }
+  /**
+   * The pick shapes' balls (chunksOf) in the world, taken once per line close-up: `pickBalls` holds them all,
+   * pick object i's from `pickFrom[i]` up to `pickFrom[i + 1]`. `pickGroups` gathers the pick objects of each
+   * building, orb and line, in a ball round all of theirs: a sight line that passes wide of a tower is not
+   * tested against each of its floors.
+   */
+  let pickBalls = new Float64Array(0)
+  let pickFrom = new Int32Array(1)
+  let pickGroups: Array<{ ball: THREE.Sphere; members: number[] }> = []
+  const pickBall = new THREE.Sphere()
+  function takePickBalls(): void {
+    const own = pickables.map((o) => chunksOf((o as THREE.Mesh).geometry))
+    pickFrom = new Int32Array(pickables.length + 1)
+    own.forEach((c, i) => { pickFrom[i + 1] = pickFrom[i] + c.length / 4 })
+    pickBalls = new Float64Array(pickFrom[pickables.length] * 4)
+    pickables.forEach((o, i) => {
+      const m = o.matrixWorld.elements
+      const grow = o.matrixWorld.getMaxScaleOnAxis()
+      const c = own[i]
+      for (let k = 0, j = pickFrom[i] * 4; k < c.length; k += 4, j += 4) {
+        const [x, y, z] = [c[k], c[k + 1], c[k + 2]]
+        pickBalls[j] = m[0] * x + m[4] * y + m[8] * z + m[12]
+        pickBalls[j + 1] = m[1] * x + m[5] * y + m[9] * z + m[13]
+        pickBalls[j + 2] = m[2] * x + m[6] * y + m[10] * z + m[14]
+        pickBalls[j + 3] = c[k + 3] * grow
+      }
+    })
+    const owners = new Map<unknown, number[]>()
+    pickables.forEach((o, i) => {
+      const key = o.userData.nodeId ?? o.userData.edgeId
+      const list = owners.get(key)
+      if (list) list.push(i)
+      else owners.set(key, [i])
+    })
+    pickGroups = [...owners.values()].map((members) => {
+      const box = new THREE.Box3()
+      for (const i of members) {
+        for (let j = pickFrom[i] * 4; j < pickFrom[i + 1] * 4; j += 4) {
+          const r = pickBalls[j + 3]
+          box.expandByPoint(scoutPt.set(pickBalls[j] - r, pickBalls[j + 1] - r, pickBalls[j + 2] - r))
+          box.expandByPoint(scoutPt.set(pickBalls[j] + r, pickBalls[j + 1] + r, pickBalls[j + 2] + r))
+        }
+      }
+      // A ball round the box round the members' balls: it holds them all.
+      return { ball: box.getBoundingSphere(new THREE.Sphere()), members }
+    })
+  }
+  /**
+   * The pick objects (their indices in `pickables`, out of `among`) with a ball (takePickBalls) within `reach` of the
+   * segment from `eye` to `to`. A click at one of a line end's probe points picks the end only by what the ray meets
+   * before it reaches that point (the point lies inside the end's floor or orb, and whatever lies behind it loses to
+   * the end): every such thing is in the list for that point, which the click then tests alone. The list for the
+   * end's ball (its centre, its radius) holds the list for each of its points: that one is taken once per end.
+   */
+  function pickablesToward(eye: THREE.Vector3, to: THREE.Vector3, reach: number, among: number[] | null): number[] {
+    const dx = to.x - eye.x
+    const dy = to.y - eye.y
+    const dz = to.z - eye.z
+    const len2 = dx * dx + dy * dy + dz * dz
+    const near = (x: number, y: number, z: number, r: number): boolean => {
+      const t = clamp(((x - eye.x) * dx + (y - eye.y) * dy + (z - eye.z) * dz) / len2, 0, 1)
+      return Math.pow(x - eye.x - t * dx, 2) + Math.pow(y - eye.y - t * dy, 2) + Math.pow(z - eye.z - t * dz, 2) <= Math.pow(r + reach, 2)
+    }
+    const out: number[] = []
+    const test = (i: number): void => {
+      for (let j = pickFrom[i] * 4; j < pickFrom[i + 1] * 4; j += 4) {
+        if (near(pickBalls[j], pickBalls[j + 1], pickBalls[j + 2], pickBalls[j + 3])) { out.push(i); return }
+      }
+    }
+    if (among) among.forEach(test)
+    else for (const g of pickGroups) if (near(g.ball.center.x, g.ball.center.y, g.ball.center.z, g.ball.radius)) g.members.forEach(test)
+    return out
+  }
+  /**
+   * How many of `ends` show nowhere from `eye` looking at `target`, with the card open (counting stops at `most`:
+   * past that, how many more is not asked). An end shows where one of its probe points lies END_INSET_PX or more
+   * inside the part of the view the panels leave free, and a click there picks that end (rayHit), not a tower or a
+   * line in front of it: the promise of a line's close-up, both ends in view beside the card.
+   */
+  function endsHidden(ends: LineEnd[], eye: THREE.Vector3, target: THREE.Vector3, most: number): number {
     const a = areaFor(true)
     lens(scout, a)
     scout.position.copy(eye)
@@ -1625,35 +1739,51 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     scout.lookAt(target)
     scout.updateMatrixWorld()
     // Where each end falls in the free area first (cheap), then the clicks there (rays).
-    const spots = ends.map((m) => probePoints(m).flatMap((p) => {
+    const spots = ends.map((end) => end.probes.flatMap((p) => {
       scoutPt.copy(p).project(scout)
-      return inFreeArea(scoutPt.x, scoutPt.y, width, height, a, END_INSET_PX, scoutPt.z) ? [[scoutPt.x, scoutPt.y] as const] : []
+      return inFreeArea(scoutPt.x, scoutPt.y, width, height, a, END_INSET_PX, scoutPt.z) ? [[scoutPt.x, scoutPt.y, p] as const] : []
     }))
     let hidden = spots.filter((sp) => sp.length === 0).length
     if (hidden > 0) return hidden
-    ends.forEach((m, k) => {
-      const shows = spots[k].some(([x, y]) => {
-        rays.left--
-        const hit = rayHit(scout, x, y)
-        return !!hit && hit.kind === 'node' && hit.id === m.id
+    for (let k = 0; k < ends.length && hidden < most; k++) {
+      const { node, ball } = ends[k]
+      const near = pickablesToward(eye, ball.center, ball.radius, null)
+      const shows = spots[k].some(([x, y, p]) => {
+        // (a hair of room round the sight line: the click's ray comes back through the point with rounding)
+        const objs = pickablesToward(eye, p, 1e-3 * (1 + eye.distanceTo(p)), near).map((i) => pickables[i])
+        const hit = rayHit(scout, x, y, objs)
+        return !!hit && hit.kind === 'node' && hit.id === node.id
       })
       if (!shows) hidden++
-    })
-    if (why) why.blocked = hidden > 0
+    }
     return hidden
   }
 
-  /** Whether nothing stands between `eye` and `p`: no building or orb crosses the sight line. */
+  /**
+   * Whether nothing stands between `eye` and `p`: no building or orb (an upright cylinder round it, from just
+   * under its foot to its roof) crosses the sight line, leaving out its first and last step (a share of the
+   * way, as the walk along it in steps of FLOOR_W * 0.4 once did, at most an eighth): `p` may sit on a face.
+   * Worked out for each building at once, not step by step: a sight line thousands of units long costs no more.
+   */
   function inSight(eye: THREE.Vector3, p: THREE.Vector3): boolean {
-    const steps = Math.max(8, Math.ceil(eye.distanceTo(p) / (FLOOR_W * 0.4)))
-    const q = new THREE.Vector3()
-    for (let i = 1; i < steps; i++) {
-      q.lerpVectors(eye, p, i / steps)
-      for (const n of nodes.values()) {
-        const g = n.group.position
-        const r = n.orb ? ORB_R : FLOOR_W * 0.5
-        if (Math.hypot(g.x - q.x, g.z - q.z) < r && q.y > g.y - 0.5 && q.y < g.y + n.height) return false
-      }
+    const edge = 1 / Math.max(8, Math.ceil(eye.distanceTo(p) / (FLOOR_W * 0.4)))
+    const dx = p.x - eye.x
+    // (the tiny shares keep a level or upright sight line from dividing by nothing)
+    const dy = p.y - eye.y + 1e-9
+    const dz = p.z - eye.z
+    const a = dx * dx + dz * dz + 1e-12
+    for (const n of nodes.values()) {
+      const g = n.group.position
+      const r = n.orb ? ORB_R : FLOOR_W * 0.5
+      // Where along the way (0 at eye, 1 at p) the line is within the cylinder's round (between the roots;
+      // NaN, so nowhere, when it passes wide of it) and within its height.
+      const fx = eye.x - g.x
+      const fz = eye.z - g.z
+      const b = fx * dx + fz * dz
+      const root = Math.sqrt(b * b - a * (fx * fx + fz * fz - r * r))
+      const lo = (g.y - 0.5 - eye.y) / dy
+      const hi = (g.y + n.height - eye.y) / dy
+      if (Math.max(edge, (-b - root) / a, Math.min(lo, hi)) < Math.min(1 - edge, (-b + root) / a, Math.max(lo, hi))) return false
     }
     return true
   }
@@ -1673,7 +1803,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    */
   function lineShot(e: EdgeRec, from: THREE.Vector3): Shot {
     scene.updateMatrixWorld()
-    rays.left = Infinity
+    takePickBalls()
+    const balls = new Map<EdgeRec, THREE.Sphere>()
+    for (const o of edges.values()) balls.set(o, new THREE.Sphere().setFromPoints(o.path))
     // The arch, and each end building's upper part up to its name: in a tall, busy district the
     // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
     const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
@@ -1696,8 +1828,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // What must be in clear sight from `eye`: the middle of the arch, and each end building's face
     // toward the camera at 60% of its height (an orb: its top), so the ends are seen, not peeked at.
     const mids = [0.3, 0.5, 0.7].map((t) => e.curve.getPoint(t))
-    const ends = [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m)
-    const seen = (eye: THREE.Vector3): THREE.Vector3[] => [...mids, ...ends.map((m) => {
+    const ends = [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m).map((node): LineEnd => {
+      const probes = lineProbes(node)
+      return { node, probes, ball: new THREE.Sphere().setFromPoints(probes) }
+    })
+    const seen = (eye: THREE.Vector3): THREE.Vector3[] => [...mids, ...ends.map(({ node: m }) => {
       if (m.orb) return m.anchor.clone().setY(m.anchor.y + 0.5)
       const c = m.group.position
       const toward = eye.clone().sub(c).setY(0).normalize() // (a zero vector stays zero)
@@ -1716,40 +1851,36 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
         for (const back of LINE_BACKS) {
           const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
-          if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target) === 0) return { pos: eye, target }
+          if (!insideAny(eye) && clearOf(eye, target, e, balls) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target, 1) === 0) return { pos: eye, target }
         }
       }
     }
     // A long line, or ends buried under the lines and towers around them: from more sides, lower
     // and higher, and as far out as it takes for both ends to show beside the card (and the arch's
-    // middle in sight). Failing that, the view that shows the most of them, never one that hides
-    // them all: then the overhead view below.
+    // middle in sight). Every look is tried before giving up: a far one may clear what a near one
+    // could not, a turned one what the straight one could not. Failing all, the view that shows the
+    // most of them, never one that hides them all: then the overhead view below.
     // The best view so far, by how many ends it hides (0.5: none, but the arch's middle is out of sight).
     let bestShot: Shot | null = null
     let bestScore = Infinity
-    rays.left = LINE_RAY_BUDGET
-    const why = { blocked: false }
     // Every side at one lift before climbing to the next: a tower in front of an end from one side
     // stays in front of it from higher up on that side, while a turn moves it out of the way.
     const turns = turnAcross([h.x, h.z], LINE_TURNS)
-    wide: for (const lift of LINE_WIDE_LIFTS) {
+    for (const lift of LINE_WIDE_LIFTS) {
       for (const [x, z] of turns) {
         const dir = new THREE.Vector3(x, lift, z).normalize()
         const fit = lineFit(dir)
         const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
-        for (const dist of backOffs(fit.dist, controls.maxDistance, LINE_BACK_STEP)) {
+        for (const dist of backOffs(fit.dist, controls.maxDistance, LINE_BACK_STEP, LINE_BACK_MOST)) {
           const eye = target.clone().addScaledVector(dir, dist)
           // Clear of every roof, as in the near search: an eye grazing a roof whites the picture out.
-          if (insideAny(eye) || !clearOf(eye, target, e)) continue
-          const hidden = endsHidden(ends, eye, target, why)
+          if (insideAny(eye) || !clearOf(eye, target, e, balls)) continue
+          // Once a view hides at most one end, only a view hiding none is better: one hidden end is enough to know.
+          const hidden = endsHidden(ends, eye, target, bestScore > 1 ? ends.length : 1)
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
           if (midSeen) return { pos: eye, target }
           const score = hidden === 0 ? 0.5 : hidden
           if (score < bestScore) { bestShot = { pos: eye, target }; bestScore = score }
-          if (rays.left <= 0) break wide
-          // An end hidden behind a tower or a line near it stays behind it further out along the same look: the
-          // clicks left go to the next side instead (spent stepping back, none were left to turn the camera).
-          if (why.blocked) break
         }
       }
     }
@@ -1760,7 +1891,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
-    while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e)) dist *= 1.15
+    while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e, balls)) dist *= 1.15
     return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target }
   }
 
@@ -1984,6 +2115,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (const [dx, dz] of [[c, c], [-c, c], [c, -c], [-c, -c]]) points.push(top.localToWorld(new THREE.Vector3(dx, 0, dz)))
     }
     return points
+  }
+
+  /**
+   * The probe points a line's close-up tests on one of its ends: an orb's both; a building's top floor and the
+   * roof's corners, and LINE_LOW_PROBES floors spread down its height (all its floors, when it has no more).
+   */
+  function lineProbes(n: NodeRec): THREE.Vector3[] {
+    const all = probePoints(n)
+    const f = n.floors.length
+    if (f === 0) return all
+    // probePoints: the floors top down (0 .. f - 1), then the four corners (f .. f + 3).
+    const keep = new Set([0, f, f + 1, f + 2, f + 3])
+    for (let j = 1; j <= LINE_LOW_PROBES; j++) keep.add(Math.round((j * f) / (LINE_LOW_PROBES + 1)))
+    return all.filter((_, i) => keep.has(i))
   }
 
   function visibleIds(): string[] {

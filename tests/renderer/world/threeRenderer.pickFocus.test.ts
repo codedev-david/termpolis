@@ -554,6 +554,52 @@ describe('threeRenderer line framing', () => {
     r.dispose()
   })
 
+  /**
+   * A line between two towers of `floors` floors (5 apart), 40 apart along x. A ring of walls 8 out round p, taller than p
+   * and sunk below the ground (no gap under them), leaves one gap open, on the side away from q (toward -x, +z); a row of
+   * taller towers 20 out round p, from 100 to 170 degrees, stands in that gap's way at every lift below 2. The only views
+   * that click on p look through the gap from lift 2, turned 135 degrees off straight across the line, and stand further
+   * back than the distance that fits the line (116 against 44 for 12 floors).
+   */
+  function gapAtLift2(floors: number): SceneModel {
+    const H = floors * 5
+    const walls = Array.from({ length: 16 }, (_, k) => k).filter((k) => k < 5 || k > 7)
+      .map((k) => bldg(`w${k}`, [8 * Math.cos((k * Math.PI) / 8), -H * 0.16, 8 * Math.sin((k * Math.PI) / 8)], { floors: 1, height: H * 1.6 }))
+    const outer = Array.from({ length: 8 }, (_, k) => ((100 + 10 * k) * Math.PI) / 180)
+      .map((a, k) => bldg(`o${k}`, [20 * Math.cos(a), -(H + 25) * 0.1, 20 * Math.sin(a)], { floors: 1, height: (H + 25) / 0.825 }))
+    return {
+      districts: [district('d1', [0, 0, 0], 60)],
+      buildings: [bldg('p', [0, 0, 0], { floors, height: H }), bldg('q', [40, 0, 0], { floors, height: H }), ...walls, ...outer],
+      conduits: [conduit('e', [0, H, 0], [40, H, 0])],
+      orbs: [],
+    }
+  }
+  it.each([12, 40])('a line between %i-floor towers whose only clear view is turned at lift 2 is framed from there; with a narrow free strip, stepped back (M1)', async (floors) => {
+    // The wide search once spent its 150 clicks on the first few directions (a tall end costs a click per floor):
+    // the looks at lift 2 were never tried and the close-up showed q beside a p no click could reach.
+    const shot = async (free: number): Promise<{ lift: number; turn: number; dist: number }> => {
+      const r = drawn(gapAtLift2(floors))
+      if (free < 800) { r.setRightReserve(800 - free, 0); h.frames.step() }
+      r.setSelected('e')
+      await r.frame(['e'], true)
+      h.frames.step()
+      expect(r.screenPoint('p'), `p, free ${free}`).not.toBeNull()
+      expect(r.screenPoint('q'), `q, free ${free}`).not.toBeNull()
+      const { pos, target } = r.getCamera()
+      const [x, y, z] = [pos[0] - target[0], pos[1] - target[1], pos[2] - target[2]]
+      r.dispose()
+      return { lift: y / Math.hypot(x, z), turn: (Math.atan2(Math.abs(x), Math.abs(z)) * 180) / Math.PI, dist: Math.hypot(x, y, z) }
+    }
+    const wide = await shot(800)
+    // The card leaves a strip 50 px wide: both ends fit in it only from further back along the same look.
+    const strip = await shot(50)
+    for (const s of [wide, strip]) {
+      expect(s.lift).toBeCloseTo(2, 5)
+      expect(s.turn).toBeCloseTo(45, 5)
+    }
+    expect(strip.dist).toBeGreaterThan(2 * wide.dist)
+  })
+
   it('an upright line (its ends one above the other) is framed from the camera\'s side; a line to an orb, from either side', async () => {
     const m = smallCity()
     m.conduits.push(conduit('v', [-30, 0, 30], [-30, 20, 30]))

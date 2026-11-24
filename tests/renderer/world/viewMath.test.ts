@@ -677,6 +677,16 @@ describe("a long line's close-up: both ends beside the card", () => {
     expect(backOffs(100, 300, 1)).toEqual([100])
     expect(backOffs(100, 300, Number.NaN)).toEqual([100])
   })
+  it('backOffs takes at most `most` steps: longer ones where the reach is far, the same ones where it is near (M1)', () => {
+    expect(backOffs(100, 1600, 1.3, 5).map((d) => Math.round(d))).toEqual([100, 200, 400, 800, 1600])
+    expect(backOffs(100, 300, 1.5, 8)).toEqual([100, 150, 225, 300])
+    expect(backOffs(100, 300, 1.5, 2)).toEqual([100, 300])
+    // a reach 44 times the fit, as a tall line's narrow strip gives: 8 looks, the last the reach itself
+    const far = backOffs(414.8, 18115, 1.3, 8)
+    expect(far).toHaveLength(8)
+    expect(far[7]).toBe(18115)
+    expect(far[6]).toBeLessThan(18115 / 1.3)
+  })
   it('turnAcross turns a ground direction about the vertical', () => {
     const [a, b, c, d] = turnAcross([0, 1], [0, 180, 90, -45])
     expect(a[0]).toBeCloseTo(0); expect(a[1]).toBeCloseTo(1)

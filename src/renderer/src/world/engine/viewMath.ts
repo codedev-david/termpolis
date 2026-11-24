@@ -442,11 +442,14 @@ export function inFreeArea(ndcX: number, ndcY: number, width: number, height: nu
 /**
  * The distances a framing backs off through, from `from` out to `to`: each `step` times the one
  * before, and `to` itself last. Only `from` when it is already as far as `to` (or `step` does not grow).
+ * At most `most` of them (2 or more): where `to` is too far for that, the steps grow to share the way evenly.
  */
-export function backOffs(from: number, to: number, step: number): number[] {
+export function backOffs(from: number, to: number, step: number, most = Infinity): number[] {
   const out = [from]
   if (!(to > from) || !(step > 1)) return out
-  for (let d = from * step; d < to; d *= step) out.push(d)
+  const s = Math.max(step, Math.pow(to / from, 1 / (most - 1)))
+  // (stopping a hair short of `to`: the last even step, rounded up, would otherwise land next to `to` itself)
+  for (let d = from * s; d * (1 + 1e-9) < to; d *= s) out.push(d)
   out.push(to)
   return out
 }
