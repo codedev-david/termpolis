@@ -95,6 +95,24 @@ export function fitView(points: V3[], dir: V3, fovDeg: number, aspect: number, m
 }
 
 /**
+ * The most pixels the drawing buffer holds when the GPU is drawn in software: a 2560 x 1440 screen's. In software
+ * every pixel of every pass (the city, the glow's chain, the output) is the CPU's work, so a frame costs in step with
+ * the buffer: a 5120 x 2880 view is four times this, and with thousands of parts in sight one frame took the GPU
+ * process past Chromium's GPU watchdog, which ended the process; two such ends leave the map in 2D for good. A bigger
+ * view is drawn at this many pixels and stretched to fit, as the low quality tier draws at half the ratio.
+ */
+export const SOFTWARE_MAX_PIXELS = 2560 * 1440
+
+/**
+ * The pixel ratio `want` for a view `width` x `height` (CSS pixels), lowered where needed so the drawing buffer holds
+ * at most `maxPixels`. A view with no area keeps `want`.
+ */
+export function pixelBudgetRatio(want: number, width: number, height: number, maxPixels: number): number {
+  const pixels = width * height * want * want
+  return pixels > maxPixels ? want * Math.sqrt(maxPixels / pixels) : want
+}
+
+/**
  * The pixel ratio a view `width` x `height` (CSS pixels) is drawn at: `want`, lowered so the drawing buffer fits the
  * GPU's largest buffer `cap` ([across, down]: the smaller of its biggest render buffer and its biggest viewport), as
  * on a 4K or bigger display, where a buffer past it draws nothing. A missing or unusable limit holds nothing back.
