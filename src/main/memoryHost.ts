@@ -48,6 +48,7 @@ import {
 import { graphStats, graphRelationStats, graphCreatorStats, edgeKeysIncident, exportGraphEdges, importGraphEdges } from './memoryGraph'
 import { setSafeStorage } from './secureKeyStore'
 import { lowerHostPriority, setLanePriority } from './hostPriority'
+import { probe } from './probeLog'
 import { createHostLane, abortError, LANE_LINGER_MS, type HostLaneName } from './hostLane'
 import type { WeaveNeighbour } from './mnemeWeave'
 // v1.56.0: the per-message model router's classifier runs beside the embedder it uses.
@@ -401,12 +402,15 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
     // lane (ingest's writes and removals, fix round 3) and every other call but the LANE_FREE_CALLS waits here (an await: the thread stays free) while an interactive one is in the lane, at most
     // BACKGROUND_MAX_WAIT_MS (Ruling 13). Once started, a call finishes; one whose caller has already timed out still lands,
     // and main logs its late outcome by name and fires the change boundary again for a changing call (memoryClient).
+    const pt0 = Date.now()
     if (msg.lane === 'interactive') release = await lane.enter('interactive')
     else if (msg.lane === 'background' || !LANE_FREE_CALLS.has(msg.fn)) release = await lane.enter('background', ctl?.signal)
     if (ctl?.signal.aborted) throw abortError()
     const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
+    const pt1 = Date.now()
     const run = async (): Promise<unknown> => await (handler as (...a: unknown[]) => unknown)(...args)
     const result = embedsOffThread(msg) ? await runAsBackgroundEmbeds(run) : await run()
+    if (Date.now() - pt0 > 200 || msg.lane === 'interactive' || msg.fn === 'memorySearch' || msg.fn === 'memoryList') probe(`host ${String(msg.fn)} off=${embedsOffThread(msg)} lane=${String(msg.lane ?? '-')} wait=${pt1 - pt0} run=${Date.now() - pt1} inflight=${inflight.size} li=${lane.interactive()} lw=${lane.waiting()}`)
     return { kind: 'result', id: msg.id, ok: true, result }
   } catch (err) {
     return { kind: 'result', id: msg.id, ok: false, error: serializeError(err) }

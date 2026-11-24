@@ -1,5 +1,6 @@
 // Lumopolis ask runner: one question about a stored world, answered by the user's own agent run
 // hidden and read-only through runHeadless. A second ask for the same root cancels the first.
+import { probe } from '../probeLog'
 import { parseAnswer } from '../../shared/world/answerProtocol'
 import { itemsForEvidence } from '../../shared/world/evidenceLinks'
 import { estimateTokens } from '../../shared/world/tokens'
@@ -88,6 +89,7 @@ const bounded = <T>(start: (signal: AbortSignal) => Promise<T>, ms: number, sign
     const own = new AbortController()
     const stop = (): void => { own.abort(); reject(new Error('stopped')) }
     const timer = setTimeout(() => {
+      probe(`ask step ${step} RAN OUT ms=${Date.now() - began}`)
       log(`[world] ask: ${step} ran out after ${Date.now() - began} ms (limit ${ms} ms)`)
       own.abort()
       reject(new Error(RAN_OUT))
@@ -96,7 +98,7 @@ const bounded = <T>(start: (signal: AbortSignal) => Promise<T>, ms: number, sign
     // A step that throws before it returns a promise fails here too, so its timer and listener are always cleared.
     let started: Promise<T>
     try { started = start(own.signal) } catch (err) { started = Promise.reject(err) }
-    started.then(resolve, reject).finally(() => {
+    started.then((v) => { probe(`ask step ${step} ok ms=${Date.now() - began}`); resolve(v) }, (e) => { probe(`ask step ${step} fail ms=${Date.now() - began} ${e instanceof Error ? e.message.slice(0, 80) : ''}`); reject(e) }).finally(() => {
       clearTimeout(timer)
       signal.removeEventListener('abort', stop)
     })
