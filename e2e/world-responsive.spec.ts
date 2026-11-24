@@ -213,7 +213,8 @@ async function setViewport(v: Viewport): Promise<void> {
 
 async function shoot(name: string): Promise<void> {
   // A 4K or 5K frame drawn in software takes longer than the default 30 s to capture.
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 })
+  const st0 = Date.now(); mark(`shot start ${name}`)
+  try { await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 }) } finally { mark(`shot end ${name} ms=${Date.now() - st0}`) }
   await reEmulate()
 }
 
@@ -573,7 +574,10 @@ async function litShare(): Promise<number> {
     // PNG at the layout's own size.
     const box = await page.locator('[data-testid="world-canvas-host"] canvas').first().boundingBox()
     if (!box) return 0
-    const png = PNG.sync.read(await page.screenshot({ clip: box, scale: 'css', timeout: 120_000 }))
+    const lt0 = Date.now(); mark(`lit start ${Math.round(box.width)}x${Math.round(box.height)}`)
+    let lbuf: Buffer
+    try { lbuf = await page.screenshot({ clip: box, scale: 'css', timeout: 120_000 }) } finally { mark(`lit end ms=${Date.now() - lt0}`) }
+    const png = PNG.sync.read(lbuf)
     await reEmulate()
     const n = png.width * png.height
     const ys = new Uint8Array(n)
