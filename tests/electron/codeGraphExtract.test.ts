@@ -580,6 +580,19 @@ describe('codeGraphExtract', () => {
       expect(show('n.ts', nested).s).toEqual([['A', 'class', 1, 8], ['m', 'method', 2, 5], ['n', 'method', 6, 7], ['g', 'function', 9, 10]])
     })
 
+    it('block ends: Python defs nested deeper on every line stop scanning once the file has been read 16 times over', () => {
+      // Each def's body runs to the end of the file, so 800 of them would read it hundreds of times over.
+      const deep = Array.from({ length: 800 }, (_, i) => ' '.repeat(i) + 'def f' + i + '():').join('\n')
+      const ends = extractFile('deep.py', deep)!.symbols.map((s) => s.endLine)
+      expect(ends).toHaveLength(800)
+      expect(ends[0]).toBe(800)
+      // Past the budget a scan stops where it is, so a later def ends early, and the last ones on their own line.
+      const cut = ends.findIndex((end) => end < 800)
+      expect(cut).toBeGreaterThan(0)
+      expect(ends[cut]).toBeGreaterThan(cut + 1)
+      expect(ends[798]).toBe(799)
+    })
+
     it('the hand-read matchers agree with the old regexes where a remembered fact is reused or a clause is empty', () => {
       // const heads with no `=` or `:` after them, and two heads sharing one `=` or one `)` that are no arrow.
       expect(show('a.ts', 'let x\nlet y;\nconst z\n')).toEqual({ s: [], i: [] })
