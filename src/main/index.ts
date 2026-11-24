@@ -197,6 +197,7 @@ import { readFileCoverage, summarizeCoverage } from './coverageReader'
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
+import { probe, probeOn } from './probeLog'
 import { offMainFiles } from './offMainFiles'
 import { nodeAsyncFs } from './gitRefs'
 import { createIntroGate, isRendererPage } from './launchIntro'
@@ -4169,7 +4170,7 @@ const askPrimers = createPrimerCache({
       project: project || undefined,
       projectPath: root,
       recent: askPrimerRecent(signal, lane),
-      hasWorld: worldPrimerProbe,
+      hasWorld: async (pp: string) => { const h0 = Date.now(); try { return await worldPrimerProbe(pp) } finally { probe(`primer hasWorld ms=${Date.now() - h0}`) } },
       combined: true,
       ...(signal ? { signal } : {}),
     })
@@ -4360,6 +4361,15 @@ if (!gotTheLock) {
   let mcpExecShell = 'bash'
   let mcpExecSeq = 0
 
+  if (probeOn()) {
+    app.on('child-process-gone', (_e, d) => probe(`child-gone type=${d.type} reason=${d.reason} code=${d.exitCode} name=${d.name ?? ''}`))
+    app.on('render-process-gone', (_e, _w, d) => probe(`render-gone reason=${d.reason} code=${d.exitCode}`))
+    setInterval(() => {
+      try {
+        probe('metrics ' + app.getAppMetrics().map((m) => `${m.type}${m.name ? ':' + m.name.replace(/\s+/g, '_') : ''}=${Math.round(m.cpu.percentCPUUsage)}%/${Math.round(m.memory.workingSetSize / 1024)}M`).join(' '))
+      } catch { /* probe */ }
+    }, 2000).unref()
+  }
   app.whenReady().then(() => {
     // FIRST, before anything can want a child process. Every spawn main used to do — git for the
     // status bar and the Changes rail, `where`/`which` for agent detection, the login-shell PATH

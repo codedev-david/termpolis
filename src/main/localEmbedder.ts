@@ -24,6 +24,7 @@ import * as path from 'path'
 import { AsyncLocalStorage } from 'async_hooks'
 import { BertTokenizer } from './bertTokenizer'
 import { BGE_QUERY_PREFIX } from '../shared/world/askIndex'
+import { probe } from './probeLog'
 
 export const EMBED_DIM = 384
 
@@ -383,6 +384,10 @@ function noteWorkerStatus(usedWorker: boolean): void {
  * input in order; failed/missing rows are null. Runs are token-bucketed (BB12).
  */
 export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<(number[] | null)[]> {
+  const et0 = Date.now()
+  try { return await embedBatchInner(texts, opts) } finally { probe(`embed bg=${inBackgroundEmbeds()} wbg=${workerBackgroundOnly} wt=${workerTransport ? 1 : 0} n=${texts.length} ms=${Date.now() - et0}`) }
+}
+async function embedBatchInner(texts: string[], opts?: EmbedOptions): Promise<(number[] | null)[]> {
   if (!Array.isArray(texts) || texts.length === 0) return []
   const prepared = opts?.isQuery ? texts.map((t) => BGE_QUERY_PREFIX + t) : texts
   // BB11: try the off-thread worker first (single-text protocol). If it embeds every
