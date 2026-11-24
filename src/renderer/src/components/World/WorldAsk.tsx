@@ -57,7 +57,8 @@ const speechPieces = (line: string): string[] => {
     else if (cur.length + 1 + piece.length <= SPOKEN_PIECE_CHARS) cur += ' ' + piece
     else { out.push(cur); cur = piece }
   }
-  for (const sentence of line.split(/(?<=[.!?]) /)) {
+  // A sentence ends at . ! or ? and a space, or at a CJK 。！？, which has no space after it.
+  for (const sentence of line.split(/(?<=[.!?]) |(?<=[。！？])/)) {
     if (sentence.length <= SPOKEN_PIECE_CHARS) { add(sentence); continue }
     for (const word of sentence.split(' ')) {
       for (let i = 0; i < word.length;) {

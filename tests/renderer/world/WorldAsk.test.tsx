@@ -1026,6 +1026,15 @@ describe('WorldAsk: speech in bounded pieces that always ends (T6)', () => {
     expect(said().map((u) => u.text).join(' ')).toBe(spokenText(text))
   })
 
+  it('CJK text is broken after its own sentence marks, not cut mid-sentence', async () => {
+    const a = '项目'.repeat(100) + '。'
+    const b = '结构'.repeat(30) + '！'
+    const c = '测试'.repeat(20) + '？'
+    await answered(a + b + c)
+    act(() => { said()[0].onend() })
+    expect(said().map((u) => u.text)).toEqual([a, `${b} ${c}`])
+  })
+
   it('a word cut into pieces is never cut between the two halves of an emoji', async () => {
     const run = 'a' + '😀'.repeat(150)
     await answered(run)
