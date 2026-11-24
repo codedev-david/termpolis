@@ -551,15 +551,20 @@ function backstopOf(ctx: SanitizeContext): [RegExp, RegExp] | null {
   }
   return backstops.get(ctx) as [RegExp, RegExp] | null
 }
+/** Two or more `<outside the project>` in a row. A fixed string repeated, so one pass over the text. */
+const REPEATS = new RegExp(`(?:${escapeRe(OUTSIDE)}){2,}`, 'g')
 function backstopped(s: string, ctx: SanitizeContext): string {
   const net = backstopOf(ctx)
-  return net === null ? s : s.replace(net[0], (_m: string, sep: string, rest: string, at: number, whole: string) => {
+  const out = net === null ? s : s.replace(net[0], (_m: string, sep: string, rest: string, at: number, whole: string) => {
     const tail = (TRAILING.exec(rest) ?? [''])[0]
     const name = baseName(rest.slice(0, rest.length - tail.length).split(/[\\/]|%2F|%5C/i))
     // After a name the first separator stays (`host/<outside the project>`), so the two stay apart.
     const lead = /\w/.test(whole.charAt(at - 1)) ? sep : ''
     return lead + (name !== '' && !net[1].test(name) ? `${OUTSIDE}/${name}` : OUTSIDE) + tail
   })
+  // A folder one pass took may sit right beside one another pass took (`Ann/Users/dev/file:/Users/dev/z`, or a path
+  // field the known pass reads again): the tokens in a row become one.
+  return out.replace(REPEATS, OUTSIDE)
 }
 
 /**

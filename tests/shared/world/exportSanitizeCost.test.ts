@@ -17,7 +17,7 @@ const posix: SanitizeContext = { root: '/home/dev/repo', home: '/home/dev', user
 const long: SanitizeContext = { root: null, home: 'C:\\Users\\DavidEngelhart', userData: 'C:\\Users\\DavidEngelhart\\AppData\\Roaming\\Termpolis' }
 const spaced: SanitizeContext = { root: null, home: '/home/Ann Lee', userData: '/home/Ann Lee/.config/Termpolis' }
 
-/** Characters at the small size; the large one is eight times as many. Fourteen shapes at both: about 520 KB in all. */
+/** Characters at the small size; the large one is eight times as many. Sixteen shapes at both: about 600 KB in all. */
 const N = 4096
 /** Linear is about 8, quadratic about 64. */
 const LIMIT = 24
@@ -49,6 +49,8 @@ const shapes: Shape[] = [
   ['text: a run of %2F after an encoded home', (s) => sanitizeText(s, posix), after('%2Fhome%2Fdev', '%2F')],
   ['text: a run of + after an encoded home', (s) => sanitizeText(s, spaced), after('%2Fhome%2FAnn', '+')],
   ['text: the account\'s folder over and over', (s) => sanitizeText(s, win), repeat('/Users/dev')],
+  ['text: a run of <outside the project> tokens', (s) => sanitizeText(s, win), repeat('<outside the project>')],
+  ['text: folders two passes take side by side', (s) => sanitizeText(s, win), repeat('/Users/dev/file:/Users/dev')],
   ['field: the account\'s folder over and over', (s) => relativePath(s, win), repeat('/Users/dev')],
   ['field: a run of slashes', (s) => relativePath(s, posix), repeat('/')],
   ['field: a run of backslashes', (s) => relativePath(s, win), repeat(B)],

@@ -1218,6 +1218,14 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // A free-text field whose path follows a drive is read whole, the drive with it.
     expect(relativePath(' C:\\Users\\dev\\notes.md', win)).toBe(` ${OUTSIDE}/notes.md`)
     expect(relativePath('-x:##file:///Users/dev\n', win)).toBe(`-x:##${OUTSIDE}\n`)
+    // Beside a folder an earlier pass took, the token is written once, not twice.
+    expect(sanitizeText('Ann/Users/dev/file:/Users/dev/z', win)).toBe(`Ann/${OUTSIDE}/z`)
+    expect(field('#%2FUsers%2Fdev~%2FUsers%2Fdev%3A//x', win)).toBe(`#${OUTSIDE}:/x`)
+    expect(field('#%2FUsers%2Fdev~%2FUsers%2Fdev%3A//', win)).toBe(`#${OUTSIDE}:`)
+    // Tokens apart stay apart; tokens in a row become one, in any context.
+    expect(sanitizeText('a/Users/dev/x b/Users/dev', win)).toBe(`a/${OUTSIDE}/x b/${OUTSIDE}`)
+    expect(sanitizeText(`see ${OUTSIDE}/${OUTSIDE} now`, win)).toBe(`see ${OUTSIDE}/${OUTSIDE} now`)
+    expect(sanitizeText(`see ${OUTSIDE}${OUTSIDE}${OUTSIDE} now`, { root: null, home: '/root', userData: '/root/.config/Termpolis' })).toBe(`see ${OUTSIDE} now`)
     // A folder only starting with the name, a name with no parent folder before it, or no separator before the parent
     // keeps its words; so does a home with no parent below a drive (`C:\dev`).
     for (const kept of ['src/dev/x.ts', 'Users/dev/x', 'home/dev', 'the Users/dev team', 'x/Users/devx/y', 'x/Users/dev-x/y',
