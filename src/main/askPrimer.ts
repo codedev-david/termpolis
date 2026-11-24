@@ -1,12 +1,13 @@
 // askPrimer.ts — the memory primer a Lumopolis Ask starts with (WPA, Lumopolis 2.0).
 //
-// The digest comes from the primer cache (primerCache.ts): at once when one is held, built under the ask's own cancel signal
-// when not. When none comes back, this says why, so the answer can say it was made without the project memory:
+// The digest comes from the primer cache (primerCache.ts): at once when one is held, built when not; the ask's cancel stops
+// its wait, and the build's reads when no one else waits on them. When none comes back, this says why, so the answer can say it was made without the project memory:
 //   - a memory call that ran out of time (memoryClient's coded timeout): 'timeout' (WPA fix I2);
 //   - the store is locked (its own key cannot open it): 'locked';
 //   - the memory process is down (memoryClient mode 'unavailable'), restarting, unreachable, or a build that failed any other
 //     way: 'down';
-//   - otherwise there were simply no notes for this project, which is no note at all.
+//   - otherwise the memory answered and no saved notes matched: 'empty' (WPA2 M8), so the answer says it comes from the code
+//     alone. A digest of nothing but white space is no digest (headlessExec trims the primer and drops an empty one).
 // A cancelled ask asks nothing further and is owed no reason. PURE: every read is injected.
 import { memoryUnavailable } from './world/askRunner'
 import { isMemoryTimeout } from './hostLane'
@@ -44,10 +45,12 @@ export function createAskPrimer(deps: AskPrimerDeps): (cwd: string, signal?: Abo
       if (signal?.aborted) return null
       throw await reasonOf(err, deps.isLocked)
     }
-    if (text !== null || signal?.aborted) return text
+    if (signal?.aborted) return null
+    if (text !== null && text.trim() !== '') return text
     if (deps.hostDown()) throw memoryUnavailable('down')
     if (await deps.isLocked()) throw memoryUnavailable('locked')
-    return null
+    if (signal?.aborted) return null
+    throw memoryUnavailable('empty')
   }
 }
 

@@ -29,9 +29,25 @@ describe('createAskPrimer', () => {
     expect(get).toHaveBeenCalledWith('C:/repo', 12, {})
   })
 
-  it('no digest from a working, open store is no notes: null, no reason', async () => {
-    const { primer } = setup({ get: async () => null })
-    expect(await primer('C:/repo')).toBeNull()
+  it('no digest from a working, open store says empty: no saved notes matched (WPA2 M8)', async () => {
+    const a = setup({ get: async () => null })
+    await expect(a.primer('C:/repo')).rejects.toMatchObject({ noMemory: 'empty' })
+    expect(a.hostDown).toHaveBeenCalledTimes(1)
+    expect(a.isLocked).toHaveBeenCalledTimes(1) // asked first: a locked store also gives no digest, and says so
+  })
+
+  it('a digest of nothing but white space is no digest: empty, or down or locked when that is why (WPA2 M8)', async () => {
+    await expect(setup({ get: async () => '' }).primer('C:/repo')).rejects.toMatchObject({ noMemory: 'empty' })
+    await expect(setup({ get: async () => ' \n\t ' }).primer('C:/repo')).rejects.toMatchObject({ noMemory: 'empty' })
+    await expect(setup({ get: async () => '  ', hostDown: true }).primer('C:/repo')).rejects.toMatchObject({ noMemory: 'down' })
+    await expect(setup({ get: async () => '', locked: true }).primer('C:/repo')).rejects.toMatchObject({ noMemory: 'locked' })
+  })
+
+  it('a cancel that lands while the lock is asked after an empty digest is owed no reason (WPA2 M8)', async () => {
+    const ctl = new AbortController()
+    const get = vi.fn(async () => null)
+    const primer = createAskPrimer({ cache: { get: get as never }, limit: () => 12, hostDown: () => false, isLocked: async () => { ctl.abort(); return false } })
+    expect(await primer('C:/repo', ctl.signal)).toBeNull()
   })
 
   it('no digest with the memory process down says down; locked says locked', async () => {
@@ -102,6 +118,23 @@ describe('lockAwareBuild (WPA fix I1)', () => {
     locked = true
     cache.clear() // the reload that locked it (onMemoryChanged)
     await expect(primer('/srv/repo')).rejects.toMatchObject({ noMemory: 'locked' })
+    expect(cache.size()).toBe(0)
+  })
+
+  it('with the cache: an ask waiting on a build that read the store before it locked says locked, never the old digest (WPA2 I2)', async () => {
+    let locked = false
+    const gates: Array<(v: string) => void> = []
+    const cache = createPrimerCache({ build: lockAwareBuild(() => new Promise<string>((r) => gates.push(r)), async () => locked) })
+    const primer = createAskPrimer({ cache, limit: () => 12, hostDown: () => false, isLocked: async () => locked })
+    const asked = primer('/srv/repo', new AbortController().signal)
+    await new Promise((r) => setImmediate(r))
+    locked = true
+    cache.clear() // the reload that locked it (onMemoryChanged)
+    gates[0]('digest read before the lock')
+    await new Promise((r) => setImmediate(r))
+    expect(gates).toHaveLength(2) // built again, against the locked store
+    gates[1]('digest read through the lock')
+    await expect(asked).rejects.toMatchObject({ noMemory: 'locked' })
     expect(cache.size()).toBe(0)
   })
 })

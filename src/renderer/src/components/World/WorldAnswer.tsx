@@ -27,11 +27,13 @@ export interface WorldAnswerPanelProps {
 /**
  * The quiet line under an answer made without the project memory (WPA), by why. PROPOSED wording, awaiting David's
  * sign-off (the responsive report's m3 proposal was "Answered without memory context (it took too long to load).").
+ * `empty` (WPA2 M8: the memory answered, and no saved notes matched) was approved by David on 2026-11-23.
  */
 export const NO_MEMORY_NOTE: Record<AskNoMemory, string> = {
   timeout: 'Answered without project memory (it took too long to load).',
   locked: 'Answered without project memory (memory is locked).',
   down: "Answered without project memory (memory couldn't be reached).",
+  empty: 'No saved notes matched this question, so this answer comes from the code alone.',
 }
 
 /**

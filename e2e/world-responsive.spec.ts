@@ -999,7 +999,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     expect(clickedZoomed, 'a zoomed button was clicked with the mouse').toBe(RUN.some((v) => uiScale(v.width, v.height) > 1))
   })
 
-  test('an answer made while memory is locked says so, and fits with that note at 768x1024 and the largest size the run checks (WPA fix M8)', async () => {
+  test('an answer made while memory is locked, or with no saved notes matching, says so, and fits with that note at 768x1024 and the largest size the run checks (WPA fix M8, WPA2 M8)', async () => {
     test.setTimeout(1_800_000)
     // A reduced run (the macOS CI job, which renders in software) checks its own largest size, 1440x900@2x, instead of 5K:
     // a software-drawn 5120x2880 world starves the runner's few cores, as the reduced run's own header says. Every other run checks 5K.
@@ -1017,50 +1017,58 @@ test.describe.serial('Lumopolis at every screen size', () => {
       await expect.poll(() => provisional(path.resolve('.')), { timeout: 240_000 }).toBe(false)
       await settled(180_000)
     }
-    fs.writeFileSync(memoryLockFile, 'locked')
-    try {
-      // The store only locks by reloading, which tells main the memory changed and drops the Ask's cached primers. The switch
-      // above reloads nothing, so a delete (of nothing) stands in for that: every delete crosses the same change boundary.
-      await page.evaluate(() => (window as unknown as { termpolis: { memoryDelete: (id: string) => Promise<unknown> } }).termpolis.memoryDelete('wpa-m8-no-such-note'))
-      for (const v of sizes) {
-        const at = await layoutAt(v, null)
-        expect(at, `the pane opens at its default width at ${v.name}`).not.toBeNull()
-        if (!at) continue
-        await settled()
-        const askBox = page.getByPlaceholder('Ask about this project…')
-        seedEvidence()
-        await askBox.fill('How does the memory search work?')
-        await askBox.press('Enter')
-        // The ask runner's own worst case (map load, three steps, the agent), plus slack for handing back and drawing the answer.
-        const ASK_MS = 15_000 + 3 * 10_000 + 90_000 + 30_000
-        const answer = page.locator('[data-testid="world-answer"]')
-        const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
-        for (let retries = 0; ; retries++) {
-          await expect(answer.or(alert).first()).toBeVisible({ timeout: ASK_MS })
-          if (await answer.isVisible()) break
-          expect((await alert.first().textContent()) ?? '', `the ask at ${at.tag} failed`).toContain(MAP_FAILED)
-          expect(retries, `the map was read for the ask at ${at.tag}`).toBeLessThan(3)
-          await click(alert.first().getByRole('button', { name: 'Retry' }))
+    // The memory process's switch (e2e/mocks/memory-host-lockable.mjs): `locked` says the store is locked; `empty` (WPA2 M8)
+    // answers every search and listing with no notes, a healthy store with nothing saved for the question.
+    const NOTES = [
+      { word: 'locked', text: 'Answered without project memory (memory is locked).', name: 'locked' },
+      { word: 'empty', text: 'No saved notes matched this question, so this answer comes from the code alone.', name: 'empty' },
+    ]
+    for (const n of NOTES) {
+      try {
+        fs.writeFileSync(memoryLockFile, n.word)
+        // The store only locks by reloading, which tells main the memory changed and drops the Ask's cached primers. The switch
+        // above reloads nothing, so a delete (of nothing) stands in for that: every delete crosses the same change boundary.
+        await page.evaluate(() => (window as unknown as { termpolis: { memoryDelete: (id: string) => Promise<unknown> } }).termpolis.memoryDelete('wpa-m8-no-such-note'))
+        for (const v of sizes) {
+          const at = await layoutAt(v, null)
+          expect(at, `the pane opens at its default width at ${v.name}`).not.toBeNull()
+          if (!at) continue
+          await settled()
+          const askBox = page.getByPlaceholder('Ask about this project…')
+          seedEvidence()
+          await askBox.fill('How does the memory search work?')
+          await askBox.press('Enter')
+          // The ask runner's own worst case (map load, three steps, the agent), plus slack for handing back and drawing the answer.
+          const ASK_MS = 15_000 + 3 * 10_000 + 90_000 + 30_000
+          const answer = page.locator('[data-testid="world-answer"]')
+          const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
+          for (let retries = 0; ; retries++) {
+            await expect(answer.or(alert).first()).toBeVisible({ timeout: ASK_MS })
+            if (await answer.isVisible()) break
+            expect((await alert.first().textContent()) ?? '', `the ask at ${at.tag} failed`).toContain(MAP_FAILED)
+            expect(retries, `the map was read for the ask at ${at.tag}`).toBeLessThan(3)
+            await click(alert.first().getByRole('button', { name: 'Retry' }))
+          }
+          // The answer says it was made without the project memory, and why (askPrimer: the store is locked, or no notes matched).
+          const note = page.locator('[data-testid="world-answer-memory"]')
+          await expect(note).toHaveText(n.text, { timeout: 10_000 })
+          // The note lies inside the answer panel, whole: not cut off at its edge, and nothing scrolls across.
+          const box = await note.evaluate((el) => {
+            const panel = el.closest('[data-testid="world-answer"]') as HTMLElement
+            const r = el.getBoundingClientRect()
+            const p = panel.getBoundingClientRect()
+            return { inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.width > 0 && r.height > 0, wide: el.scrollWidth <= el.clientWidth + 1, across: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 }
+          })
+          expect.soft(box, `the ${n.name} note fits in the answer at ${at.tag}`).toEqual({ inside: true, wide: true, across: true })
+          await check(`answer with the ${n.name} note at ${at.tag}`)
+          await shoot(`app-answer-${n.name}-${at.name}`)
+          await click(page.getByRole('button', { name: 'Close answer' }))
+          await expect(answer).toHaveCount(0)
+          await closeCard()
         }
-        // The answer says it was made without the project memory, and why (askPrimer: the store is locked).
-        const note = page.locator('[data-testid="world-answer-memory"]')
-        await expect(note).toHaveText('Answered without project memory (memory is locked).', { timeout: 10_000 })
-        // The note lies inside the answer panel, whole: not cut off at its edge, and nothing scrolls across.
-        const box = await note.evaluate((el) => {
-          const panel = el.closest('[data-testid="world-answer"]') as HTMLElement
-          const r = el.getBoundingClientRect()
-          const p = panel.getBoundingClientRect()
-          return { inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.width > 0 && r.height > 0, wide: el.scrollWidth <= el.clientWidth + 1, across: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 }
-        })
-        expect.soft(box, `the locked note fits in the answer at ${at.tag}`).toEqual({ inside: true, wide: true, across: true })
-        await check(`answer with the locked note at ${at.tag}`)
-        await shoot(`app-answer-locked-${at.name}`)
-        await click(page.getByRole('button', { name: 'Close answer' }))
-        await expect(answer).toHaveCount(0)
-        await closeCard()
+      } finally {
+        fs.writeFileSync(memoryLockFile, '')
       }
-    } finally {
-      fs.writeFileSync(memoryLockFile, '')
     }
   })
 

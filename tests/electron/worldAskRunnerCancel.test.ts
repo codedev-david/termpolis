@@ -141,7 +141,12 @@ describe('askRunner: an answer made without the project memory says why', () => 
     expect(await odd.runner.ask(REQ)).toMatchObject({ ok: true, noMemory: 'down' })
   })
 
-  it('a memory that answered, with notes or with none, is no note; nor is a run that never asked for it', async () => {
+  it('a healthy memory with no saved notes for the question says empty (WPA2 M8)', async () => {
+    const { runner } = setup({ primer: vi.fn(async () => { throw memoryUnavailable('empty') }) })
+    expect(await runner.ask(REQ)).toMatchObject({ ok: true, answer: { text: 'primer:null' }, noMemory: 'empty' })
+  })
+
+  it('a memory that answered with notes is no note, nor is a primer that hands back null itself; nor a run that never asked for it', async () => {
     const some = setup({ primer: vi.fn(async () => 'recalled') })
     expect(await some.runner.ask(REQ)).not.toHaveProperty('noMemory')
     const none = setup({ primer: vi.fn(async () => null) })

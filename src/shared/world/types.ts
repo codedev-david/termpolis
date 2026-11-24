@@ -130,8 +130,9 @@ export interface WorldUpdatedEvent { root: string; projectKey: string }
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string; /** The model id for the Lumopolis agent; absent means the CLI's own default. */ model?: string; /** The design proposal on show (an id in doc.layers.plan); main looks it up and adds it to the question. */ proposalId?: string }
 /** Evidence an answer cites, with the ids of the buildings and lines it points at. */
 export type CitedEvidence = Evidence & { items: string[] }
-/** Why an answer was made without the project memory (WPA): it took too long, it is locked, or it could not be reached. */
-export type AskNoMemory = 'timeout' | 'locked' | 'down'
+/** Why an answer was made without the project memory (WPA): it took too long, it is locked, it could not be reached, or (WPA2 M8)
+ *  it answered and no saved notes matched. */
+export type AskNoMemory = 'timeout' | 'locked' | 'down' | 'empty'
 export type AskResult =
   | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, CitedEvidence>; tokens: number; noMemory?: AskNoMemory }
   | { askId: string; ok: false; error: string; cancelled?: boolean }

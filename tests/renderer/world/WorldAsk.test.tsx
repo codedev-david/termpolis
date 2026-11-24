@@ -175,7 +175,17 @@ describe('WorldAsk', () => {
       expect(screen.queryByRole('note')).toBeNull()
       view.unmount()
     }
-    expect(Object.keys(NO_MEMORY_NOTE).sort()).toEqual(['down', 'locked', 'timeout'])
+    expect(Object.keys(NO_MEMORY_NOTE).sort()).toEqual(['down', 'empty', 'locked', 'timeout'])
+  })
+
+  it('says the answer comes from the code alone when no saved notes matched, in the approved words (WPA2 M8)', async () => {
+    const v = makeViewer()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'The answer.', { noMemory: 'empty' }))
+    await submit(v, 'q')
+    const note = screen.getByTestId('world-answer-memory')
+    expect(note.textContent).toBe('No saved notes matched this question, so this answer comes from the code alone.')
+    expect(note.className).toContain('text-xs') // the same quiet line as the other memory notes
+    expect(note.className).toContain('break-words') // wraps in a narrow pane rather than running off it
   })
 
   it('shows no memory note for an answer made with the memory', async () => {

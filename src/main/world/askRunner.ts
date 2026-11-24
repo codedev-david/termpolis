@@ -95,11 +95,11 @@ const bounded = <T>(start: (signal: AbortSignal) => Promise<T>, ms: number, sign
     })
   })
 
-/** Why a primer that failed left the memory out: it ran out, or the reason it gave, or (anything else) unreachable. */
+/** Why a primer that failed left the memory out: it ran out, or the reason it gave (empty is WPA2 M8), or (anything else) unreachable. */
 const noMemoryOf = (err: unknown): AskNoMemory => {
   if (err instanceof Error && err.message === RAN_OUT) return 'timeout'
   const why = (err as Partial<MemoryUnavailableError> | null)?.noMemory
-  return why === 'locked' || why === 'timeout' ? why : 'down'
+  return why === 'locked' || why === 'timeout' || why === 'empty' ? why : 'down'
 }
 
 export function createAskRunner(deps: AskRunnerDeps): AskRunner {
