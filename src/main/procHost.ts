@@ -23,7 +23,8 @@
 //     'ENOENT' when the binary is missing and the numeric exit status when it ran and failed —
 //     because gitCommand's install-location fallback keys on exactly that distinction.
 
-import { execFile, exec } from 'child_process'
+import { execFile, exec, spawn, type ChildProcess } from 'child_process'
+import { getSystemErrorName } from 'util'
 import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
 import { endProcessTree, signalProcessGroup, TREE_KILL_GRACE_MS, type KillTreeDeps } from './processTree'
@@ -172,6 +173,97 @@ export function treeGroupsInFlight(): number[] {
   return [...groupsInFlight]
 }
 
+/** What execFile hands its callback, and what spawnTree hands its own. */
+type ExecDone = (err: Error | null, stdout: string, stderr: string) => void
+
+/** execFile's error for output past `maxBuffer`: a RangeError with node's code, on the stream that overran. */
+function maxBufferError(stream: 'stdout' | 'stderr'): Error {
+  return Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
+}
+
+/**
+ * `tree` only: execFile, rebuilt on spawn, because execFile cannot detach. It forwards only cwd, env,
+ * gid, uid, shell, signal, windowsHide and windowsVerbatimArguments to spawn and drops the rest, so a
+ * tree child started through it never called setsid on macOS and Linux. It stayed in the host's own
+ * process group, `kill(-pid)` found no group (ESRCH), which reads as "already gone", and a cancel, the
+ * timeout and the host's exit ended nothing (6 real-process tests on Linux, batch 2).
+ *
+ * Everything else is execFile's, line for line (node 22 and 24, lib/child_process.js): the same spawn
+ * options (`detached` the only addition, false on Windows as execFile left it), utf8 output, `maxBuffer`
+ * counted in bytes with the overrunning chunk cut at the limit, both pipes destroyed and the child sent
+ * SIGTERM, and the answer on 'close', once every holder of the pipes has let go. The error is execFile's
+ * too: the spawn's own (ENOENT, with errno, syscall, path and spawnargs), or the maxBuffer RangeError, or
+ * `Command failed: <cmd>\n<stderr>` with `code` (the exit status, null for a signal), `killed` and
+ * `signal`; each gets `cmd`. No timer: runExec's own timeout ends the tree. procHost.process.test.ts
+ * runs the same commands through execFile and through this and compares what comes back.
+ */
+function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOptions>, detached: boolean, done: ExecDone): ChildProcess {
+  const child = spawn(bin, args, {
+    cwd: base.cwd,
+    env: base.env,
+    shell: false,
+    windowsHide: base.windowsHide,
+    windowsVerbatimArguments: false,
+    detached,
+  })
+  const out: string[] = []
+  const err: string[] = []
+  let outLen = 0
+  let errLen = 0
+  let killed = false
+  let exited = false
+  let ex: Error | null = null
+  const exitHandler = (code?: number | null, signal?: NodeJS.Signals | null): void => {
+    if (exited) return
+    exited = true
+    const stdout = out.join('')
+    const stderr = err.join('')
+    if (!ex && code === 0 && signal === null) return done(null, stdout, stderr)
+    const cmd = args.length ? `${bin} ${args.join(' ')}` : bin
+    ex ||= Object.assign(new Error(`Command failed: ${cmd}\n${stderr}`), {
+      code: typeof code === 'number' && code < 0 ? getSystemErrorName(code) : code,
+      killed: child.killed || killed,
+      signal,
+    })
+    done(Object.assign(ex, { cmd }), stdout, stderr)
+  }
+  const kill = (): void => {
+    child.stdout!.destroy()
+    child.stderr!.destroy()
+    killed = true
+    try {
+      child.kill('SIGTERM')
+    } catch (e) {
+      ex = e as Error
+      exitHandler()
+    }
+  }
+  const collect = (stream: 'stdout' | 'stderr', chunks: string[], chunk: string): void => {
+    if (base.maxBuffer === Infinity) { chunks.push(chunk); return }
+    const length = Buffer.byteLength(chunk, 'utf8')
+    const total = (stream === 'stdout' ? (outLen += length) : (errLen += length))
+    if (total > base.maxBuffer) {
+      chunks.push(chunk.slice(0, base.maxBuffer - (total - length)))
+      ex = maxBufferError(stream)
+      kill()
+    } else {
+      chunks.push(chunk)
+    }
+  }
+  child.stdout!.setEncoding('utf8')
+  child.stdout!.on('data', (chunk: string) => collect('stdout', out, chunk))
+  child.stderr!.setEncoding('utf8')
+  child.stderr!.on('data', (chunk: string) => collect('stderr', err, chunk))
+  child.addListener('close', exitHandler)
+  child.addListener('error', (e: Error) => {
+    ex = e
+    child.stdout!.destroy()
+    child.stderr!.destroy()
+    exitHandler()
+  })
+  return child
+}
+
 /** The error a cancelled request answers with: AbortError's code, and no output. */
 export function cancelledError(): Error {
   return Object.assign(new Error('cancelled'), { code: 'ABORT_ERR' })
@@ -221,11 +313,14 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       backstop = setTimeout(() => finish(stoppedOutcome('', '')), TREE_STOP_SETTLE_MS)
     }
     const onAbort = (): void => stop('cancelled')
-    // With `tree` the timeout is this module's, so it ends the tree too; execFile's own would end the child only.
-    const child = execFile(bin, args, { ...base, ...(tree ? { timeout: 0, detached: !isWin } : {}), shell: false }, (err, stdout, stderr) => {
-      if (stopped) return finish(stoppedOutcome(String(stdout ?? ''), String(stderr ?? '')))
+    const answer: ExecDone = (err, stdout, stderr) => {
+      // Only a tree run is stopped, and spawnTree always hands over strings.
+      if (stopped) return finish(stoppedOutcome(stdout, stderr))
       finish({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), ...(err ? { error: err } : {}) })
-    })
+    }
+    // With `tree` the timeout is this module's, so it ends the tree too; execFile's own would end the child only.
+    // And spawnTree, not execFile, which drops `detached` (see spawnTree).
+    const child = tree ? spawnTree(bin, args, base, !isWin, answer) : execFile(bin, args, { ...base, shell: false }, answer)
     if (tree) {
       if (!isWin && child.pid !== undefined) {
         group = child.pid

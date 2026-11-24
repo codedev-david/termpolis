@@ -12,6 +12,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vitest'
 import { _resetProcClientForTests, execCaptureOffThread } from '../../src/main/procClient'
+import { runExec, type ProcOptions, type RunOutcome } from '../../src/main/procHost'
 import { taskkillPath } from '../../src/main/processTree'
 
 let dir = ''
@@ -132,5 +133,58 @@ describe('a labelling exec with tree, on real processes', () => {
     expect(r.stderr).toContain('labeller up')
     expect(await waitDead(labeller)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
+  }, 60_000)
+})
+
+// A tree run spawns its child itself (execFile drops `detached`) and collects its output the way execFile
+// does. Each command here runs both ways, through runExec without tree (execFile) and with it (spawnTree),
+// on real processes, and must come back the same: output, and every field of the error callers read.
+describe('a tree run answers as execFile does, on real processes', () => {
+  const node = process.execPath
+  function shape(r: RunOutcome): unknown {
+    const e = r.error as (NodeJS.ErrnoException & { killed?: boolean; signal?: unknown; cmd?: string; spawnargs?: string[] }) | undefined
+    return {
+      stdout: r.stdout,
+      stderr: r.stderr,
+      error: e && {
+        ctor: e.constructor.name, name: e.name, message: e.message, code: e.code, killed: e.killed, signal: e.signal,
+        cmd: e.cmd, errno: e.errno, syscall: e.syscall, path: e.path, spawnargs: e.spawnargs,
+      },
+    }
+  }
+  async function both(bin: string, args: string[], opts: ProcOptions = {}): Promise<unknown> {
+    const viaExecFile = shape(await runExec(bin, args, { timeout: 30_000, ...opts }))
+    const viaTree = shape(await runExec(bin, args, { timeout: 30_000, ...opts, tree: true }))
+    expect(viaTree).toEqual(viaExecFile)
+    return viaTree
+  }
+
+  it('a clean exit: both pipes, utf8 decoded across a character split between two writes', async () => {
+    // 'é' is 0xC3 0xA9: written apart, read as one character only by a decoder that waits for the rest.
+    const r = await both(node, ['-e', "process.stdout.write(Buffer.from([0x61, 0xc3])); setTimeout(() => { process.stdout.write(Buffer.from([0xa9, 0x62])); process.stderr.write('note ü') }, 100)"])
+    expect(r).toEqual({ stdout: 'aéb', stderr: 'note ü', error: undefined })
+  }, 60_000)
+
+  it('a failed exit: Command failed with the command line and stderr, the status, killed and signal', async () => {
+    const r = await both(node, ['-e', "process.stderr.write('it broke'); process.exitCode = 3", 'extra arg'])
+    expect(r).toMatchObject({ stdout: '', stderr: 'it broke', error: { ctor: 'Error', message: `Command failed: ${node} -e process.stderr.write('it broke'); process.exitCode = 3 extra arg\nit broke`, code: 3, killed: false, signal: null } })
+  }, 60_000)
+
+  it('a missing binary: the spawn error, ENOENT and all', async () => {
+    const missing = join(dir, 'no-such-binary')
+    const r = await both(missing, ['a', 'b'])
+    expect(r).toMatchObject({ stdout: '', stderr: '', error: { code: 'ENOENT', syscall: `spawn ${missing}`, path: missing, spawnargs: ['a', 'b'], cmd: `${missing} a b` } })
+  }, 60_000)
+
+  it('output past maxBuffer: cut at the limit, the RangeError, the child ended', async () => {
+    const r = await both(node, ['-e', "process.stdout.write('0123456789'); setTimeout(() => {}, 20000)"], { maxBuffer: 4 })
+    expect(r).toMatchObject({ stdout: '0123', error: { ctor: 'RangeError', message: 'stdout maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' } })
+  }, 60_000)
+
+  it('stdin input, cwd and added variables reach the child', async () => {
+    const r = await both(node, ['-e', "let s = ''; process.stdin.on('data', (d) => { s += d }); process.stdin.on('end', () => process.stdout.write([s, require('fs').existsSync('labeller.cjs'), process.env.TP_PARITY].join('|')))"], { input: 'from stdin', cwd: dir, addEnv: { TP_PARITY: 'added' } })
+    // The stand-in script sits in `dir`, so a relative path finds it only from there (a macOS tmpdir is a
+    // symlink, so the child's own cwd would not read back as `dir`).
+    expect(r).toEqual({ stdout: 'from stdin|true|added', stderr: '', error: undefined })
   }, 60_000)
 })

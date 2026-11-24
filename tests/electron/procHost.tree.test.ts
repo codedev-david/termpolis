@@ -8,12 +8,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const H = vi.hoisted(() => ({
   execFile: vi.fn(),
+  spawn: vi.fn(),
   exec: vi.fn(),
   endProcessTree: vi.fn(async () => true),
   signalProcessGroup: vi.fn((_pid: number, _signal: string, _deps?: unknown) => 'sent'),
 }))
 
-vi.mock('child_process', () => ({ execFile: H.execFile, exec: H.exec }))
+vi.mock('child_process', () => ({ execFile: H.execFile, exec: H.exec, spawn: H.spawn }))
 // The fake child's pid is made up: the real endProcessTree must never be handed it.
 vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree, signalProcessGroup: H.signalProcessGroup, TREE_KILL_GRACE_MS: 2_000 }))
 
@@ -26,14 +27,34 @@ type ExecFileCb = (e: NodeJS.ErrnoException | null, stdout: string, stderr: stri
 
 let nextPid: number | undefined = 4242
 
+class FakeStream extends EventEmitter {
+  encoding: string | undefined
+  destroyed = false
+  setEncoding(e: string): this { this.encoding = e; return this }
+  destroy(): this { this.destroyed = true; return this }
+}
+
 class FakeChild extends EventEmitter {
   readonly pid = nextPid
   stdin = null
+  stdout = new FakeStream()
+  stderr = new FakeStream()
+  killed = false
+  kill = vi.fn((_signal?: string): boolean => true)
 }
 
 let child: FakeChild
 let done: ExecFileCb
 let spawnOpts: Record<string, unknown>
+
+/** A tree run's child (spawnTree) as execFile's callback: print what it was given, then close the pipes. */
+function closeWith(c: FakeChild): ExecFileCb {
+  return (e, stdout, stderr) => {
+    if (stdout) c.stdout.emit('data', stdout)
+    if (stderr) c.stderr.emit('data', stderr)
+    c.emit('close', e ? (typeof e.code === 'number' ? e.code : null) : 0, e ? ((e as { signal?: string }).signal ?? null) : null)
+  }
+}
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -44,6 +65,12 @@ beforeEach(() => {
     spawnOpts = o
     done = cb
     child = new FakeChild()
+    return child
+  })
+  H.spawn.mockReset().mockImplementation((_bin: string, _args: string[], o: Record<string, unknown>) => {
+    spawnOpts = o
+    child = new FakeChild()
+    done = closeWith(child)
     return child
   })
 })
@@ -62,14 +89,18 @@ function track(p: Promise<RunOutcome>): { value: () => RunOutcome | undefined } 
 const CANCELLED = { message: 'cancelled', code: 'ABORT_ERR' }
 
 describe('runExec with tree', () => {
+  // spawn, not execFile: execFile hands spawn only the options it knows and drops `detached`. The rest
+  // is what execFile hands spawn for the same call (no timeout: runExec's own ends the tree).
   it('on POSIX spawns the child detached, to lead its group, with the timeout its own', () => {
-    void runExec('claude', ['-p'], { tree: true, timeout: 5_000 }, undefined, { platform: 'linux', endTree: vi.fn() })
-    expect(spawnOpts).toMatchObject({ detached: true, timeout: 0, shell: false })
+    void runExec('claude', ['-p'], { tree: true, timeout: 5_000, cwd: '/w', env: { A: '1' } }, undefined, { platform: 'linux', endTree: vi.fn() })
+    expect(H.execFile).not.toHaveBeenCalled()
+    expect(H.spawn.mock.calls[0].slice(0, 2)).toEqual(['claude', ['-p']])
+    expect(spawnOpts).toEqual({ cwd: '/w', env: expect.objectContaining({ A: '1' }), shell: false, windowsHide: true, windowsVerbatimArguments: false, detached: true })
   })
 
   it('on Windows does not detach (that would give it its own console)', () => {
     void runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'win32', endTree: vi.fn() })
-    expect(spawnOpts).toMatchObject({ detached: false, timeout: 0 })
+    expect(spawnOpts).toEqual({ cwd: undefined, env: undefined, shell: false, windowsHide: true, windowsVerbatimArguments: false, detached: false })
   })
 
   it('without tree keeps execFile as it was and ignores the signal', async () => {
@@ -88,6 +119,7 @@ describe('runExec with tree', () => {
     ac.abort()
     const r = await runExec('claude', ['-p'], { tree: true }, ac.signal)
     expect(H.execFile).not.toHaveBeenCalled()
+    expect(H.spawn).not.toHaveBeenCalled()
     expect(r.stdout).toBe('')
     expect(r.error).toMatchObject(CANCELLED)
   })
@@ -177,6 +209,99 @@ describe('runExec with tree', () => {
   it('with a timeout of 0 arms no timer of its own', () => {
     void runExec('claude', ['-p'], { tree: true, timeout: 0 }, undefined, { platform: 'linux', endTree: vi.fn() })
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+// spawnTree collects output the way execFile does (the real-process comparison against execFile itself
+// is in procHost.process.test.ts); these pin the paths a real child cannot be made to take on demand.
+describe('a tree run collects its output as execFile does', () => {
+  const run = (opts: Record<string, unknown> = {}, args: string[] = ['-p']): Promise<RunOutcome> =>
+    runExec('claude', args, { tree: true, ...opts }, undefined, { platform: 'linux', endTree: vi.fn() })
+
+  it('reads both pipes as utf8 and answers a clean exit with no error', async () => {
+    const r = run()
+    expect([child.stdout.encoding, child.stderr.encoding]).toEqual(['utf8', 'utf8'])
+    child.stdout.emit('data', 'la')
+    child.stdout.emit('data', 'bels')
+    child.stderr.emit('data', 'warn')
+    child.emit('close', 0, null)
+    expect(await r).toEqual({ stdout: 'labels', stderr: 'warn' })
+  })
+
+  it('answers a failed exit with execFile\'s error: the command, its stderr, code, killed and signal', async () => {
+    const r = run({}, ['-p', 'x'])
+    child.stderr.emit('data', 'bad')
+    child.emit('close', 2, null)
+    const { error } = await r
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ message: 'Command failed: claude -p x\nbad', code: 2, killed: false, signal: null, cmd: 'claude -p x' })
+  })
+
+  it('names a negative status as the system error it is, and a signal with a null code; no args, no trailing space', async () => {
+    const neg = run({}, [])
+    child.emit('close', -4058, null)
+    expect((await neg).error).toMatchObject({ message: 'Command failed: claude\n', code: 'ENOENT', cmd: 'claude' })
+    const sig = run()
+    child.killed = true
+    child.emit('close', null, 'SIGKILL')
+    expect((await sig).error).toMatchObject({ code: null, killed: true, signal: 'SIGKILL' })
+  })
+
+  it('answers a spawn error with that error, cmd added, its pipes destroyed, and only once', async () => {
+    const r = run()
+    const enoent = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT', errno: -4058, syscall: 'spawn claude', path: 'claude', spawnargs: ['-p'] })
+    child.emit('error', enoent)
+    child.emit('close', -4058, null)
+    const { error } = await r
+    expect(error).toBe(enoent)
+    expect(error).toMatchObject({ code: 'ENOENT', errno: -4058, syscall: 'spawn claude', path: 'claude', spawnargs: ['-p'], cmd: 'claude -p' })
+    expect([child.stdout.destroyed, child.stderr.destroyed]).toEqual([true, true])
+  })
+
+  it('cuts stdout at maxBuffer bytes, mid-chunk, and ends the child with SIGTERM as execFile does', async () => {
+    const r = run({ maxBuffer: 6 })
+    child.stdout.emit('data', 'ab')
+    // 'é' is two bytes, so 2 + 6 > 6 and the chunk is cut to 6 - 2 = 4 characters: execFile counts bytes but slices characters.
+    child.stdout.emit('data', 'cdéfg')
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
+    expect([child.stdout.destroyed, child.stderr.destroyed]).toEqual([true, true])
+    child.emit('close', null, 'SIGTERM')
+    const out = await r
+    expect(out.stdout).toBe('abcdéf')
+    expect(out.error).toBeInstanceOf(RangeError)
+    expect(out.error).toMatchObject({ message: 'stdout maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', cmd: 'claude -p' })
+  })
+
+  it('cuts stderr at maxBuffer on its own count', async () => {
+    const r = run({ maxBuffer: 3 })
+    child.stdout.emit('data', 'abc')
+    child.stderr.emit('data', 'wxyz')
+    child.emit('close', null, 'SIGTERM')
+    const out = await r
+    expect(out).toMatchObject({ stdout: 'abc', stderr: 'wxy' })
+    expect(out.error).toMatchObject({ message: 'stderr maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
+  })
+
+  it('counts nothing with an infinite maxBuffer', async () => {
+    const r = run({ maxBuffer: Infinity })
+    child.stdout.emit('data', 'x'.repeat(2 * 1024 * 1024))
+    child.stderr.emit('data', 'y')
+    child.emit('close', 0, null)
+    const out = await r
+    expect([out.stdout.length, out.stderr, out.error]).toEqual([2 * 1024 * 1024, 'y', undefined])
+    expect(child.kill).not.toHaveBeenCalled()
+  })
+
+  it('answers with the kill\'s own error when SIGTERM throws, and ignores the close after', async () => {
+    const r = run({ maxBuffer: 1 })
+    const eperm = Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+    child.kill.mockImplementation(() => { throw eperm })
+    child.stdout.emit('data', 'ab')
+    child.emit('close', 0, null)
+    const out = await r
+    expect(out.stdout).toBe('a')
+    expect(out.error).toBe(eperm)
+    expect(out.error).toMatchObject({ cmd: 'claude -p' })
   })
 })
 
