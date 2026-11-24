@@ -18,6 +18,8 @@ import {
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
   PRIMER_SUBMIT_SETTLE_MS,
+  claudeHookLoadsMemory,
+  isClaudeAgent,
   type PrimerGate,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
@@ -2283,5 +2285,144 @@ describe('a shell the OS cannot read, at its prompt', () => {
       expect(writes()).toEqual([])
       expect(terminalShellAlone).toHaveBeenCalledTimes(2)
     })
+  })
+})
+
+// 1.63.1, David's report: the pointer sat unsent on a new Claude terminal's input line. Termpolis
+// seeds Claude through --append-system-prompt-file only when the launch recall is back within
+// PRIMER_WAIT_MS, and launchAgents (Welcome screen, command palette, restored workspace, account
+// switch) and a hand-typed `claude` never seed it. Each of those left launchPrimed false, so the
+// launch prime typed the pointer into Claude Code, which buffers keys typed while it starts and
+// hands them to its input box unsent. With Termpolis's SessionStart memory hook in the profile,
+// Claude loads its memory by itself: nothing may be typed into it.
+describe('a Claude Code with the SessionStart memory hook gets nothing typed', () => {
+  const hookOn = { success: true, data: { connected: true, primerHook: true } }
+  const hookOff = { success: true, data: { connected: true, primerHook: false } }
+  const codexAgent = { name: 'OpenAI Codex' } as any
+  afterEach(() => useTerminalStore.setState({ terminals: [] }))
+
+  it('types nothing into a Termpolis-launched Claude whose launch recall was too slow to seed it', async () => {
+    vi.useFakeTimers()
+    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    // aiProfiles: the recall missed PRIMER_WAIT_MS, so the command went in without the seed.
+    useTerminalStore.setState({ terminals: [{ id: 't-slow', agentCommand: 'claude', launchPrimed: false, agentLaunchPending: false } as any] })
+    renderHook(() => useAutoPrimer('t-slow', agent, 'C:\\Users\\me\\SIMPLILEARN_CONTENT', openGate()))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('types nothing into a Claude that launchAgents typed (no pane gate, never seeded)', async () => {
+    vi.useFakeTimers()
+    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    useTerminalStore.setState({ terminals: [{ id: 't-la', agentCommand: 'claude --dangerously-skip-permissions' } as any] })
+    renderHook(() => useAutoPrimer('t-la', agent, '/repo'))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('types nothing into a Claude typed by hand', async () => {
+    vi.useFakeTimers()
+    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    const { state, gate } = liveGate({ launched: null })
+    renderHook(() => useAutoPrimer('t-hand', agent, '/repo', gate))
+    await vi.advanceTimersByTimeAsync(2000)
+    state.launched = { name: 'Claude Code' } // the user submitted `claude`
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('still types the pointer into a Claude whose profile has no memory hook', async () => {
+    vi.useFakeTimers()
+    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+    useTerminalStore.setState({ terminals: [{ id: 't-nohook', agentCommand: 'claude' } as any] })
+    renderHook(() => useAutoPrimer('t-nohook', agent, '/repo', openGate()))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2) // the pointer, then its Enter
+  })
+
+  it('still types the pointer into Codex, which has no such hook', async () => {
+    vi.useFakeTimers()
+    const status = vi.fn(async () => hookOn)
+    mockApi({ agentIntegrationStatus: status })
+    useTerminalStore.setState({ terminals: [{ id: 't-codex', agentCommand: 'codex' } as any] })
+    renderHook(() => useAutoPrimer('t-codex', codexAgent, '/repo', { launchedAgent: () => codexAgent, draft: () => '' }))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2)
+    expect(status).not.toHaveBeenCalled()
+  })
+
+  it('primeOnLaunch asks about the hook only for Claude, before the boot delay', async () => {
+    const inject = vi.fn(async () => true)
+    const sleep = vi.fn(async () => {})
+    const claudeLoadsMemory = vi.fn(async () => true)
+    expect(await primeOnLaunch('t', '/p', openGate(), { inject, sleep, claudeLoadsMemory, awaiting: async () => false })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+    expect(sleep).not.toHaveBeenCalled()
+    const codexGate: PrimerGate = { launchedAgent: () => codexAgent, draft: () => '' }
+    expect(await primeOnLaunch('t', '/p', codexGate, { inject, sleep, claudeLoadsMemory, awaiting: async () => false })).toBe(true)
+    expect(claudeLoadsMemory).toHaveBeenCalledTimes(1)
+  })
+
+  it('a compaction in an unseeded Claude with the hook types nothing', async () => {
+    vi.useFakeTimers()
+    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    useTerminalStore.setState({ terminals: [{ id: 't-cmp', launchPrimed: false } as any] })
+    const { result } = renderHook(() => useCompactionReprimer('t-cmp', agent, '/repo'))
+    result.current('Compacting conversation...')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('a compaction elsewhere is re-primed as before', async () => {
+    vi.useFakeTimers()
+    const status = vi.fn(async () => hookOn)
+    mockApi({ agentIntegrationStatus: status })
+    useTerminalStore.setState({ terminals: [{ id: 't-cmp2', launchPrimed: false } as any] })
+    const { result } = renderHook(() => useCompactionReprimer('t-cmp2', codexAgent, '/repo'))
+    result.current('Compacting conversation...')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    expect(status).not.toHaveBeenCalled()
+  })
+
+  it('reprimeAfterCompaction types nothing when the agent loads its memory itself', async () => {
+    const inject = vi.fn(async () => true)
+    expect(await reprimeAfterCompaction('t', '/p', { isLaunchPrimed: () => false, loadsMemoryItself: async () => true, inject })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+    expect(await reprimeAfterCompaction('t', '/p', {
+      isLaunchPrimed: () => false, loadsMemoryItself: async () => false, inject, pending: async () => false, awaiting: async () => false,
+    })).toBe(true)
+  })
+
+  describe('claudeHookLoadsMemory', () => {
+    it('is false without the bridge: nothing is known about the hook', async () => {
+      mockApi()
+      expect(await claudeHookLoadsMemory()).toBe(false)
+    })
+    it('is true only when Agent Integration is connected with the memory hook on', async () => {
+      mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+      expect(await claudeHookLoadsMemory()).toBe(true)
+      mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+      expect(await claudeHookLoadsMemory()).toBe(false)
+      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: true, data: { connected: false, primerHook: true } })) })
+      expect(await claudeHookLoadsMemory()).toBe(false)
+    })
+    it('is true when the read fails, so nothing is typed', async () => {
+      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: false, error: 'x' })) })
+      expect(await claudeHookLoadsMemory()).toBe(true)
+      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: true })) })
+      expect(await claudeHookLoadsMemory()).toBe(true)
+      mockApi({ agentIntegrationStatus: vi.fn(async () => { throw new Error('ipc gone') }) })
+      expect(await claudeHookLoadsMemory()).toBe(true)
+    })
+  })
+
+  it('isClaudeAgent reads the agent name', () => {
+    expect(isClaudeAgent({ name: 'Claude Code' })).toBe(true)
+    expect(isClaudeAgent({ name: 'OpenAI Codex' })).toBe(false)
+    expect(isClaudeAgent(null)).toBe(false)
+    expect(isClaudeAgent({})).toBe(false)
   })
 })
