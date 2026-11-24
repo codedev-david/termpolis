@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { compileWorldStaged, readBeat, readManifests, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
+import { compileWorldStaged, MANIFEST_TIME_MS, readBeat, readManifests, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
 import { RUNS_GRACE_MS, RUNS_WAIT_MS, testClaims, type TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
@@ -313,8 +313,9 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const signals: AbortSignal[] = []
-    const glob = vi.fn((_root: string, _patterns: string[], opts: { signal: AbortSignal }) => {
-      signals.push(opts.signal)
+    const manifestSignals: AbortSignal[] = []
+    const glob = vi.fn((_root: string, patterns: string[], opts: { signal: AbortSignal }) => {
+      ;(patterns.some((p) => p.includes('package.json')) ? manifestSignals : signals).push(opts.signal)
       return new Promise<string[]>(() => undefined)
     })
     const never = vi.fn(() => new Promise<TestRun[]>(() => undefined))
@@ -329,16 +330,26 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     void compile(d).then((o) => (out = o))
     await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS - 1)
     expect(out).toBeNull()
-    // The report search (inside readTestResults) and the manifest search: one window for both.
+    // The report search (inside readTestResults) is on the window; the manifest search keeps its own clock (R4-1).
     expect(glob).toHaveBeenCalledTimes(2)
+    expect([signals.length, manifestSignals.length]).toEqual([1, 1])
     expect(signals.some((s) => s.aborted)).toBe(false)
     await vi.advanceTimersByTimeAsync(20)
     expect(signals.every((s) => s.aborted)).toBe(true)
+    expect(manifestSignals[0].aborted).toBe(false)
     // Main's asks have their own clock, longer than the host's own wait for main (RUNS_WAIT_MS): still waited for.
     expect(out).toBeNull()
     await vi.advanceTimersByTimeAsync(RUNS_WAIT_MS + RUNS_GRACE_MS - SEARCH_TIME_MS - 40)
     expect(out).toBeNull()
     await vi.advanceTimersByTimeAsync(40)
+    // Then the manifests, to the end of their own budget, and the compile ends with what it has.
+    expect(out).toBeNull()
+    // To 1 ms before the budget (22 019 ms have passed).
+    await vi.advanceTimersByTimeAsync(MANIFEST_TIME_MS - RUNS_WAIT_MS - RUNS_GRACE_MS - 20)
+    expect(out).toBeNull()
+    expect(manifestSignals[0].aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(manifestSignals[0].aborted).toBe(true)
     const done = out as unknown as Awaited<ReturnType<typeof compile>>
     expect(done).not.toBeNull()
     // No result read and no source complete: no building is called untested (gap); each reads as not yet checked,
@@ -346,7 +357,8 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(done.doc.buildings.every((b) => b.status === 'built' && b.claims.length === 0)).toBe(true)
     expect(done.cache.tests).toBe('')
     expect(d.pcts[d.pcts.length - 1]).toEqual(['layout', 100])
-    // While it waited, the bar moved at least every STATUS_BEAT_MS, and never past the status stage's 64.
+    // While it waited, the bar moved at least every STATUS_BEAT_MS (the manifests' wait too), and the status stage
+    // never past its 64; the manifests' beat stays under 94.
     for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeLessThanOrEqual(STATUS_BEAT_MS)
     const status = d.pcts.filter(([s]) => s === 'status').map(([, p]) => p)
     expect(status[0]).toBe(55)
@@ -354,13 +366,18 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(Math.max(...status.slice(0, -1))).toBeLessThan(64)
     // It never sat still: every beat of the wait is above the one before.
     for (let i = 1; i < status.length; i++) expect(status[i]).toBeGreaterThan(status[i - 1])
+    const layout = d.pcts.filter(([s]) => s === 'layout').map(([, p]) => p)
+    const beats = layout.slice(layout.indexOf(86), layout.indexOf(95))
+    expect(beats.length).toBeGreaterThan(2)
+    for (let i = 1; i < beats.length; i++) expect(beats[i]).toBeGreaterThan(beats[i - 1])
+    expect(Math.max(...beats)).toBeLessThan(94)
     // The log names the stage that waited, and says a source ran out of time.
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; a search or a source of test results ran out of time \(searches 16000 ms, main's runs 20000 ms\)$/)
+    expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; a search or a source of test results ran out of time \(searches 16000 ms, manifests 32000 ms, main's runs 20000 ms\)$/)
     warn.mockRestore()
   })
 
-  it('manifests keep their own answers: what was read when the window ends stays, a read that never returns costs only itself, and the compile says it ran out (fix round 4, M5)', async () => {
+  it('manifests keep their own answers: what was read when their budget ends stays, a read that never returns costs only itself, and the compile says it ran out (fix round 4, M5; minor sweep, R4-1)', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const pkg = (name: string): string => JSON.stringify({ name })
@@ -372,13 +389,52 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     })
     let out: Awaited<ReturnType<typeof compile>> | null = null
     void compile(d).then((o) => (out = o))
-    await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS + 10)
+    await vi.advanceTimersByTimeAsync(MANIFEST_TIME_MS - 10)
+    expect(out).toBeNull()
+    await vi.advanceTimersByTimeAsync(20)
     const done = out as unknown as Awaited<ReturnType<typeof compile>>
     expect(done).not.toBeNull()
     // The names of the two manifests read are there; the stuck one's are not, and nothing else was lost with it.
     expect(Object.values(done.doc.runtimeNames).flat().sort()).toEqual(['app', 'lib-svc'])
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toMatch(/ran out of time/)
+  })
+
+  it('a manifest that answers after the search window but within its own budget keeps its names, and nothing ran out (minor sweep, R4-1)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const later = <T,>(v: T, ms: number): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms))
+    const d = deps({
+      glob: async (_root, patterns) => (patterns.some((p) => p.includes('package.json')) ? [`${ROOT}/src/app/package.json`, `${ROOT}/src/lib/package.json`] : []),
+      // On a big project the manifests' reads queue behind the file reads: these land 4 s after the window.
+      readFile: (p) => later(JSON.stringify({ name: p.includes('/app/') ? '@acme/app' : 'lib' }), SEARCH_TIME_MS + 4000)
+    })
+    let out: Awaited<ReturnType<typeof compile>> | null = null
+    void compile(d).then((o) => (out = o))
+    await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS + 4010)
+    const done = out as unknown as Awaited<ReturnType<typeof compile>>
+    expect(done).not.toBeNull()
+    expect(Object.values(done.doc.runtimeNames).flat().sort()).toEqual(['app', 'lib'])
+    const lines = warn.mock.calls.map(([m]) => String(m)).filter((m) => m.startsWith('[world compile]'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).not.toMatch(/ran out of time/)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('readManifests: a budget that runs out keeps the names read by then; the compile ending stops it at once (minor sweep, R4-1)', async () => {
+    vi.useFakeTimers()
+    const two = async () => [`${ROOT}/a/package.json`, `${ROOT}/b/package.json`]
+    const readFile = (p: string) => (p.includes('/a/') ? Promise.resolve(JSON.stringify({ name: 'a' })) : new Promise<string>(() => undefined))
+    const budget = readManifests({ glob: two, readFile }, ROOT, new AbortController().signal, 1000)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await budget).toEqual({ found: [['a/package.json', ['a']]], complete: false })
+    expect(vi.getTimerCount()).toBe(0)
+    const ended = new AbortController()
+    const stopped = readManifests({ glob: two, readFile }, ROOT, ended.signal)
+    await vi.advanceTimersByTimeAsync(0)
+    ended.abort()
+    expect(await stopped).toEqual({ found: [['a/package.json', ['a']]], complete: false })
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('readManifests: a search that fails finds none, a window already shut reads nothing, and a read landing after the window is not counted (fix round 4, M5)', async () => {
@@ -531,6 +587,7 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(warn).not.toHaveBeenCalled()
     expect(SLOW_STAGE_MS).toBe(5000)
     expect(SEARCH_TIME_MS).toBe(16_000)
+    expect(MANIFEST_TIME_MS).toBe(32_000)
     warn.mockRestore()
   })
 

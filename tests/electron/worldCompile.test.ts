@@ -1370,7 +1370,8 @@ describe('compileWorldStaged', () => {
       }
       const next = compileWorldStaged({ ...input, previous: first.doc, cache: first.cache, changed: [] }, { ...deps, glob: delayedGlob })
       await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS)
-      expect(onProgress).toHaveBeenCalledWith('status', 56)
+      // The bar moves while the listing is awaited (by STATUS_BEAT_STEP a beat, WP4a).
+      expect(onProgress.mock.calls.some(([stage, pct]) => stage === 'status' && pct > 55)).toBe(true)
       await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS)
       expect(status((await next).doc)).toBe('gap')
     } finally {

@@ -97,6 +97,13 @@ export const STATUS_BEAT_MS = 2000
  * never the reports already read (fix round 3, N2).
  */
 export const SEARCH_TIME_MS = 16_000
+/**
+ * The manifests' own budget, from the compile's start, apart from the window the file reads share. Before round 4 only
+ * their listing was bound (by SEARCH_TIME_MS) and their reads, after the file reads, had no bound; round 4 put both
+ * inside the window, so on a big project it cut reads that used to land (minor sweep, R4-1). Twice the window: still
+ * bounded, and past it the compile goes on with the names read by then.
+ */
+export const MANIFEST_TIME_MS = 2 * SEARCH_TIME_MS
 /** A stage that takes this long is named, with every stage's time, in one log line as the compile ends. */
 export const SLOW_STAGE_MS = 5000
 const STATUS_BEAT_TOP = 63
@@ -105,6 +112,9 @@ const STATUS_BEAT_TOP = 63
 const STATUS_BEAT_STEP = ((STATUS_BEAT_TOP - 55) * STATUS_BEAT_MS) / (RUNS_WAIT_MS + RUNS_GRACE_MS)
 const LABEL_BEAT_TOP = 84
 const MANIFEST_BEAT_TOP = 94
+/** What one manifest beat adds: the 8 points from 86 to 94 spread over the manifests' whole budget, the longest the
+ *  layout stage can wait on them, so the bar keeps moving to its end (minor sweep, R4-1). */
+const MANIFEST_BEAT_STEP = ((MANIFEST_BEAT_TOP - 86) * STATUS_BEAT_MS) / MANIFEST_TIME_MS
 /** Places one "Seen in code" claim cites at most. */
 const MAX_SEEN = 3
 const MAX_LABEL = 120
@@ -227,22 +237,30 @@ export function manifestServiceNames(file: string, text: string): string[] {
   return cleanRuntimeNames(found)
 }
 
-/** Manifests read at once while the search window is open: a few, so they finish early and never crowd the file reads. */
+/** Manifests read at once: a few, so they never crowd the file reads. */
 const MANIFEST_CONCURRENCY = 4
 
 /**
- * The manifests under the project and the runtime names each gives, read as they are found, on the search window's
- * clock as the reports on disk are (testStatus.ts, fix round 3, N2): at `signal` the search and the reads stop, and
- * what was read by then is kept, so a late manifest costs its own names and no one else's (fix round 4, M5). A read
- * that never returns stops counting at the window too. `complete` is false when the window cut anything short.
+ * The manifests under the project and the runtime names each gives: listed, then read four at a time, on their own
+ * clock (`budgetMs` from the call, MANIFEST_TIME_MS) rather than the search window the file reads share (minor sweep,
+ * R4-1). At the budget, or at `stop` (the compile ended), the search and the reads stop and what was read by then is
+ * kept, so a late manifest costs its own names and no one else's (fix round 4, M5). A read that never returns stops
+ * counting then too. `complete` is false when anything was cut short.
  */
 export async function readManifests(
   deps: Pick<CompileDeps, 'glob' | 'readFile'>,
   root: string,
-  signal: AbortSignal
+  stop: AbortSignal,
+  budgetMs: number = MANIFEST_TIME_MS
 ): Promise<{ found: Array<[string, string[]]>; complete: boolean }> {
   const prefix = `${root.replace(/\\/g, '/')}/`
   const got: Array<[string, string[]] | null> = []
+  const own = new AbortController()
+  const end = (): void => own.abort()
+  if (stop.aborted) end()
+  else stop.addEventListener('abort', end, { once: true })
+  const timer = setTimeout(end, budgetMs)
+  const signal = own.signal
   const stopped = new Promise<false>((resolve) => (signal.aborted ? resolve(false) : signal.addEventListener('abort', () => resolve(false), { once: true })))
   const search = async (): Promise<boolean> => {
     const listed = await Promise.resolve()
@@ -262,9 +280,16 @@ export async function readManifests(
     })
     return !signal.aborted
   }
-  const complete = await Promise.race([search(), stopped])
-  // In path order, as read by now: a read that lands after the window is not counted.
-  return { found: got.filter((x): x is [string, string[]] => x != null && x[1].length > 0), complete }
+  try {
+    const complete = await Promise.race([search(), stopped])
+    // In path order, as read by now: a read that lands after the budget is not counted.
+    return { found: got.filter((x): x is [string, string[]] => x != null && x[1].length > 0), complete }
+  } finally {
+    clearTimeout(timer)
+    stop.removeEventListener('abort', end)
+    // A walk or a read still out is told to stop: nothing waits on it now.
+    end()
+  }
 }
 
 /** Runtime names the manifests give, by building: a manifest's names go to the building with the most members in its folder. */
@@ -775,11 +800,14 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   // it ends) the walks still running are told to stop.
   const searches = new AbortController()
   const timer = setTimeout(() => searches.abort(), SEARCH_TIME_MS)
+  // The manifests keep their own clock (MANIFEST_TIME_MS): this ends them early only when the compile ends (R4-1).
+  const ended = new AbortController()
   try {
-    return await compileWithin(input, deps, searches.signal)
+    return await compileWithin(input, deps, searches.signal, ended.signal)
   } finally {
     clearTimeout(timer)
     searches.abort()
+    ended.abort()
   }
 }
 
@@ -787,11 +815,11 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
 function logSlow(projectKey: string, stages: Array<[CompileStage, number]>, end: number, ranOut: boolean): void {
   const spent = stages.map(([stage, at], i): [CompileStage, number] => [stage, (i + 1 < stages.length ? stages[i + 1][1] : end) - at])
   if (!ranOut && !spent.some(([, ms]) => ms >= SLOW_STAGE_MS)) return
-  const why = ranOut ? `; a search or a source of test results ran out of time (searches ${SEARCH_TIME_MS} ms, main's runs ${RUNS_WAIT_MS} ms)` : ''
+  const why = ranOut ? `; a search or a source of test results ran out of time (searches ${SEARCH_TIME_MS} ms, manifests ${MANIFEST_TIME_MS} ms, main's runs ${RUNS_WAIT_MS} ms)` : ''
   console.warn(`[world compile] ${projectKey}: ${spent.map(([stage, ms]) => `${stage} ${ms} ms`).join(', ')}${why}`)
 }
 
-async function compileWithin(input: StagedInput, deps: CompileDeps, signal: AbortSignal): Promise<{ doc: WorldDoc; cache: StageCache }> {
+async function compileWithin(input: StagedInput, deps: CompileDeps, signal: AbortSignal, ended: AbortSignal): Promise<{ doc: WorldDoc; cache: StageCache }> {
   let { previous } = input
   let { snap } = input
   // When each stage began, for the slow-stage log.
@@ -809,8 +837,27 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
   const root = snap.root.replace(/\/+$/, '')
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   // Slow reads of the whole tree start now, so they overlap the file reads rather than wait behind them.
-  // On the window's clock, keeping what was read by then (fix round 4, M5).
-  const manifestsFound = readManifests(deps, root, signal)
+  // On their own clock, not the window the file reads share, keeping what was read by then (fix round 4, M5;
+  // minor sweep, R4-1).
+  // The listing is kept as well: the test links scope a name match by the package.json files it holds (review 1, I3).
+  // The status stage waits for it only while the search window is open, as the listing was before R4-1, so the
+  // manifests' longer clock never holds the status bar still; a listing later than that links by folder alone.
+  let manifestPaths: string[] = []
+  let listed!: (inTime: boolean) => void
+  const listing = new Promise<boolean>((resolve) => (listed = resolve))
+  const manifestsFound = readManifests({
+    readFile: deps.readFile,
+    glob: async (...args) => {
+      try {
+        return (manifestPaths = await deps.glob(...args))
+      } finally {
+        listed(true)
+      }
+    }
+  }, root, ended)
+  void manifestsFound.finally(() => listed(false))
+  // The window is opened just before this compile starts, so it is still open here.
+  const listingSeen = Promise.race([listing, new Promise<boolean>((resolve) => signal.addEventListener('abort', () => resolve(false), { once: true }))])
   // Not raced with the window: each source keeps its own clock and what it found by then (testStatus.ts, N2).
   const runsFound = readTestSources(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }, signal)
   // More files than a map reads: all are parts of the world, only the capped set is read (readCap.ts).
@@ -878,10 +925,10 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
   }
 
   progress('status', 55)
-  const [listed, found] = await beating(Promise.all([manifestsFound, runsFound]),
+  const [inTime, found] = await beating(Promise.all([listingSeen, runsFound]),
     (n) => progress('status', Math.min(STATUS_BEAT_TOP, round2(55 + n * STATUS_BEAT_STEP))))
-  if (!found.complete) ranOut = true
-  const manifests = listed ?? []
+  if (!found.complete || !inTime) ranOut = true
+  const manifests = inTime ? manifestPaths : []
   const testsByMember = linkTests(snap, g, manifests)
   const runs = expandCi(found.runs, testsByMember)
   // A partial set of results is never taken for the whole one: no hash, so the next compile judges every building.
@@ -994,7 +1041,7 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     if (!complete) ranOut = true
     return manifestNames(g, found)
   })
-  for (const [id, list] of await beating(fromManifests, (n) => progress('layout', Math.min(MANIFEST_BEAT_TOP, 86 + n)))) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
+  for (const [id, list] of await beating(fromManifests, (n) => progress('layout', Math.min(MANIFEST_BEAT_TOP, round2(86 + n * MANIFEST_BEAT_STEP))))) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   progress('layout', 95)
   const runtimeNames = Object.fromEntries([...runtime].sort((a, z) => cmp(a[0], z[0])).map(([id, s]) => [id, [...s].sort()]))
 
