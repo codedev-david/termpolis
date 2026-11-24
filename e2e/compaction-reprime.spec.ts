@@ -119,6 +119,29 @@ async function askShellAlone(termId: string, wanted: 'alone' | 'running', ms: nu
   }, { id: termId, want: wanted, budget: ms })
 }
 
+/**
+ * Waits until the terminal's shell has drawn its prompt (`submitted` false) or has taken a line in
+ * after it (`submitted` true), read from the prompt reports Termpolis's shell integration writes
+ * (OSC 9;9 from PowerShell, OSC 7 from bash, zsh and fish), or until `ms` is up. PowerShell on
+ * macOS and Linux starts slowly, and a line typed before its line editor is up loses its Enter, so
+ * the test types its own command only once the prompt is there, and where the OS cannot see the
+ * command run it waits for the line to go in instead.
+ */
+async function waitForShellLine(termId: string, submitted: boolean, ms: number): Promise<boolean> {
+  return page.evaluate(async ({ id, wantIn, budget }) => {
+    const api = (window as any).termpolis
+    const until = Date.now() + budget
+    while (Date.now() < until) {
+      const r = await api.readTerminalBuffer(id)
+      const out: string = (r && r.success && r.data && r.data.output) || ''
+      const last = Math.max(out.lastIndexOf('\x1b]9;9;'), out.lastIndexOf('\x1b]7;'))
+      if (last >= 0 && (!wantIn || out.indexOf('\n', last) >= 0)) return true
+      await new Promise((res) => setTimeout(res, 250))
+    }
+    return false
+  }, { id: termId, wantIn: submitted, budget: ms })
+}
+
 /** The bracketed pastes written to one terminal so far (a pointer is one). */
 async function pastesTo(termId: string): Promise<number> {
   return page.evaluate(async ({ id, bp }) => {
@@ -151,9 +174,13 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
 
     // 0) A real process in the terminal, for the OS to find there. The injected output below is
     //    no agent, and the pointer is not typed where nothing runs but the shell. Not mock-claude:
-    //    it opens on a trust prompt, which the re-primer waits out.
+    //    it opens on a trust prompt, which the re-primer waits out. Typed once the shell's prompt is
+    //    up: a line typed into a PowerShell still starting on macOS loses its Enter, and the guard
+    //    (rightly) types nothing onto a shell prompt holding an unsent line.
+    await waitForShellLine(termId, false, 30_000)
     await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
     const running = await askShellAlone(termId, 'running', 45_000)
+    if (running === null) expect(await waitForShellLine(termId, true, 15_000), 'expected the shell to take the node line in').toBe(true)
     expect(running, 'expected the OS to see node running in the terminal (is `node` on the PATH of the terminals the app opens?)').not.toBe(true)
     // Where the OS cannot read the shell the pointer is typed as it always was, so this test runs
     // the flow without exercising the guard. Say so in the report instead of passing silently.
