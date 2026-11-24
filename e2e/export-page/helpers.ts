@@ -14,6 +14,8 @@ import { QUESTIONS_JSON } from './paths'
 
 export const ASK_FAILED = "Smart Ask couldn't start in this browser; using keyword search."
 export const ASK_LOADING = 'Smart Ask is getting ready… keyword search works now.'
+/** boot.ts's OLD_BROWSER: the page in a browser without DecompressionStream. */
+export const OLD_BROWSER = 'This browser is too old to open this Lumopolis page. Open it in Chrome or Edge 80 or later, Firefox 113 or later, or Safari 16.4 or later.'
 export type AskState = 'keyword' | 'loading' | 'smart' | 'failed'
 
 /**
@@ -28,6 +30,8 @@ export interface OpenOptions {
   noWebGL?: boolean
   /** WebAssembly.instantiate rejects, as in a browser that cannot run the ORT wasm. */
   wasmFails?: boolean
+  /** No DecompressionStream, as in Safari before 16.4 or Firefox before 113. */
+  noDecompression?: boolean
   /** WebAssembly.instantiate waits until the spec calls releaseWasm(), so smart Ask stays 'loading' meanwhile. */
   holdWasm?: boolean
   /** Playwright's clock is installed before the page loads (time runs as usual), so the spec can pause it. */
@@ -61,6 +65,10 @@ const WASM_FAILS = `(() => {
   WebAssembly.instantiateStreaming = fail
   WebAssembly.compile = fail
   WebAssembly.compileStreaming = fail
+})()`
+const NO_DECOMPRESSION = `(() => {
+  delete window.DecompressionStream
+  if (typeof window.DecompressionStream === 'function') Object.defineProperty(window, 'DecompressionStream', { value: undefined, configurable: true })
 })()`
 const HOLD_WASM = `(() => {
   let release
@@ -190,6 +198,7 @@ export const test = base.extend<Fixtures>({
       await context.addInitScript(WATCH_CSP)
       if (opts.noWebGL) await context.addInitScript(NO_WEBGL)
       if (opts.wasmFails) await context.addInitScript(WASM_FAILS)
+      if (opts.noDecompression) await context.addInitScript(NO_DECOMPRESSION)
       if (opts.holdWasm) await context.addInitScript(HOLD_WASM)
       if (opts.phases) await context.addInitScript(PHASES)
       if (opts.clock) await context.clock.install()

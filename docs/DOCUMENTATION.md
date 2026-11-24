@@ -1942,6 +1942,7 @@ It needs no script, prints cleanly to PDF, and leaves out the same things as the
 - Ask in an exported page finds the parts that match a question. It doesn't write new answers. Ask inside Termpolis, with an agent, can.
 - A browser tab holding a smart export uses more memory than an ordinary page, roughly 150–250 MB. That figure is an estimate, not a precise measurement.
 - Phones are not a target. Open exported pages in a desktop browser.
+- An exported world needs Chrome or Edge 80 or later, Firefox 113 or later, or Safari 16.4 or later. An older browser shows a message saying so. The documentation page opens in any browser.
 
 ---
 

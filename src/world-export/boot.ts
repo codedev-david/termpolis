@@ -18,6 +18,12 @@ declare global {
 }
 
 export const BROKEN_PAGE = "This Lumopolis page's data is missing or damaged, so the world can't be shown."
+/**
+ * Shown instead of BROKEN_PAGE in a browser without DecompressionStream, which every data block needs: the page's
+ * floor is Chrome and Edge 80, Firefox 113 and Safari 16.4 (the export documentation's Limits say the same).
+ * Wording pending David's sign-off.
+ */
+export const OLD_BROWSER = 'This browser is too old to open this Lumopolis page. Open it in Chrome or Edge 80 or later, Firefox 113 or later, or Safari 16.4 or later.'
 
 /** Resolves after the next frame has painted: rAF runs before the paint, the timeout after it. */
 const afterPaint = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
@@ -60,8 +66,21 @@ function disposeQuietly(viewer: WorldViewer | null): void {
   }
 }
 
+/** The page's one message in place of the world (damaged data, too old a browser), on its own over an empty body. */
+function showMessage(text: string): 'failed' {
+  const p = document.createElement('p')
+  p.className = 'wx-broken'
+  p.textContent = text
+  p.style.cssText = 'margin:32px auto;max-width:560px;padding:16px 20px;border-radius:10px;background:#0f172a;color:#e2e8f0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif'
+  document.body.appendChild(p)
+  current = () => 'failed'
+  return 'failed'
+}
+
 async function boot(): Promise<AskState> {
   await domReady()
+  // Every block is gzip that only DecompressionStream reads: without it the data is fine but cannot be opened here.
+  if (typeof DecompressionStream !== 'function') return showMessage(OLD_BROWSER)
   let viewer: WorldViewer | null = null
   try {
     const checked = validateWorld(await readJsonBlock<unknown>('world'))
@@ -84,13 +103,7 @@ async function boot(): Promise<AskState> {
     // Never leave the message under the page: the page is fixed, full-window and opaque, so it goes.
     disposeQuietly(viewer)
     document.querySelector('.wx-page')?.remove()
-    const p = document.createElement('p')
-    p.className = 'wx-broken'
-    p.textContent = BROKEN_PAGE
-    p.style.cssText = 'margin:32px auto;max-width:560px;padding:16px 20px;border-radius:10px;background:#0f172a;color:#e2e8f0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif'
-    document.body.appendChild(p)
-    current = () => 'failed'
-    return 'failed'
+    return showMessage(BROKEN_PAGE)
   }
 }
 

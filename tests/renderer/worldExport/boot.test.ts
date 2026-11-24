@@ -207,6 +207,23 @@ describe('boot', () => {
     expect(createWorldViewer).not.toHaveBeenCalled()
   })
 
+  it.each([undefined, {}])('says the browser is too old, not that the data is damaged, without DecompressionStream (%j)', async (missing) => {
+    writePage()
+    vi.stubGlobal('DecompressionStream', missing)
+    const blockRead = vi.spyOn(document, 'getElementById')
+    await boot()
+    expect(await window.__worldExport.ready).toBe('failed')
+    expect(window.__worldExport.state()).toBe('failed')
+    expect(document.querySelector('.wx-page')).toBeNull()
+    const p = document.querySelector('.wx-broken') as HTMLElement
+    expect(p.textContent).toBe('This browser is too old to open this Lumopolis page. Open it in Chrome or Edge 80 or later, Firefox 113 or later, or Safari 16.4 or later.')
+    expect(p.parentElement).toBe(document.body)
+    expect(document.querySelectorAll('.wx-broken')).toHaveLength(1)
+    // Checked before any block is read, and nothing is mounted.
+    expect(blockRead).not.toHaveBeenCalled()
+    expect(createWorldViewer).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['dirty as text', { ...META, dirty: 'false' }],
     ['no head7', { project: 'P', exportedOn: '2026-11-21', dirty: false }],
