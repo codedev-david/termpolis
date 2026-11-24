@@ -5,6 +5,7 @@ import type { SpawnOptions } from 'child_process'
 import {
   endProcessTree,
   killProcessTree,
+  signalProcessGroup,
   taskkillPath,
   TREE_KILL_GRACE_MS,
   SYNC_TASKKILL_TIMEOUT_MS,
@@ -423,5 +424,35 @@ describe('killProcessTree defaults to the platform it runs on', () => {
     const kill = vi.fn()
     expect(await withPlatform('linux', () => endProcessTree(55, {}, { kill }))).toBe(true)
     expect(kill).toHaveBeenCalledWith(-55, 'SIGTERM')
+  })
+})
+
+describe('signalProcessGroup', () => {
+  it('sends one signal to the group the pid leads, with no spawn and no timer', () => {
+    vi.useFakeTimers()
+    const kill = vi.fn()
+    const spawn = vi.fn()
+    expect(signalProcessGroup(700, 'SIGTERM', { kill, spawn })).toBe('sent')
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS * 2)
+    expect(kill.mock.calls).toEqual([[-700, 'SIGTERM']])
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('says a group that is gone is gone, without a log', () => {
+    const log = vi.fn()
+    expect(signalProcessGroup(700, 'SIGKILL', { kill: () => { throw errno('ESRCH') }, log })).toBe('gone')
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('logs any other failure, naming only the pid and the code', () => {
+    const log = vi.fn()
+    expect(signalProcessGroup(700, 'SIGKILL', { kill: () => { throw errno('EPERM') }, log })).toBe('failed')
+    expect(log.mock.calls).toEqual([['[processTree] SIGKILL did not reach process group 700 (EPERM)']])
+  })
+
+  it('never signals a pid that is not a real child', () => {
+    const kill = vi.fn()
+    for (const pid of [undefined, 0, 1, -5, 2.5]) expect(signalProcessGroup(pid, 'SIGKILL', { kill })).toBe('failed')
+    expect(kill).not.toHaveBeenCalled()
   })
 })

@@ -126,7 +126,7 @@ function taskkillOnce(pid: number, deps: KillTreeDeps): Promise<Outcome> {
 }
 
 /** How a signal to a process group went: sent, the group was gone (ESRCH), or another failure. */
-type GroupResult = 'sent' | 'gone' | 'failed'
+export type GroupResult = 'sent' | 'gone' | 'failed'
 
 /** Signals a process group, logging any failure but ESRCH once per kill. */
 function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signals) => GroupResult {
@@ -145,6 +145,17 @@ function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signal
       return 'failed'
     }
   }
+}
+
+/**
+ * POSIX only: one signal to the process group `pid` leads (a child spawned `detached`), through
+ * process.kill(-pid) and nothing else: no spawn, nothing listed. 'failed' for an unusable pid, which is
+ * never signalled. For the callers that sequence the signals themselves: the proc host's own exit, and
+ * main ending the groups a proc host left behind.
+ */
+export function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals, deps: KillTreeDeps = {}): GroupResult {
+  if (!usablePid(pid)) return 'failed'
+  return groupSignaller(pid, deps)(signal)
 }
 
 /**

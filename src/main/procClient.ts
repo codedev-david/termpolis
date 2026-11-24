@@ -8,12 +8,13 @@
 // The transport is injected so the orchestration below — correlation, timeouts, restart budget,
 // the in-process fallback — is testable without forking anything.
 
-import type { ProcHostMessage, ProcOptions, ProcRequest, ProcResult, SerializedProcError } from './procHost'
-import { cancelledError, runExec, runShell, serializeProcError } from './procHost'
+import type { ProcHostMessage, ProcOptions, ProcRequest, ProcResult, ProcTreeMsg, SerializedProcError } from './procHost'
+import { cancelledError, runExec, runShell, serializeProcError, treeGroupsInFlight } from './procHost'
+import { signalProcessGroup, TREE_KILL_GRACE_MS } from './processTree'
 
 export interface ProcTransport {
   postMessage(msg: ProcHostMessage): void
-  onMessage(cb: (msg: ProcResult) => void): void
+  onMessage(cb: (msg: ProcResult | ProcTreeMsg) => void): void
   onExit(cb: (code: number) => void): void
   kill(): void
   readonly pid?: number | undefined
@@ -63,6 +64,67 @@ const pending = new Map<number, Pending>()
 const restartTimes: number[] = []
 let nextId = 1
 
+/**
+ * macOS and Linux: the process groups the host's `tree` runs lead, by request id, from the host's
+ * ProcTreeMsg until that request's result. They are detached, so a host that dies leaves them running:
+ * a host killed outright cannot end them itself. Main then does, with process.kill(-pid) only (no
+ * spawn, nothing listed): SIGTERM, then SIGKILL after the grace, and SIGKILL for any left at quit.
+ *
+ * Only a pid the host reported, and whose result it has not sent, is ever signalled: the result is the
+ * host's word that the run is over, after which the pid may be someone else's. A group stays reserved
+ * while any member lives, so the one window left is a group whose last member dies in the grace before
+ * its SIGKILL, the window processTree accepts too. Windows never reports one (see ProcTreeMsg).
+ */
+interface TrackedGroup {
+  pid: number
+  /** The host that runs it; null once that host is gone or shut down and main is ending the group. */
+  host: ProcTransport | null
+  escalation?: ReturnType<typeof setTimeout>
+}
+const groups = new Map<number, TrackedGroup>()
+
+function forgetGroup(id: number): void {
+  const g = groups.get(id)
+  if (!g) return
+  clearTimeout(g.escalation)
+  groups.delete(id)
+}
+
+/** SIGTERM now, SIGKILL after the grace unless the group was gone. Kept until then, so a quit in the grace still ends it. */
+function endGroup(id: number, g: TrackedGroup): void {
+  if (g.host === null) return
+  g.host = null
+  if (signalProcessGroup(g.pid, 'SIGTERM') === 'gone') return void groups.delete(id)
+  g.escalation = setTimeout(() => {
+    groups.delete(id)
+    signalProcessGroup(g.pid, 'SIGKILL')
+  }, TREE_KILL_GRACE_MS)
+  g.escalation.unref()
+}
+
+/** Ends the groups `host` left behind, or every group when `host` is undefined. */
+function endGroupsOf(host?: ProcTransport): void {
+  for (const [id, g] of [...groups]) if (host === undefined || g.host === host) endGroup(id, g)
+}
+
+/**
+ * At quit (will-quit): SIGKILL for every process group a labelling run still leads, those the host
+ * reported and those of runs main made itself while the host was down. The app exits right after, so
+ * the grace's timer could not be counted on. No spawn: process.kill(-pid) only.
+ */
+export function endProcHostGroupsNow(): void {
+  for (const [id, g] of [...groups]) {
+    forgetGroup(id)
+    signalProcessGroup(g.pid, 'SIGKILL')
+  }
+  for (const pid of treeGroupsInFlight()) signalProcessGroup(pid, 'SIGKILL')
+}
+
+/** The pids main would end if the host went now. Tests only. */
+export function _trackedGroupsForTests(): number[] {
+  return [...groups.values()].map((g) => g.pid)
+}
+
 /** Wired by the app at startup; never in tests, which inject their own. */
 export function setProcSpawner(fn: (() => ProcTransport) | null): void {
   spawner = fn
@@ -74,6 +136,7 @@ export function _resetProcClientForTests(): void {
     p.reject(new Error('proc client reset'))
   }
   pending.clear()
+  for (const id of [...groups.keys()]) forgetGroup(id)
   try { transport?.kill() } catch { /* already gone */ }
   transport = null
   spawner = null
@@ -103,6 +166,9 @@ export function shutdownProcHost(): void {
     p.reject(new Error('proc host shut down'))
   }
   pending.clear()
+  // The host ends its groups on the SIGTERM below, unless it is wedged or dies first: main does too,
+  // and endProcHostGroupsNow sends SIGKILL to whatever is left at will-quit.
+  endGroupsOf()
   const t = transport
   transport = null
   try { t?.kill() } catch { /* already gone */ }
@@ -113,8 +179,10 @@ function withinRestartBudget(now: number): boolean {
   return restartTimes.length < RESTART_BUDGET
 }
 
-function onHostExit(code: number): void {
-  transport = null
+function onHostExit(host: ProcTransport, code: number): void {
+  if (transport === host) transport = null
+  // Its labelling runs' groups did not die with it (they are detached): end them here.
+  endGroupsOf(host)
   // Everything in flight died with it. Reject rather than hang: a git dot that reports nothing is
   // recoverable, a promise that never settles wedges whatever awaited it forever.
   for (const p of pending.values()) {
@@ -137,7 +205,13 @@ function ensureTransport(): ProcTransport | null {
   try {
     const t = spawner()
     t.onMessage((msg) => {
+      if (msg?.kind === 'tree') {
+        if (typeof msg.id === 'number' && Number.isInteger(msg.pid) && msg.pid > 1) groups.set(msg.id, { pid: msg.pid, host: t })
+        return
+      }
       if (!msg || msg.kind !== 'result') return
+      // The run is over: its pid is no longer the host's to report, nor main's to signal.
+      forgetGroup(msg.id)
       const p = pending.get(msg.id)
       if (!p) return
       pending.delete(msg.id)
@@ -148,7 +222,7 @@ function ensureTransport(): ProcTransport | null {
         ...(msg.ok ? {} : { error: msg.error ?? { message: 'proc host failed with no error' } }),
       })
     })
-    t.onExit(onHostExit)
+    t.onExit((code) => onHostExit(t, code))
     transport = t
     return t
   } catch {

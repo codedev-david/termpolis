@@ -733,7 +733,7 @@ const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit mem
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getAgentExtraPathsAsync, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
-import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
+import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost, endProcHostGroupsNow } from './procClient'
 import { createTerminalTreeKiller, setTerminalTreeKiller } from './terminalTreeKill'
 import { createProcHostTransport } from './procHostTransport'
 import { setPtyHostSpawner, startPtyHost, shutdownPtyHost, connectRendererPort, onPtyHostReady, onPtyHostDown, onPtyHostInput, ptyHostRouted, ptyHostSync } from './ptyHostClient'
@@ -6046,6 +6046,11 @@ async function semanticPoolOptions(
     try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
     // A sign-in the sheet left running (the hidden session's CLI and its tree) ends with the app.
     try { endAccountSignIns() } catch { /* shutting down anyway */ }
+    // A world's labelling run (claude -p) on macOS and Linux leads a detached process group, which
+    // outlives the proc host and the app. before-quit's shutdownProcHost sent it SIGTERM; whatever
+    // is left gets SIGKILL now (process.kill(-pid) only, nothing spawned). Windows: nothing to do, the
+    // run is in the proc host's kill-on-close job and ends with it.
+    try { endProcHostGroupsNow() } catch { /* shutting down anyway */ }
     shutdownStep('agent runs')
     if (process.env.NODE_ENV === 'test') {
       // What Node still holds open. After `quit` no JS runs, this watchdog included, and Node's

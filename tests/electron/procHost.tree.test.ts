@@ -1,21 +1,32 @@
 // procHost's `tree` mode with a fake child: a cancel or the timeout ends the whole tree (through an
 // injected endTree), the request settles as cancelled with no output, and the host routes a cancel
-// message to the request it names. The real-process proof is procHost.process.test.ts.
+// message to the request it names. It also tracks the process groups of POSIX tree runs, reports
+// each to main, and ends them on its own way out. The real-process proofs are procHost.process.test.ts
+// and procHost.exit.process.test.ts.
 import { EventEmitter } from 'events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const H = vi.hoisted(() => ({ execFile: vi.fn(), exec: vi.fn(), endProcessTree: vi.fn(async () => true) }))
+const H = vi.hoisted(() => ({
+  execFile: vi.fn(),
+  exec: vi.fn(),
+  endProcessTree: vi.fn(async () => true),
+  signalProcessGroup: vi.fn((_pid: number, _signal: string, _deps?: unknown) => 'sent'),
+}))
 
 vi.mock('child_process', () => ({ execFile: H.execFile, exec: H.exec }))
 // The fake child's pid is made up: the real endProcessTree must never be handed it.
-vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree }))
+vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree, signalProcessGroup: H.signalProcessGroup, TREE_KILL_GRACE_MS: 2_000 }))
 
-import { runExec, handleProcMessage, TREE_STOP_SETTLE_MS, type RunOutcome } from '../../src/main/procHost'
+import {
+  runExec, handleProcMessage, installHostExitHandlers, treeGroupsInFlight, _resetProcHostForTests, TREE_STOP_SETTLE_MS, type RunOutcome,
+} from '../../src/main/procHost'
 
 type ExecFileCb = (e: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
 
+let nextPid: number | undefined = 4242
+
 class FakeChild extends EventEmitter {
-  readonly pid = 4242
+  readonly pid = nextPid
   stdin = null
 }
 
@@ -25,6 +36,9 @@ let spawnOpts: Record<string, unknown>
 
 beforeEach(() => {
   vi.useFakeTimers()
+  _resetProcHostForTests()
+  nextPid = 4242
+  H.signalProcessGroup.mockClear()
   H.execFile.mockReset().mockImplementation((_bin: string, _args: string[], o: Record<string, unknown>, cb: ExecFileCb) => {
     spawnOpts = o
     done = cb
@@ -183,5 +197,109 @@ describe('the host routes a cancel to the request it names', () => {
     // Answered: the id is forgotten, so a late cancel reaches nothing.
     expect(await handleProcMessage({ kind: 'cancel', id: 7 })).toBeNull()
     expect(H.endProcessTree).toHaveBeenCalledTimes(1)
+  })
+})
+
+function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  try { return fn() } finally { Object.defineProperty(process, 'platform', original) }
+}
+
+describe('the process group a POSIX tree run leads', () => {
+  it('is tracked and reported once spawned, and forgotten once the run is answered', async () => {
+    const onGroup = vi.fn()
+    const run = runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'linux', endTree: vi.fn(), onGroup })
+    expect(onGroup.mock.calls).toEqual([[4242]])
+    expect(treeGroupsInFlight()).toEqual([4242])
+    done(null, 'ok', '')
+    await run
+    expect(treeGroupsInFlight()).toEqual([])
+  })
+
+  it('is neither tracked nor reported on Windows, without tree, or when nothing was spawned', () => {
+    const onGroup = vi.fn()
+    void runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'win32', endTree: vi.fn(), onGroup })
+    void runExec('git', ['status'], {}, undefined, { platform: 'linux', onGroup })
+    nextPid = undefined
+    void runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'linux', endTree: vi.fn(), onGroup })
+    expect(onGroup).not.toHaveBeenCalled()
+    expect(treeGroupsInFlight()).toEqual([])
+  })
+
+  it('is posted to main by request id, before the result', async () => {
+    const post = vi.fn()
+    const answer = withPlatform('linux', () => handleProcMessage({ kind: 'exec', id: 7, bin: 'claude', args: ['-p'], opts: { tree: true } }, post))
+    expect(post.mock.calls).toEqual([[{ kind: 'tree', id: 7, pid: 4242 }]])
+    done(null, 'labels', '')
+    expect(await answer).toMatchObject({ kind: 'result', id: 7, ok: true, stdout: 'labels' })
+    expect(treeGroupsInFlight()).toEqual([])
+  })
+
+  it('is still tracked by a host given nowhere to post it', () => {
+    void withPlatform('linux', () => handleProcMessage({ kind: 'exec', id: 8, bin: 'claude', args: ['-p'], opts: { tree: true } }))
+    expect(treeGroupsInFlight()).toEqual([4242])
+  })
+})
+
+describe('the host ends its groups on its way out', () => {
+  class FakeProc extends EventEmitter {
+    exit = vi.fn((_code?: number) => undefined)
+  }
+  const deps = { graceMs: 50 }
+  function group(pid: number): Promise<RunOutcome> {
+    nextPid = pid
+    return runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'linux', endTree: vi.fn() })
+  }
+
+  it.each(['SIGTERM', 'SIGINT', 'disconnect'] as const)('on %s: SIGTERM to every group, exit after the grace, and SIGKILL to what is left on exit', (event) => {
+    void group(4242)
+    void group(4343)
+    const proc = new FakeProc()
+    installHostExitHandlers(proc, deps)
+    proc.emit(event)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGTERM', deps], [4343, 'SIGTERM', deps]])
+    // A second signal neither signals again nor arms a second exit.
+    proc.emit('SIGTERM')
+    proc.emit('SIGINT')
+    expect(H.signalProcessGroup).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(49)
+    expect(proc.exit).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(proc.exit.mock.calls).toEqual([[0]])
+    proc.emit('exit')
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[4242, 'SIGKILL', deps], [4343, 'SIGKILL', deps]])
+    expect(treeGroupsInFlight()).toEqual([])
+  })
+
+  it('exits at once with no group in flight, signalling nothing', () => {
+    const proc = new FakeProc()
+    installHostExitHandlers(proc)
+    proc.emit('SIGTERM')
+    expect(proc.exit.mock.calls).toEqual([[0]])
+    proc.emit('exit')
+    expect(H.signalProcessGroup).not.toHaveBeenCalled()
+  })
+
+  it('waits the default grace', () => {
+    void group(4242)
+    const proc = new FakeProc()
+    installHostExitHandlers(proc)
+    proc.emit('SIGTERM')
+    vi.advanceTimersByTime(1_999)
+    expect(proc.exit).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(proc.exit).toHaveBeenCalledTimes(1)
+  })
+
+  it('on an exit it did not ask for (an unhandled rejection), SIGKILLs every group still unanswered, and none already answered', async () => {
+    const answered = group(4141)
+    done(null, 'ok', '')
+    await answered
+    void group(4242)
+    const proc = new FakeProc()
+    installHostExitHandlers(proc, deps)
+    proc.emit('exit')
+    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGKILL', deps]])
   })
 })

@@ -669,6 +669,34 @@ describe('will-quit stops every run before it returns', () => {
     expect(killTree).not.toHaveBeenCalled()
     expect(order).toEqual(['tree', 'pty'])
   })
+
+  it('on POSIX: SIGKILL to the process group of a labelling run the proc host reported and never answered', async () => {
+    const procClient = await import('../../src/main/procClient')
+    type Msg = Parameters<Parameters<import('../../src/main/procClient').ProcTransport['onMessage']>[0]>[0]
+    let deliver: (m: Msg) => void = () => undefined
+    const sent: Array<{ id: number }> = []
+    // Boot's spawner forks a utility process, which this file's electron mock cannot: start clean.
+    procClient._resetProcClientForTests()
+    procClient.setProcSpawner(() => ({
+      pid: 4242,
+      postMessage: (m) => { sent.push(m as { id: number }) },
+      onMessage: (cb) => { deliver = cb },
+      onExit: () => undefined,
+      kill: () => undefined,
+    }))
+    try {
+      const run = procClient.execCaptureOffThread('claude', ['-p'], { tree: true, timeout: 60_000 })
+      void run.catch(() => undefined)
+      deliver({ kind: 'tree', id: sent[0].id, pid: PID_B })
+      expect(groupKills(PID_B)).toEqual([])
+
+      quit()
+
+      expect(groupKills(PID_B)).toEqual([[-PID_B, 'SIGKILL']])
+    } finally {
+      procClient._resetProcClientForTests()
+    }
+  })
 })
 
 // ===========================================================================

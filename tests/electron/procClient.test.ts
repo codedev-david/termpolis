@@ -12,25 +12,39 @@
 //     PTY. A host that crashes on every message must not be re-forked on every message.
 //   * the in-process fallback — when the host is gone, git still has to work. Degrading to "as slow
 //     as before" is the goal; degrading to "git is broken" is not.
+//   * the process groups a host reports (macOS and Linux) — a labelling run's detached group outlives
+//     a host that dies, so main ends it, and only while the host has not answered that run.
+//
+// Every group signal is a mock: the pids here are made up, and a real kill(-pid) aimed at one would
+// end whatever process group happens to own it.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const H = vi.hoisted(() => ({
   runExec: vi.fn(),
   runShell: vi.fn(),
+  treeGroupsInFlight: vi.fn((): number[] => []),
+  signalProcessGroup: vi.fn((_pid: number, _signal: string): 'sent' | 'gone' | 'failed' => 'sent'),
 }))
 
 vi.mock('../../src/main/procHost', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/main/procHost')>()
-  return { ...actual, runExec: H.runExec, runShell: H.runShell }
+  return { ...actual, runExec: H.runExec, runShell: H.runShell, treeGroupsInFlight: H.treeGroupsInFlight }
+})
+vi.mock('../../src/main/processTree', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/processTree')>()
+  return { ...actual, signalProcessGroup: H.signalProcessGroup }
 })
 
-import type { ProcRequest, ProcResult } from '../../src/main/procHost'
+import type { ProcRequest, ProcResult, ProcTreeMsg } from '../../src/main/procHost'
+import { TREE_KILL_GRACE_MS } from '../../src/main/processTree'
 import {
   setProcSpawner,
   _resetProcClientForTests,
   procHostActive,
   shutdownProcHost,
+  endProcHostGroupsNow,
+  _trackedGroupsForTests,
   execOffThread,
   execShellOffThread,
   execCaptureOffThread,
@@ -46,11 +60,13 @@ interface FakeTransport extends ProcTransport {
   reply(msg: Partial<ProcResult> & { id: number }): void
   /** Answer the most recent request. */
   answer(patch?: Partial<ProcResult>): void
+  /** The host's report of the process group a tree run leads. */
+  tree(id: unknown, pid: unknown): void
   exit(code: number): void
 }
 
 function makeTransport(): FakeTransport {
-  let onMsg: ((m: ProcResult) => void) | null = null
+  let onMsg: ((m: ProcResult | ProcTreeMsg) => void) | null = null
   let onExit: ((c: number) => void) | null = null
   const t: FakeTransport = {
     sent: [],
@@ -65,6 +81,7 @@ function makeTransport(): FakeTransport {
       const last = t.sent.at(-1)!
       t.reply({ id: last.id, ...patch } as Partial<ProcResult> & { id: number })
     },
+    tree: (id, pid) => onMsg?.({ kind: 'tree', id, pid } as ProcTreeMsg),
     exit: (code) => onExit?.(code),
   }
   return t
@@ -85,6 +102,8 @@ function install(): { transports: FakeTransport[]; spawn: ReturnType<typeof vi.f
 beforeEach(() => {
   H.runExec.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
   H.runShell.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
+  H.treeGroupsInFlight.mockReset().mockReturnValue([])
+  H.signalProcessGroup.mockReset().mockReturnValue('sent')
   _resetProcClientForTests()
 })
 
@@ -518,5 +537,159 @@ describe('ProcError', () => {
     expect(e.code).toBeUndefined()
     expect(e.signal).toBeUndefined()
     expect(e.stderr).toBe('')
+  })
+})
+
+describe('the process groups a host reports (macOS and Linux)', () => {
+  // Made-up pids, above Linux's highest pid_max (2^22) and macOS's (99,999).
+  const A = 4_194_305
+  const B = 4_194_309
+
+  /** A tree call to the current host, with the id it was sent under. */
+  function treeCall(transports: FakeTransport[]): { call: Promise<unknown>; id: number; t: FakeTransport } {
+    const call = execCaptureOffThread('claude', ['-p'], { tree: true, timeout: 60_000 })
+    void call.catch(() => undefined)
+    const t = transports.at(-1)!
+    return { call, id: t.sent.at(-1)!.id, t }
+  }
+
+  it('keeps a reported group until the host answers that run, and never signals it after', async () => {
+    const { transports } = install()
+    const { call, id, t } = treeCall(transports)
+    t.tree(id, A)
+    expect(_trackedGroupsForTests()).toEqual([A])
+    t.reply({ id, stdout: 'labels' })
+    expect(await call).toEqual({ stdout: 'labels', stderr: '' })
+    expect(_trackedGroupsForTests()).toEqual([])
+    t.exit(1)
+    endProcHostGroupsNow()
+    expect(H.signalProcessGroup).not.toHaveBeenCalled()
+  })
+
+  it('a host that crashes mid-run: SIGTERM to its group at once, SIGKILL after the grace', async () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const { call, id, t } = treeCall(transports)
+    t.tree(id, A)
+    t.exit(9)
+    await expect(call).rejects.toThrow('proc host exited (code 9)')
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS - 1)
+    expect(H.signalProcessGroup).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(1)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [A, 'SIGKILL']])
+    expect(_trackedGroupsForTests()).toEqual([])
+  })
+
+  it('sends no SIGKILL to a group that was gone at the SIGTERM', () => {
+    vi.useFakeTimers()
+    H.signalProcessGroup.mockReturnValueOnce('gone')
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    t.tree(id, A)
+    t.exit(9)
+    expect(_trackedGroupsForTests()).toEqual([])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS * 2)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
+  })
+
+  it('lets the SIGKILL timer hold nothing open', () => {
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    t.tree(id, A)
+    timers.mockClear()
+    t.exit(9)
+    const escalation = timers.mock.results[0].value as NodeJS.Timeout
+    expect(escalation.hasRef()).toBe(false)
+    timers.mockRestore()
+  })
+
+  it('a restarted host: the old host\'s groups are ended once, the new host\'s stay its own', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const first = treeCall(transports)
+    first.t.tree(first.id, A)
+    first.t.exit(1)
+    const second = treeCall(transports)
+    expect(transports).toHaveLength(2)
+    second.t.tree(second.id, B)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
+    expect(_trackedGroupsForTests()).toEqual([A, B])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [A, 'SIGKILL']])
+    second.t.exit(1)
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[B, 'SIGTERM']])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS)
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[B, 'SIGTERM'], [B, 'SIGKILL']])
+  })
+
+  it('ignores a report with no usable id or pid', () => {
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    for (const pid of [0, 1, -5, 2.5, '77', undefined]) t.tree(id, pid)
+    t.tree('7', A)
+    expect(_trackedGroupsForTests()).toEqual([])
+  })
+
+  it('at quit: shutdownProcHost sends SIGTERM, a run the host still answers is forgotten, and will-quit SIGKILLs the rest', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const a = treeCall(transports)
+    a.t.tree(a.id, A)
+    const b = treeCall(transports)
+    b.t.tree(b.id, B)
+    shutdownProcHost()
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [B, 'SIGTERM']])
+    // The host, ending its own groups, answers B before it goes: B's pid is no longer ours to signal.
+    a.t.reply({ id: b.id, ok: false, error: { message: 'cancelled', code: 'ABORT_ERR' } })
+    a.t.exit(0)
+    expect(H.signalProcessGroup).toHaveBeenCalledTimes(2)
+    endProcHostGroupsNow()
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[A, 'SIGKILL']])
+    expect(_trackedGroupsForTests()).toEqual([])
+    // The grace's timer went with it.
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS * 2)
+    expect(H.signalProcessGroup).toHaveBeenCalledTimes(3)
+  })
+
+  it('a shutdown after a crash does not signal the crashed host\'s group twice', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const first = treeCall(transports)
+    first.t.tree(first.id, A)
+    first.t.exit(1)
+    const second = treeCall(transports)
+    second.t.tree(second.id, B)
+    shutdownProcHost()
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [B, 'SIGTERM']])
+  })
+
+  it('a group reported by a host after its shutdown is still ended when that host goes', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    shutdownProcHost()
+    t.tree(id, A)
+    expect(_trackedGroupsForTests()).toEqual([A])
+    t.exit(0)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
+  })
+
+  it('at quit also SIGKILLs the groups of runs main started itself while the host was down', () => {
+    H.treeGroupsInFlight.mockReturnValue([A])
+    endProcHostGroupsNow()
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGKILL']])
+  })
+
+  it('a reset forgets every group without signalling one', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    t.tree(id, A)
+    _resetProcClientForTests()
+    expect(_trackedGroupsForTests()).toEqual([])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS * 2)
+    expect(H.signalProcessGroup).not.toHaveBeenCalled()
   })
 })

@@ -26,7 +26,7 @@
 import { execFile, exec } from 'child_process'
 import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
-import { endProcessTree } from './processTree'
+import { endProcessTree, signalProcessGroup, TREE_KILL_GRACE_MS, type KillTreeDeps } from './processTree'
 
 export interface ProcExecMsg {
   kind: 'exec'
@@ -78,6 +78,16 @@ export interface ProcCancelMsg {
 
 /** Everything main posts to the host. */
 export type ProcHostMessage = ProcRequest | ProcCancelMsg
+
+/** macOS and Linux: the host tells main the process group a `tree` exec leads, as soon as it is spawned.
+ *  Main keeps it until that request's result arrives (the host's word that the run is over) and ends the
+ *  group itself if the host goes away first, a host that crashed included. Windows sends none: there the
+ *  child is in the host's kill-on-close job, which ends it with the host however the host ends. */
+export interface ProcTreeMsg {
+  kind: 'tree'
+  id: number
+  pid: number
+}
 
 export interface SerializedProcError {
   message: string
@@ -146,6 +156,17 @@ export const TREE_STOP_SETTLE_MS = 3_000
 export interface RunExecDeps {
   platform?: NodeJS.Platform
   endTree?: typeof endProcessTree
+  /** macOS and Linux, `tree` only: told the pid of the process group just spawned. */
+  onGroup?: (pid: number) => void
+}
+
+/** macOS and Linux: the process groups `tree` runs lead, while their request is unanswered. They are
+ *  detached (their own session), so nothing else ends them when this process goes: its own exit does. */
+const groupsInFlight = new Set<number>()
+
+/** The groups a `tree` run in this process leads now: main sweeps its own (fallback runs) at quit. */
+export function treeGroupsInFlight(): number[] {
+  return [...groupsInFlight]
 }
 
 /** The error a cancelled request answers with: AbortError's code, and no output. */
@@ -166,9 +187,11 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
     let exited = false
     let limit: ReturnType<typeof setTimeout> | undefined
     let backstop: ReturnType<typeof setTimeout> | undefined
+    let group: number | undefined
     const finish = (r: RunOutcome): void => {
       if (settled) return
       settled = true
+      if (group !== undefined) groupsInFlight.delete(group)
       clearTimeout(limit)
       clearTimeout(backstop)
       signal?.removeEventListener('abort', onAbort)
@@ -201,6 +224,11 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       finish({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), ...(err ? { error: err } : {}) })
     })
     if (tree) {
+      if (!isWin && child.pid !== undefined) {
+        group = child.pid
+        groupsInFlight.add(group)
+        deps.onGroup?.(group)
+      }
       child.on('exit', () => { exited = true })
       if (base.timeout > 0) limit = setTimeout(() => stop('timeout'), base.timeout)
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -226,7 +254,8 @@ export function runShell(cmd: string, opts: ProcOptions): Promise<RunOutcome> {
 /** The exec requests in flight, by id, so a cancel can reach the one it names. */
 const inFlight = new Map<number, AbortController>()
 
-export async function handleProcMessage(msg: ProcHostMessage): Promise<ProcResult | null> {
+/** `post` carries the host's other messages to main: the process group of a `tree` run, once spawned. */
+export async function handleProcMessage(msg: ProcHostMessage, post?: (m: ProcTreeMsg) => void): Promise<ProcResult | null> {
   if (msg?.kind === 'cancel') {
     inFlight.get(msg.id)?.abort()
     return null
@@ -236,7 +265,9 @@ export async function handleProcMessage(msg: ProcHostMessage): Promise<ProcResul
   if (msg.kind === 'exec') {
     const ctl = new AbortController()
     inFlight.set(msg.id, ctl)
-    run = runExec(msg.bin, msg.args, msg.opts, ctl.signal).finally(() => { inFlight.delete(msg.id) })
+    const id = msg.id
+    const onGroup = post ? (pid: number): void => post({ kind: 'tree', id, pid }) : undefined
+    run = runExec(msg.bin, msg.args, msg.opts, ctl.signal, onGroup ? { onGroup } : {}).finally(() => { inFlight.delete(id) })
   } else {
     run = runShell(msg.cmd, msg.opts)
   }
@@ -246,9 +277,56 @@ export async function handleProcMessage(msg: ProcHostMessage): Promise<ProcResul
     : { kind: 'result', id: msg.id, ok: true, stdout, stderr }
 }
 
+/** The part of `process` the host's exit handling needs. */
+export interface HostProcessLike {
+  on(event: 'SIGTERM' | 'SIGINT' | 'disconnect' | 'exit', listener: () => void): unknown
+  exit(code?: number): void
+}
+
+export interface HostExitDeps extends KillTreeDeps {
+  graceMs?: number
+}
+
+/**
+ * The host ends the process groups of its `tree` runs on its way out (macOS and Linux). They are
+ * detached, so they would outlive it: a SIGTERM or SIGINT to the host (shutdownProcHost's kill, a Ctrl+C
+ * in a dev terminal) or the loss of its parent sends them SIGTERM, and the host exits after the grace;
+ * its 'exit', however it was reached (process.exit on an unhandled rejection included), sends SIGKILL to
+ * every group still unanswered. Only process.kill(-pid): nothing is spawned or listed. A host killed
+ * outright runs none of this, which is why it also reports each group to main (ProcTreeMsg).
+ *
+ * Windows has nothing to do here: a `tree` run's child is not detached there, so libuv puts it in this
+ * host's kill-on-close job, and it ends with the host on any exit, a crash included. Its own ordinary
+ * children are in its job in turn. Only a descendant that detaches itself is out of reach, the known
+ * Job Object gap processTree.ts names.
+ */
+export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDeps = {}): void {
+  let leaving = false
+  const leave = (): void => {
+    if (leaving) return
+    leaving = true
+    if (groupsInFlight.size === 0) return proc.exit(0)
+    for (const pid of groupsInFlight) signalProcessGroup(pid, 'SIGTERM', deps)
+    setTimeout(() => proc.exit(0), deps.graceMs ?? TREE_KILL_GRACE_MS)
+  }
+  proc.on('SIGTERM', leave)
+  proc.on('SIGINT', leave)
+  proc.on('disconnect', leave)
+  proc.on('exit', () => {
+    for (const pid of groupsInFlight) signalProcessGroup(pid, 'SIGKILL', deps)
+    groupsInFlight.clear()
+  })
+}
+
+/** Resets the groups this module tracks. Tests only. */
+export function _resetProcHostForTests(): void {
+  groupsInFlight.clear()
+  inFlight.clear()
+}
+
 interface ParentPortLike {
   on(event: 'message', cb: (e: { data: ProcHostMessage }) => void): void
-  postMessage(msg: ProcResult): void
+  postMessage(msg: ProcResult | ProcTreeMsg): void
 }
 
 // `process.parentPort` exists ONLY when this module runs as a forked utilityProcess, so importing
@@ -275,10 +353,12 @@ if (parentPort) {
     console.error('[proc host] unhandled rejection:', reason)
     process.exit(1)
   })
+  installHostExitHandlers(process)
+  const post = (m: ProcTreeMsg): void => parentPort.postMessage(m)
   parentPort.on('message', (e) => {
     const msg = e?.data
     const id = (msg as ProcRequest)?.id
-    void handleProcMessage(msg)
+    void handleProcMessage(msg, post)
       .then((res) => { if (res) parentPort.postMessage(res) })
       .catch((err) => {
         if (typeof id === 'number') {
