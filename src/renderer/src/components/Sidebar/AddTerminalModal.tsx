@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ShellInfo, ShellType } from '../../types'
 import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
 import { FONT_FAMILY_OPTIONS, getTerminalDefaults } from '../../lib/terminalDefaults'
@@ -31,6 +31,13 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
   const [cwd, setCwd] = useState(defaultCwd ?? '')
 
   const selectedTheme = getTheme(theme)
+
+  // Esc cancels, as in the app's other dialogs. On the window, so it works before anything in the dialog has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
 
   const handleFontSizeChange = (value: number) => {
     setFontSize(Math.min(32, Math.max(8, value)))

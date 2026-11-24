@@ -446,7 +446,9 @@ test.describe.serial('Lumopolis on this platform', () => {
         // CI installs both shells: there a missing one is a failure, not a skip.
         expect(process.env.CI, `${shell} is not installed (offered: ${offered.join(', ')})`).toBeFalsy()
         note(`lumopolis in ${shell}: skipped, ${shell} is not installed here`)
+        // Esc shuts the dialog. Left open, its overlay took every later click (test 9's, on a box without zsh).
         await page.keyboard.press('Escape')
+        await expect(dialog).toHaveCount(0)
         continue
       }
       await dialog.locator('input').first().fill(`Lumopolis ${shell}`)

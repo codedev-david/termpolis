@@ -21,6 +21,18 @@ describe('AddTerminalModal', () => {
     expect(onCancel).toHaveBeenCalled()
   })
 
+  it('calls onCancel on Escape, before anything in it has focus, and stops listening once closed', () => {
+    const onCancel = vi.fn()
+    const { unmount } = render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={vi.fn()} onCancel={onCancel} />)
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(onCancel).not.toHaveBeenCalled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    unmount()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
   it('calls onCreate with name, shellType, color when Create clicked', () => {
     const onCreate = vi.fn()
     render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
