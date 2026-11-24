@@ -393,7 +393,8 @@ function expandCi(runs: TestRun[], testsByMember: Record<string, string[]>): Tes
 
 /**
  * Tests link to their resolved imports and, when none of those has the test's own stem (only relative imports
- * resolve, so a subject behind an alias leaves just helpers), to the one file of that stem in their folder or package.
+ * resolve, so a subject behind an alias leaves just helpers), to the one file of that stem in their folder or package,
+ * or to the one file of that stem in the whole world: with a single candidate anywhere there is nothing to mistake it for.
  */
 function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Record<string, string[]> {
   const prefix = `${snap.root.replace(/\\/g, '/').replace(/\/+$/, '')}/`
@@ -417,6 +418,9 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
   }
   const stemOf = (file: string): string => baseName(file).replace(/\.[^.]*$/, '')
   for (const m of fileSet) add(byStem, stemOf(m), m)
+  // The source files of each stem, counted once: a test whose stem names exactly one links to it at any depth.
+  const sourcesByStem = new Map<string, string[]>()
+  for (const m of fileSet) if (!TEST_FILE.test(m)) add(sourcesByStem, stemOf(m), m)
   const byTarget = new Map<string, string[]>()
   for (const t of tests) {
     const targets = new Set<string>()
@@ -433,6 +437,10 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
         return targetDir === dir || (pkg !== undefined && nearestPackage(targetDir) === pkg)
       })
       if (candidates.length === 1) targets.add(candidates[0])
+      else {
+        const only = sourcesByStem.get(stem)
+        if (only?.length === 1) targets.add(only[0])
+      }
     }
     for (const target of targets) add(byTarget, target, t)
   }

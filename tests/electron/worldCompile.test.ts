@@ -619,6 +619,49 @@ describe('compileWorld', () => {
     expect(status('src/testing/helper.ts')).toBe(imports.some((i) => i.endsWith('/helper')) ? 'verified' : 'gap')
   })
 
+  it('links a test by name across folders only where the stem names one source file in the world; two or more keep the folder and package rule', async () => {
+    const files: Record<string, string> = {
+      'packages/a/src/index.ts': 'export const a = 1\n',
+      'packages/a/src/index.test.ts': 'test\n',
+      'packages/b/src/index.ts': 'export const b = 1\n',
+      'packages/b/test/index.test.ts': 'test\n',
+      'packages/b/src/deep/index.ts': 'export const d = 1\n',
+      'src/foo.ts': 'export const foo = 1\n',
+      'tests/foo.test.ts': 'test\n',
+      'tests/index.test.ts': 'test\n',
+      'tools/index.test.ts': 'test\n'
+    }
+    // tools/index.test.ts names no file but proves itself by import.
+    const imports = { 'tools/index.test.ts': ['../packages/b/src/deep/index'] }
+    const report = JSON.stringify({
+      testResults: [
+        { name: 'packages/a/src/index.test.ts', status: 'passed', endTime: 1 },
+        { name: 'packages/b/test/index.test.ts', status: 'failed', endTime: 1 },
+        { name: 'tests/foo.test.ts', status: 'passed', endTime: 1 },
+        { name: 'tests/index.test.ts', status: 'failed', endTime: 1 },
+        { name: 'tools/index.test.ts', status: 'passed', endTime: 1 }
+      ]
+    })
+    const deps = mkDeps(files, {
+      readFile: async (p) => (p === REPORT ? report : (files[p.slice(ROOT.length + 1)] ?? null))
+    })
+    const doc = await compileWorld({ snap: snapOf(files, imports), projectKey: 'k', head: HEAD, previous: null }, deps)
+    expectValid(doc)
+    const of = (f: string): WorldDoc['buildings'][number] => doc.buildings.find((b) => b.members.includes(f)) as WorldDoc['buildings'][number]
+    const refs = (f: string): string[] => of(f).claims.flatMap((c) => c.evidence.filter((e) => e.kind === 'test').map((e) => e.ref)).sort()
+    // Three index.ts files: the same-folder test links; the sibling test folder (no package.json) and the root test do not.
+    expect(of('packages/a/src/index.ts').status).toBe('verified')
+    expect(refs('packages/a/src/index.ts')).toEqual(['packages/a/src/index.test.ts'])
+    expect(of('packages/b/src/index.ts').status).toBe('gap')
+    expect(refs('packages/b/src/index.ts')).toEqual([])
+    for (const f of ['packages/a/src/index.ts', 'packages/b/src/index.ts', 'packages/b/src/deep/index.ts']) expect(refs(f)).not.toContain('tests/index.test.ts')
+    // One foo.ts in the world: the usual src/ and tests/ split with no package.json links.
+    expect(of('src/foo.ts').status).toBe('verified')
+    expect(refs('src/foo.ts')).toEqual(['tests/foo.test.ts'])
+    // An import is evidence wherever the test lives.
+    expect(refs('packages/b/src/deep/index.ts')).toEqual(['tools/index.test.ts'])
+  })
+
   it('a deleted file relabels its building and leaves no floor listing it; a building new since previous is labelled', async () => {
     const files: Record<string, string> = { 'src/lib/a.ts': 'export const a = 1\n', 'src/z/z.ts': 'export const z = 1\n' }
     const compile = (previous: WorldDoc | null, changed: string[] | undefined, llm: LabelDeps['llm']): Promise<WorldDoc> =>
@@ -1409,8 +1452,9 @@ describe('compileWorldStaged', () => {
   it('refreshes cached status when a new package boundary removes a test link', async () => {
     const member = 'src/search/parser.ts'
     const test = 'tests/parser.test.ts'
-    const files = { [member]: 'export const search = 1', [test]: '' }
-    const manifests = [`${ROOT}/package.json`]
+    // A second parser.ts in its own package keeps the stem ambiguous, so only the package boundary decides the link.
+    const files = { [member]: 'export const search = 1', 'src/billing/parser.ts': 'export const billing = 1', [test]: '' }
+    const manifests = [`${ROOT}/package.json`, `${ROOT}/src/billing/package.json`]
     const onProgress = vi.fn()
     const deps = mkDeps(files, {
       glob: async (_root, patterns) => patterns.includes('**/package.json') ? manifests : [],
