@@ -85,6 +85,10 @@ describe('menuRows: one row per account of the agent, in registry order', () => 
     expect(status({ lastEmail: 'a@x', limit: { seenAt: 1, resetsAt: null, text: '', scope: 'account' } })).toEqual(['Out of usage', 'warn'])
     expect(status({ lastEmail: 'a@x', limit: { seenAt: 1, resetsAt: at4, text: '', scope: 'model' } })).toEqual(['A model is out of usage', 'warn'])
     expect(status({ lastEmail: 'a@x', limitedOutside: 5 })).toEqual(['Out of usage (your failover hook)', 'warn'])
+    // Once the limit or the marker has ended, the menu says so by itself (1.63.1).
+    expect(status({ lastEmail: 'a@x', limitedOutside: NOW - 10, limitedOutsideEnds: NOW })[0]).not.toMatch(/[Oo]ut of usage/)
+    expect(status({ lastEmail: 'a@x', limit: { seenAt: NOW - 10, resetsAt: null, text: 'x', scope: 'account' }, limitEnds: NOW })[0]).not.toMatch(/[Oo]ut of usage/)
+    expect(status({ lastEmail: 'a@x', limit: { seenAt: NOW - 10, resetsAt: null, text: 'x', scope: 'account' }, limitEnds: NOW + 10 })).toEqual(['Out of usage', 'warn'])
     expect(status({ email: 'a@x', lastEmail: 'other@x' })).toEqual(['Signed in as other@x', 'warn'])
     expect(status({})).toEqual(['Signed out', 'muted'])
     expect(status({ lastEmail: 'a@x', autoOffer: false })).toEqual(['Not offered automatically', 'muted'])

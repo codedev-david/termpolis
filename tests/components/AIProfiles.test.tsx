@@ -147,6 +147,19 @@ describe('AIProfiles', () => {
       expect(screen.getAllByTestId('launch-on-limited')).toHaveLength(2)
     })
 
+    it('drops "out of usage" once the limit or the failover hook\'s marker has ended, with no reset time read (1.63.1)', async () => {
+      const past = Date.now() - 1000
+      const ahead = Date.now() + 3_600_000
+      mockAccountsView = { accounts: [
+        { ...acc('acc_a', 'claude', 'personal'), limit: { seenAt: 1, resetsAt: null, text: 'x', scope: 'account' }, limitEnds: past },
+        { ...acc('acc_b', 'claude', 'codedev'), limitedOutside: past - 1000, limitedOutsideEnds: past },
+        { ...acc('acc_d', 'claude', 'spare'), limitedOutside: past, limitedOutsideEnds: ahead },
+      ], preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h' }
+      render(<AIProfiles availableShells={defaultShells} />)
+      fireEvent.contextMenu(screen.getByText('Claude Code').closest('.group') as HTMLElement)
+      expect(screen.getAllByTestId('launch-on-account').map((b) => b.textContent)).toEqual(['personal', 'codedev', 'spareout of usage'])
+    })
+
     it('is reachable without a mouse: a button on the profile opens the same list, with menu semantics and arrow keys', async () => {
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())

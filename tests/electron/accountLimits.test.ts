@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import {
-  limitKindOf, limitTargets, parseResetsAt, resetTextOf, stopKey, suggestedModel, unofferedLoginOwner, untilText,
+  currentAccountsView, isAccountLimited, limitKindOf, limitTargets, limitedOutsideNow, liveLimit, nextLimitEnd, parseResetsAt, resetTextOf, stopKey, suggestedModel, unofferedLoginOwner, untilText,
 } from '../../src/shared/accountLimits'
-import type { AccountRowView } from '../../src/shared/agentAccounts'
+import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 
 // The usage-limit chooser's pure half (§8.2, §8.3): when a limit lifts, what kind it is, and which
 // accounts it offers. Reset times are in each CLI's own forms, read from their program files:
@@ -376,5 +376,91 @@ describe('the login in a profile decides which account it is (SWARM-R3-1)', () =
       const plain = [row('a', { order: 0 }), row('b', { order: 1 })]
       expect(limitTargets(plain, 'claude', { accountId: 'a', email: 'a@example.test' }, now).map((x) => x.row.id)).toEqual(['b', 'a'])
     })
+  })
+})
+
+// ── When a limit ends (1.63.1) ────────────────────────────────────────────────────────────
+// David's report: the sidebar said "codedev out of usage", with no time, long after codedev's window
+// had passed. A limit with no reset time read, and the failover hook's marker, had nothing to end them
+// in the view the renderer holds: they only went when main was asked again.
+describe('when a limit or a marker ends', () => {
+  const now = at('2026-11-24T12:00:00Z')
+  const H = 3_600_000
+  const account = (over: Partial<NonNullable<AccountRowView['limit']>> = {}) => ({ seenAt: now - H, resetsAt: null, text: 'x', scope: 'account' as const, ...over })
+  const viewOf = (accounts: AccountRowView[]): AccountsView => ({
+    accounts, preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [],
+    advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h',
+  })
+
+  it('a limit with no reset time ends when main says it does (its cooldown), and not before', () => {
+    const r = row('codedev', { limit: account(), limitEnds: now + H })
+    expect(isAccountLimited(r, now)).toBe(true)
+    expect(liveLimit(r, now + H - 1)).toBe(r.limit)
+    expect(isAccountLimited(r, now + H)).toBe(false)
+    expect(liveLimit(r, now + H)).toBeUndefined()
+  })
+
+  it('a limit with a reset time ends then, with or without main\'s word', () => {
+    expect(isAccountLimited(row('a', { limit: account({ resetsAt: now + 10 }) }), now + 10)).toBe(false)
+    expect(isAccountLimited(row('a', { limit: account({ resetsAt: now + 10 }) }), now + 9)).toBe(true)
+    expect(isAccountLimited(row('a', { limit: account({ resetsAt: now + 10 }), limitEnds: now + 10 }), now + 10)).toBe(false)
+  })
+
+  it('a limit with no time at all, from an older main, stays until main drops it', () => {
+    expect(isAccountLimited(row('a', { limit: account() }), now + 1000 * H)).toBe(true)
+  })
+
+  it('a model\'s limit never makes the account out of usage, and ends the same way', () => {
+    const r = row('a', { limit: account({ scope: 'model', resetsAt: now + H }) })
+    expect(isAccountLimited(r, now)).toBe(false)
+    expect(liveLimit(r, now)).toBe(r.limit)
+    expect(liveLimit(r, now + H)).toBeUndefined()
+  })
+
+  it('the failover hook\'s marker counts only inside its cooldown, which main gives as its end', () => {
+    const marked = row('codedev', { limitedOutside: now - H, limitedOutsideEnds: now + 4 * H })
+    expect(limitedOutsideNow(marked, now + 4 * H - 1)).toBe(true)
+    expect(isAccountLimited(marked, now + 4 * H - 1)).toBe(true)
+    expect(limitedOutsideNow(marked, now + 4 * H)).toBe(false)
+    expect(isAccountLimited(marked, now + 4 * H)).toBe(false)
+    // An older main gave no end: it counts until main drops it, as before.
+    expect(isAccountLimited(row('codedev', { limitedOutside: now }), now + 1000 * H)).toBe(true)
+    expect(limitedOutsideNow(row('a'), now)).toBe(false)
+  })
+
+  it('the chooser offers an account again once its limit or marker has ended', () => {
+    const rows = [row('personal', { order: 0 }), row('codedev', { order: 1, limit: account({ email: 'codedev@example.test' }), limitEnds: now + H }), row('spare', { order: 2, limitedOutside: now - H, limitedOutsideEnds: now + H })]
+    const before = limitTargets(rows, 'claude', { accountId: 'personal', email: 'personal@example.test' }, now)
+    expect(before.map((t) => [t.row.id, t.state])).toEqual([['codedev', 'limited'], ['spare', 'limited'], ['personal', 'this']])
+    const after = limitTargets(rows, 'claude', { accountId: 'personal', email: 'personal@example.test' }, now + H)
+    expect(after.map((t) => [t.row.id, t.state])).toEqual([['codedev', 'available'], ['spare', 'available'], ['personal', 'this']])
+  })
+
+  it('nextLimitEnd is the soonest end still ahead; null when nothing will end', () => {
+    const v = viewOf([
+      row('a', { limit: account(), limitEnds: now + 3 * H }),
+      row('b', { limitedOutside: now - H, limitedOutsideEnds: now + H }),
+      row('c', { limit: account({ resetsAt: now + 2 * H }) }),
+      row('d', { limit: account() }),
+      row('e', { limit: account({ resetsAt: now - 1 }) }),
+    ])
+    expect(nextLimitEnd(v, now)).toBe(now + H)
+    expect(nextLimitEnd(v, now + H)).toBe(now + 2 * H)
+    expect(nextLimitEnd(v, now + 3 * H)).toBeNull()
+    expect(nextLimitEnd(viewOf([row('a')]), now)).toBeNull()
+  })
+
+  it('currentAccountsView drops what has ended, and keeps the same view when nothing has', () => {
+    const live = row('a', { limit: account(), limitEnds: now + H })
+    const v = viewOf([live, row('b', { limit: account(), limitEnds: now }), row('c', { limitedOutside: now - H, limitedOutsideEnds: now }), row('d')])
+    const cur = currentAccountsView(v, now)
+    expect(cur).not.toBe(v)
+    expect(cur.accounts[0]).toBe(live)
+    expect(cur.accounts[1].limit).toBeUndefined()
+    expect(cur.accounts[1].limitEnds).toBeUndefined()
+    expect(cur.accounts[2].limitedOutside).toBeUndefined()
+    expect(cur.accounts[2].limitedOutsideEnds).toBeUndefined()
+    expect(cur.accounts[3]).toBe(v.accounts[3])
+    expect(currentAccountsView(cur, now)).toBe(cur)
   })
 })

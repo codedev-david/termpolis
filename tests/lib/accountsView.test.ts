@@ -47,6 +47,19 @@ describe('accountBadge: the row\'s state, worst first', () => {
     expect(accountBadge(row({ limitedOutside: now - 1000 }), now)).toEqual({ text: 'out of usage (seen by your failover hook)', tone: 'warn' })
   })
 
+  it('drops "out of usage" by itself once the limit or the marker has ended (1.63.1)', () => {
+    const noTime = row({ limit: { seenAt: now, resetsAt: null, text: 'x', scope: 'account' }, limitEnds: now + 1000 })
+    expect(accountBadge(noTime, now + 999).text).toBe('out of usage')
+    expect(accountBadge(noTime, now + 1000).text).not.toMatch(/out of usage/)
+    const timed = row({ limit: { seenAt: now, resetsAt: now + 1000, text: 'x', scope: 'account' } })
+    expect(accountBadge(timed, now + 1000).text).not.toMatch(/out of usage/)
+    const model = row({ limit: { seenAt: now, resetsAt: now + 1000, text: 'x', scope: 'model' } })
+    expect(accountBadge(model, now + 1000).text).not.toMatch(/out of usage/)
+    const marked = row({ limitedOutside: now - 1000, limitedOutsideEnds: now + 1000 })
+    expect(accountBadge(marked, now + 999).text).toBe('out of usage (seen by your failover hook)')
+    expect(accountBadge(marked, now + 1000).text).not.toMatch(/out of usage/)
+  })
+
   it('warns when the profile is signed in to another email than the account\'s own', () => {
     expect(accountBadge(row({ email: 'b@example.test', lastEmail: 'a@example.test' }), now))
       .toEqual({ text: 'signed in to a@example.test instead!', tone: 'bad' })

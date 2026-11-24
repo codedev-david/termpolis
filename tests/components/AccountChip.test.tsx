@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AccountChip } from '../../src/renderer/src/components/Accounts/AccountChip'
 import { ActiveTerminalAccount } from '../../src/renderer/src/components/Accounts/ActiveTerminalAccount'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
-import { noteTerminalAccount, refreshAccounts, watchAccounts } from '../../src/renderer/src/lib/accountsState'
+import { noteTerminalAccount, refreshAccounts, watchAccounts, watchLimitEnds } from '../../src/renderer/src/lib/accountsState'
 import { canSwitchAccount } from '../../src/renderer/src/lib/accountsView'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
@@ -310,5 +310,110 @@ describe('the Settings line about the active terminal, for an agent with no acco
     useTerminalStore.setState({ terminals: [term({})], activeTerminalId: 't1' })
     render(<ActiveTerminalAccount view={VIEW} />)
     expect(screen.getByTestId('accounts-switch-active')).toBeInTheDocument()
+  })
+})
+
+// 1.63.1, David's report: "codedev out of usage" stayed in the sidebar after codedev's window had
+// passed. The view the renderer holds now drops a limit or a marker the moment it ends, on one timer.
+describe('the accounts view keeps itself current as limits end', () => {
+  const NOW = Date.UTC(2026, 10, 24, 12, 0, 0)
+  const H = 3_600_000
+  const limited = (over: Partial<AccountRowView>): AccountsView => ({ ...VIEW, accounts: [VIEW.accounts[0], { ...VIEW.accounts[1], ...over }] })
+  const codedev = () => useTerminalStore.getState().accountsView!.accounts[1]
+  let stop: (() => void) | null = null
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = null
+    vi.useRealTimers()
+    useTerminalStore.setState({ accountsView: null })
+  })
+
+  it('drops a limit with no reset time when its cooldown ends, and reads main\'s view again', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    useTerminalStore.setState({ accountsView: limited({ limit: { seenAt: NOW, resetsAt: null, text: 'x', scope: 'account' }, limitEnds: NOW + 5 * H }) })
+    stop = watchLimitEnds(api as never)
+    await vi.advanceTimersByTimeAsync(5 * H - 1)
+    expect(codedev().limit).toBeDefined()
+    expect(api.list).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(codedev().limit).toBeUndefined()
+    expect(api.list).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the failover hook\'s marker when its cooldown ends', async () => {
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW - H, limitedOutsideEnds: NOW + 4 * H }) })
+    stop = watchLimitEnds(undefined)
+    await vi.advanceTimersByTimeAsync(4 * H - 1)
+    expect(codedev().limitedOutside).toBe(NOW - H)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(codedev().limitedOutside).toBeUndefined()
+  })
+
+  it('sets one timer at a time, to the next end, and none while nothing is limited (no poll)', async () => {
+    useTerminalStore.setState({ accountsView: VIEW })
+    stop = watchLimitEnds(undefined)
+    expect(vi.getTimerCount()).toBe(0)
+    useTerminalStore.setState({ accountsView: { ...VIEW, accounts: [{ ...VIEW.accounts[0], limit: { seenAt: NOW, resetsAt: NOW + 2 * H, text: 'x', scope: 'account' }, limitEnds: NOW + 2 * H }, { ...VIEW.accounts[1], limitedOutside: NOW, limitedOutsideEnds: NOW + H }] } })
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(H + 1000)
+    expect(codedev().limitedOutside).toBeUndefined()
+    expect(useTerminalStore.getState().accountsView!.accounts[0].limit).toBeDefined()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(H)
+    expect(useTerminalStore.getState().accountsView!.accounts[0].limit).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('waits for an end past setTimeout\'s longest delay in steps', async () => {
+    const far = NOW + 30 * 24 * H
+    useTerminalStore.setState({ accountsView: limited({ limit: { seenAt: NOW, resetsAt: far, text: 'x', scope: 'account' }, limitEnds: far }) })
+    stop = watchLimitEnds(undefined)
+    await vi.advanceTimersByTimeAsync(2 ** 31 - 1)
+    expect(codedev().limit).toBeDefined()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(far - Date.now() + 1000)
+    expect(codedev().limit).toBeUndefined()
+  })
+
+  it('does nothing when the view went away before the timer fired, and stops on its stop', async () => {
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    stop = watchLimitEnds(undefined)
+    useTerminalStore.setState({ accountsView: null })
+    expect(vi.getTimerCount()).toBe(0)
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    expect(vi.getTimerCount()).toBe(1)
+    stop()
+    stop = null
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(2 * H)
+    expect(codedev().limitedOutside).toBe(NOW)
+  })
+
+  it('a newer view moves the timer to its own next end', async () => {
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    stop = watchLimitEnds(undefined)
+    // Main read the hook's marker again: it now ends later.
+    const later = limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + 3 * H })
+    useTerminalStore.setState({ accountsView: later })
+    await vi.advanceTimersByTimeAsync(H + 1000)
+    expect(useTerminalStore.getState().accountsView).toBe(later)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('watchAccounts keeps the view current too, and its stop stops the timer', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })), onTerminalAccount: vi.fn(() => () => undefined) }
+    stop = watchAccounts(api as never)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(codedev().limitedOutside).toBe(NOW)
+    api.list.mockResolvedValue({ success: true as const, data: VIEW })
+    await vi.advanceTimersByTimeAsync(H + 1000)
+    expect(codedev().limitedOutside).toBeUndefined()
+    stop()
+    stop = null
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
