@@ -56,7 +56,33 @@ describe('bookmarks', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
     expect(loadBookmarks('p1')).toEqual([])
+    expect(loadBookmarks('p1', ['old'])).toEqual([])
     expect(saveBookmark('p1', mk('a'))).toEqual([mk('a')])
     expect(removeBookmark('p1', 'a')).toEqual([])
+  })
+
+  // WP5 fix I5: a world whose key changed keeps the views saved under its older keys.
+  it('a project with no list of its own copies the lists of its older keys, in order, a name once, and leaves them in place', () => {
+    const OLD_A = 'termpolis.world.bookmarks.oldA'
+    const OLD_B = 'termpolis.world.bookmarks.oldB'
+    localStorage.setItem(OLD_A, JSON.stringify([mk('one'), mk('two')]))
+    localStorage.setItem(OLD_B, JSON.stringify([mk('two', { selection: [] }), mk('three'), ...Array.from({ length: 25 }, (_, i) => mk(`x${i}`))]))
+    const list = loadBookmarks('p1', ['p1', 'oldA', 'oldB'])
+    expect(list).toHaveLength(MAX_BOOKMARKS)
+    expect(list.slice(0, 3)).toEqual([mk('one'), mk('two'), mk('three')])
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual(list)
+    expect(JSON.parse(localStorage.getItem(OLD_A) as string)).toEqual([mk('one'), mk('two')])
+    expect(localStorage.getItem(OLD_B)).not.toBeNull()
+    // Once the project has its own list (even an emptied one), the older lists are not read again.
+    removeBookmark('p1', 'one')
+    expect(loadBookmarks('p1', ['oldA']).map((b) => b.name)).not.toContain('one')
+    localStorage.setItem(KEY, '[]')
+    expect(loadBookmarks('p1', ['oldA'])).toEqual([])
+  })
+
+  it('copies nothing, and writes nothing, when the older keys hold no views', () => {
+    expect(loadBookmarks('p1', ['oldA', 'p1'])).toEqual([])
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(loadBookmarks('p1', [])).toEqual([])
   })
 })

@@ -150,6 +150,25 @@ describe('WP5: keys that keep the case on Linux, and short Git Bash spellings (r
     initSwarmMemory(dir)
     expect(ids(await memorySearch({ query: 'axolotl gill', project: '/srv/X/Repo', limit: 5 }))).toEqual(['old'])
     expect(ids(memoryList({ project: '/srv/X/Repo' }))).toEqual(['old'])
+    expect(ids(await memoryListLong({ project: '/srv/X/Repo' }))).toEqual(['old'])
+  })
+
+  // WP5 fix I1: the lowercased key is also the key of a folder spelled in lower case; once one exists, its notes are its own.
+  it.runIf(process.platform === 'linux')('Linux: a note under the lowercased key stops matching `Repo` once a separate `repo` exists', async () => {
+    const upper = path.join(dir, 'Repo')
+    const lower = upper.toLowerCase() // the whole path, as the key before WP5 was made
+    fs.mkdirSync(upper)
+    drop([line('old', 'okapi stripe notes', { project: 'repo', projectKey: sha(lower) })])
+    initSwarmMemory(dir)
+    expect(ids(await memorySearch({ query: 'okapi stripe', project: upper, strictProject: true, limit: 5 }))).toEqual(['old'])
+    const made = fs.mkdirSync(lower, { recursive: true }) as string
+    try {
+      expect(ids(await memorySearch({ query: 'okapi stripe notes', project: upper, strictProject: true, limit: 5 }))).toEqual([])
+      expect(ids(await memoryListLong({ project: upper }))).toEqual([])
+      expect(ids(await memorySearch({ query: 'okapi stripe notes', project: lower, strictProject: true, limit: 5 }))).toEqual(['old'])
+    } finally {
+      fs.rmSync(made, { recursive: true, force: true })
+    }
   })
 
   it.runIf(process.platform === 'linux')('Linux: two folders that differ only in case keep their notes apart', async () => {

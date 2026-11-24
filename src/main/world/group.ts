@@ -100,10 +100,12 @@ export const COHESIVE_WEIGHT = 2
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
-/** How many import steps naming one building's front door may take (review K6): a search from every member is quadratic on
- *  a long chain. Members with the fewest importers inside the building are searched first, as they reach the most; past the
- *  budget a member counts only what it reached, and one never searched counts only itself, so the same input names alike. */
-export const FRONT_DOOR_BUDGET = 2_000_000
+/** How many imports naming one building's front door may examine (review K6; WP5 fix M2 counts each import looked at, so a
+ *  barrel file with thousands of imports costs what it reads): a search from every member is quadratic on a long chain.
+ *  Members with the fewest importers inside the building are searched first, as they reach the most, each in import order;
+ *  past the budget a member counts only what it reached, and one never searched counts only itself, so the same input names
+ *  alike. */
+export const FRONT_DOOR_BUDGET = 20_000_000
 
 /** Stable id of a grouping edge (edges carry none). Labels and the compiled world key on it. */
 export function edgeId(e: { from: string; to: string }): string {
@@ -841,13 +843,16 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       const seen = new Set([i])
       const stack = budget > 0 ? [i] : []
       while (stack.length && budget > 0) {
-        for (const g of imports[stack.pop() as number]) {
+        const out = imports[stack.pop() as number]
+        const n = Math.min(out.length, budget) // the imports looked at, in order, up to what the budget has left
+        budget -= n
+        for (let j = 0; j < n; j++) {
+          const g = out[j]
           if (own.has(g) && !seen.has(g)) {
             seen.add(g)
             stack.push(g)
           }
         }
-        budget--
       }
       const outside = importers[i].length - (inside.get(i) as number)
       key.set(i, [TEST_NAME.test(files[i]) ? 0 : 1, seen.size, outside, importers[i].length])

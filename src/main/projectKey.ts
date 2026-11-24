@@ -13,11 +13,10 @@
 //     and on Windows the Git Bash `/c/...`, Cygwin `/cygdrive/c/...` and WSL `/mnt/c/...` spellings read as the drive
 //     `c:/...` (a bare one-letter root such as `/c` or `/r` is left as it is: it keeps the key it always had);
 //   - every `\` a `/`, and a run of separators one (a leading `//` of a UNC share is kept);
-//   - lowercased where the folder's file system ignores case (foldsCase, the one rule folderKey, the code index and the
-//     watchers use, WP5 X03): on Windows always; on Linux never, so two folders differing only in case are two projects
-//     (WP5 X02); on macOS unless the folder is on a case-sensitive volume (review S6). APFS ignores case unless it was
-//     formatted otherwise, so a Mac folder folds case until learnCaseRule has asked its volume, once per folder per run,
-//     and found it keeps case. Before WP5 every key was lowercased, and that key stays an alias (projectKeyAliases).
+//   - lowercased where the platform's file systems ignore case (foldsCase, the one rule folderKey, the code index and the
+//     watchers use, WP5 X03): on Windows and macOS always; on Linux never, so two folders differing only in case are two
+//     projects (WP5 X02). Before WP5 every key was lowercased, and on Linux that key stays an alias (projectKeyAliases) only
+//     while no other folder has the lowercased spelling (liveProjectKeyAliases, WP5 fix I1).
 // An 8.3 short name (`C:\Users\DAVIDE~1\...`) cannot be told from its long name by its spelling. expandShortPath spells it
 // out (async; only the parts that look short, each found by listing its folder: never realpath, which would also resolve
 // junctions, symlinks and mapped drives into a different folder's key). The store expands a note's project and a search's
@@ -46,66 +45,9 @@ function pathPart(pathOrName: unknown): string {
   return t && /[\\/]/.test(t) ? t : ''
 }
 
-/** macOS folders learnCaseRule found on a volume that keeps case (canonical spelling, case kept): a path inside one keeps
- *  its case too. Learned this run; a run starts again from the platform rule until the folder is asked about. */
-const caseKeptRoots = new Set<string>()
-/** The answer for each spelling learnCaseRule was asked about, so a second ask makes no file system call. */
-const caseLearned = new Map<string, Promise<boolean>>()
-const CASE_LEARNED_MAX = 256
-
-/** Whether a folder spelled `s` (canonical, case kept) folds case on `platform`: the platform rule, unless a Mac folder is
- *  inside one learnCaseRule found keeps case. */
-function foldsCaseFor(s: string, platform: NodeJS.Platform): boolean {
-  if (!foldsCase(platform)) return false
-  if (platform !== 'darwin' || caseKeptRoots.size === 0) return true
-  for (const r of caseKeptRoots) if (s === r || s.startsWith(r + '/')) return false
-  return true
-}
-
-/** One path's device and file id (lstat: a link is never followed). */
-export type CaseProbeFs = (path: string) => Promise<{ dev: bigint | number; ino: bigint | number }>
-const realCaseProbeFs: CaseProbeFs = (p) => fsp.lstat(p, { bigint: true })
-
-/** `name` with each letter's case swapped, so it names the same entry only where the file system ignores case. */
-const swapCase = (name: string): string => name.replace(/\p{L}/gu, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()))
-
-/**
- * Asks a Mac folder's volume whether it ignores case (review S6), as git does for core.ignorecase: the folder, or its
- * nearest ancestor with a letter in its name, looked up under its name with the case swapped is the same entry (same device
- * and file id) only where the volume ignores case. A volume that keeps case is remembered, so the folder and everything in
- * it keep their case in their keys from then on. Off macOS it answers the platform rule and touches nothing; a folder that
- * cannot be read, or has no letter anywhere in its path, keeps the platform rule. Resolves with whether the folder folds case.
- * Never rejects.
- */
-export function learnCaseRule(pathOrName: string, platform: NodeJS.Platform = process.platform, fs: CaseProbeFs = realCaseProbeFs): Promise<boolean> {
-  const c = canonicalProjectPath(pathOrName, 'linux') // the spelling with its case kept
-  if (platform !== 'darwin' || !c) return Promise.resolve(c ? foldsCaseFor(c, platform) : foldsCase(platform))
-  const known = caseLearned.get(c)
-  if (known) return known
-  const asked = (async (): Promise<boolean> => {
-    // The folder, then each ancestor up to the root, until one has a letter in its name and can be looked up.
-    for (let cur = c, cut = cur.lastIndexOf('/'); cut >= 0 && cur !== '/'; cur = cur.slice(0, cut) || '/', cut = cur.lastIndexOf('/')) {
-      const swapped = swapCase(cur.slice(cut + 1))
-      if (swapped === cur.slice(cut + 1)) continue
-      const own = await fs(cur).catch(() => null)
-      if (!own) continue
-      const other = await fs(cur.slice(0, cut + 1) + swapped).catch(() => null)
-      if (other && other.dev === own.dev && other.ino === own.ino) return true
-      caseKeptRoots.add(cur)
-      return false
-    }
-    return true // no letter to ask with, or nothing readable: the macOS rule
-  })()
-  caseLearned.set(c, asked)
-  if (caseLearned.size > CASE_LEARNED_MAX) caseLearned.delete(caseLearned.keys().next().value as string)
-  return asked
-}
-
-/** Forgets what learnCaseRule learned (tests). */
-export function _resetCaseRuleForTests(): void {
-  caseKeptRoots.clear()
-  caseLearned.clear()
-}
+/** One path's device and file id, and whether it is a folder (stat: a link is followed to what it names). */
+export type FolderIdFs = (path: string) => Promise<{ dev: bigint | number; ino: bigint | number; isDirectory(): boolean }>
+const realFolderIdFs: FolderIdFs = (p) => fsp.stat(p, { bigint: true })
 
 /** The canonical spelling of a project path (see the header), or '' for a bare name. */
 export function canonicalProjectPath(pathOrName: string, platform: NodeJS.Platform = process.platform): string {
@@ -122,7 +64,7 @@ export function canonicalProjectPath(pathOrName: string, platform: NodeJS.Platfo
   if (platform === 'win32') s = s.replace(/^\/(?:cygdrive\/)?([a-zA-Z])(?=\/)/, '$1:')
   // A drive with nothing after it has no separator left: no folder to key on.
   if (!/[\\/]/.test(s)) return ''
-  return foldsCaseFor(s, platform) ? s.toLowerCase() : s
+  return foldsCase(platform) ? s.toLowerCase() : s
 }
 
 /** The key of a project path: the canonical spelling, hashed. Undefined for a bare name. */
@@ -137,20 +79,63 @@ export function legacyProjectKeyOf(pathOrName: string): string | undefined {
   return t ? hash(t.replace(/\\/g, '/').toLowerCase()) : undefined
 }
 
+/** The alias keys of a folder, with or without the ones made by lowercasing its path on a platform that keeps case. */
+function aliasKeys(pathOrName: string, platform: NodeJS.Platform, spelledAs: unknown, lowered: boolean): string[] {
+  const c = canonicalProjectPath(pathOrName, platform)
+  if (!c) return []
+  const keys = [hash(c)]
+  if (lowered || foldsCase(platform)) keys.push(hash(c.toLowerCase()), legacyProjectKeyOf(pathOrName) as string)
+  // A canonical drive path always has a folder after the drive: a bare `c:` has no separator, so it has no key at all.
+  const drive = platform === 'win32' ? /^([a-z]):(\/.*)$/.exec(c) : null
+  if (drive) keys.push(hash(`/${drive[1]}${drive[2]}`), hash(`/cygdrive/${drive[1]}${drive[2]}`))
+  if (typeof spelledAs === 'string' && spelledAs !== pathOrName) keys.push(...aliasKeys(spelledAs, platform, undefined, lowered))
+  return [...new Set(keys)]
+}
+
 /** Every key a note about this folder may carry: the canonical one first; on a platform that keeps case, the lowercased key
  *  every note had before WP5; the key this spelling had before WPA; and on Windows the keys of the folder's Git Bash and
  *  Cygwin spellings (what a note written from such a terminal was given before WPA). `spelledAs`, the spelling a caller was
  *  handed before expandShortPath spelled it out, adds that spelling's keys too, so a note written under the short spelling
- *  keeps matching (WP5, review I6). Empty for a bare name. */
+ *  keeps matching (WP5, review I6). Empty for a bare name. Sync, no I/O: liveProjectKeyAliases is the one a lookup uses. */
 export function projectKeyAliases(pathOrName: string, platform: NodeJS.Platform = process.platform, spelledAs?: unknown): string[] {
+  return aliasKeys(pathOrName, platform, spelledAs, true)
+}
+
+/** The aliases of projectKeyAliases that came from lowercasing the path on a platform that keeps case (Linux: every key
+ *  before WP5 was lowercased). Such a key is also the canonical key of the folder spelled in lower case, so it stands for this
+ *  folder only while no other folder has that spelling (liveProjectKeyAliases). Empty where the platform folds case. */
+export function loweredAliasKeys(pathOrName: string, platform: NodeJS.Platform = process.platform, spelledAs?: unknown): string[] {
+  const kept = new Set(aliasKeys(pathOrName, platform, spelledAs, false))
+  return aliasKeys(pathOrName, platform, spelledAs, true).filter((k) => !kept.has(k))
+}
+
+/** Whether another folder (not this one by device and file id) is at this path's lowercased spelling. Never rejects. */
+async function lowerSpellingIsAnother(pathOrName: string, platform: NodeJS.Platform, fs: FolderIdFs): Promise<boolean> {
   const c = canonicalProjectPath(pathOrName, platform)
-  if (!c) return []
-  const keys = [hash(c), hash(c.toLowerCase()), legacyProjectKeyOf(pathOrName) as string]
-  // A canonical drive path always has a folder after the drive: a bare `c:` has no separator, so it has no key at all.
-  const drive = platform === 'win32' ? /^([a-z]):(\/.*)$/.exec(c) : null
-  if (drive) keys.push(hash(`/${drive[1]}${drive[2]}`), hash(`/cygdrive/${drive[1]}${drive[2]}`))
-  if (typeof spelledAs === 'string' && spelledAs !== pathOrName) keys.push(...projectKeyAliases(spelledAs, platform))
-  return [...new Set(keys)]
+  if (c === c.toLowerCase()) return false // spelled in lower case already: the old key is its own
+  const lower = await fs(c.toLowerCase()).catch(() => null)
+  if (!lower || !lower.isDirectory()) return false
+  const own = await fs(c).catch(() => null)
+  return !own || own.dev !== lower.dev || own.ino !== lower.ino
+}
+
+/**
+ * The keys a lookup of this folder's notes, primer or saved world goes by (WP5 fix I1): projectKeyAliases, less the lowered
+ * aliases (loweredAliasKeys) while another folder is at the lowercased spelling. On Linux `~/App` and `~/app` are then two
+ * projects: the lowered key of `~/App` is `~/app`'s own key, and `~/app`'s notes and world must not appear in `~/App`. With
+ * no folder there (the usual case: only `~/App` exists), or the same folder there, the lowered key is this folder's notes from
+ * before WP5 and stays. Asked anew on each lookup, so a folder made later at that spelling ends the alias. Never rejects.
+ */
+export async function liveProjectKeyAliases(
+  pathOrName: string,
+  platform: NodeJS.Platform = process.platform,
+  spelledAs?: unknown,
+  fs: FolderIdFs = realFolderIdFs,
+): Promise<string[]> {
+  const keys = projectKeyAliases(pathOrName, platform, spelledAs)
+  const lowered = loweredAliasKeys(pathOrName, platform, spelledAs)
+  if (lowered.length === 0 || !(await lowerSpellingIsAnother(pathOrName, platform, fs))) return keys
+  return keys.filter((k) => !lowered.includes(k))
 }
 
 const SHORT_PART = /(^|[\\/])[^\\/]*~\d[^\\/]*(?=[\\/]|$)/

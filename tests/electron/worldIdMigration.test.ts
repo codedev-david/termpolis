@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Building, Claim, District, External, Proposal, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { edgeId, type Grouping } from '../../src/main/world/group'
-import { idRenames, renameClaims, renameDoc } from '../../src/main/world/idMigration'
+import { copyClaims, idRenames, renameClaims, renameDoc } from '../../src/main/world/idMigration'
 
 const orbKey = (x: Pick<External, 'kind' | 'name'>): string => `${x.kind}\0${x.name}`
 const B = (id: string, districtId: string, members: string[]): Building => ({ id, districtId, members }) as unknown as Building
@@ -203,5 +203,23 @@ describe('renameClaims', () => {
       new Map([['b-root', 'b-u1'], ['b-x-2', 'b-x--abcdef']])
     )
     expect({ ...out }).toEqual({ 'b-u1': [c('both'), c('old')], 'b-k': [c('kept')], 'b-x--abcdef': [c('alone')] })
+  })
+})
+
+// WP5 fix I2: the store copies, so the old ids keep their claims until nothing reads them.
+describe('copyClaims', () => {
+  const c = (text: string): Claim => ({ text, state: 'verified', evidence: [{ kind: 'person', ref: 'me' }] })
+
+  it('returns the annotations themselves when nothing needs copying', () => {
+    const byItem = { 'b-a': [c('one')], 'b-b': [c('one')] }
+    expect(copyClaims(byItem, new Map([['b-z', 'b-y']]))).toBe(byItem)
+    expect(copyClaims(byItem, new Map([['b-a', 'b-b'], ['b-b', 'b-b']]))).toBe(byItem)
+  })
+
+  it('copies a renamed item after what its new id has, keeping a claim held under both once, and keeps the old id', () => {
+    const byItem = { 'b-root': [c('old'), c('both')], 'b-u1': [c('both')], 'b-k': [c('kept')], 'b-x-2': [c('alone')] }
+    const out = copyClaims(byItem, new Map([['b-root', 'b-u1'], ['b-x-2', 'b-x--abcdef']]))
+    expect({ ...out }).toEqual({ ...byItem, 'b-u1': [c('both'), c('old')], 'b-x--abcdef': [c('alone')] })
+    expect(byItem['b-u1']).toEqual([c('both')]) // the input is left as it was
   })
 })

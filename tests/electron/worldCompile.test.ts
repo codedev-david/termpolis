@@ -1310,18 +1310,25 @@ describe('ids and keys (WP5: G09, G10, F03 and the one-time rename)', () => {
     expect(both.externals.map((x) => x.id).sort()).toEqual([`x-claude--${orb('agent', 'claude')}`, `x-claude--${orb('service', 'claude')}`].sort())
   })
 
-  it('G10: an IDN host is one readable orb in either spelling, shown in Unicode, and hosts made only of unicode never share one', async () => {
+  it('G10: an IDN host is one readable orb in either spelling, shown in punycode (WP5 fix I4), and hosts made only of unicode never share one', async () => {
     const doc = await compileFiles({
       'a.ts': "fetch('https://日本.jp/a')\nfetch('https://xn--wgv71a.jp/b')\n",
       'b.ts': "fetch('https://中国.cn/a')\nfetch('https://Bücher.de/x')\n"
     })
     expectValid(doc)
     expect(doc.externals).toEqual([
-      { id: 'x-xn-bcher-kva-de', name: 'bücher.de', kind: 'service', fog: false },
-      { id: 'x-xn-fiqs8s-cn', name: '中国.cn', kind: 'service', fog: false },
-      { id: 'x-xn-wgv71a-jp', name: '日本.jp', kind: 'service', fog: false }
+      { id: 'x-xn-bcher-kva-de', name: 'xn--bcher-kva.de', kind: 'service', fog: false },
+      { id: 'x-xn-fiqs8s-cn', name: 'xn--fiqs8s.cn', kind: 'service', fog: false },
+      { id: 'x-xn-wgv71a-jp', name: 'xn--wgv71a.jp', kind: 'service', fog: false }
     ])
     expect(doc.edges.filter((e) => e.to === 'x-xn-wgv71a-jp').map((e) => e.from)).toEqual(['b-a'])
+  })
+
+  it('WP5 fix I4: a look-alike host is shown as its punycode, never as the name it imitates', async () => {
+    // "\u0430pple.com" starts with a Cyrillic letter that looks like a Latin "a".
+    const doc = await compileFiles({ 'a.ts': "fetch('https://\u0430pple.com/x')\nfetch('https://apple.com/y')\n" })
+    expectValid(doc)
+    expect(doc.externals.map((x) => x.name).sort()).toEqual(['apple.com', 'xn--pple-43d.com'])
   })
 
   it('a host url.domainToASCII refuses keeps its own spelling', async () => {
@@ -1366,14 +1373,14 @@ describe('ids and keys (WP5: G09, G10, F03 and the one-time rename)', () => {
       }
     }
     const stored = { 'b-root': [person], [edgeId({ from: 'b-z', to: 'x-api-foo-com' })]: [person] }
-    const renameAnnotations = vi.fn(async (_renames: Record<string, string>) => undefined)
+    const copyAnnotations = vi.fn(async (_renames: Record<string, string>) => undefined)
     const doc = await compileWorld(
       { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: old, changed: [] },
-      mkDeps(files, { glob: async () => [], annotations: async () => stored, renameAnnotations })
+      mkDeps(files, { glob: async () => [], annotations: async () => stored, copyAnnotations })
     )
     expectValid(doc)
-    expect(renameAnnotations).toHaveBeenCalledTimes(1)
-    expect(renameAnnotations).toHaveBeenCalledWith({
+    expect(copyAnnotations).toHaveBeenCalledTimes(1)
+    expect(copyAnnotations).toHaveBeenCalledWith({
       'b-root': rocket,
       'x-api-foo-com': dot,
       [edgeId({ from: 'b-root', to: 'x-api-foo-com' })]: edgeId({ from: rocket, to: dot }),
@@ -1384,21 +1391,28 @@ describe('ids and keys (WP5: G09, G10, F03 and the one-time rename)', () => {
     expect(doc.buildings.find((b) => b.id === rocket)?.name).toBe('Launcher')
     expect(doc.edges.find((e) => e.id === edgeId({ from: 'b-z', to: dash }))?.claims.slice(-1)[0]).toEqual(person)
     expect(doc.layout.positions[dot]).toEqual([500, 12, 500])
-    // Compiled again over its own doc, nothing more is renamed; a store that cannot move them never fails the compile.
+    // Compiled again over its own doc, nothing more is renamed.
     const failing = vi.fn(async (_renames: Record<string, string>): Promise<void> => {
       throw new Error('locked')
     })
     const again = await compileWorld(
       { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: doc },
-      mkDeps(files, { glob: async () => [], renameAnnotations: failing })
+      mkDeps(files, { glob: async () => [], copyAnnotations: failing })
     )
     expect(failing).not.toHaveBeenCalled()
     expect(again.buildings.map((b) => b.id)).toEqual(doc.buildings.map((b) => b.id))
-    const tolerant = await compileWorld(
+    // WP5 fix I2: a store that cannot copy them fails the compile, so the renamed world is never saved without its notes, and
+    // the next compile over the same old world asks for the same copy again.
+    await expect(compileWorld(
       { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: old },
-      mkDeps(files, { glob: async () => [], renameAnnotations: failing })
+      mkDeps(files, { glob: async () => [], copyAnnotations: failing })
+    )).rejects.toThrow('locked')
+    const retry = vi.fn(async (_renames: Record<string, string>) => undefined)
+    const retried = await compileWorld(
+      { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: old },
+      mkDeps(files, { glob: async () => [], copyAnnotations: retry })
     )
-    expect(failing).toHaveBeenCalledTimes(1)
-    expect(tolerant.layout.positions[dot]).toEqual([500, 12, 500])
+    expect(retry.mock.calls[0][0]).toEqual(failing.mock.calls[0][0])
+    expect(retried.layout.positions[dot]).toEqual([500, 12, 500])
   })
 })

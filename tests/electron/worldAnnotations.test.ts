@@ -227,29 +227,33 @@ describe('runtime-names claims', () => {
   })
 })
 
-// WP5: ids that collided are renamed once, and the annotations made under the old ids follow them.
-describe('annotation store rename (WP5)', () => {
-  it('moves an item to its new id, after any it has there already, a claim held under both kept once', async () => {
+// WP5: ids that collided are renamed once, and the annotations made under the old ids are copied to them (fix I2: copied, so a
+// migration that stops part way loses nothing; the old ids keep theirs).
+describe('annotation store copyRenamed (WP5)', () => {
+  it('copies an item to its new id, after any it has there already, a claim held under both kept once, the old id keeping its own', async () => {
     const store = createAnnotationStore(dir)
     await store.add('k', 'x-api-foo-com', person('old note'))
     await store.add('k', 'x-api-foo-com', person('shared'))
     await store.add('k', 'x-api-foo-com--abc123', person('shared'))
     await store.add('k', 'b-keep', person('untouched'))
-    await store.rename('k', { 'x-api-foo-com': 'x-api-foo-com--abc123', 'b-gone': 'b-new' })
+    await store.copyRenamed('k', { 'x-api-foo-com': 'x-api-foo-com--abc123', 'b-gone': 'b-new' })
     expect(await store.list('k')).toEqual({
+      'x-api-foo-com': [person('old note'), person('shared')],
       'x-api-foo-com--abc123': [person('shared'), person('old note')],
       'b-keep': [person('untouched')],
     })
   })
 
-  it('writes nothing when no id it holds is renamed, nor when there is no file', async () => {
+  it('writes nothing when no id it holds is renamed, nor when every claim is under its new id already, nor when there is no file', async () => {
     const store = createAnnotationStore(dir)
-    await store.rename('none', { a: 'b' })
+    await store.copyRenamed('none', { a: 'b' })
     expect(await readdir(dir)).toEqual([])
     await store.add('k', 'b1', person('n'))
+    await store.add('k', 'b2', person('n'))
     const before = await readFile(fileFor('k'), 'utf8')
     await writeFile(fileFor('k'), before.replace('{', '{ ')) // a mark a rewrite would remove
-    await store.rename('k', { b2: 'b3' })
+    await store.copyRenamed('k', { b3: 'b4' })
+    await store.copyRenamed('k', { b1: 'b2', b2: 'b2' })
     expect(await readFile(fileFor('k'), 'utf8')).toBe(before.replace('{', '{ '))
   })
 
@@ -257,17 +261,17 @@ describe('annotation store rename (WP5)', () => {
     const store = createAnnotationStore(dir)
     for (let i = 0; i < MAX_ANNOTATIONS_PER_ITEM; i++) await store.add('k', 'old', person(`o${i}`))
     for (let i = 0; i < 5; i++) await store.add('k', 'new', person(`n${i}`))
-    await store.rename('k', { old: 'new' })
+    await store.copyRenamed('k', { old: 'new' })
     const list = (await store.list('k')).new
     expect(list).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
     expect(list[list.length - 1]).toEqual(person('o19'))
-    expect(Object.keys(await store.list('k'))).toEqual(['new'])
+    expect((await store.list('k')).old).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
   })
 
-  it('leaves the file alone when another writer (the other world host store) moved the items first', async () => {
+  it('copies once when another writer (the other world host store) copies at the same time', async () => {
     await createAnnotationStore(dir).add('k', 'old', person('n'))
     const [a, b] = [createAnnotationStore(dir), createAnnotationStore(dir)]
-    await Promise.all([a.rename('k', { old: 'new' }), b.rename('k', { old: 'new' })])
-    expect(await a.list('k')).toEqual({ new: [person('n')] })
+    await Promise.all([a.copyRenamed('k', { old: 'new' }), b.copyRenamed('k', { old: 'new' })])
+    expect(await a.list('k')).toEqual({ old: [person('n')], new: [person('n')] })
   })
 })

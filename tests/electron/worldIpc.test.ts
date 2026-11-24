@@ -207,6 +207,18 @@ describe('registerWorldIpc', () => {
     expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
   })
 
+  it('WP5 fix I5: the older keys prepare adopted from go back with the world, never with no world nor when there are none', async () => {
+    const prepare = vi.fn(async (): Promise<string[] | void> => ['k-old'])
+    const asker: WorldAsker = { ask: vi.fn(), cancel: vi.fn(), prepare }
+    const { invoke, client } = setup(() => null, fakeSettings(), asker)
+    ;(client.get as ReturnType<typeof vi.fn>).mockResolvedValue(DOC)
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: { ...DOC, aliasKeys: ['k-old'] } })
+    prepare.mockResolvedValueOnce([])
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
+    ;(client.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null)
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: null })
+  })
+
   it('handlers return err() shapes for a missing root or a failure', async () => {
     const { invoke, client } = setup()
     for (const args of [undefined, null, 'C:/repo', {}, { root: '   ' }, { root: 5 }]) {

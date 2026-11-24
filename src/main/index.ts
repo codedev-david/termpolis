@@ -652,7 +652,7 @@ async function reflectOnTask(
 import { buildContextPrimer, type PrimerRecent, type PrimerSearch } from './contextPrimer'
 import { createPrimerCache } from './primerCache'
 import { createAskPrimer, createAskPrimerWarm, lockAwareBuild, trackWrittenProjects } from './askPrimer'
-import { expandShortPath, learnCaseRule, projectKeyAliases } from './projectKey'
+import { expandShortPath, liveProjectKeyAliases, loweredAliasKeys } from './projectKey'
 import type { HostLaneName } from './hostLane'
 import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
@@ -2877,17 +2877,19 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
   warm: (root) => { void askPrimerWarm(root) },
   // WPA fix M2: a root whose key WPA changed (a Git Bash or WSL spelling) brings the annotations made under its older key along.
   // WP5: on Linux the key now keeps the folder's case, so the saved world and its recent-list line follow too (copied, never moved).
+  // WP5 fix I1: the lowercased key from before WP5 only while no other folder has that spelling, and only from a recent-list line
+  // of this very folder. The keys it adopted from go back with the world, so its saved views follow too (fix I5).
   prepare: async (root) => {
-    await learnCaseRule(root) // WP5 (review S6): on a Mac, whether the folder's volume keeps case, before it is keyed
     const key = graphKeyForRoot(root)
-    const aliases = projectKeyAliases(root).slice(1)
-    await adoptWorldAliases(key, aliases, {
+    const adopted = await adoptWorldAliases(key, (await liveProjectKeyAliases(root)).slice(1), {
       store: createWorldStore(worldUserData),
       hasWorld: (k) => fsPromises.access(join(worldUserData, 'world', worldFileName(k))).then(() => true, () => false),
       registry: worldSources,
       keyOf: keyForSource,
+      lowered: new Set(loweredAliasKeys(root)),
     })
-    await adoptAnnotationAliases(worldUserData, key, aliases)
+    await adoptAnnotationAliases(worldUserData, key, adopted.aliases)
+    return adopted.aliases
   },
 }, worldDesigner, {
   registry: worldSources,
@@ -4162,8 +4164,7 @@ function dropAskPrimers(): void { askPrimers.clear() }
 // and release passes, a sync reload, a key or encryption change, an import), and the store restarting, drops the primers.
 onMemoryChanged(() => dropAskPrimers())
 /** WPA fix I5: the Ask's folder with its 8.3 short parts spelled out, before it keys the cache and scopes the reads. */
-// WP5 (review S6): and on a Mac, whether its volume keeps case, before it is keyed.
-const expandAskRoot = (root: string): Promise<string> => expandShortPath(root).then(async (long) => (await learnCaseRule(long), long))
+const expandAskRoot = (root: string): Promise<string> => expandShortPath(root)
 const askPrimer = createAskPrimer({
   cache: askPrimers,
   limit: () => getPrimerLimit(),

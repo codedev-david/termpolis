@@ -125,7 +125,9 @@ export function renameDoc(doc: WorldDoc, map: ReadonlyMap<string, string>): Worl
 export function renameClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<string, string>): Record<string, Claim[]> {
   if (!Object.keys(byItem).some((id) => map.has(id))) return byItem
   const out: Record<string, Claim[]> = Object.create(null)
-  for (const [id, list] of Object.entries(byItem)) if (!map.has(id)) out[id] = list
+  for (const [id, list] of Object.entries(byItem)) {
+    if (!map.has(id)) out[id] = list
+  }
   for (const [id, list] of Object.entries(byItem)) {
     const to = map.get(id)
     if (to === undefined) continue
@@ -134,4 +136,24 @@ export function renameClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<s
     out[to] = [...have, ...list.filter((c) => !seen.has(JSON.stringify(c)))]
   }
   return out
+}
+
+/**
+ * WP5 fix I2: annotations with every renamed item's claims also under its new id, after any the new id already has, a claim
+ * held under both kept once; the old ids keep theirs, so a migration that stops part way loses nothing (the store caps what
+ * it writes). The input is returned as is when no claim needs copying.
+ */
+export function copyClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<string, string>): Record<string, Claim[]> {
+  let out: Record<string, Claim[]> | null = null
+  for (const [id, list] of Object.entries(byItem)) {
+    const to = map.get(id)
+    if (to === undefined || to === id) continue
+    const have = (out ?? byItem)[to] ?? []
+    const seen = new Set(have.map((c) => JSON.stringify(c)))
+    const add = list.filter((c) => !seen.has(JSON.stringify(c)))
+    if (add.length === 0) continue
+    if (out === null) out = Object.assign(Object.create(null), byItem) as Record<string, Claim[]>
+    out[to] = [...have, ...add]
+  }
+  return out ?? byItem
 }

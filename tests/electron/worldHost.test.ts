@@ -2077,10 +2077,10 @@ describe('annotate', () => {
         const cur = byKey.get(k) ?? {}
         byKey.set(k, { ...cur, [id]: [...(cur[id] ?? []), c] })
       },
-      rename: async (k, renames) => {
+      copyRenamed: async (k, renames) => {
         const cur = byKey.get(k) ?? {}
-        const next: Record<string, Claim[]> = {}
-        for (const [id, cs] of Object.entries(cur)) next[renames[id] ?? id] = [...(next[renames[id] ?? id] ?? []), ...cs]
+        const next: Record<string, Claim[]> = { ...cur }
+        for (const [id, cs] of Object.entries(cur)) if (renames[id]) next[renames[id]] = [...(next[renames[id]] ?? []), ...cs]
         byKey.set(k, next)
       }
     }
@@ -2127,8 +2127,8 @@ describe('annotate', () => {
     expect(await (deps.annotations as () => Promise<unknown>)()).toEqual({ 'b-api': [person('Kept across compiles')] })
   })
 
-  // WP5 (G14): a compile that renames a part moves its saved annotations, in this project's store only.
-  it('a compile moves the annotations of a renamed part to its new id', async () => {
+  // WP5 (G14): a compile that renames a part copies its saved annotations, in this project's store only (fix I2: copied).
+  it('a compile copies the annotations of a renamed part to its new id', async () => {
     const ann = memAnnotations()
     await ann.add('k1', 'b-old', person('Follows the rename'))
     await ann.add('k2', 'b-old', person('Another project'))
@@ -2137,8 +2137,8 @@ describe('annotate', () => {
     await h.init(false)
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
     const deps = compile.mock.calls[0][1] as CompileDeps
-    await deps.renameAnnotations?.({ 'b-old': 'b-new' })
-    expect(await ann.list('k1')).toEqual({ 'b-new': [person('Follows the rename')] })
+    await deps.copyAnnotations?.({ 'b-old': 'b-new' })
+    expect(await ann.list('k1')).toEqual({ 'b-old': [person('Follows the rename')], 'b-new': [person('Follows the rename')] })
     expect(await ann.list('k2')).toEqual({ 'b-old': [person('Another project')] })
   })
 })

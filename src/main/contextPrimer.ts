@@ -26,7 +26,7 @@ import { adaptiveGate, dedupeHits, diversifyHits, dropOverlapping, dropPrefixDup
 import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
-import { projectKeyAliases } from './projectKey'
+import { liveProjectKeyAliases } from './projectKey'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -360,8 +360,11 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // the computers that wrote it), so whose key a note carries is its to judge, not the path hash worked out here.
   // Only a read that named no project has to be told apart by key in this builder: two repos can share a folder name.
   // WP5: every key this folder's notes may carry (projectKeyAliases), so a note written under an older spelling, or on
-  // Linux before WP5 kept the case, is this folder's own and not another's.
-  const ownKeys = new Set(opts.projectPath && opts.projectPath.trim() ? projectKeyAliases(opts.projectPath.trim()) : [])
+  // Linux before WP5 kept the case, is this folder's own and not another's; that lowercased key only while no other folder has
+  // the lowercased spelling (WP5 fix I1), so `~/app`'s notes never count as `~/App`'s. Asked alongside the search, like the
+  // Lumopolis check, and taken once the search answers, before any row is judged.
+  const ownKeysAsked = liveProjectKeyAliases(worldPath)
+  let ownKeys = new Set<string>()
   const foreignNote = (h: PrimerHit, scoped = false): boolean => {
     if (!isClaudeNote(h)) return false
     if (slugOf(h) !== project) return true
@@ -402,6 +405,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       async (asked) => {
         try {
           page = (await search({ query: opts.query, limit: asked, ...(scope === undefined ? {} : { project: scope }), ...(signal ? { signal } : {}) })) || []
+          ownKeys = new Set(await ownKeysAsked)
           // Never more rows than were asked for (best first, so these are the ones the search meant): the folding below is quadratic in
           // the rows, and a search that ignores its limit must not hand it thousands ('primer stays linear on hostile prefixes').
           if (Array.isArray(page) && asked !== undefined && page.length > asked) page = page.slice(0, asked)
@@ -431,6 +435,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     let rows: PrimerHit[]
     try {
       rows = (await search({ query: opts.query, limit: COMBINED_LIMIT, ...(project ? { project: searchScope, crossProject: true } : {}), ...(signal ? { signal } : {}) })) || []
+      ownKeys = new Set(await ownKeysAsked)
     } catch (e) {
       // WPA fix I2: a read that failed (the memory process restarting, a call that timed out, a store that cannot answer) is not
       // "no notes", so it is the caller's to tell apart: the error goes up. A cancelled ask is owed no reason.
@@ -442,8 +447,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     if (rows.length > COMBINED_LIMIT) rows = rows.slice(0, COMBINED_LIMIT)
     const shown = withoutExcluded(withoutCandidates(rows))
     if (project) {
-      const keys = new Set(opts.projectPath && opts.projectPath.trim() ? projectKeyAliases(opts.projectPath.trim()) : [])
-      const own = (h: PrimerHit): boolean => (keys.size > 0 && typeof h.projectKey === 'string' ? keys.has(h.projectKey) : slugOf(h) === project)
+      const own = (h: PrimerHit): boolean => (ownKeys.size > 0 && typeof h.projectKey === 'string' ? ownKeys.has(h.projectKey) : slugOf(h) === project)
       projectHits = gate(withoutForeignNotes(shown.filter(own), true))
     }
     globalHits = gate(withoutForeignNotes(shown, false), project !== '')

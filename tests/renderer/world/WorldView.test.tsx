@@ -1595,6 +1595,18 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(screen.getByText('No saved views yet')).toBeInTheDocument()
   })
 
+  // WP5 fix I5: the world comes back with the older keys of its root; their saved views are copied under the new key.
+  it('a world opened under a new key shows the views saved under its older keys, and leaves them where they were', async () => {
+    const oldKey = 'termpolis.world.bookmarks.k-old'
+    localStorage.setItem(oldKey, JSON.stringify([{ name: 'From before', camera: cam, selection: ['b1'] }]))
+    bridge({ worldGet: vi.fn(async () => ok({ ...minimal(), aliasKeys: ['k-old'] })) })
+    await mount()
+    openMenu()
+    expect(screen.getAllByTestId('world-bookmark-go').map((x) => x.textContent)).toEqual(['From before'])
+    expect(JSON.parse(localStorage.getItem(keyOf()) as string)).toEqual([{ name: 'From before', camera: cam, selection: ['b1'] }])
+    expect(localStorage.getItem(oldKey)).not.toBeNull()
+  })
+
   it('choosing a bookmark calls setCamera(camera, false) and restores its selection; an id no longer in the world is skipped', async () => {
     localStorage.setItem(keyOf(), JSON.stringify([
       { name: 'Open b1', camera: cam, selection: ['gone', 'b1'] },

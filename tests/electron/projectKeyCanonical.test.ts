@@ -1,11 +1,11 @@
 // WPA item 4: one folder, one key, however the path is spelled.
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as crypto from 'crypto'
 import {
   canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart, SHORT_SCAN_MAX, foldsCase,
-  SHORT_MEMO_MAX, SHORT_MEMO_HIT_MS, SHORT_MEMO_MISS_MS, learnCaseRule, _resetCaseRuleForTests,
+  SHORT_MEMO_MAX, SHORT_MEMO_HIT_MS, SHORT_MEMO_MISS_MS, loweredAliasKeys, liveProjectKeyAliases,
 } from '../../src/main/projectKey'
-import type { CaseProbeFs, ShortPathFs } from '../../src/main/projectKey'
+import type { FolderIdFs, ShortPathFs } from '../../src/main/projectKey'
 import { promises as fsp } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -339,79 +339,72 @@ describe('WP5, review I6, on a real Windows file system', () => {
   })
 })
 
-describe('WP5, review S6: a Mac folder keeps its case on a case-sensitive volume', () => {
-  // A fake volume: `ids` gives each path that exists its file id; a path not in it does not exist.
-  const volume = (ids: Record<string, number>): CaseProbeFs & ReturnType<typeof vi.fn> =>
-    vi.fn(async (p: string) => {
-      if (ids[p] === undefined) throw new Error('ENOENT')
-      return { dev: 1n, ino: BigInt(ids[p]) }
-    }) as CaseProbeFs & ReturnType<typeof vi.fn>
-  afterEach(() => _resetCaseRuleForTests())
-
-  it('folds case on macOS until the folder\'s volume is found to keep it, and then keeps the case of it and what is inside it', async () => {
+describe('WP5 fix I3: macOS always folds case, as before WP5', () => {
+  it('two spellings of one Mac folder are one key, on any volume', () => {
+    expect(canonicalProjectPath('/Volumes/Work/Project', 'darwin')).toBe('/volumes/work/project')
     expect(projectKeyOf('/Volumes/Work/Project', 'darwin')).toBe(projectKeyOf('/Volumes/Work/project', 'darwin'))
-    const fs = volume({ '/Volumes/Work/Project': 3, '/Volumes/Work/project': 4 }) // pROJECT absent: two folders differ only in case
-    expect(await learnCaseRule('/Volumes/Work/Project/', 'darwin', fs)).toBe(false)
-    expect(fs.mock.calls.map((c) => c[0])).toEqual(['/Volumes/Work/Project', '/Volumes/Work/pROJECT'])
-    expect(canonicalProjectPath('/Volumes/Work/Project', 'darwin')).toBe('/Volumes/Work/Project')
-    expect(canonicalProjectPath('/Volumes/Work/Project/Sub', 'darwin')).toBe('/Volumes/Work/Project/Sub')
-    expect(projectKeyOf('/Volumes/Work/Project', 'darwin')).not.toBe(projectKeyOf('/Volumes/Work/project', 'darwin'))
-    // A sibling never asked about, or a folder whose name only starts the same, keeps the macOS rule.
-    expect(canonicalProjectPath('/Volumes/Work/ProjectTwo', 'darwin')).toBe('/volumes/work/projecttwo')
-    // The key every note had before carries on as an alias, so saved notes and worlds are still found.
-    expect(projectKeyAliases('/Volumes/Work/Project', 'darwin')).toEqual([sha('/Volumes/Work/Project'), sha('/volumes/work/project')])
-    // Asked again: answered from what it learned, with no file system call.
-    expect(await learnCaseRule('/Volumes/Work/Project', 'darwin', fs)).toBe(false)
-    expect(fs).toHaveBeenCalledTimes(2)
+    expect(loweredAliasKeys('/Volumes/Work/Project', 'darwin')).toEqual([])
+  })
+})
+
+describe('WP5 fix I1: the lowercased Linux key is an alias only while no other folder has that spelling', () => {
+  // A fake file system: `ids` gives each folder that exists its id; `files` are entries that are not folders.
+  const disk = (ids: Record<string, number>, files: string[] = []): FolderIdFs & ReturnType<typeof vi.fn> =>
+    vi.fn(async (p: string) => {
+      if (files.includes(p)) return { dev: 1n, ino: 99n, isDirectory: () => false }
+      if (ids[p] === undefined) throw new Error('ENOENT')
+      return { dev: 1n, ino: BigInt(ids[p]), isDirectory: () => true }
+    }) as FolderIdFs & ReturnType<typeof vi.fn>
+
+  it('loweredAliasKeys names the keys made by lowercasing, on Linux only', () => {
+    expect(loweredAliasKeys('/home/me/App', 'linux')).toEqual([sha('/home/me/app')])
+    expect(loweredAliasKeys('/home/me//App', 'linux')).toEqual([sha('/home/me/app'), sha('/home/me//app')])
+    expect(loweredAliasKeys('/home/me/app', 'linux')).toEqual([])
+    expect(loweredAliasKeys('C:\Me\App', 'win32')).toEqual([])
+    expect(loweredAliasKeys('/Users/me/App', 'darwin')).toEqual([])
+    expect(loweredAliasKeys('/home/me/app', undefined)).toEqual(loweredAliasKeys('/home/me/app', process.platform))
   })
 
-  it('folds case on a volume that ignores it (the default APFS): the swapped name is the same entry', async () => {
-    const fs = volume({ '/Users/me/Repo': 7, '/Users/me/rEPO': 7 })
-    expect(await learnCaseRule('/Users/me/Repo', 'darwin', fs)).toBe(true)
-    expect(canonicalProjectPath('/Users/me/Repo', 'darwin')).toBe('/users/me/repo')
-    // Another entry under the swapped name (another device, or another file) is a volume that keeps case.
-    const other = vi.fn(async (p: string) => ({ dev: p.endsWith('rEPO') ? 2n : 1n, ino: 7n }))
-    expect(await learnCaseRule('/Users/me/Repo', 'darwin', other)).toBe(true) // remembered from the first ask
-    _resetCaseRuleForTests()
-    expect(await learnCaseRule('/Users/me/Repo', 'darwin', other)).toBe(false)
+  it('keeps the old key when nothing is at the lowercased spelling, or it is a file', async () => {
+    const all = [sha('/home/me/App'), sha('/home/me/app')]
+    expect(await liveProjectKeyAliases('/home/me/App', 'linux', undefined, disk({ '/home/me/App': 1 }))).toEqual(all)
+    expect(await liveProjectKeyAliases('/home/me/App', 'linux', undefined, disk({ '/home/me/App': 1 }, ['/home/me/app']))).toEqual(all)
   })
 
-  it('asks the nearest ancestor with a letter that can be read, and keeps the macOS rule when there is none', async () => {
-    const fs = volume({ '/srv/Data': 1 }) // the folder itself (not yet made) and '123' have nothing to ask with
-    expect(await learnCaseRule('/srv/Data/123/new', 'darwin', fs)).toBe(false)
-    expect(fs.mock.calls.map((c) => c[0])).toEqual(['/srv/Data/123/new', '/srv/Data', '/srv/dATA'])
-    expect(canonicalProjectPath('/srv/Data/123/new', 'darwin')).toBe('/srv/Data/123/new')
-    expect(await learnCaseRule('/1/2', 'darwin', volume({}))).toBe(true)
-    expect(await learnCaseRule('/nothing/here', 'darwin', volume({}))).toBe(true)
-    expect(canonicalProjectPath('/nothing/here', 'darwin')).toBe('/nothing/here'.toLowerCase())
+  it('keeps it when the lowercased spelling is this very folder (same device and file id)', async () => {
+    const fs = disk({ '/home/me/App': 5, '/home/me/app': 5 })
+    expect(await liveProjectKeyAliases('/home/me/App', 'linux', undefined, fs)).toEqual([sha('/home/me/App'), sha('/home/me/app')])
+    expect(fs.mock.calls.map((c) => c[0])).toEqual(['/home/me/app', '/home/me/App'])
   })
 
-  it('touches nothing off macOS, nor for a bare name, and answers the platform rule', async () => {
-    const fs = volume({})
-    expect(await learnCaseRule('C:\\Work\\Repo', 'win32', fs)).toBe(true)
-    expect(await learnCaseRule('/home/me/Repo', 'linux', fs)).toBe(false)
-    expect(await learnCaseRule('repo', 'darwin', fs)).toBe(true)
-    expect(await learnCaseRule('repo', 'linux', fs)).toBe(false)
+  it('drops it when another folder has the lowercased spelling, or this one cannot be read', async () => {
+    expect(await liveProjectKeyAliases('/home/me/App', 'linux', undefined, disk({ '/home/me/App': 1, '/home/me/app': 2 }))).toEqual([sha('/home/me/App')])
+    expect(await liveProjectKeyAliases('/home/me/App', 'linux', undefined, disk({ '/home/me/app': 2 }))).toEqual([sha('/home/me/App')])
+    const otherDev: FolderIdFs = async (p) => ({ dev: p.endsWith('App') ? 1 : 2, ino: 1, isDirectory: () => true })
+    expect(await liveProjectKeyAliases('/home/me//App', 'linux', undefined, otherDev)).toEqual([sha('/home/me/App')])
+  })
+
+  it('asks nothing where no key was lowercased: Windows, macOS, a lower-case Linux path, a bare name', async () => {
+    const fs = disk({})
+    expect(await liveProjectKeyAliases('C:\Me\App', 'win32', undefined, fs)).toEqual(projectKeyAliases('C:\Me\App', 'win32'))
+    expect(await liveProjectKeyAliases('/Users/me/App', 'darwin', undefined, fs)).toEqual(projectKeyAliases('/Users/me/App', 'darwin'))
+    expect(await liveProjectKeyAliases('/home/me/app', 'linux', undefined, fs)).toEqual([sha('/home/me/app')])
+    expect(await liveProjectKeyAliases('/home/x//repo', 'linux', undefined, fs)).toEqual([sha('/home/x/repo'), sha('/home/x//repo')])
+    expect(await liveProjectKeyAliases('repo', 'linux', undefined, fs)).toEqual([])
     expect(fs).not.toHaveBeenCalled()
   })
 
-  it('remembers a bounded number of answers', async () => {
-    const fs = volume({})
-    for (let i = 0; i < 300; i++) await learnCaseRule(`/a/f${i}x`, 'darwin', fs)
-    const calls = fs.mock.calls.length
-    await learnCaseRule('/a/f0x', 'darwin', fs) // the oldest answer was dropped: asked again
-    expect(fs.mock.calls.length).toBeGreaterThan(calls)
-    await learnCaseRule('/a/f299x', 'darwin', fs)
-    expect(fs.mock.calls.length).toBe(calls + 2)
-  })
-
-  it.runIf(process.platform === 'darwin')('on this Mac: a folder on the boot volume answers as the volume does', async () => {
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'wp5s6-Case-'))
+  it('on this machine: reads the real folder (defaults to this platform)', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'wp5i1-Case-'))
     try {
-      const folds = await learnCaseRule(dir)
-      let sameEntry = true
-      try { await fsp.lstat(dir.replace('wp5s6-Case-', 'WP5S6-cASE-')) } catch { sameEntry = false }
-      expect(folds).toBe(sameEntry)
+      const keys = await liveProjectKeyAliases(dir)
+      expect(keys[0]).toBe(projectKeyOf(dir))
+      // Where case is kept and nothing is at the lowercased spelling, the old key stays; where it folds there is none.
+      if (!foldsCase()) expect(keys).toContain(sha(canonicalProjectPath(dir).toLowerCase()))
+      // Read as Linux reads it, on the real disk: nothing other than this folder answers to its lowercased spelling (a disk
+      // that folds case finds the same folder there), so the old key stays.
+      const linux = await liveProjectKeyAliases(dir, 'linux')
+      expect(linux).toContain(sha(canonicalProjectPath(dir, 'linux').toLowerCase()))
     } finally {
       await fsp.rm(dir, { recursive: true, force: true })
     }

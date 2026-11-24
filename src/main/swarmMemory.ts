@@ -27,7 +27,7 @@ import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { inspectSecret, createSecretExclusive, retireSecretFile, listRetiredSecrets, keyStorageMode } from './secureKeyStore'
-import { projectKeyOf, projectKeyAliases, hasShortPart, expandShortPath, learnCaseRule } from './projectKey'
+import { projectKeyOf, projectKeyAliases, liveProjectKeyAliases, hasShortPart, expandShortPath } from './projectKey'
 import { abortError } from './hostLane'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
@@ -1476,8 +1476,6 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   assertWritable()
   // WPA: an 8.3 short spelling of the folder is stored under its long name's key (only the parts that look short, each by a folder listing).
   if (hasShortPart(input.project)) input = { ...input, project: await expandShortPath(input.project as string) }
-  // WP5 (review S6): on a Mac, whether the folder's volume keeps case, before the note is keyed (no file call elsewhere).
-  if (typeof input.project === 'string') await learnCaseRule(input.project)
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
   const projectKey = input.project ? projectKeyOf(input.project) : undefined // F19
@@ -2281,7 +2279,6 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // WP5 (review I6): the keys of the spelling asked with stay aliases, so a note written under it keeps matching.
   const asked = opts.project
   if (hasShortPart(opts.project)) opts = { ...opts, project: await expandShortPath(opts.project as string) }
-  if (typeof opts.project === 'string') await learnCaseRule(opts.project) // WP5 (review S6), as memoryWrite
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
   // BB2: when diversifying, over-fetch a wider candidate pool so MMR has room to swap
   // near-duplicates for distinct hits; otherwise fetch exactly the requested count.
@@ -2290,7 +2287,8 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
   if (opts.project && !projectSlug) return []
   const projectKey = opts.project ? projectKeyOf(opts.project) : undefined // F19: precise full-path scope
-  const projectKeys = opts.project ? projectKeyAliases(opts.project, process.platform, asked) : []
+  // WP5 fix I1: on Linux the lowercased key from before WP5 counts only while no other folder has that spelling.
+  const projectKeys = opts.project ? await liveProjectKeyAliases(opts.project, process.platform, asked) : []
   if (projectSlug) opts = { ...opts, project: projectSlug, projectKey, ...(projectKeys.length > 1 ? { projectKeys } : {}) }
 
   const cacheKey = searchCacheKey(opts, limit)
@@ -2752,12 +2750,12 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
  *  search's is, so the primer's recent listing finds the notes a search finds. memoryList itself stays sync for the store's own
  *  callers, which only ever pass a folder already spelled out. */
 export async function memoryListLong(opts: ListOptions = {}): Promise<MemoryEntry[]> {
-  if (typeof opts?.project === 'string') await learnCaseRule(opts.project) // WP5 (review S6), as memoryWrite
-  if (hasShortPart(opts?.project)) {
-    const asked = opts.project as string
-    const project = await expandShortPath(asked)
-    // WP5 (review I6): the keys of the spelling asked with stay aliases, as memorySearch keeps them.
-    opts = { ...opts, project, projectKeys: projectKeyAliases(project, process.platform, asked) }
+  if (typeof opts?.project === 'string' && !opts.projectKey) {
+    const asked = opts.project
+    const project = hasShortPart(asked) ? await expandShortPath(asked) : asked
+    // WP5 (review I6): the keys of the spelling asked with stay aliases, as memorySearch keeps them. WP5 fix I1: on Linux the
+    // lowercased key from before WP5 counts only while no other folder has that spelling.
+    opts = { ...opts, project, projectKeys: await liveProjectKeyAliases(project, process.platform, asked) }
   }
   return memoryList(opts)
 }

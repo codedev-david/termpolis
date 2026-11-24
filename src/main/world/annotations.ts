@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
-import { renameClaims } from './idMigration'
+import { copyClaims } from './idMigration'
 import type { WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
@@ -27,10 +27,11 @@ export interface AnnotationStore {
   /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM. */
   add(key: string, itemId: string, claim: Claim): Promise<void>
   /**
-   * Moves each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
-   * both kept once and the item capped as an add caps it (idMigration.ts). Writes only when an old id had any.
+   * Copies each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
+   * both kept once and the item capped as an add caps it (idMigration.ts). The old ids keep theirs (WP5 fix I2). Writes only
+   * when a claim was not yet under its new id, and rejects when that write fails.
    */
-  rename(key: string, renames: Record<string, string>): Promise<void>
+  copyRenamed(key: string, renames: Record<string, string>): Promise<void>
 }
 
 const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
@@ -263,14 +264,17 @@ export function createAnnotationStore(dir: string): AnnotationStore {
           await writeAtomic(fileOf(key), JSON.stringify(all))
         })
       }),
-    rename: (key, renames) =>
+    copyRenamed: (key, renames) =>
       lock(key, async () => {
-        const moved = (all: Record<string, Claim[]>): boolean => Object.keys(all).some((id) => Object.hasOwn(renames, id))
-        if (!moved(await read(key))) return // the common case: nothing to move, no lock file taken
+        const map = new Map(Object.entries(renames))
+        const pending = (all: Record<string, Claim[]>): Record<string, Claim[]> | null => {
+          const next = copyClaims(all, map)
+          return next === all ? null : next
+        }
+        if (pending(await read(key)) === null) return // the common case: nothing to copy, no lock file taken
         await withAnnotationFileLock(fileOf(key), async () => {
-          const all = await read(key)
-          if (!moved(all)) return
-          const next = renameClaims(all, new Map(Object.entries(renames)))
+          const next = pending(await read(key))
+          if (next === null) return
           for (const id of Object.keys(next)) next[id] = capClaims(next[id])
           await writeAtomic(fileOf(key), JSON.stringify(next))
         })

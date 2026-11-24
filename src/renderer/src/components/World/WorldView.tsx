@@ -544,7 +544,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     bookmarkWorldRef.current = projectKey
     cancelBookmark()
   }
-  useEffect(() => { setBookmarks(projectKey === null ? [] : loadBookmarks(projectKey)) }, [projectKey])
+  // WP5 fix I5: a world opened under a new key brings the views saved under its older keys (copied once, never moved).
+  useEffect(() => { setBookmarks(projectKey === null ? [] : loadBookmarks(projectKey, docRef.current?.aliasKeys)) }, [projectKey])
   const onSaveBookmark = (name: string): void => {
     const v = viewer as WorldViewer // the save button is off without a viewer
     const cam = v.cameraState()

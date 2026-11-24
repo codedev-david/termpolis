@@ -44,7 +44,7 @@ const folder: WorldSource = { kind: 'folder', root: '/home/me/Repo' }
 describe('adoptWorldAliases', () => {
   it('copies the world saved under the older key to the new key, and leaves the older one where it was', async () => {
     const { deps, docs } = fakes({ docs: { [OLD]: doc(OLD, { title: 'Hand title' } as Partial<WorldDoc>) } })
-    expect(await adoptWorldAliases(NEW, ['', NEW, OLD, OLD], deps)).toEqual({ world: OLD, entries: [] })
+    expect(await adoptWorldAliases(NEW, ['', NEW, OLD, OLD], deps)).toEqual({ world: OLD, entries: [], aliases: [OLD] })
     expect(docs[NEW]).toEqual(doc(NEW, { title: 'Hand title' } as Partial<WorldDoc>))
     expect(docs[OLD].projectKey).toBe(OLD)
   })
@@ -61,24 +61,24 @@ describe('adoptWorldAliases', () => {
 
   it('never overwrites a world the new key already has, even one saved while it read', async () => {
     const first = fakes({ docs: { [NEW]: doc(NEW, { title: 'newer' } as Partial<WorldDoc>), [OLD]: doc(OLD) } })
-    expect(await adoptWorldAliases(NEW, [OLD], first.deps)).toEqual({ entries: [] })
+    expect(await adoptWorldAliases(NEW, [OLD], first.deps)).toEqual({ entries: [], aliases: [OLD] })
     expect(first.deps.store.load).not.toHaveBeenCalled()
     expect(first.deps.store.save).not.toHaveBeenCalled()
 
     const raced = fakes({ docs: { [OLD]: doc(OLD) } })
     raced.deps.hasWorld.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-    expect(await adoptWorldAliases(NEW, [OLD], raced.deps)).toEqual({ entries: [] })
+    expect(await adoptWorldAliases(NEW, [OLD], raced.deps)).toEqual({ entries: [], aliases: [OLD] })
     expect(raced.deps.store.save).not.toHaveBeenCalled()
   })
 
   it('does nothing without a key or an older key, and never throws when a write fails', async () => {
     const { deps } = fakes({ docs: { [OLD]: doc(OLD) } })
-    expect(await adoptWorldAliases('', [OLD], deps)).toEqual({ entries: [] })
-    expect(await adoptWorldAliases(NEW, [NEW, ''], deps)).toEqual({ entries: [] })
+    expect(await adoptWorldAliases('', [OLD], deps)).toEqual({ entries: [], aliases: [] })
+    expect(await adoptWorldAliases(NEW, [NEW, ''], deps)).toEqual({ entries: [], aliases: [] })
     expect(deps.hasWorld).not.toHaveBeenCalled()
     deps.store.save.mockRejectedValueOnce(new Error('ENOSPC'))
     deps.registry.list.mockRejectedValueOnce(new Error('EACCES'))
-    expect(await adoptWorldAliases(NEW, [OLD], deps)).toEqual({ entries: [] })
+    expect(await adoptWorldAliases(NEW, [OLD], deps)).toEqual({ entries: [], aliases: [OLD] })
   })
 
   it('moves the recent-list line of this folder from the older key to the new one, keeping its title', async () => {
@@ -110,6 +110,33 @@ describe('adoptWorldAliases', () => {
     expect(two.entries().map((e) => e.title)).toEqual(['A'])
   })
 
+  // WP5 fix I1: the lowercased key is also `~/repo`'s own key. Its world and line are this folder's only when the recent list
+  // holds that key for `/home/me/Repo` itself, spelled case for case.
+  it('adopts from a lowered key only when the recent list holds it for this very folder', async () => {
+    const lowered = new Set([OLD])
+    const theirs = fakes({ docs: { [OLD]: doc(OLD) }, entries: [entry(OLD, { kind: 'folder', root: '/home/me/repo' }, 'Lower twin')] })
+    expect(await adoptWorldAliases(NEW, [OLD, 'k-dup'], { ...theirs.deps, lowered })).toEqual({ entries: [], aliases: ['k-dup'] })
+    expect(theirs.deps.store.save).not.toHaveBeenCalled()
+    expect(theirs.entries().map((e) => e.key)).toEqual([OLD])
+
+    const none = fakes({ docs: { [OLD]: doc(OLD) } })
+    expect(await adoptWorldAliases(NEW, [OLD], { ...none.deps, lowered })).toEqual({ entries: [], aliases: [] })
+    expect(none.deps.hasWorld).not.toHaveBeenCalled()
+
+    const design = fakes({ docs: { [OLD]: doc(OLD) }, entries: [entry(OLD, { kind: 'design', id: 'x', title: 'X' })] })
+    design.deps.keyOf.mockReturnValue(NEW)
+    expect((await adoptWorldAliases(NEW, [OLD], { ...design.deps, lowered })).aliases).toEqual([])
+
+    const unread = fakes({ docs: { [OLD]: doc(OLD) } })
+    unread.deps.registry.list.mockRejectedValueOnce(new Error('EACCES'))
+    expect(await adoptWorldAliases(NEW, [OLD], { ...unread.deps, lowered })).toEqual({ entries: [], aliases: [] })
+
+    const ours = fakes({ docs: { [OLD]: doc(OLD) }, entries: [entry(OLD, folder, 'Mine')] })
+    expect(await adoptWorldAliases(NEW, [OLD], { ...ours.deps, lowered })).toEqual({ world: OLD, entries: [OLD], aliases: [OLD] })
+    expect(ours.docs[NEW].projectKey).toBe(NEW)
+    expect(ours.deps.registry.list).toHaveBeenCalledTimes(1)
+  })
+
   it('works on the real world store and source registry', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'world-adopt-'))
     try {
@@ -131,12 +158,12 @@ describe('adoptWorldAliases', () => {
         registry,
         keyOf: keyForSource,
       }
-      expect(await adoptWorldAliases(newKey, [oldKey], deps)).toEqual({ world: oldKey, entries: [oldKey] })
+      expect(await adoptWorldAliases(newKey, [oldKey], deps)).toEqual({ world: oldKey, entries: [oldKey], aliases: [oldKey] })
       expect((await loadAny(newKey))?.projectKey).toBe(newKey)
       expect((await loadAny(oldKey))?.projectKey).toBe(oldKey)
       expect((await registry.list()).map((e) => [e.key, e.title])).toEqual([[newKey, 'Saved title']])
       // Every open after the first finds nothing left to do.
-      expect(await adoptWorldAliases(newKey, [oldKey], deps)).toEqual({ entries: [] })
+      expect(await adoptWorldAliases(newKey, [oldKey], deps)).toEqual({ entries: [], aliases: [oldKey] })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

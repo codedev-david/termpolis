@@ -101,6 +101,8 @@ export interface WorldDoc {
   filesListed?: number
   /** A first map drawn from the file listing while the files are still being read; never stored. Absent on a full world. */
   provisional?: boolean
+  /** The root's older keys (world:get only, never stored): the pane copies its saved views from them (WP5 fix I5). */
+  aliasKeys?: string[]
 }
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }

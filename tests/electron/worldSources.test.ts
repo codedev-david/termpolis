@@ -39,6 +39,30 @@ describe('source registry', () => {
     expect(list[0].missing).toBeUndefined()
   })
 
+  // F-R2 (WP5, fix I1/I3): on Linux the key keeps the folder's case, so `~/app` and `~/App` are two worlds and an upsert of
+  // one never replaces the other; Windows and macOS fold case, so there the two spellings are one folder and one entry.
+  it('F-R2: two sibling folders that differ only in case are two entries on Linux, one where case folds', async () => {
+    const real = process.platform
+    try {
+      for (const [platform, want] of [['linux', 2], ['darwin', 1], ['win32', 1]] as const) {
+        Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+        await rm(join(dir, 'world'), { recursive: true, force: true })
+        present = new Set(['/home/me/app', '/home/me/App'])
+        const r = reg()
+        await r.upsert({ kind: 'folder', root: '/home/me/app' }, 'lower')
+        await r.upsert({ kind: 'folder', root: '/home/me/App' }, 'upper')
+        const list = await r.list()
+        expect(list, platform).toHaveLength(want)
+        if (want === 2) {
+          expect(list.map((e) => [e.title, e.source.kind === 'design' ? '' : e.source.root])).toEqual([['upper', '/home/me/App'], ['lower', '/home/me/app']])
+          expect(new Set(list.map((e) => e.key)).size).toBe(2)
+        }
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+
   it('same root twice → one entry, lastOpened updated', async () => {
     const r = reg()
     const first = await r.upsert({ kind: 'project', root: '/a' }, 'Alpha')

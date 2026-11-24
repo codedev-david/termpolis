@@ -6,6 +6,10 @@
 // It copies and never moves: the old world file stays where it was, so going back to an older build still finds it. It
 // never overwrites a world the new key already has (that one is the newer), only takes over a recent-list line whose
 // folder is this one, never throws, and never logs (keys and content stay out of the log).
+//
+// WP5 fix I1: the lowercased key is also the key of the folder spelled in lower case. A Linux `~/App` takes the world saved
+// under it only when the caller found no other folder at `~/app` (liveProjectKeyAliases) and the recent list holds that key
+// for `~/App` itself, spelled case for case; a key it cannot place stays where it is.
 import type { WorldDoc } from '../../shared/world/types'
 import type { WorldEntry, WorldSource } from './sources'
 
@@ -20,6 +24,10 @@ export interface WorldAdoptionDeps {
   }
   /** The registry key of a source (keyForSource). */
   keyOf(s: WorldSource): string
+  /** WP5 fix I1: the older keys made by lowercasing the root on a platform that keeps case (loweredAliasKeys). Such a key is
+   *  also the key of the folder spelled in lower case (`~/app` beside `~/App`), so it is adopted from only when the recent list
+   *  holds it for this very folder, spelled case for case. */
+  lowered?: ReadonlySet<string>
 }
 
 export interface WorldAdoption {
@@ -27,13 +35,23 @@ export interface WorldAdoption {
   world?: string
   /** The older keys whose recent-list lines now sit under the new key. */
   entries: string[]
+  /** The older keys this root's saved data may be adopted from (its annotations, its saved views): `aliasKeys` less the
+   *  lowered ones not shown to be this folder's. */
+  aliases: string[]
 }
 
 /** Brings a world saved under an older key of its root (`aliasKeys`, in order) to `key`. Resolves with what it moved. */
 export async function adoptWorldAliases(key: string, aliasKeys: readonly string[], deps: WorldAdoptionDeps): Promise<WorldAdoption> {
-  const out: WorldAdoption = { entries: [] }
-  const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
-  if (!key || others.length === 0) return out
+  const out: WorldAdoption = { entries: [], aliases: [] }
+  const unique = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
+  if (!key || unique.length === 0) return out
+  // Listed once, before anything is copied: the lines that show which folder each older key was.
+  const listed = await deps.registry.list().catch(() => null)
+  const ours = (old: string): boolean =>
+    !deps.lowered?.has(old) || !!listed?.some((e) => e.key === old && e.source.kind !== 'design' && deps.keyOf(e.source) === key)
+  const others = unique.filter(ours)
+  out.aliases = others
+  if (others.length === 0) return out
   try {
     if (!(await deps.hasWorld(key))) {
       for (const old of others) {
@@ -48,10 +66,10 @@ export async function adoptWorldAliases(key: string, aliasKeys: readonly string[
   } catch {
     // the world is compiled afresh under the new key: the old file stays as it was
   }
+  if (listed === null) return out // the older line stays in the recent list; opening it still opens this folder
   try {
-    const entries = await deps.registry.list()
-    const hasNew = entries.some((e) => e.key === key)
-    for (const e of entries) {
+    const hasNew = listed.some((e) => e.key === key)
+    for (const e of listed) {
       if (!others.includes(e.key) || e.source.kind === 'design' || deps.keyOf(e.source) !== key) continue
       if (!hasNew && out.entries.length === 0) await deps.registry.upsert(e.source, e.title)
       await deps.registry.remove(e.key)

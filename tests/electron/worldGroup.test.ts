@@ -499,6 +499,22 @@ describe('groupProject', () => {
     expect(home(groupProject(snap(m), [], { maxBuildings: 1 }), name(N - 1)).name).toBe('item00000')
   }, 60000)
 
+  // WP5 fix M2: the budget counts each import looked at, so a barrel file that imports thousands (and is imported back by
+  // each) costs what it reads, not one step per visit.
+  it('M2: a 4k-file barrel cycle in one building is named in bounded work, the same name every time', () => {
+    const N = 4000
+    const leaf = (i: number): string => `src/barrel/part${String(i).padStart(4, '0')}`
+    const m: Record<string, string[]> = { 'src/barrel/hub.ts': Array.from({ length: N }, (_, i) => `./${leaf(i).slice('src/barrel/'.length)}`) }
+    for (let i = 0; i < N; i++) m[`${leaf(i)}.ts`] = ['./hub']
+    const t0 = Date.now()
+    const g = groupProject(snap(m), [], { maxBuildings: 1 })
+    const ms = Date.now() - t0
+    const b = home(g, 'src/barrel/hub.ts')
+    expect(b.members.length).toBe(N + 1)
+    expect(ms).toBeLessThan(10000)
+    expect(home(groupProject(snap(m), [], { maxBuildings: 1 }), `${leaf(N - 1)}.ts`).name).toBe(b.name)
+  }, 60000)
+
   it('G15 and F03: folders and files named only in a non-Latin script or emoji get readable distinct ids, not root', () => {
     const s = snap({ '文档/a.ts': [], '资料/b.ts': [], '🚀.ts': [], 'z.ts': [] })
     const g = groupProject(s, [])

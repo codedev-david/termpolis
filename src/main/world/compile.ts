@@ -16,7 +16,7 @@ import { baseKey } from './detectors/common'
 import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
 import { markTwoWay } from '../../shared/world/cardFacts'
-import { domainToASCII, domainToUnicode } from 'node:url'
+import { domainToASCII } from 'node:url'
 import { edgeId, groupProject, idSlug, isIgnored, resolveImport, shortHash, uniqueIds, type GroupBuilding, type Grouping } from './group'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { languageForFile } from '../codeGraphExtract'
@@ -48,8 +48,10 @@ export interface CompileDeps {
   ciRuns?: () => Promise<TestRun[]>
   /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
   annotations?: () => Promise<Record<string, Claim[]>>
-  /** Moves the saved annotations of renamed parts (old id → new id) to their new ids, once (idMigration.ts). Absent: only this compile's copy is renamed. */
-  renameAnnotations?: (renames: Record<string, string>) => Promise<void>
+  /** Copies the saved annotations of renamed parts (old id → new id) to their new ids, the old ids keeping theirs (idMigration.ts,
+   *  WP5 fix I2). A rejection fails the compile, so the renamed world is not saved and the next open copies again. Absent: only
+   *  this compile's copy is renamed. */
+  copyAnnotations?: (renames: Record<string, string>) => Promise<void>
   onProgress?: (stage: CompileStage, pct: number) => void
   /**
    * A file's scan made from the text the snapshot already read (worldHost prescans), so a first map reads each file
@@ -317,13 +319,13 @@ function seenInCode(e: Grouping['edges'][number], g: Grouping, snap: GraphSnapsh
 
 /**
  * A web host as one orb knows it: `ascii`, its punycode form (url.domainToASCII), is who it is, so a host written in
- * Unicode and in punycode is one orb; `name`, what the orb shows, is that host in Unicode again (the host as written,
- * lowercased, for an ordinary host). A host domainToASCII refuses keeps its own spelling for both.
+ * Unicode and in punycode is one orb; `name`, what the orb shows, is that same punycode form (WP5 fix I4), never turned back
+ * into Unicode, so a look-alike host cannot pass for another. A host domainToASCII refuses keeps its own spelling for both.
  */
 function hostOf(key: string): { ascii: string; name: string } {
   const host = key.toLowerCase()
   const ascii = domainToASCII(host) || host
-  return { ascii, name: domainToUnicode(ascii) || host }
+  return { ascii, name: ascii }
 }
 
 /** Two orbs are one when they are the same kind and the same agent or host (a host in punycode, so its two spellings are one). */
@@ -668,7 +670,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const renames = previous ? idRenames(previous, g, ext, orbKey) : new Map<string, string>()
   if (renames.size > 0) {
     previous = renameDoc(previous as WorldDoc, renames)
-    await deps.renameAnnotations?.(Object.fromEntries(renames)).catch(() => undefined)
+    await deps.copyAnnotations?.(Object.fromEntries(renames))
   }
 
   progress('status', 55)
