@@ -73,10 +73,12 @@ const visibleBroken = (): void => {
 }
 
 let actualStart: typeof SmartAskModule.startSmartAsk
+let actualAskBox: typeof AskBoxModule.mountAskBox
 beforeEach(async () => {
   ensureDecompressionStream()
   actualStart = (await vi.importActual<typeof SmartAskModule>('../../../src/world-export/smartAsk')).startSmartAsk
-  mountAskBox.mockReset().mockImplementation((await vi.importActual<typeof AskBoxModule>('../../../src/world-export/askBox')).mountAskBox)
+  actualAskBox = (await vi.importActual<typeof AskBoxModule>('../../../src/world-export/askBox')).mountAskBox
+  mountAskBox.mockReset().mockImplementation(actualAskBox)
   createWorldViewer.mockReset().mockImplementation(fakeViewer)
   hasWebGL.mockReset().mockReturnValue(true)
   startSmartAsk.mockReset().mockResolvedValue({ embed: async () => new Float32Array([1, 0, 0, 0]) })
@@ -277,6 +279,36 @@ describe('boot', () => {
     await boot()
     expect(await window.__worldExport.ready).toBe('keyword')
     expect((document.querySelector('.wx-map2d') as HTMLElement).hidden).toBe(false)
+  })
+
+  it.each([
+    ['the Ask box cannot be made', (): void => { mountAskBox.mockImplementation(() => { throw new Error('ask box') }) }],
+    ['the page cannot take the Ask box', (): void => {
+      mountAskBox.mockImplementation((...args: Parameters<typeof AskBoxModule.mountAskBox>) => {
+        const box = actualAskBox(...args)
+        Object.defineProperty(box, 'state', { get: () => { throw new Error('state') } })
+        return box
+      })
+    }],
+  ])('never loads the model after a failed boot on a smart page (%s), and leaves no unhandled rejection', async (_name, breakIt) => {
+    writePage({ smart: true })
+    breakIt()
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', vi.fn((cb: FrameRequestCallback) => { frames.push(cb); return frames.length }))
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      await boot()
+      expect(await window.__worldExport.ready).toBe('failed')
+      visibleBroken()
+      await vi.waitFor(() => expect(frames).toHaveLength(1))
+      frames[0](0)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(startSmartAsk).not.toHaveBeenCalled()
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
   })
 
   it('removes the page and shows the damaged-page message on top for any other failure after the page is built', async () => {

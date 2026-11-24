@@ -83,6 +83,9 @@ async function boot(): Promise<AskState> {
   if (typeof DecompressionStream !== 'function') return showMessage(OLD_BROWSER)
   let viewer: WorldViewer | null = null
   let page: Page | null = null
+  let smart: Promise<SmartAsk> | null = null
+  // Set by a failed boot: smart Ask, waiting for the first paint, then never loads the model for a page that is gone.
+  let failed = false
   try {
     const checked = validateWorld(await readJsonBlock<unknown>('world'))
     const meta = await readJsonBlock<unknown>('meta')
@@ -93,8 +96,11 @@ async function boot(): Promise<AskState> {
     page = buildPage(document.body, doc, meta)
     viewer = mountViewer(page, doc, meta)
     // Smart Ask only on a page that carries the model (and the vectors it ranks), and only after the city has painted.
-    const smart: Promise<SmartAsk> | null = vectors && document.getElementById('model')
-      ? afterPaint().then(() => startSmartAsk(readBlock))
+    smart = vectors && document.getElementById('model')
+      ? afterPaint().then(() => {
+        if (failed) throw new Error('the page did not start')
+        return startSmartAsk(readBlock)
+      })
       : null
     const box = mountAskBox(page.askHost, { entries, bm25: buildBm25(entries.map((e) => e.text)), vectors, smart, onPick: page.pick })
     page.setAsk(box)
@@ -102,6 +108,8 @@ async function boot(): Promise<AskState> {
     return await box.ready
   } catch {
     // Never leave the message under the page: the page is fixed, full-window and opaque, so it goes.
+    failed = true
+    smart?.catch(() => undefined)
     disposeQuietly(viewer)
     page?.dispose()
     document.querySelector('.wx-page')?.remove()
