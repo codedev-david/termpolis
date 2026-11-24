@@ -1127,6 +1127,9 @@ describe('manifestServiceNames', () => {
     expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    app: web', '', '   ', '  name: after-blank'))).toEqual(['after-blank'])
     expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    app: web', '  name: crlf').replace(/\n/g, '\r\n'))).toEqual(['crlf'])
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata:  \r\n\r\n  name: s\r\n')).toEqual(['s'])
+    // A doubled \r ending the metadata: line, as the old `\s*` read it.
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata:\r\r\n  name: a\r\n')).toEqual(['a'])
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata: \r\r\r\n  name: b\r\r\n')).toEqual(['b'])
     // generateName only: the block ends at spec:, and a name further down belongs to something else.
     expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  generateName: gen-', '  labels:', '    app: web'))).toEqual([])
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Deployment\nmetadata:\nspec:\n  name: no')).toEqual([])
