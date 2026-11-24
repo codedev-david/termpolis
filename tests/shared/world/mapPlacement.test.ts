@@ -31,6 +31,42 @@ describe('placeOnMap', () => {
   })
 })
 
+/** 50,000 parts, each alone in its own district, none with a layout position: the codex review's E3 world. */
+function oneFileDistricts(n: number): WorldDoc {
+  const doc = labelledWorld()
+  doc.layout.positions = {}
+  doc.edges = []
+  doc.externals = []
+  const proto = doc.buildings[0]
+  doc.buildings = []
+  doc.districts = []
+  for (let i = 0; i < n; i++) {
+    doc.buildings.push({ ...proto, id: `b${i}`, name: `b${i}`, districtId: `d${i}` })
+    doc.districts.push({ id: `d${i}`, name: `d${i}`, subtitle: '', hue: 0, members: [`b${i}`], nameState: 'observed' })
+  }
+  return doc
+}
+
+describe('a world of 50,000 one-file districts (E3)', () => {
+  // Each district looked through every part for its own: 2.5e9 checks, minutes. Indexed once, it is a fraction of a second.
+  it('is placed in one pass over the parts', () => {
+    const doc = oneFileDistricts(50_000)
+    const t = performance.now()
+    const { districts } = placeOnMap(doc)
+    expect(performance.now() - t).toBeLessThan(2_000)
+    expect(districts[0]).toEqual([0, 14])
+    expect(districts[49_999]).toEqual([(49_999 % 6) * 8, 14 + Math.floor(49_999 / 6) * 8])
+  })
+  it('is drawn as a 2D map in one pass, every district listing its one part', () => {
+    const doc = oneFileDistricts(50_000)
+    const t = performance.now()
+    const html = renderFallback(doc, 'p')
+    expect(performance.now() - t).toBeLessThan(5_000)
+    expect(html).toContain('<h3>d49999</h3><p></p><ul><li data-kind="building" data-id="b49999" tabindex="0">b49999 ')
+    expect(html.match(/<polygon /g)).toHaveLength(50_000)
+  })
+})
+
 describe('the 2D map and the document map share one placement', () => {
   /** Where renderFallback drew each building (its square's centre) and each district (its hexagon's centre). */
   function drawn(doc: WorldDoc): { at: Map<string, [number, number]>; districts: [number, number][] } {

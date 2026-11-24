@@ -245,8 +245,8 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
 
   const stage = make('div', 'wx-stage')
   const viewHost = make('div', 'wx-view')
+  // Drawn when first shown (drawMap): a big world opening on the 3D city never builds a map nobody sees.
   const map2d = make('div', 'wx-map2d')
-  map2d.innerHTML = renderFallback(doc, meta.project)
   map2d.hidden = true
   const card = make('aside', 'wx-card wx-panel')
   card.setAttribute('aria-label', 'Lumopolis details')
@@ -270,6 +270,25 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   let viewer: WorldViewer | null = null
   let flat = true
   let processes = DEFAULT_LAYERS.processes
+  const plan = doc.layers.plan
+  const has = (id: string | undefined): id is string => id !== undefined && plan.some((p) => p.id === id)
+  // A design world's export keeps its whole plan (the design is what it exports): it opens on the Removals
+  // proposal, when the design removes parts, so they are drawn as removed. A proposal export opens on its one.
+  const design = doc.projectKey.startsWith('design:')
+  /** The plan both views show: the city's layers (planned, proposal), and the 2D map drawn from the same two. */
+  const layers = { planned: DEFAULT_LAYERS.planned, proposal: has(meta.proposalId) ? meta.proposalId : design && has(REMOVALS_ID) ? REMOVALS_ID : null }
+  /** The 2D map shows `layers` as they are now; false: it is drawn again before it is shown. */
+  let mapDrawn = false
+  const drawMap = (): void => {
+    map2d.innerHTML = renderFallback(doc, meta.project, layers)
+    mapDrawn = true
+  }
+  const setPlan = (change: Partial<typeof layers>): void => {
+    Object.assign(layers, change)
+    viewer?.setLayers(change)
+    if (flat) drawMap()
+    else mapDrawn = false
+  }
   /** How much bigger than a laptop's the page draws, for this window (uiScale). */
   let scale = 1
   const sizeRoot = (): void => {
@@ -441,6 +460,7 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
 
   const setFlat = (on: boolean): void => {
     flat = on
+    if (on && !mapDrawn) drawMap()
     map2d.hidden = !on
     viewHost.hidden = on
     viewer?.setPaused(on)
@@ -455,41 +475,43 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     const actions = make('div', 'wx-tools wx-actions')
     toolbar.append(tools, actions)
     if (v) {
-      const plan = doc.layers.plan
-      const has = (id: string | undefined): id is string => id !== undefined && plan.some((p) => p.id === id)
-      // A design world's export keeps its whole plan (the design is what it exports): it opens on the Removals
-      // proposal, when the design removes parts, so they are drawn as removed. A proposal export opens on its one.
-      const design = doc.projectKey.startsWith('design:')
-      const proposal = has(meta.proposalId) ? meta.proposalId : design && has(REMOVALS_ID) ? REMOVALS_ID : null
-      v.setLayers({ proposal })
+      v.setLayers({ proposal: layers.proposal })
       // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
-      const planned = checkbox('Planned parts', 'planned', DEFAULT_LAYERS.planned, (on) => v.setLayers({ planned: on }))
       tools.append(
         select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => v.setTheme(t as ThemeName)),
         select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], DEFAULT_LAYERS.labels, (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
         checkbox('Processes', 'processes', DEFAULT_LAYERS.processes, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),
         checkbox('All line labels', 'allLineLabels', DEFAULT_LAYERS.allLineLabels, (on) => v.setLayers({ allLineLabels: on })),
-        planned,
       )
-      // A proposal export and a design world with a plan have proposals to pick. Picking one draws the planned
-      // parts again, so "Planned parts" is ticked to match.
-      if (proposal !== null || (design && plan.length > 0)) {
-        const options: Array<[string, string]> = [['', design ? 'No proposal' : 'Built world only'], ...plan.map((p): [string, string] => [p.id, p.title])]
-        tools.appendChild(select('Proposal', 'proposal', options, proposal ?? '', (id) => {
-          v.setLayers({ proposal: id === '' ? null : id, planned: true })
-          ;(planned.firstChild as HTMLInputElement).checked = true
-        }))
-      }
+    }
+    // The plan's controls work on the 2D map too, so a page without WebGL shows the proposal it was exported with.
+    const planned = checkbox('Planned parts', 'planned', layers.planned, (on) => setPlan({ planned: on }))
+    tools.appendChild(planned)
+    // A proposal export and a design world with a plan have proposals to pick. Picking one draws the planned
+    // parts again, so "Planned parts" is ticked to match.
+    if (layers.proposal !== null || (design && plan.length > 0)) {
+      const options: Array<[string, string]> = [['', design ? 'No proposal' : 'Built world only'], ...plan.map((p): [string, string] => [p.id, p.title])]
+      tools.appendChild(select('Proposal', 'proposal', options, layers.proposal ?? '', (id) => {
+        setPlan({ proposal: id === '' ? null : id, planned: true })
+        ;(planned.firstChild as HTMLInputElement).checked = true
+      }))
     }
     for (const t of doc.tours) actions.appendChild(button(t.title, 'tour', () => playTour(t)))
     if (v) {
-      const toggle = button('2D map', 'map2d', () => {
-        setFlat(!flat)
-        toggle.textContent = flat ? '3D city' : '2D map'
-        toggle.setAttribute('aria-pressed', String(flat))
-      })
+      const toggle = button('2D map', 'map2d', () => showFlat(!flat))
+      const showFlat = (on: boolean): void => {
+        setFlat(on)
+        toggle.textContent = on ? '3D city' : '2D map'
+        toggle.setAttribute('aria-pressed', String(on))
+      }
       toggle.setAttribute('aria-pressed', 'false')
       actions.appendChild(toggle)
+      // The city's graphics stopped (a lost WebGL context): the 2D map shows, and the switch back to the city waits
+      // until they return. Lost a second time, the viewer gives up on 3D ('flat') and the switch stays away.
+      v.on('graphics', (g) => {
+        toggle.hidden = g !== 'restored'
+        if (g !== 'restored' && !flat) showFlat(true)
+      })
     }
     actions.appendChild(button('Reset view', 'reset', () => { showCard(null); viewer?.resetView() }))
     setFlat(v === null)

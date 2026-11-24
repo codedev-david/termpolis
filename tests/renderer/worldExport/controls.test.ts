@@ -2,7 +2,7 @@
 // annotate, Build it or Re-layout), the proposal picker, the legend, the card panel and how clicks, Esc,
 // tours and Ask picks reach the viewer (3D) or the card panel (2D).
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WorldViewer } from '../../../src/renderer/src/world/engine'
+import type { WorldGraphics, WorldViewer } from '../../../src/renderer/src/world/engine'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import type { PageMeta } from '../../../src/shared/world/exportMeta'
 import { REMOVALS_ID } from '../../../src/shared/world/designPatch'
@@ -12,7 +12,15 @@ import { edge, minimal, rich } from '../world/helpers'
 const META: PageMeta = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false }
 
 function fakeViewer() {
+  const graphics = new Set<(g: WorldGraphics) => void>()
   return {
+    graphics,
+    /** The viewer's graphics changed (a lost WebGL context), as its on('graphics') reports it. */
+    lose: (g: WorldGraphics): void => { for (const cb of Array.from(graphics)) cb(g) },
+    on: vi.fn((ev: string, cb: (g: WorldGraphics) => void) => {
+      if (ev === 'graphics') graphics.add(cb)
+      return () => { graphics.delete(cb) }
+    }),
     load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
     setLabelScale: vi.fn(), setPanels: vi.fn(),
     apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
@@ -757,5 +765,100 @@ describe('the card close button and the card scrollbar', () => {
   it('keeps the close button clear of the gutter in the page CSS', () => {
     setup()
     expect(Array.from(document.querySelectorAll('style')).map((st) => st.textContent).join('')).toMatch(/\.wx-card-close\{[^}]*right:calc\([^)]*var\(--wx-card-gutter, 0px\)\)/)
+  })
+})
+
+describe('buildPage: the 2D map is built when first shown, from the layers the city shows (E2, E3)', () => {
+  const map = (q: (sel: string) => HTMLElement): HTMLElement => q('.wx-map2d')
+  const shape = (q: (sel: string) => HTMLElement, id: string): Element | null => map(q).querySelector(`rect[data-id="${id}"]`)
+
+  it('is not built while the city shows: a big world starts on the 3D city without drawing a hidden map', () => {
+    const { q, control } = setup()
+    expect(map(q).innerHTML).toBe('')
+    control('map2d').click()
+    expect(map(q).querySelector('section.world-fallback')).not.toBeNull()
+  })
+
+  it('draws the proposal the export opens on: its added parts dashed, and Removals faded', () => {
+    const a = setup({ meta: { proposalId: 'p1' } })
+    a.control('map2d').click()
+    expect(shape(a.q, 'pb1')?.getAttribute('fill')).toBe('none')
+    expect(map(a.q).querySelector('line[data-id="pe1"]')).not.toBeNull()
+    const b = setup({ doc: designDoc(true) })
+    b.control('map2d').click()
+    expect(shape(b.q, 'b2')?.getAttribute('opacity')).toBe('0.4')
+  })
+
+  it('follows the picker and "Planned parts", whether they change on the map or in the city', () => {
+    const { q, control } = setup({ meta: { proposalId: 'p1' } })
+    const planned = q<HTMLInputElement>('[data-layer="planned"]')
+    change(planned, false) // in the city: the map, built later, starts without them
+    control('map2d').click()
+    expect(shape(q, 'b4')).toBeNull()
+    expect(shape(q, 'pb1')).toBeNull()
+    change(control('proposal') as HTMLSelectElement, 'p1') // on the map: drawn again at once, planned ticked
+    expect(planned.checked).toBe(true)
+    expect(shape(q, 'b4')).not.toBeNull()
+    expect(shape(q, 'pb1')).not.toBeNull()
+    change(control('proposal') as HTMLSelectElement, '')
+    expect(shape(q, 'pb1')).toBeNull()
+    expect(shape(q, 'b4')).not.toBeNull()
+  })
+
+  it('without WebGL the page offers "Planned parts" and the proposal picker, and the map follows them', () => {
+    const { q, control, parent } = setup({ viewer: false, meta: { proposalId: 'p1' } })
+    const picker = control('proposal') as HTMLSelectElement
+    expect(picker.value).toBe('p1')
+    expect(shape(q, 'pb1')).not.toBeNull()
+    change(picker, '')
+    expect(shape(q, 'pb1')).toBeNull()
+    change(q<HTMLInputElement>('[data-layer="planned"]'), false)
+    expect(shape(q, 'b4')).toBeNull()
+    // The city's own controls stay away: there is no city.
+    expect(parent.querySelector('[data-control="theme"], [data-control="labels"], [data-layer="processes"], [data-layer="allLineLabels"]')).toBeNull()
+    const design = setup({ viewer: false, doc: designDoc(true) })
+    expect((design.control('proposal') as HTMLSelectElement).value).toBe(REMOVALS_ID)
+    expect(shape(design.q, 'b2')?.getAttribute('opacity')).toBe('0.4')
+    expect(setup({ viewer: false }).control('proposal')).toBeNull()
+  })
+})
+
+describe('buildPage: the city loses its graphics after start (E1)', () => {
+  it('a loss shows the 2D map and takes the 3D switch away until the graphics come back', () => {
+    const { q, control, viewer, page } = setup()
+    expect(viewer.on).toHaveBeenCalledWith('graphics', expect.any(Function))
+    const toggle = control('map2d')
+    page.showCard('<h3>x</h3>')
+    viewer.lose('lost')
+    expect(q('.wx-map2d').hidden).toBe(false)
+    expect(q('.wx-map2d').querySelector('section.world-fallback')).not.toBeNull()
+    expect(page.viewHost.hidden).toBe(true)
+    expect(viewer.setPaused).toHaveBeenLastCalledWith(true)
+    expect(toggle.hidden).toBe(true)
+    expect(q('.wx-card').hidden).toBe(true)
+    viewer.lose('restored') // back: the reader chooses the city again, nothing moves under them
+    expect(toggle.hidden).toBe(false)
+    expect(q('.wx-map2d').hidden).toBe(false)
+    expect(toggle.textContent).toBe('3D city')
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    toggle.click()
+    expect(page.viewHost.hidden).toBe(false)
+    expect(viewer.setPaused).toHaveBeenLastCalledWith(false)
+  })
+
+  it('a loss while the map shows keeps it; a second loss (the viewer gives up on 3D) keeps the switch away for good', () => {
+    const { q, control, viewer, page } = setup()
+    const toggle = control('map2d')
+    toggle.click()
+    page.showCard('<h3>x</h3>')
+    viewer.lose('lost')
+    expect(q('.wx-card').hidden).toBe(false) // already on the map: the open card stays
+    expect(toggle.hidden).toBe(true)
+    viewer.lose('restored')
+    toggle.click()
+    viewer.lose('flat')
+    expect(q('.wx-map2d').hidden).toBe(false)
+    expect(toggle.hidden).toBe(true)
+    expect(toggle.textContent).toBe('3D city')
   })
 })

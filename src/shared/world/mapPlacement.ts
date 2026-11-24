@@ -27,11 +27,19 @@ export function placeOnMap(doc: WorldDoc): MapPlacement {
   }
   for (const b of doc.buildings) place(b.id)
   for (const x of doc.externals) place(x.id)
+  // Each district's parts summed in one pass: looking through every part for each district is quadratic, minutes for a
+  // world of 50,000 one-file districts.
+  const sums = new Map<string, [number, number, number]>()
+  for (const b of doc.buildings) {
+    const p = at.get(b.id) as MapPoint
+    const s = sums.get(b.districtId)
+    if (s) { s[0] += p[0]; s[1] += p[1]; s[2]++ } else sums.set(b.districtId, [p[0], p[1], 1])
+  }
   const districts = doc.districts.map((d): MapPoint => {
     const own = doc.layout.positions[d.id]
     if (own) return [own[0], own[2]]
-    const mine = doc.buildings.filter((b) => b.districtId === d.id).map((b) => at.get(b.id) as MapPoint)
-    return mine.length ? [mine.reduce((s, p) => s + p[0], 0) / mine.length, mine.reduce((s, p) => s + p[1], 0) / mine.length] : [0, 0]
+    const s = sums.get(d.id)
+    return s ? [s[0] / s[2], s[1] / s[2]] : [0, 0]
   })
   return { at, districts }
 }
