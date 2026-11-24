@@ -539,7 +539,7 @@ describe('createAskRunner', () => {
       done()
       expect(await p).toMatchObject({ askId: 'a1', ok: true })
       expect(client.get).toHaveBeenCalledTimes(2)
-      expect(client.get).toHaveBeenLastCalledWith('C:/repo', { refresh: false })
+      expect(client.get).toHaveBeenLastCalledWith('C:/repo', { refresh: false, signal: expect.any(AbortSignal) })
     })
 
     it('no compile to wait on leaves the project not mapped; one that saved nothing, or runs past the wait, is a load failure', async () => {
