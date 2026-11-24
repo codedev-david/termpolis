@@ -61,8 +61,9 @@ export interface ProcOptions {
   input?: string
   /** argv form only: the command may start processes of its own (an agent CLI), so a cancel and the timeout
    *  end its whole tree, not only the direct child. On macOS and Linux it is spawned detached, to lead its
-   *  own process group; on Windows taskkill /T runs while the child is still alive and ours. A cancelled
-   *  request answers with no output and a `cancelled` error (code ABORT_ERR). */
+   *  own process group, which is signalled even after its leader exits (its members are what is being
+   *  ended; see runExec's stop); on Windows taskkill /T runs while the child is still alive and ours. A
+   *  cancelled request answers with no output and a `cancelled` error (code ABORT_ERR). */
   tree?: boolean
 }
 
@@ -177,8 +178,15 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       ? { stdout: '', stderr, error: cancelledError() }
       : { stdout, stderr, error: Object.assign(new Error(`timed out after ${base.timeout}ms`), { killed: true, signal: 'SIGTERM' }) }
     // The tree first, while its root lives: `taskkill /T` walks down from a live root only, and once the
-    // child's 'exit' has run its pid may name a stranger. A POSIX group outlives its leader, so it is
-    // still signalled. The request is answered when the pipes close, or by the backstop.
+    // child's 'exit' has run its pid may name a stranger. The request is answered when the pipes close,
+    // or by the backstop.
+    //
+    // On POSIX the group is signalled even after its leader has exited, ON PURPOSE: do not gate it on
+    // `exited` the way Windows is. A process group outlives its leader, and the members still in it
+    // (claude's tool subprocesses) are exactly what this kill is for. The pgid stays reserved while any
+    // member lives, so `-pid` can only name a stranger once the whole group is gone AND the pid has been
+    // handed out again in the moments before the signal lands: the same narrow window accepted for the
+    // SIGKILL that follows the SIGTERM (processTree's ESRCH check).
     const stop = (why: 'cancelled' | 'timeout'): void => {
       if (settled || stopped) return
       stopped = why
