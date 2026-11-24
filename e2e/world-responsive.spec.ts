@@ -1167,17 +1167,37 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect(mapped.error ?? '').toBe('')
       await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
       await expect(page.locator(PANE)).toBeVisible({ timeout: 60_000 })
-      const note = page.locator('[data-testid="world-notice"]', { hasText: 'Showing the first ' })
+      const NOTE = '[data-testid="world-notice"]'
+      // The first map from the listing comes first, with its "Still reading" note: the note every big project shows
+      // while its files are read keeps clear of the legend, open or shut, and inside the pane (fix round 2, m6).
+      const reading = page.locator(NOTE, { hasText: 'Still reading the files' })
+      await expect(reading).toBeVisible({ timeout: 300_000 })
+      const toggle = page.locator('[data-testid="world-legend-toggle"]')
+      for (let pass = 0; pass < 2; pass++) {
+        if (!(await reading.isVisible())) break
+        const state = `legend ${(await toggle.getAttribute('aria-expanded')) === 'true' ? 'open' : 'shut'} on the first map`
+        expect.soft(await overlapOf(NOTE, '[data-testid="world-legend"]'), `the first map's note leaves the legend clear, ${state}`).toBe(0)
+        const inside = await page.evaluate(([n, p]) => {
+          const a = document.querySelector(n)?.getBoundingClientRect()
+          const b = document.querySelector(p)?.getBoundingClientRect()
+          return !!a && !!b && a.left >= b.left - 1 && a.right <= b.right + 1 && a.top >= b.top - 1 && a.bottom <= b.bottom + 1
+        }, [NOTE, PANE] as const)
+        expect.soft(inside, `the first map's note lies inside the pane, ${state}`).toBe(true)
+        await shoot(`app-notice-first-map-${pass}`)
+        await click(toggle)
+      }
+      const note = page.locator(NOTE, { hasText: 'Showing the first ' })
       await expect(note).toBeVisible({ timeout: 600_000 })
       await settled(600_000)
-      const NOTE = '[data-testid="world-notice"]'
+      // Every layout the pane fits is measured: only a set pane width the row cannot hold is skipped (fix round 2, m6).
+      let measured = 0
       for (const { v, width } of NOTICE_LAYOUTS) {
         const at = await layoutAt(v, width)
         if (!at) continue
+        measured++
         await settled()
         const { tag, name } = at
         await expect(note).toBeVisible()
-        const toggle = page.locator('[data-testid="world-legend-toggle"]')
         for (let pass = 0; pass < 2; pass++) {
           const state = `legend ${(await toggle.getAttribute('aria-expanded')) === 'true' ? 'open' : 'shut'} at ${tag}`
           await glideDone(state)
@@ -1218,6 +1238,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
         if (v.width * v.height <= 3840 * 2160) await shoot(`app-notice-card-${name}`)
         await closeCard()
       }
+      expect(measured, 'the notice was measured at every layout with a default pane, at least').toBeGreaterThanOrEqual(NOTICE_LAYOUTS.filter((l) => l.width === null).length)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

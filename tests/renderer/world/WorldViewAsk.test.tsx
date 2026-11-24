@@ -43,8 +43,9 @@ const answered = (askId: string): Res<AskResult> => ok({
 
 function deferred<T>() {
   let resolve!: (v: T) => void
-  const promise = new Promise<T>((r) => { resolve = r })
-  return { promise, resolve }
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 
 const speech = { speak: vi.fn(), cancel: vi.fn() }
@@ -287,5 +288,186 @@ describe('Ask bar inside the Lumopolis pane', () => {
     expect(v.load).toHaveBeenCalledTimes(1)
     expect(err).not.toHaveBeenCalled()
     err.mockRestore()
+  })
+})
+
+describe('an Ask made on a first map (fix round 2, R1)', () => {
+  const first = (): WorldDoc => ({ ...minimal(), provisional: true })
+  const full = (): WorldDoc => ({ ...minimal(), generatedAt: minimal().generatedAt + 1 })
+  const askIdOf = (b: { api: { worldAsk: ReturnType<typeof vi.fn> } }, n = 0): string => (b.api.worldAsk.mock.calls[n][0] as AskRequest).askId
+  /** The answer's tour played on the viewer after it loaded `doc`, and on nothing before. */
+  const playedAfterLoad = (v: any, doc: WorldDoc): void => {
+    const loads = v.load.mock.calls as Array<[WorldDoc]>
+    const at = loads.findIndex(([d]) => d === doc)
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(v.play).toHaveBeenCalled()
+    expect(v.play.mock.invocationCallOrder[0]).toBeGreaterThan(v.load.mock.invocationCallOrder[at])
+  }
+  const reading = () => screen.queryByTestId('world-notice')
+  const exportOn = () => screen.queryByTestId('world-export') !== null
+
+  it('a remounted pane shows the complete world the moment it is saved, while the answer is awaited, and plays the answer on it', async () => {
+    const f = first()
+    const c = full()
+    const reply = deferred<Res<AskResult>>()
+    const b = bridge({ worldGet: vi.fn(async () => ok(f)), worldAsk: vi.fn(() => reply.promise) })
+    await mount()
+    const v = viewer()
+    expect(v.load).toHaveBeenLastCalledWith(f)
+    expect(b.api.worldCompile).not.toHaveBeenCalled()
+    expect(reading()).toHaveTextContent(/Still reading/)
+    expect(exportOn()).toBe(false)
+    await askQ()
+    expect(screen.getAllByRole('status').some((e) => /Thinking/.test(e.textContent ?? ''))).toBe(true)
+    b.api.worldGet.mockResolvedValue(ok(c))
+    await b.updated({ root: '/repo', projectKey: c.projectKey })
+    await settle()
+    // Shown at once, though the answer is still awaited: the note and the disabled Export go with the first map.
+    expect(v.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+    expect(reading()).toBeNull()
+    expect(exportOn()).toBe(true)
+    expect(v.play).not.toHaveBeenCalled()
+    await act(async () => { reply.resolve(answered(askIdOf(b))) })
+    await settle()
+    playedAfterLoad(v, c)
+    expect(v.load).toHaveBeenCalledTimes(2)
+  })
+
+  it('an answer that comes before the saved world is pushed loads the complete world first, then plays on it', async () => {
+    const f = first()
+    const c = full()
+    const reply = deferred<Res<AskResult>>()
+    const b = bridge({ worldGet: vi.fn(async () => ok(f)), worldAsk: vi.fn(() => reply.promise) })
+    await mount()
+    const v = viewer()
+    await askQ()
+    b.api.worldGet.mockResolvedValue(ok(c))
+    await act(async () => { reply.resolve(answered(askIdOf(b))) })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+    playedAfterLoad(v, c)
+    expect(reading()).toBeNull()
+    expect(exportOn()).toBe(true)
+    // The push that follows brings the same world: nothing loads again.
+    await b.updated({ root: '/repo', projectKey: c.projectKey })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(2)
+  })
+
+  it('a second pane, opened on the first map while the first pane compiles, shows the complete world at once and plays its answer on it', async () => {
+    const f = first()
+    const c = full()
+    const compile = deferred<Res<WorldDoc>>()
+    const reply = deferred<Res<AskResult>>()
+    const b = bridge({ worldGet: vi.fn(async () => ok<WorldDoc | null>(null)), worldCompile: vi.fn(() => compile.promise), worldAsk: vi.fn(() => reply.promise) })
+    // The first pane starts the compile; its first map is pushed.
+    render(<WorldView root="/repo" onClose={vi.fn()} askSlot={slot} />)
+    await settle()
+    expect(b.api.worldCompile).toHaveBeenCalledTimes(1)
+    const one = h.viewers[0]
+    b.api.worldGet.mockResolvedValue(ok(f))
+    await b.updated({ root: '/repo', projectKey: f.projectKey })
+    await settle()
+    expect(one.load).toHaveBeenLastCalledWith(f)
+    // The second pane opens on that first map, and is asked.
+    render(<WorldView root="/repo" onClose={vi.fn()} askSlot={slot} />)
+    await settle()
+    const two = h.viewers[1]
+    expect(two.load).toHaveBeenLastCalledWith(f)
+    const box = screen.getAllByPlaceholderText('Ask about this project…')[1]
+    fireEvent.change(box, { target: { value: 'What is this?' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    expect(b.api.worldAsk).toHaveBeenCalledTimes(1)
+    // The compile ends: the first pane shows its world, and the push reaches the second while its answer is awaited.
+    b.api.worldGet.mockResolvedValue(ok(c))
+    await act(async () => { compile.resolve(ok(c)) })
+    await b.updated({ root: '/repo', projectKey: c.projectKey })
+    await settle()
+    expect(one.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+    expect(two.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+    expect(screen.queryAllByTestId('world-notice')).toHaveLength(0)
+    expect(two.play).not.toHaveBeenCalled()
+    await act(async () => { reply.resolve(answered(askIdOf(b))) })
+    await settle()
+    playedAfterLoad(two, c)
+    expect(one.play).not.toHaveBeenCalled()
+  })
+
+  it('a project mapped from the home opens on its first map and shows the complete world at once while it is asked', async () => {
+    const saved = minimal()
+    const f = { ...first(), projectKey: 'mapped' }
+    const c = { ...full(), projectKey: 'mapped' }
+    const reply = deferred<Res<AskResult>>()
+    const entry = { key: 'mapped', source: { kind: 'project', root: '/repo' }, title: 'repo', lastOpened: 1 } as WorldEntry
+    const b = bridge({ worldGet: vi.fn(async () => ok<WorldDoc | null>(saved)), worldMapProject: vi.fn(async () => ok(entry)), worldAsk: vi.fn(() => reply.promise) })
+    await mount()
+    const v = viewer()
+    const worlds = screen.getByRole('combobox', { name: 'Worlds' }) as HTMLSelectElement
+    fireEvent.change(worlds, { target: { value: [...worlds.options].find((o) => o.textContent === 'Home')?.value } })
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    // Map this project: main starts the compile and draws its first map, which the pane opens on.
+    b.api.worldGet.mockResolvedValue(ok(f))
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    expect(b.api.worldMapProject).toHaveBeenCalledWith('/repo')
+    expect(v.load).toHaveBeenLastCalledWith(f)
+    expect(b.api.worldCompile).not.toHaveBeenCalled()
+    await askQ()
+    b.api.worldGet.mockResolvedValue(ok(c))
+    await b.updated({ root: '/repo', projectKey: 'mapped' })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+    expect(reading()).toBeNull()
+    expect(v.play).not.toHaveBeenCalled()
+    await act(async () => { reply.resolve(answered(askIdOf(b))) })
+    await settle()
+    playedAfterLoad(v, c)
+  })
+
+  it('an answer plays on the first map when no complete world can be had, and not at all when the pane moved on or a newer question came', async () => {
+    for (const end of ['provisional', 'failed', 'thrown', 'moved', 'newer'] as const) {
+      const f = first()
+      const replies = [deferred<Res<AskResult>>(), deferred<Res<AskResult>>()]
+      const got = deferred<Res<WorldDoc | null>>()
+      let gets = 0
+      const b = bridge({
+        worldGet: vi.fn((root: string) => (root === '/other' ? Promise.resolve(ok(full())) : ++gets === 1 ? Promise.resolve(ok(f)) : got.promise)),
+        worldAsk: vi.fn(() => replies[b.api.worldAsk.mock.calls.length - 1].promise),
+      })
+      const view = await mount()
+      const v = viewer()
+      await askQ()
+      await act(async () => { replies[0].resolve(answered(askIdOf(b))) })
+      await settle()
+      expect(gets).toBe(2) // the pane looks for the complete world
+      expect(v.play).not.toHaveBeenCalled()
+      if (end === 'moved') {
+        view.rerender(<WorldView root="/other" onClose={view.onClose} askSlot={slot} />)
+        await settle()
+      }
+      if (end === 'newer') {
+        fireEvent.change(input(), { target: { value: 'And this?' } })
+        fireEvent.keyDown(input(), { key: 'Enter' })
+        await settle()
+      }
+      await act(async () => {
+        if (end === 'thrown') got.reject(new Error('down'))
+        else if (end === 'failed') got.resolve({ success: false, error: 'host down' })
+        else got.resolve(ok(end === 'provisional' ? first() : full()))
+      })
+      await settle()
+      if (end === 'provisional' || end === 'failed' || end === 'thrown') {
+        expect(v.play).toHaveBeenCalledTimes(1)
+        expect(v.load).toHaveBeenCalledTimes(1)
+      } else {
+        // Another world, or another question: the older answer's tour never plays.
+        expect(v.play).not.toHaveBeenCalled()
+      }
+      view.unmount()
+      cleanup()
+      h.viewers.length = 0
+    }
   })
 })

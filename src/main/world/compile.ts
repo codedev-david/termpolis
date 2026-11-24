@@ -40,7 +40,8 @@ export interface CompileDeps {
   /** Reads a source file for the boundary scan (null or a rejection skips it). The host caps it near
    *  MAX_DETECT_FILE_CHARS, so a huge source file is never read whole only to be dropped. */
   readSource?: (p: string) => Promise<string | null>
-  glob: (root: string, patterns: string[]) => Promise<string[]>
+  /** `signal` aborts when the compile stops waiting for its searches (SEARCH_TIME_MS) or ends: the walk should stop. */
+  glob: (root: string, patterns: string[], opts: { signal: AbortSignal }) => Promise<string[]>
   label: LabelDeps
   now: () => number
   transcriptRuns?: () => Promise<TestRun[]>
@@ -85,10 +86,21 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
   Watcher: 'Watches files and reacts when they change'
 }
 
-/** While the status stage waits on manifests and test results, progress moves one point this often,
- *  up to STATUS_BEAT_TOP, so the pane never sits at one value while it waits. */
+/** While a stage waits (test results, the label pass, the manifests), progress moves one point this often, so the
+ *  pane never sits at one value while it waits. */
 export const STATUS_BEAT_MS = 2000
-const STATUS_BEAT_TOP = 64
+/**
+ * How long a compile waits, from its start, for its searches of the tree (test reports, manifests) and for main's
+ * transcript and CI runs. Past it the compile goes on without what has not come (no test status from it), and the
+ * walks are told to stop. A beat every STATUS_BEAT_MS then moves the status stage at most 8 points (55 to 63), so
+ * it never sits at a ceiling while it waits (fix round 2, R2).
+ */
+export const SEARCH_TIME_MS = 16_000
+/** A stage that takes this long is named, with every stage's time, in one log line as the compile ends. */
+export const SLOW_STAGE_MS = 5000
+const STATUS_BEAT_TOP = 63
+const LABEL_BEAT_TOP = 84
+const MANIFEST_BEAT_TOP = 94
 /** Places one "Seen in code" claim cites at most. */
 const MAX_SEEN = 3
 const MAX_LABEL = 120
@@ -181,8 +193,7 @@ export function manifestServiceNames(file: string, text: string): string[] {
 }
 
 /** Runtime names the manifests under the project give, by building: a manifest's names go to the building with the most members in its folder. */
-async function manifestNames(deps: CompileDeps, root: string, g: Grouping, found: Promise<string[]>): Promise<Map<string, string[]>> {
-  const paths = await found
+async function manifestNames(deps: CompileDeps, root: string, g: Grouping, paths: string[]): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>()
   const prefix = `${root.replace(/\\/g, '/')}/`
   for (const abs of paths.map((p) => p.replace(/\\/g, '/')).filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules')).sort().slice(0, MAX_MANIFESTS)) {
@@ -226,7 +237,11 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
   const fileSet = new Set(g.buildings.flatMap((b) => b.members))
   const tests = [...new Set(snap.files.filter((f) => TEST_FILE.test(f)))].sort()
   const byStem = new Map<string, string[]>()
-  const add = (m: Map<string, string[]>, k: string, t: string): void => void m.set(k, [...(m.get(k) ?? []), t])
+  const add = (m: Map<string, string[]>, k: string, t: string): void => {
+    const list = m.get(k)
+    if (list) list.push(t)
+    else m.set(k, [t])
+  }
   const stemOf = (file: string): string => baseName(file).replace(/\.[^.]*$/, '')
   for (const m of fileSet) add(byStem, stemOf(m), m)
   const byTarget = new Map<string, string[]>()
@@ -686,9 +701,40 @@ export function firstMap(paths: GraphSnapshot, projectKey: string, head: { head:
 }
 
 export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {
+  // One window for every search the compile starts: at SEARCH_TIME_MS it stops waiting, and when it ends (however
+  // it ends) the walks still running are told to stop.
+  const searches = new AbortController()
+  const timer = setTimeout(() => searches.abort(), SEARCH_TIME_MS)
+  try {
+    return await compileWithin(input, deps, searches.signal)
+  } finally {
+    clearTimeout(timer)
+    searches.abort()
+  }
+}
+
+/** One log line as a compile ends, when a stage was slow or a search ran out of time: every stage with its time. */
+function logSlow(projectKey: string, stages: Array<[CompileStage, number]>, end: number, ranOut: boolean): void {
+  const spent = stages.map(([stage, at], i): [CompileStage, number] => [stage, (i + 1 < stages.length ? stages[i + 1][1] : end) - at])
+  if (!ranOut && !spent.some(([, ms]) => ms >= SLOW_STAGE_MS)) return
+  const why = ranOut ? `; the searches ran out of time after ${SEARCH_TIME_MS} ms` : ''
+  console.warn(`[world compile] ${projectKey}: ${spent.map(([stage, ms]) => `${stage} ${ms} ms`).join(', ')}${why}`)
+}
+
+async function compileWithin(input: StagedInput, deps: CompileDeps, signal: AbortSignal): Promise<{ doc: WorldDoc; cache: StageCache }> {
   let { previous } = input
   let { snap } = input
-  const progress = (stage: CompileStage, pct: number): void => deps.onProgress?.(stage, pct)
+  // When each stage began, for the slow-stage log.
+  const stages: Array<[CompileStage, number]> = []
+  const progress = (stage: CompileStage, pct: number): void => {
+    const last = stages[stages.length - 1]
+    if (last === undefined || last[0] !== stage) stages.push([stage, Date.now()])
+    deps.onProgress?.(stage, pct)
+  }
+  // A search still running when the window ends gives null: the compile goes on without it.
+  const late = new Promise<null>((resolve) => signal.addEventListener('abort', () => resolve(null), { once: true }))
+  const within = <T>(p: Promise<T>): Promise<T | null> => Promise.race([p, late])
+  let ranOut = false
   progress('structure', 0)
   const prior = isStageCache(input.cache) ? input.cache : null
 
@@ -696,8 +742,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const root = snap.root.replace(/\/+$/, '')
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   // Slow reads of the whole tree start now, so they overlap the file reads rather than wait behind them.
-  const manifestsFound = Promise.resolve().then(() => deps.glob(root, MANIFEST_PATTERNS)).catch((): string[] => [])
-  const runsFound = readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns })
+  const manifestsFound = within(Promise.resolve().then(() => deps.glob(root, MANIFEST_PATTERNS, { signal })).catch((): string[] => []))
+  const runsFound = within(readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }, signal))
   // More files than a map reads: all are parts of the world, only the capped set is read (readCap.ts).
   const traced = cappedReads(files)
   const reads = (f: string): boolean => traced === null || traced.has(f)
@@ -760,10 +806,12 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   }
 
   progress('status', 55)
-  const [manifests, foundRuns] = await beating(Promise.all([manifestsFound, runsFound]),
+  const [listed, found] = await beating(Promise.all([manifestsFound, runsFound]),
     (n) => progress('status', Math.min(STATUS_BEAT_TOP, 55 + n)))
+  if (found === null) ranOut = true
+  const manifests = listed ?? []
   const testsByMember = linkTests(snap, g, manifests)
-  const runs = expandCi(foundRuns, testsByMember)
+  const runs = expandCi(found ?? [], testsByMember)
   const tests = contentHash(JSON.stringify([
     Object.entries(testsByMember).sort(([a], [b]) => cmp(a, b)),
     runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort()
@@ -779,8 +827,10 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     return { status: statusFor(b.members, runs, testsByMember), claims: testClaims(b.members, runs, testsByMember) }
   }
 
+  progress('status', 64)
+
   progress('labelling', 65)
-  const labels = await labelAll(g, previous, changed, deps.label)
+  const labels = await beating(labelAll(g, previous, changed, deps.label), (n) => progress('labelling', Math.min(LABEL_BEAT_TOP, 65 + n)))
 
   progress('layout', 85)
   const glossary: Record<string, string> = { ...labels.glossary, ...BUILTIN_GLOSSARY }
@@ -854,7 +904,14 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     const id = ownerOf.get(f) as string
     runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   }
-  for (const [id, list] of await manifestNames(deps, root, g, manifestsFound)) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
+  // The status pass (each building's status and claims) is done: the layout stage reports between its steps.
+  progress('layout', 86)
+  const fromManifests = manifestsFound.then((listed) => {
+    if (listed === null) ranOut = true
+    return manifestNames(deps, root, g, listed ?? [])
+  })
+  for (const [id, list] of await beating(fromManifests, (n) => progress('layout', Math.min(MANIFEST_BEAT_TOP, 86 + n)))) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
+  progress('layout', 95)
   const runtimeNames = Object.fromEntries([...runtime].sort((a, z) => cmp(a[0], z[0])).map(([id, s]) => [id, [...s].sort()]))
 
   const seed = previous?.layout ?? input.layoutFrom ?? null
@@ -865,6 +922,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     const angle = (2 * Math.PI * i) / ext.externals.length
     layout.positions[x.id] = seed?.positions[x.id] ?? [round2(radius * Math.cos(angle)), RING_Y, round2(radius * Math.sin(angle))]
   })
+  progress('layout', 98)
 
   const doc: WorldDoc = {
     version: 1,
@@ -889,6 +947,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, renameClaims(await deps.annotations(), renames)) : doc
   progress('layout', 100)
+  logSlow(input.projectKey, stages, Date.now(), ranOut)
   return { doc: input.plan ? overlayPlan(merged, input.plan, previous) : merged, cache }
 }
 

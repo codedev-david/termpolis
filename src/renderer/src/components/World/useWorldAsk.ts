@@ -12,6 +12,8 @@
 // while its tour flies stops the tour in the viewer and lets the pane go at once; the rest of the answer
 // is then shown whole (U5, U6). `stop` is that same stop for Esc and a different project (T4). A sentence's
 // steps wait for the sentence before to finish playing, so two sentences' tours never fly at once (T4).
+// An answer is computed from the complete world; asked on a first map, its tour waits for `whenComplete`, which
+// resolves once the pane shows the complete world (fix round 2, R1).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
 import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
@@ -66,7 +68,7 @@ function reducedMotion(): boolean {
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string): UseWorldAsk {
+export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<void>): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
@@ -81,6 +83,10 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const stopCurrent = useRef<() => unknown>(noop)
   const onDesignRef = useRef(onDesign)
   onDesignRef.current = onDesign
+  const whenCompleteRef = useRef(whenComplete)
+  whenCompleteRef.current = whenComplete
+  /** Bumped by every question, a dismissal and a root change: an answer whose tour waited plays only if none came since. */
+  const answerGen = useRef(0)
   /** The design proposal on show; read when a question is sent, so a change of proposal never recreates `ask`. */
   const proposalRef = useRef(proposalId)
   proposalRef.current = proposalId
@@ -158,6 +164,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     cancelCurrent()
     clearTimers()
     viewer?.cancelActions()
+    const gen = ++answerGen.current
     const askId = `ask-${Date.now()}-${++counter.current}`
     current.current = askId
     stopCurrent.current = design ? () => window.termpolis.worldDesignCancel(root) : () => window.termpolis.worldAskCancel(askId)
@@ -212,8 +219,14 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         setCited(r.cited)
         setNoMemory(r.noMemory ?? null)
         setState('answered')
+        // The pane may still show the first map: the tour plays on the world the answer came from, once it is shown.
+        const ready = whenCompleteRef.current
+        if (ready) {
+          await ready()
+          if (answerGen.current !== gen) return
+        }
         // The viewer as it is now: an answer plays only on the viewer it was asked from; none (the 2D view), or a
-        // viewer that went while the question was out, shows the answer whole with nothing played (U6, M2).
+        // viewer that went while the question was out (or while its tour waited), shows the answer whole with nothing played (U6, M2).
         if (viewerRef.current === v) reveal(v, r.answer)
         else setRevealed(r.answer.sentences.length)
       } catch {
@@ -252,6 +265,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   }, [stopTour])
 
   const dismiss = useCallback((): void => {
+    // An answer whose tour still waits for the complete world never plays after it is closed.
+    answerGen.current++
     // A tour still flying is stopped in the viewer, not left to land after the answer is gone (U5).
     stopTour()
     setAnswer(null)
@@ -282,6 +297,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   useEffect(() => {
     if (lastRoot.current === root) return
     lastRoot.current = root
+    answerGen.current++
     cancelCurrent()
     stopTour()
     summary.current = ''

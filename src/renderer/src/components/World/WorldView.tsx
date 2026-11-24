@@ -93,10 +93,15 @@ const DEFAULT_WIDTH = 480
 export interface WorldAskLink {
   /** The box's Esc handler, asked before the pane's own; true when it used the key. null removes it. */
   onEscape(fn: (() => boolean) | null): void
-  /** True while an answer is under way: a world update waits, so the answer's tour is not wiped. */
+  /** True while an answer is under way: a world update waits, so the answer's tour is not wiped (a first map does not wait). */
   setBusy(busy: boolean): void
   /** A design changed by the box (design mode): the pane draws it, growing from the one it showed. */
   setDoc(doc: WorldDoc): void
+  /**
+   * Resolves once the pane shows the complete world: at once when it does, else after loading it when it is saved by
+   * now (an answer is computed from it), else (none to be had) at once. An answer's tour waits for it (fix round 2, R1).
+   */
+  whenComplete?(): Promise<void>
 }
 
 /** The e2e probe on window.__termpolis_world. */
@@ -284,6 +289,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const askEscRef = useRef<(() => boolean) | null>(null)
   const askBusyRef = useRef(false)
   const heldDocRef = useRef<WorldDoc | null>(null)
+  /** Tours waiting for the complete world to be shown (askLink.whenComplete): let go when the pane's doc is no first map. */
+  const completeWaitersRef = useRef<Array<() => void>>([])
+  /** Bumped by every opening of a world (and Try again): a pushed failure read for an earlier one is dropped (m2). */
+  const runGenRef = useRef(0)
   const [askLink] = useState<WorldAskLink>(() => ({
     onEscape: (fn) => { askEscRef.current = fn },
     setBusy: (b) => {
@@ -299,6 +308,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       if (!mountedRef.current) return
       setError(null)
       setDoc(d)
+    },
+    whenComplete: async () => {
+      if (docRef.current?.provisional !== true) return
+      const at = rootRef.current as string
+      const res = await window.termpolis.worldGet(at).catch(() => null)
+      const got = res?.success === true ? res.data : null
+      // No complete world to be had (the run failed meanwhile), or the pane moved on: nothing to wait for.
+      if (got === null || got.provisional === true || rootRef.current !== at || docRef.current?.provisional !== true) return
+      const shown = new Promise<void>((resolve) => { completeWaitersRef.current.push(resolve) })
+      heldDocRef.current = null
+      setError(null)
+      setDoc(got)
+      await shown
     },
   }))
 
@@ -355,6 +377,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     // A tour or a flight over the world being left stops here: paused under the home, it would otherwise caption
     // over it (T4). Nothing can be playing before a world is drawn.
     if (docRef.current !== null) viewerRef.current?.cancelActions()
+    runGenRef.current++
     heldDocRef.current = null
     setDoc(null)
     setProposalPick(undefined)
@@ -443,9 +466,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       setProgress(null)
       // The run that drew the first map ended without a world (it failed, or the world process stopped).
       const failed = typeof e.error === 'string' ? e.error : null
+      const gen = runGenRef.current
       window.termpolis.worldGet(at).then(
         (res) => {
-          if (rootRef.current !== at) return
+          if (rootRef.current !== at || runGenRef.current !== gen) return
           const got = res.success ? res.data : null
           if (failed !== null) {
             // Only a pane still on a first map (or on none) hears of it: one showing a saved world keeps it as it is.
@@ -459,8 +483,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             }
           }
           if (got === null) return
-          // Loading a world stops the answer's tour, so it waits until the answer is over.
-          if (askBusyRef.current) { heldDocRef.current = got; return }
+          // Loading a world stops the answer's tour, so it waits until the answer is over. A first map gives way at once:
+          // the answer is computed from the complete world and its tour waits for it (whenComplete), never the reverse.
+          if (askBusyRef.current && docRef.current?.provisional !== true) { heldDocRef.current = got; return }
           setError(null)
           setDoc(got)
         },
@@ -610,6 +635,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held })
     else viewer.load(doc)
   }, [viewer, doc])
+
+  // A tour waiting for the complete world (whenComplete) goes once the doc is no first map: it was loaded just above.
+  useEffect(() => {
+    if (doc?.provisional === true) return
+    const waiting = completeWaitersRef.current
+    completeWaitersRef.current = []
+    for (const go of waiting) go()
+  }, [doc])
 
   // In 2D the card is built from the doc: a newer world rebuilds the open one (or closes it when
   // its part is gone).

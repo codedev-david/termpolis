@@ -1252,10 +1252,15 @@ describe('createWorldClient', () => {
               ? { kind: 'result', id: m.id, ok: true, result: at('old') }
               : { kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: 'disk full' } }
         })
+        const updated: unknown[] = []
+        client.onUpdated((e) => updated.push(e))
         expect(await client.get(ROOT)).toEqual(at('old'))
         await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1))
         expect(warn.mock.calls[0][0]).toContain('[world] background refresh failed')
         expect(String(warn.mock.calls[0][1])).toContain('disk full')
+        // The pane keeps the saved world it shows and no pane waits on this run: nothing is pushed (fix round 2, m5).
+        await flush()
+        expect(updated).toEqual([])
       } finally {
         warn.mockRestore()
       }
@@ -1478,11 +1483,13 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
       x.reply = () => undefined
     })
     let done = false
-    await client.whenCompiled(ROOT)
-    await client.whenCompiled('')
+    // It says whether it waited on a compile (fix round 2, m1: Ask tells a failed map from one never made).
+    expect(await client.whenCompiled(ROOT)).toBe(false)
+    expect(await client.whenCompiled('')).toBe(false)
     const first = client.compile(ROOT)
     const second = client.relayout(ROOT).catch((e: Error) => e.message)
-    const waited = client.whenCompiled(ROOT).then(() => (done = true))
+    let said: boolean | null = null
+    const waited = client.whenCompiled(ROOT).then((w) => { said = w; done = true })
     await flush()
     const [a, b] = t.calls()
     t.emit({ kind: 'result', id: a.id, ok: true, result: DOC })
@@ -1493,8 +1500,9 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
     expect(await second).toBe('boom')
     await waited
     expect(done).toBe(true)
+    expect(said).toBe(true)
     // Nothing is left in flight: it answers at once again.
-    await client.whenCompiled(ROOT)
+    expect(await client.whenCompiled(ROOT)).toBe(false)
   })
 
   it('the snapshot made for a compile in flight carries the project and commit, so the host can draw a first map', async () => {

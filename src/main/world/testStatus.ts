@@ -15,7 +15,8 @@ export interface TestRun {
 
 export interface TestResultDeps {
   readFile(p: string): Promise<string | null>
-  glob(root: string, patterns: string[]): Promise<string[]>
+  /** `signal` aborts when the compile's search window ends (compile.ts SEARCH_TIME_MS): the walk should stop then. */
+  glob(root: string, patterns: string[], opts: { signal: AbortSignal }): Promise<string[]>
   transcriptRuns?: () => Promise<TestRun[]>
   /** The newest CI conclusion as runs (source 'ci'). The caller decides whether CI is read at all. */
   ciRuns?: () => Promise<TestRun[]>
@@ -273,16 +274,19 @@ export function parseTranscriptTestRuns(jsonl: string, root: string, now: number
 
 // ---- reading --------------------------------------------------------------
 
-export async function readTestResults(root: string, deps: TestResultDeps): Promise<TestRun[]> {
+/** The reports under `root`, then main's transcript and CI runs. Once `signal` aborts no further report is read (the
+ *  compile has stopped waiting: compile.ts SEARCH_TIME_MS), and the glob is handed the same signal. */
+export async function readTestResults(root: string, deps: TestResultDeps, signal: AbortSignal = new AbortController().signal): Promise<TestRun[]> {
   let found: string[]
   try {
-    found = await deps.glob(root, PATTERNS)
+    found = await deps.glob(root, PATTERNS, { signal })
   } catch {
     found = []
   }
   const paths = found.filter((p) => !slashes(p).split('/').includes('node_modules'))
   const runs: TestRun[] = []
   for (const p of paths) {
+    if (signal.aborted) break
     try {
       const text = await deps.readFile(p)
       if (text === null || text.length > MAX_CHARS) continue
@@ -317,14 +321,34 @@ function replaces(r: TestRun, cur: TestRun): boolean {
 }
 
 /** The newest run of each test file linked to the members, by file (see `replaces`). */
-function latestRuns(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Map<string, TestRun> {
-  const linked = new Set<string>()
-  for (const m of members) for (const t of testsByMember[m] ?? []) linked.add(t)
-  const latest = new Map<string, TestRun>()
+/** Each runs list indexed by file, once: a compile asks for every building, so a scan of all runs per building
+ *  (buildings x runs, twice) would stall the status pass on a big project with many results (fix round 2, R2). */
+const byFileOf = new WeakMap<TestRun[], Map<string, TestRun[]>>()
+function runsByFile(runs: TestRun[]): Map<string, TestRun[]> {
+  const hit = byFileOf.get(runs)
+  if (hit) return hit
+  const index = new Map<string, TestRun[]>()
   for (const r of runs) {
-    if (!linked.has(r.file)) continue
-    const cur = latest.get(r.file)
-    if (!cur || replaces(r, cur)) latest.set(r.file, r)
+    const list = index.get(r.file)
+    if (list) list.push(r)
+    else index.set(r.file, [r])
+  }
+  byFileOf.set(runs, index)
+  return index
+}
+
+function latestRuns(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Map<string, TestRun> {
+  const index = runsByFile(runs)
+  const latest = new Map<string, TestRun>()
+  for (const m of members) {
+    for (const t of testsByMember[m] ?? []) {
+      if (latest.has(t)) continue
+      // In the runs' own order, as before, so a tie keeps the same winner.
+      for (const r of index.get(t) ?? []) {
+        const cur = latest.get(t)
+        if (!cur || replaces(r, cur)) latest.set(t, r)
+      }
+    }
   }
   return latest
 }

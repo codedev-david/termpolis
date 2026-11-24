@@ -286,13 +286,17 @@ const nodeGlob = (fsp as unknown as { glob?: GlobFn }).glob
  * Absolute paths under `root` matching the positive patterns. `!` patterns are dropped (node's glob
  * has no negation); node_modules and .git are never entered instead. Never rejects.
  */
-export async function globFiles(root: string, patterns: string[], globFn: GlobFn | undefined = nodeGlob): Promise<string[]> {
+export async function globFiles(root: string, patterns: string[], globFn: GlobFn | undefined = nodeGlob, signal?: AbortSignal): Promise<string[]> {
   const positive = patterns.filter((p) => !p.startsWith('!'))
-  if (typeof globFn !== 'function' || positive.length === 0) return []
+  // A call, not a field read: the signal aborts while the walk runs.
+  const stopped = (): boolean => signal?.aborted === true
+  if (typeof globFn !== 'function' || positive.length === 0 || stopped()) return []
   const out: string[] = []
   try {
-    const exclude = (p: string): boolean => String(p).split(/[\\/]/).some((part) => SKIP_DIRS.has(part))
+    // Once the compile stops waiting (signal aborted), every entry is excluded, so the walk enters nothing more and ends.
+    const exclude = (p: string): boolean => stopped() || String(p).split(/[\\/]/).some((part) => SKIP_DIRS.has(part))
     for await (const rel of globFn(positive, { cwd: root, exclude })) {
+      if (stopped()) break
       out.push(join(root, rel))
       if (out.length >= MAX_GLOB_RESULTS) break
     }
@@ -326,7 +330,10 @@ function claimsOf(item: Item): Claim[] {
   return [...how, ...why, ...known]
 }
 
-/** Every text field an item is searched by: id, names, labels, members, tech words and claim text. */
+/**
+ * Every text field an item is searched by: id, names, labels, members, tech words and claim text. NFC on both
+ * sides: a name read from a macOS disk can arrive decomposed (e + U+0301) while the same name is typed composed.
+ */
 function wordsOf(item: Item): string {
   const rec = item as unknown as Record<string, unknown>
   const out: string[] = [item.id]
@@ -337,7 +344,7 @@ function wordsOf(item: Item): string {
     if (Array.isArray(rec[k])) out.push(...(rec[k] as unknown[]).filter(isStr))
   }
   for (const c of claimsOf(item)) out.push(c.text)
-  return out.join('\n').toLowerCase()
+  return out.join('\n').normalize('NFC').toLowerCase()
 }
 
 /** Districts, buildings and edges matching every given filter (ids, then text), and their claims' evidence. */
@@ -351,7 +358,7 @@ export function filterWorld(doc: WorldDoc | null, query: WorldQuery | null | und
       ? Math.min(MAX_READ_LIMIT, Math.max(1, Math.floor(q.limit)))
       : DEFAULT_READ_LIMIT
   const ids = Array.isArray(q.ids) ? new Set(q.ids.filter(isStr)) : null
-  const text = isStr(q.text) ? q.text.trim().toLowerCase() : ''
+  const text = isStr(q.text) ? q.text.trim().normalize('NFC').toLowerCase() : ''
   const all: Item[] = [...doc.districts, ...doc.buildings, ...doc.edges]
   const items = all.filter((it) => (ids === null || ids.has(it.id)) && (text === '' || wordsOf(it).includes(text))).slice(0, limit)
   const seen = new Set<string>()
@@ -412,7 +419,7 @@ export interface WorldHostDeps {
   readFile?: (p: string) => Promise<string | null>
   /** Reads source for the boundary scan and labelling excerpts (default: readCapped up to MAX_SOURCE_READ_BYTES). */
   readSource?: (p: string) => Promise<string | null>
-  glob?: (root: string, patterns: string[]) => Promise<string[]>
+  glob?: CompileDeps['glob']
   now?: () => number
   /** The watcher recompile's debounce (default WATCH_RECOMPILE_MS). */
   debounceMs?: number
@@ -536,7 +543,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const createAnnotations = deps.createAnnotations ?? createAnnotationStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
   const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
-  const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
+  const glob = deps.glob ?? ((root: string, patterns: string[], opts: { signal: AbortSignal }) => globFiles(root, patterns, undefined, opts.signal))
   const now = deps.now ?? Date.now
   const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
   const firstMapWait = deps.firstMapWaitMs ?? FIRST_MAP_WAIT_MS
@@ -879,7 +886,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     post({ kind: 'updated', projectKey: key, error: e instanceof Error ? e.message : String(e) })
   }
 
-  /** Drops what a run whose compile never came left behind: its progress and its first map, after PRESCAN_TTL_MS (M5). */
+  /** What a pane on a first map is told when the run that drew it never compiled (fix round 2, m3). */
+  const UNFINISHED = 'The map was not finished.'
+
+  /** Drops what a run whose compile never came left behind: its progress and its first map, after PRESCAN_TTL_MS (M5).
+   *  A pane still on that map is told, as dropFirst tells it (fix round 2, m3). */
   const sweepRuns = (): void => {
     const at = now()
     for (const [k, t] of snapAt) {
@@ -887,7 +898,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       if (at - t <= PRESCAN_TTL_MS) continue
       snapAt.delete(k)
       runPct.delete(k)
-      provisional.delete(k)
+      dropFirst(k, new Error(UNFINISHED))
     }
   }
 
@@ -955,6 +966,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         snapAt.delete(key)
         try {
           // A first map still being drawn is waited for (bounded), so this run starts from where its parts are drawn.
+          // The wait is inside this project's queue on purpose: whatever is queued behind the compile (another
+          // compile, a watcher's run, an annotation) waits with it, up to firstMapWait (FIRST_MAP_WAIT_MS, 10 s), so
+          // the project's calls keep their order. Only this project's queue waits; other projects' runs go on (fix
+          // round 2, m4).
           const pending = drawing.get(key)
           if (pending) {
             let timer: ReturnType<typeof setTimeout> | undefined
@@ -1003,8 +1018,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       if (stored) return stored
       if (opts?.provisional !== true) return null
       const drawn = provisional.get(key)
-      // A first map whose compile never came (the call that asked for it failed before it) is dropped.
-      if (drawn && !running.has(key) && now() - drawn.at > PRESCAN_TTL_MS) provisional.delete(key)
+      // A first map whose compile never came (the call that asked for it failed before it) is dropped, and the
+      // panes still on it are told (fix round 2, m3).
+      if (drawn && !running.has(key) && now() - drawn.at > PRESCAN_TTL_MS) dropFirst(key, new Error(UNFINISHED))
       return provisional.get(key)?.doc ?? null
     },
     // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved

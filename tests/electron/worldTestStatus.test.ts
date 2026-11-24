@@ -35,6 +35,27 @@ function deps(files: Record<string, string | null>, extra: Partial<Deps> = {}): 
 }
 
 describe('readTestResults', () => {
+  it('hands the report search its signal and reads no report once it is aborted (fix round 2, R2)', async () => {
+    const stop = new AbortController()
+    const reads: string[] = []
+    const seen: AbortSignal[] = []
+    const body = JSON.stringify({ testResults: [{ name: '/repo/x.test.ts', status: 'passed' }] })
+    const d: Deps = {
+      readFile: async (p: string) => {
+        reads.push(p)
+        stop.abort()
+        return body
+      },
+      glob: async (_r: string, _p: string[], opts: { signal: AbortSignal }) => {
+        seen.push(opts.signal)
+        return ['/repo/test-results-1.json', '/repo/test-results-2.json']
+      }
+    }
+    expect(await readTestResults(ROOT, d, stop.signal)).toEqual([{ file: 'x.test.ts', passed: true, at: 0, source: 'jest' }])
+    expect(seen).toEqual([stop.signal])
+    expect(reads).toEqual(['/repo/test-results-1.json'])
+  })
+
   it('parses vitest reports with normalised paths', async () => {
     const { d, calls } = deps({ '/repo/out/vitest-report.json': fixture('vitest-report.json') })
     const runs = byFile(await readTestResults('C:/repo', d))

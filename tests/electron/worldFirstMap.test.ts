@@ -102,6 +102,8 @@ const until = async (ok: () => boolean, ms = 15_000): Promise<void> => {
 }
 
 const early = (head: unknown = HEAD, projectKey: unknown = 'k1') => ({ projectKey, head })
+/** What a pane on a first map is told when the run that drew it never compiled (fix round 2, m3). */
+const UNFINISHED = 'The map was not finished.'
 
 describe('the first map of a big project (WP4a)', () => {
   it('a big listing is drawn before any file is read; the full world replaces it from the same positions, each file read once', async () => {
@@ -283,6 +285,8 @@ describe('the first map of a big project (WP4a)', () => {
     lost.state.clock += PRESCAN_TTL_MS + 1
     expect(await lost.pane()).toBeNull()
     expect(await lost.pane()).toBeNull()
+    // Every pane still on that map is told it is gone, once (fix round 2, m3).
+    expect(lost.failures()).toEqual([UNFINISHED])
 
     const failed = setup()
     await failed.init()
@@ -314,9 +318,16 @@ describe('the first map of a big project (WP4a)', () => {
     const reads = gate()
     let throwNow = false
     // The first reads wait; once the first map is up the next read throws outright (a read that rejects only reads
-    // as absent), which ends the snapshot.
+    // as absent), which ends the snapshot. Only that one throws: every read after it would succeed, so a pass that
+    // did not stop would read the whole listing.
+    const order: Array<'read' | 'threw'> = []
     const readSource = vi.fn((p: string): Promise<string | null> => {
-      if (throwNow) throw new Error('disk gone')
+      if (throwNow) {
+        throwNow = false
+        order.push('threw')
+        throw new Error('disk gone')
+      }
+      order.push('read')
       return reads.wait.then(() => (p.endsWith('.ts') ? 'export const x = 1\n' : null))
     })
     const h = setup({ listFiles: async () => many, readSource })
@@ -330,9 +341,16 @@ describe('the first map of a big project (WP4a)', () => {
     await failed
     expect(await h.pane()).toBeNull()
     expect(h.failures()).toEqual(['disk gone'])
-    // No read starts after the first that threw (eachLimit stops, fix round 1 M9): the 32 that waited, and at most
-    // one more for each of the 32 workers as they finish.
-    expect(readSource.mock.calls.length).toBeLessThanOrEqual(64)
+    // No read starts after the first that threw (eachLimit stops, fix round 1 M9; fix round 2, m7): the 32 that waited,
+    // the one that threw, and only the other workers' reads already started in the same turn (one each, at most 31).
+    // Nothing starts once the pass has stopped, however long it is given.
+    const threw = order.indexOf('threw')
+    expect(threw).toBeGreaterThanOrEqual(32)
+    expect(order.filter((o) => o === 'threw')).toHaveLength(1)
+    expect(order.length - threw - 1).toBeLessThanOrEqual(31)
+    const stoppedAt = order.length
+    await new Promise((r) => setTimeout(r, 20))
+    expect(order).toHaveLength(stoppedAt)
     expect(readSource.mock.calls.length).toBeLessThan(many.length)
   })
 
@@ -404,14 +422,25 @@ describe('the first map of a big project (WP4a)', () => {
     expect((await h.pane()).provisional).toBe(true)
     h.state.clock += PRESCAN_TTL_MS + 1
     // Past it, any later snapshot sweeps it: the first map is gone, and a new run starts its progress from 0.
+    expect(h.failures()).toEqual([])
     await h.call('snapshotFromFiles', '/other')
+    // A pane still on that map is told, so it shows Try again rather than "Still reading" for good (fix round 2, m3).
+    expect(h.failures()).toEqual([UNFINISHED])
+    expect(h.updated()).toBe(2)
     expect(await h.pane()).toBeNull()
     const at = h.progress().length
     await h.call('snapshotFromFiles', '/r', early())
     expect(h.progress()[at]).toMatchObject({ stage: 'structure', pct: 0 })
     // A fresh first map is drawn for the new run.
-    await until(() => h.updated() === 2)
+    await until(() => h.updated() === 3)
     expect((await h.pane()).provisional).toBe(true)
+    // A swept run that drew no first map (its listing too small for one) says nothing.
+    const quiet = setup({ provisionalMinFiles: 1000 })
+    await quiet.init()
+    await quiet.call('snapshotFromFiles', '/r', early())
+    quiet.state.clock += PRESCAN_TTL_MS + 1
+    await quiet.call('snapshotFromFiles', '/other')
+    expect(quiet.updated()).toBe(0)
   })
 
   it("a watcher's compile never takes the scans a snapshot made for a person's run (fix round 1, M6)", async () => {

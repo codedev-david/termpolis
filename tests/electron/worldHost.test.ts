@@ -340,6 +340,22 @@ describe('host file-system deps', () => {
     expect(await globFiles('/r', ['*.xml'], endless)).toHaveLength(MAX_GLOB_RESULTS)
   })
 
+  it('globFiles stops its walk once the signal is aborted: every later entry is excluded and no later match is kept (fix round 2, R2)', async () => {
+    const stop = new AbortController()
+    const walk: GlobFn = async function* (_p, o) {
+      expect(o.exclude('src/a')).toBe(false)
+      yield 'one.xml'
+      stop.abort()
+      expect(o.exclude('src/b')).toBe(true)
+      yield 'two.xml'
+    }
+    expect(await globFiles('/r', ['*.xml'], walk, stop.signal)).toEqual([join('/r', 'one.xml')])
+    // Aborted before it starts: no walk at all.
+    const unused = vi.fn(walk)
+    expect(await globFiles('/r', ['*.xml'], unused, stop.signal)).toEqual([])
+    expect(unused).not.toHaveBeenCalled()
+  })
+
   it('excerptOf slices about 40 lines around a line, or from the top', () => {
     const text = Array.from({ length: 100 }, (_, i) => `L${i + 1}`).join('\r\n')
     const top = excerptOf(text).split('\n')
@@ -375,6 +391,22 @@ describe('filterWorld', () => {
     expect(filterWorld(doc(), { text: 'the middle' }).items.map((i) => i.id)).toEqual(['d-core'])
     expect(filterWorld(doc(), { ids: ['b-api', 'b-db'], text: 'store' }).items.map((i) => i.id)).toEqual(['b-db'])
     expect(filterWorld(doc(), { text: '' }).items).toHaveLength(4)
+  })
+
+  it('matches names in other scripts, emoji names whole, and a decomposed name typed composed (and back)', () => {
+    const named = (names: string[]) =>
+      doc('k', { districts: names.map((name, i) => ({ id: `d${i}`, name, subtitle: '', hue: 0, members: [] })) })
+    const nfd = 'café orders' // é stored as e + U+0301, as macOS file names arrive
+    const w = named(['שלום', nfd, '数据库', '\u{1F680}', 'Plain'])
+    const hits = (text: string) => filterWorld(w, { text }).items.map((i) => i.id)
+    expect(hits('שלום')).toEqual(['d0'])
+    expect(hits('café')).toEqual(['d1'])
+    expect(hits('CAFÉ ORDERS')).toEqual(['d1'])
+    expect(hits('数据库')).toEqual(['d2'])
+    expect(hits('\u{1F680}')).toEqual(['d3'])
+    expect(hits('plain')).toEqual(['d4'])
+    // Composed in the world, decomposed in the query: the same match.
+    expect(filterWorld(named(['café']), { text: 'café' }).items.map((i) => i.id)).toEqual(['d0'])
   })
 
   it('clamps the limit', () => {

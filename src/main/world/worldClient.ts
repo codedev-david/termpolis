@@ -480,7 +480,7 @@ export function createWorldClient(
     }
   }
 
-  const compileWith = (root: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
+  const compileWith = (root: string, relayout: boolean, linked?: WorldDoc | null, background = false): Promise<WorldDoc> => {
     let key: string
     try {
       key = keyOf(root, true)
@@ -497,9 +497,10 @@ export function createWorldClient(
     }
     // A compile that ended without a world (the host failed it, stopped, or the call ran out) is pushed with its
     // error, so a pane showing the first map from the listing, or one opened while it ran, hears how it ended (I2).
+    // A background refresh is not: its world is stored, so it drew no first map and no pane waits on it (m5).
     const failed = (e: unknown): void => {
       done()
-      emit(updatedSubs, { root, projectKey: key, error: e instanceof Error ? e.message : String(e) })
+      if (!background) emit(updatedSubs, { root, projectKey: key, error: e instanceof Error ? e.message : String(e) })
     }
     run.then(done, failed)
     return run
@@ -530,7 +531,7 @@ export function createWorldClient(
       const failed = refreshFailed.get(key)
       if (failed && failed.head === token && Date.now() - failed.at < REFRESH_BACKOFF_MS) return
       tried = token
-      const fresh = await compileWith(root, false, plan)
+      const fresh = await compileWith(root, false, plan, true)
       if (carried(fresh) === stamp) refreshFailed.delete(key)
       else refreshFailed.set(key, { head: token, at: Date.now() })
     })()
@@ -676,10 +677,12 @@ export function createWorldClient(
      * Resolves once no compile of `root`'s world is running (at once when none is), whatever they ended with. Main's
      * code graph waits on it, so its reads never compete with the world's first map (WP4a Ruling R3).
      */
-    whenCompiled: async (root: string): Promise<void> => {
+    whenCompiled: async (root: string): Promise<boolean> => {
       const key = graphKeyForRoot(root)
       const runs = key ? inFlight.get(key) : undefined
-      if (runs) await Promise.allSettled([...runs])
+      if (!runs) return false
+      await Promise.allSettled([...runs])
+      return true
     },
     /** The world with this key (graphKeyForRoot, the registry key) was removed: its labelling calls still waiting for a
      *  slot never start, running ones are answered null, and none it asks later starts a CLI until the world is asked

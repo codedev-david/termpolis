@@ -223,18 +223,23 @@ async function recorded(dir: string): Promise<Recorded> {
 }
 
 /** The first map, the complete world and the longest wait between progress reports (until the compile's 100), in ms. */
-function timings(r: Recorded): { firstMapMs: number; completeMs: number; longestQuietMs: number; risesOnly: boolean } {
+function timings(r: Recorded): { firstMapMs: number; completeMs: number; longestQuietMs: number; quietBetween: string; risesOnly: boolean } {
   const first = r.samples.find((s) => s.n !== null) as Sample
   const complete = r.samples.find((s) => s.n !== null && !s.provisional) as Sample
   const end = r.progress.findIndex((p) => p.pct >= 100)
   const run = end < 0 ? r.progress : r.progress.slice(0, end + 1)
   let longestQuietMs = 0
+  // The two reports either side of the longest wait (stage pct at t ms), so a quiet bar names its stage.
+  let quietBetween = ''
   let risesOnly = true
   for (let i = 1; i < run.length; i++) {
-    longestQuietMs = Math.max(longestQuietMs, run[i].t - run[i - 1].t)
+    if (run[i].t - run[i - 1].t > longestQuietMs) {
+      longestQuietMs = run[i].t - run[i - 1].t
+      quietBetween = [run[i - 1], run[i]].map((p) => `${p.stage} ${p.pct} at ${p.t}`).join(' -> ')
+    }
     if (run[i].pct < run[i - 1].pct) risesOnly = false
   }
-  return { firstMapMs: first.t, completeMs: complete.t, longestQuietMs, risesOnly }
+  return { firstMapMs: first.t, completeMs: complete.t, longestQuietMs, quietBetween, risesOnly }
 }
 
 /** The kind of every recent world whose folder is `dir` under any spelling (compared as real paths). */
@@ -331,7 +336,10 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     test.setTimeout(900_000)
     const dir = await makeScenario('huge', base, { git: withGit })
     const key = await worldKey(dir, false)
-    await startRecorder(key, 250)
+    // Every look while the first map is up has the world process send that map whole (tens of thousands of parts):
+    // a look every 2 s, not every 250 ms, so the looks themselves do not raise the peak being measured (fix round 2,
+    // I5/R3). The first map's time is then known to within 2 s.
+    await startRecorder(key, 2000)
     const mapped = await page.evaluate(
       (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
       dir
@@ -357,7 +365,7 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       eapp.getAppMetrics().map((m) => ({ process: m.name ? `${m.type}:${m.name}` : m.type, peakMB: Math.round(m.memory.peakWorkingSetSize / 1024) }))
     )
     const firstWasProvisional = r.samples.find((s) => s.n !== null)?.provisional === true
-    const report = { git: withGit, firstMapMs: t.firstMapMs, completeMs: t.completeMs, longestQuietMs: t.longestQuietMs, firstWasProvisional, mapped: got.length, peaks }
+    const report = { git: withGit, firstMapMs: t.firstMapMs, completeMs: t.completeMs, longestQuietMs: t.longestQuietMs, quietBetween: t.quietBetween, firstWasProvisional, mapped: got.length, peaks }
     console.log(`[huge] ${JSON.stringify(report)}`)
     test.info().annotations.push({ type: 'huge', description: JSON.stringify(report) })
     await page.locator('[data-testid="world-close"]').click()

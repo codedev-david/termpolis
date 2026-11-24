@@ -5,12 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { compileWorldStaged, scanFile, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
+import { compileWorldStaged, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
+import type { TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 const ROOT = '/repo'
@@ -242,7 +244,7 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(small.doc).not.toHaveProperty('filesListed')
   }, 60_000)
 
-  it('progress only rises, the reads move it from 5 to 40, and a slow wait for test results keeps it moving up to 64', async () => {
+  it('progress only rises, the reads move it from 5 to 40, a slow wait for test results keeps it moving, and the status stage reports once more after it (fix round 2, R2)', async () => {
     vi.useFakeTimers()
     let release!: (v: never[]) => void
     const ciRuns = () => new Promise<never[]>((r) => (release = r))
@@ -254,18 +256,131 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(d.pcts[d.pcts.length - 1]).toEqual(['status', 55])
     await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
     expect(d.pcts.slice(-3)).toEqual([['status', 56], ['status', 57], ['status', 58]])
-    await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 20)
-    expect(d.pcts[d.pcts.length - 1]).toEqual(['status', 64])
     release([])
     await vi.advanceTimersByTimeAsync(10)
     await running
     const pcts = d.pcts.map(([, p]) => p)
     for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1])
     expect(pcts[pcts.length - 1]).toBe(100)
+    const labelling = d.pcts.findIndex(([s]) => s === 'labelling')
+    expect(d.pcts[labelling - 1]).toEqual(['status', 64])
     // The heartbeat stopped with the wait.
     const n = d.pcts.length
     await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 5)
     expect(d.pcts).toHaveLength(n)
+  })
+
+  it('the test-results search is bounded: at SEARCH_TIME_MS its walks are told to stop and the compile goes on without what it lacks (fix round 2, R2)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const signals: AbortSignal[] = []
+    const glob = vi.fn((_root: string, _patterns: string[], opts: { signal: AbortSignal }) => {
+      signals.push(opts.signal)
+      return new Promise<string[]>(() => undefined)
+    })
+    const never = vi.fn(() => new Promise<TestRun[]>(() => undefined))
+    const times: number[] = []
+    const d = deps({ glob, ciRuns: never, transcriptRuns: never })
+    const onProgress = d.onProgress as NonNullable<CompileDeps['onProgress']>
+    d.onProgress = (s, p) => {
+      times.push(Date.now())
+      onProgress(s, p)
+    }
+    let out: Awaited<ReturnType<typeof compile>> | null = null
+    void compile(d).then((o) => (out = o))
+    await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS - 1)
+    expect(out).toBeNull()
+    // The report search (inside readTestResults) and the manifest search: one window for both.
+    expect(glob).toHaveBeenCalledTimes(2)
+    expect(signals.some((s) => s.aborted)).toBe(false)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(signals.every((s) => s.aborted)).toBe(true)
+    const done = out as unknown as Awaited<ReturnType<typeof compile>>
+    expect(done).not.toBeNull()
+    // No test results: every building is a gap, and the world is complete.
+    expect(done.doc.buildings.every((b) => b.status === 'gap')).toBe(true)
+    expect(d.pcts[d.pcts.length - 1]).toEqual(['layout', 100])
+    // While it waited, the bar moved at least every STATUS_BEAT_MS, and never past the status stage's 64.
+    for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeLessThanOrEqual(STATUS_BEAT_MS)
+    const status = d.pcts.filter(([s]) => s === 'status').map(([, p]) => p)
+    expect(status[0]).toBe(55)
+    expect(status[status.length - 1]).toBe(64)
+    expect(Math.max(...status.slice(0, -1))).toBeLessThan(64)
+    // The log names the stage that waited, and says the search ran out of time.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; the searches ran out of time after 16000 ms$/)
+    warn.mockRestore()
+  })
+
+  it('every stage reports progress, and a slow label cache or manifest search keeps the bar moving; a slow stage is logged (fix round 2, R2)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const later = <T,>(v: T, ms: number): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms))
+    const times: number[] = []
+    const d = deps({
+      // Reports come at once; the manifest search takes 12 s.
+      glob: (_root, patterns) => (patterns.some((p) => p.includes('junit')) ? Promise.resolve([]) : later([], 12_000)),
+      // A model that takes 2.5 s a call and describes nothing (every reply null).
+      label: { llm: () => later(null, 2500), cache: { get: async () => null, set: async () => undefined }, excerpt: async () => '' }
+    })
+    const onProgress = d.onProgress as NonNullable<CompileDeps['onProgress']>
+    d.onProgress = (s, p) => {
+      times.push(Date.now())
+      onProgress(s, p)
+    }
+    const running = compile(d)
+    await vi.advanceTimersByTimeAsync(60_000)
+    const out = await running
+    expect(out.doc.buildings.length).toBeGreaterThan(0)
+    const stages = d.pcts.map(([s]) => s).filter((s, i, all) => all.indexOf(s) === i)
+    expect(stages).toEqual(['structure', 'boundaries', 'grouping', 'status', 'labelling', 'layout'])
+    const pcts = d.pcts.map(([, p]) => p)
+    for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1])
+    for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeLessThanOrEqual(STATUS_BEAT_MS)
+    // The layout stage reports between its steps: the status pass, the manifests, the layout, then 100.
+    const layout = d.pcts.filter(([s]) => s === 'layout').map(([, p]) => p)
+    expect(layout[0]).toBe(85)
+    expect(layout).toContain(86)
+    expect(layout).toContain(95)
+    expect(layout).toContain(98)
+    expect(layout[layout.length - 1]).toBe(100)
+    expect(d.pcts.filter(([s]) => s === 'labelling').length).toBeGreaterThan(1)
+    // Both slow stages are named in the one log line, each with its time; nothing ran out of time. (The label
+    // pass logs its own retries for the replies that said nothing.)
+    const lines = warn.mock.calls.map(([m]) => String(m)).filter((m) => m.startsWith('[world compile]'))
+    expect(lines).toHaveLength(1)
+    const line = lines[0]
+    expect(line).toMatch(/labelling \d+ ms/)
+    expect(line).toMatch(/layout \d+ ms/)
+    expect(line).not.toMatch(/ran out of time/)
+    warn.mockRestore()
+  })
+
+  it('a quick compile logs nothing (fix round 2, R2)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await compile(deps())
+    expect(warn).not.toHaveBeenCalled()
+    expect(SLOW_STAGE_MS).toBe(5000)
+    expect(SEARCH_TIME_MS).toBe(16_000)
+    warn.mockRestore()
+  })
+
+  it('a compile that throws still ends its search window (fix round 2, R2)', async () => {
+    vi.useFakeTimers()
+    const signals: AbortSignal[] = []
+    const d = deps({
+      glob: (_root, _patterns, opts) => {
+        signals.push(opts.signal)
+        return Promise.resolve([])
+      },
+      annotations: async () => {
+        throw new Error('store down')
+      }
+    })
+    await expect(compile(d)).rejects.toThrow('store down')
+    expect(signals.length).toBeGreaterThan(0)
+    expect(signals.every((s) => s.aborted)).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('layoutFrom: with no previous world, the parts start where the first map drew them; a previous world wins', async () => {

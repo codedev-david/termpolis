@@ -138,8 +138,10 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
         // No world saved yet while one is being compiled (its first map may be on screen): the ask waits for it.
         const whenCompiled = deps.client.whenCompiled
         if (!doc && whenCompiled) {
-          await bounded(() => whenCompiled(root), deps.compileWaitMs ?? DEFAULT_COMPILE_WAIT_MS, ctl.signal, 'waiting for the map', log)
+          const waited = await bounded(() => whenCompiled(root), deps.compileWaitMs ?? DEFAULT_COMPILE_WAIT_MS, ctl.signal, 'waiting for the map', log)
           doc = await bounded((signal) => deps.client.get(root, { refresh: false, signal }), getMs, ctl.signal, 'loading the map', log)
+          // The compile it waited on saved nothing: the map failed, not "not mapped yet" (fix round 2, m1).
+          if (!doc && waited === true) throw new Error('the compile saved no world')
         }
       } catch (err) {
         if (ctl.signal.aborted) return cancelled()

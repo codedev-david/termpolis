@@ -2410,6 +2410,32 @@ describe('WorldView export', () => {
     }
   })
 
+  it('a failure pushed for an earlier run changes nothing once Try again has started the next (fix round 2, m2)', async () => {
+    const compiles = [deferred<Res<WorldDoc>>(), deferred<Res<WorldDoc>>()]
+    const b = bridge(exportApi({ worldGet: vi.fn(async (): Promise<Res<WorldDoc | null>> => ok(null)), worldCompile: vi.fn(() => compiles[b.api.worldCompile.mock.calls.length - 1].promise) }))
+    await mountWith()
+    await act(async () => { compiles[0].resolve(fail('no source files found')) })
+    await settle()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('no source files found')
+    // The failed run's own push arrives, and its read is slow.
+    const late = deferred<Res<WorldDoc | null>>()
+    b.api.worldGet.mockReturnValueOnce(late.promise)
+    await b.updated({ root: '/repo', projectKey: 'k', error: 'no source files found' })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await settle()
+    expect(b.api.worldCompile).toHaveBeenCalledTimes(2)
+    // The next run draws its first map; then the earlier read lands with it.
+    const first = { ...minimal(), provisional: true }
+    b.api.worldGet.mockResolvedValue(ok(first))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.getByTestId('world-notice')).toBeInTheDocument()
+    await act(async () => { late.resolve(ok(first)) })
+    await settle()
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    expect(screen.getByTestId('world-notice')).toBeInTheDocument()
+  })
+
   it("the export dialog's low-description note follows Describe parts with AI", async () => {
     const info = vi.fn(async () => ok({ title: 'repo', savedAt: 1, smartDefault: false, buildings: 0.1, lines: 0.1, smartBytes: 37 * MB, keywordBytes: MB, smartAvailable: true, proposals: [] }))
     for (const on of [true, false]) {

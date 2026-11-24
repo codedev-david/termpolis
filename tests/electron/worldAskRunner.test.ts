@@ -542,10 +542,13 @@ describe('createAskRunner', () => {
       expect(client.get).toHaveBeenLastCalledWith('C:/repo', { refresh: false })
     })
 
-    it('a compile that saved nothing leaves the project not mapped; one that runs past the wait is a load failure', async () => {
+    it('no compile to wait on leaves the project not mapped; one that saved nothing, or runs past the wait, is a load failure', async () => {
       const { runner, client, execFn } = setup(async () => okRes('x'), null, undefined, undefined, { compileWaitMs: 5 })
-      Object.assign(client, { whenCompiled: vi.fn(async () => undefined) })
+      Object.assign(client, { whenCompiled: vi.fn(async () => false) })
       expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: 'This project has not been mapped yet.' })
+      // The compile it waited on failed: the map failed, not "not mapped yet" (fix round 2, m1).
+      Object.assign(client, { whenCompiled: vi.fn(async () => true) })
+      expect(await runner.ask({ ...REQ, askId: 'a3' })).toEqual({ askId: 'a3', ok: false, error: "Lumopolis couldn't load this project's map. Try again." })
       Object.assign(client, { whenCompiled: vi.fn(() => new Promise<void>(() => undefined)) })
       expect(await runner.ask({ ...REQ, askId: 'a2' })).toEqual({ askId: 'a2', ok: false, error: "Lumopolis couldn't load this project's map. Try again." })
       expect(execFn).not.toHaveBeenCalled()
