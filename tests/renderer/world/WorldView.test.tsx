@@ -2461,19 +2461,25 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     expect(h.viewers).toHaveLength(1)
   })
 
-  it('a loss stops what plays and takes the 3D card; a 2D card opened meanwhile goes on the restore (M2)', async () => {
+  it('a loss stops what plays and takes the 3D card; a 2D card opened meanwhile goes on the restore; the switch shows the 2D map (M2, N2)', async () => {
     bridge()
     await mount()
     const v = viewer()
+    const sw = () => screen.getByTestId('world-map2d')
     act(() => v.opts.renderCard('<p class="tour-caption">The app talks</p>'))
     expect(screen.getByTestId('world-card')).toHaveTextContent('The app talks')
     act(() => { v.opts.onGraphics('lost') })
     expect(v.cancelActions).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('world-card')).toBeNull()
+    // the 2D map is on show: the switch says so, and waits for the graphics
+    expect(sw()).toHaveAttribute('aria-checked', 'true')
+    expect(sw()).toBeDisabled()
     fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
     expect(screen.getByTestId('world-card')).toBeInTheDocument()
     act(() => { v.opts.onGraphics('restored') })
     expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(sw()).toHaveAttribute('aria-checked', 'false')
+    expect(sw()).not.toBeDisabled()
     expect(localStorage.getItem('termpolis.world.map2d')).toBeNull() // the switch's own setting is untouched
   })
 

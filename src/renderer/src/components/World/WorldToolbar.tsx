@@ -86,6 +86,8 @@ export interface WorldToolbarProps {
   bookmarkSaveDisabled?: boolean
   /** The 2D map is on: a flat SVG map with a list, for screen readers and machines without WebGL. */
   map2d: boolean
+  /** The 2D map shows until the 3D map's lost graphics come back: the switch cannot turn it off meanwhile. */
+  map2dDisabled?: boolean
   onMap2d: (on: boolean) => void
   /** A narrow pane: the secondary controls fold into the More menu. */
   compact?: boolean
@@ -270,6 +272,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         aria-checked={props.map2d}
         title="A flat map with a list instead of the 3D city"
         data-testid="world-map2d"
+        disabled={props.map2dDisabled === true}
         className={toggleCls(props.map2d)}
         onClick={() => props.onMap2d(!props.map2d)}
       >2D map</button>

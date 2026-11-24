@@ -935,7 +935,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onBookmark={onBookmark}
         onRemoveBookmark={onRemoveBookmark}
         bookmarkSaveDisabled={!viewer || !doc}
-        map2d={map2d}
+        // While the graphics are away the switch shows the 2D map that is on show, and waits for them.
+        map2d={shows2d}
+        map2dDisabled={glPaused}
         onMap2d={onMap2d}
         // Always folded below TOOLBAR_FOLD_PX; above it the toolbar folds itself where it would take too many rows.
         compact={width / scale < TOOLBAR_FOLD_PX}
