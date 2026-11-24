@@ -14,7 +14,7 @@ const B = '\\'
 const win: SanitizeContext = { root: 'C:\\Users\\dev\\repo', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
 const posix: SanitizeContext = { root: '/home/dev/repo', home: '/home/dev', userData: '/home/dev/.config/Termpolis' }
 
-/** Characters at the small size; the large one is eight times as many. Seven shapes at both: about 260 KB in all. */
+/** Characters at the small size; the large one is eight times as many. Eight shapes at both: about 300 KB in all. */
 const N = 4096
 /** Linear is about 8, quadratic about 64. */
 const LIMIT = 24
@@ -36,6 +36,7 @@ const shapes: Shape[] = [
   ['text: a minified token', (s) => sanitizeText(s, posix), repeat('a.b(c)&&d[e]=f/g*h;')],
   ['text: a base64 token', (s) => sanitizeText(s, posix), base64],
   ['text: a UNC token naming the home', (s) => sanitizeText(s, posix), (n) => B + B + 'h' + repeat('/home/dev/x')(n - 3)],
+  ['text: a share path of folders named Users', (s) => sanitizeText(s, win), (n) => '//h' + repeat('/Users')(n - 3)],
   ['text: a run of dots', (s) => sanitizeText(s, win), repeat('.')],
   ['text: a run of backslashes', (s) => sanitizeText(s, win), repeat(B)],
   ['field: a run of slashes', (s) => relativePath(s, posix), repeat('/')],

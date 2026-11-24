@@ -1105,6 +1105,31 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     const dots: SanitizeContext = { root: null, home: 'C:\\Users\\. .', userData: 'C:\\Users\\. .\\AppData\\Roaming\\Termpolis' }
     expect(relativePath('C:\\Users\\~1\\x', dots)).toBe(`${OUTSIDE}/x`)
   })
+
+  it('takes a Windows home folder on a host written with forward slashes or as an smb: URL whole, host and share too', () => {
+    const spaced: SanitizeContext = { root: null, home: 'C:\\Users\\Ann Lee', userData: 'C:\\Users\\Ann Lee\\AppData\\Roaming\\Termpolis' }
+    const both: Array<[SanitizeContext, string, string]> = [
+      // As the backslash form is.
+      [win, '\\\\host\\share\\Users\\dev\\x', `${OUTSIDE}/x`],
+      [win, '//host/share/Users/dev/x', `${OUTSIDE}/x`],
+      [win, 'smb://host/share/Users/dev/x', `${OUTSIDE}/x`],
+      [win, 'SMB://HOST/share/users/DEV/x', `${OUTSIDE}/x`],
+      [win, '//host/share/Users/dev', OUTSIDE],
+      [win, 'smb://h/Users/dev', OUTSIDE],
+      [win, '//host/share/deep/Users/dev/repo/a.ts', `${OUTSIDE}/a.ts`],
+      [win, 'smb://host/share/Users/dev/repo/a.ts', `${OUTSIDE}/a.ts`],
+      [spaced, '//host/share/Users/Ann Lee/x', `${OUTSIDE}/x`],
+      [spaced, 'smb://host/s/Users/Ann%20Lee/x', `${OUTSIDE}/x`],
+      // Another account on the host is outside the project as a field, and left to the definition in text.
+      [win, 'smb://host/share/x', `${OUTSIDE}/x`],
+    ]
+    for (const [ctx, path, want] of both) expect(relativePath(path, ctx), path).toBe(want)
+    for (const [ctx, path, want] of both.slice(0, -1)) expect(sanitizeText(`see ${path} now`, ctx), path).toBe(`see ${want} now`)
+    expect(sanitizeText('see "//host/share/Users/dev/x". now', win)).toBe(`see "${OUTSIDE}/x". now`)
+    // Not after a name or another scheme, and not a folder that only starts with the account's name.
+    for (const kept of ['see smb://host/share/x now', 'see //host/share/Users/devx/y now', 'see a//host/share/Users/dev/x now',
+      'see x://host/share/Users/dev/x now', 'see http://host/share/Users/dev/x now']) expect(sanitizeText(kept, win)).toBe(kept)
+  })
 })
 
 function projD(): SanitizeContext {

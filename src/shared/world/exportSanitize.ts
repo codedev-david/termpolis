@@ -22,7 +22,8 @@
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms, and a drive written the Git Bash or Cygwin way, `/c/...` or
 // `/cygdrive/c/...`), so a folder name holding a space never splits. On Windows the account's folder is also found
-// by its short (8.3) name (`DAVIDE~1`, shortSource), which Git Bash and temp paths write.
+// by its short (8.3) name (`DAVIDE~1`, shortSource), which Git Bash and temp paths write, and a folder below a drive
+// on a host's share written with forward slashes or as an smb: URL (`//host/share/Users/ann`) is taken with the host.
 // Another account's path is found by the definition alone, so it is missed when a line break splits it, after
 // `<`, `|`, `+`, `@`, `&` or `*`, as a forward-slash UNC path (`//host/share`) or inside another scheme's URL
 // (`vscode://file/home/<other>`), and it ends at a space in its folder name (`/home/Ann Lee/x`).
@@ -105,6 +106,8 @@ function plainPath(p: string, keepBackslash: boolean): string {
     try { n = decodeURIComponent(n) } catch { /* a stray % : keep the path as written */ }
     if (/^\/[A-Za-z]:/.test(n)) n = n.slice(1)
   }
+  // An smb: URL is the UNC path it names (`smb://host/share/x` is `//host/share/x`).
+  n = n.replace(/^smb:(?=[\\/]{2})/i, '')
   if (!keepBackslash) n = n.replace(/\\/g, '/')
   n = (n.startsWith('//') ? '/' : '') + n.replace(/\/{2,}/g, '/')
   const long = /^\/\/[?.]\/(unc\/)?/i.exec(n)
@@ -346,6 +349,10 @@ const UNC_TOKEN = `(?<![\\w.:\\\\/$~%-])\\\\{2,}[^\\s\\\\/"'<>|][^\\s"'<>|]*`
  */
 const RUN_START = '(?:(?<![\\\\/])|(?<=(?<![\\\\/])[\\\\/]))'
 
+/** A host and the folders of its share a Windows path written with forward slashes runs on in (baseSource's `share`). */
+const SHARE_START = `(?<![\\w.:\\\\/$~%-])`
+const SHARE = `(?:${SHARE_START}smb:|${SHARE_START})//[^\\s\\\\/"'<>|]+(?:/[^\\s\\\\/"'<>|]+)*?`
+
 /**
  * A RegExp source (for the `i` flag) matching folder `base` however a text writes it: either slash, doubled
  * backslashes (JSON), the long forms `\\?\` and `\\.\`, and a drive as an admin share (`\\host\C$`). With `inUnc`, only
@@ -365,7 +372,12 @@ function baseSource(base: string, inUnc: boolean, ctx: SanitizeContext): string 
     // it, while `..\Users\ann`, `a.ts:12:\Users\ann`, `cwd:\Users\ann`, `-\Users\ann` and `$\Users\ann` are. Nor
     // anywhere inside a UNC path (`\\host\share$\Users\ann`). Only below the drive itself too.
     const rooted = inUnc ? '' : `|(?=[\\\\/])(?<![\\w\\\\/]|(?<!\\w)[a-z]:|[\\\\/]{2}[^\\s\\\\/"'<>|]+[\\\\/][a-z]\\$)`
-    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])${rooted}` : ''
+    // On a host's share written with forward slashes, as an smb: URL or not (`//host/share/Users/ann`,
+    // `smb://host/share/Users/ann`), the drive left out too: the host and its folders go with the path, as UNC_TOKEN's
+    // do, so neither the account nor the host shows. Never after a name or path character (so each path is tried
+    // once, and `x://host` is another scheme's URL); the host's folders are whole names up to the folder's.
+    const share = inUnc ? '' : `|${SHARE}`
+    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])${rooted}${share}` : ''
     return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash}${bare})${rest}`
   }
   if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map((s) => partSource(s, ctx, escapeRe)).join(SEP)
@@ -396,7 +408,8 @@ function urlSource(base: string, ctx: SanitizeContext): string | null {
   // The drive left out: at the run's start, or else (after a name) right after the run's first slash or backslash, the
   // first place in the run no letter or digit comes before (`%2F` ends with one).
   const first = `(?:${URL_RUN}|(?<=${URL_RUN}(?:%2F|%5C)*[\\\\/]))`
-  if (drive) return `(?:${drive[1]}(?::|%3A)|(?=[\\\\/%])${first}(?<!\\w|(?<!\\w)[a-z](?::|%3A)))${URL_SEP}${names}`
+  // On a host's share too, as baseSource's `share` form (`smb://host/share/Users/Ann%20Lee`).
+  if (drive) return `(?:${drive[1]}(?::|%3A)|(?=[\\\\/%])${first}(?<!\\w|(?<!\\w)[a-z](?::|%3A))|${SHARE})${URL_SEP}${names}`
   return parts[0] === '' && parts[1] !== '' ? URL_RUN + URL_SEP + names : null
 }
 
