@@ -85,6 +85,23 @@ describe('useWorldAsk', () => {
     expect(result.current.cited).toEqual({})
   })
 
+  it('waits for the pane before the tour, and plays none when the pane answers that it moved on (fix round 3, N5)', async () => {
+    for (const go of [true, undefined, false]) {
+      const v = makeViewer()
+      const ready = deferred<boolean | undefined>()
+      const whenComplete = vi.fn(() => ready.promise as Promise<boolean | void>)
+      const { result, unmount } = renderHook(() => useWorldAsk(v as never, 'r', undefined, undefined, whenComplete))
+      await act(async () => { result.current.ask('q') })
+      expect(whenComplete).toHaveBeenCalledTimes(1)
+      expect(v.play).not.toHaveBeenCalled()
+      await act(async () => { ready.resolve(go) })
+      // The root this box was given is unchanged: only the pane's answer says whether it moved on.
+      expect(v.play).toHaveBeenCalledTimes(go === false ? 0 : 1)
+      expect(result.current.state).toBe('answered')
+      unmount()
+    }
+  })
+
   it('a play that rejects is swallowed', async () => {
     const v = makeViewer()
     v.play.mockRejectedValueOnce(new Error('boom'))

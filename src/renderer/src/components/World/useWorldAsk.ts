@@ -68,7 +68,7 @@ function reducedMotion(): boolean {
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<void>): UseWorldAsk {
+export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
@@ -222,8 +222,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         // The pane may still show the first map: the tour plays on the world the answer came from, once it is shown.
         const ready = whenCompleteRef.current
         if (ready) {
-          await ready()
-          if (answerGen.current !== gen) return
+          // false: the pane moved on to another world (or closed) while it waited, which it knows before this box does.
+          const go = await ready()
+          if (go === false || answerGen.current !== gen) return
         }
         // The viewer as it is now: an answer plays only on the viewer it was asked from; none (the 2D view), or a
         // viewer that went while the question was out (or while its tour waited), shows the answer whole with nothing played (U6, M2).

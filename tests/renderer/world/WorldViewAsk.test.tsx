@@ -33,6 +33,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
 
 import { WorldView } from '../../../src/renderer/src/components/World'
 import type { WorldViewProps } from '../../../src/renderer/src/components/World'
+import type { WorldAskLink } from '../../../src/renderer/src/components/World/WorldView'
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
@@ -424,6 +425,55 @@ describe('an Ask made on a first map (fix round 2, R1)', () => {
     await act(async () => { reply.resolve(answered(askIdOf(b))) })
     await settle()
     playedAfterLoad(v, c)
+  })
+
+  it('the pane answers false to a tour waiting on a world it no longer shows: another root opened, or the pane closed (fix round 3, N4, N5)', async () => {
+    for (const end of ['moved', 'closed', 'closed-while-shown', 'here'] as const) {
+      const f = first()
+      const c = full()
+      const got = deferred<Res<WorldDoc | null>>()
+      let gets = 0
+      bridge({ worldGet: vi.fn((root: string) => (root === '/other' ? Promise.resolve(ok(full())) : ++gets === 1 ? Promise.resolve(ok(f)) : got.promise)) })
+      let link: WorldAskLink | undefined
+      const grab: NonNullable<WorldViewProps['askSlot']> = (_v, _d, _r, l) => { link = l; return null }
+      const onClose = vi.fn()
+      const view = render(<WorldView root="/repo" onClose={onClose} askSlot={grab} />)
+      await settle()
+      const v = viewer()
+      expect(v.load).toHaveBeenLastCalledWith(f)
+      const waiting = (link as WorldAskLink).whenComplete?.() as Promise<boolean>
+      let answer: boolean | undefined
+      void waiting.then((a) => { answer = a })
+      await settle()
+      expect(gets).toBe(2)
+      if (end === 'moved') {
+        // The pane renders the new root first: the box's own root change comes in a later effect.
+        view.rerender(<WorldView root="/other" onClose={onClose} askSlot={grab} />)
+        await settle()
+      }
+      if (end === 'closed') view.unmount()
+      if (end === 'closed-while-shown') {
+        // The complete world arrives, and the pane closes before it renders it: its waiter is let go on unmount.
+        // Inside one act the pane's render of it waits for the scope to end, so the unmount comes first.
+        await act(async () => {
+          got.resolve(ok(c))
+          for (let i = 0; i < 4; i++) await Promise.resolve()
+          expect(answer).toBeUndefined()
+          view.unmount()
+        })
+        await settle()
+        expect(v.load).toHaveBeenCalledTimes(1)
+      } else {
+        await act(async () => { got.resolve(ok(c)) })
+        await settle()
+      }
+      expect(answer).toBe(end === 'here')
+      // The other root's own world loads; /repo's complete world, come too late, does not.
+      if (end === 'moved') expect((v.load.mock.calls as Array<[WorldDoc]>).some(([d]) => d === c)).toBe(false)
+      if (end === 'here') expect(v.load).toHaveBeenLastCalledWith(c, { animateFrom: f })
+      cleanup()
+      h.viewers.length = 0
+    }
   })
 
   it('an answer plays on the first map when no complete world can be had, and not at all when the pane moved on or a newer question came', async () => {

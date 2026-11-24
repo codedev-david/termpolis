@@ -100,8 +100,10 @@ export interface WorldAskLink {
   /**
    * Resolves once the pane shows the complete world: at once when it does, else after loading it when it is saved by
    * now (an answer is computed from it), else (none to be had) at once. An answer's tour waits for it (fix round 2, R1).
+   * It answers false when the pane moved on meanwhile (another world opened, or the pane closed): that answer's tour
+   * must not play, whether or not the box has seen the change yet (fix round 3, N4 and N5).
    */
-  whenComplete?(): Promise<void>
+  whenComplete?(): Promise<boolean>
 }
 
 /** The e2e probe on window.__termpolis_world. */
@@ -291,6 +293,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const heldDocRef = useRef<WorldDoc | null>(null)
   /** Tours waiting for the complete world to be shown (askLink.whenComplete): let go when the pane's doc is no first map. */
   const completeWaitersRef = useRef<Array<() => void>>([])
+  /** Lets every waiting tour go (each then checks whether the pane is still on its world). */
+  const releaseWaiters = (): void => {
+    const waiting = completeWaitersRef.current
+    completeWaitersRef.current = []
+    for (const go of waiting) go()
+  }
+  // A closed pane releases the tours waiting in it, so their asks settle (fix round 3, N4).
+  useEffect(() => releaseWaiters, [])
   /** Bumped by every opening of a world (and Try again): a pushed failure read for an earlier one is dropped (m2). */
   const runGenRef = useRef(0)
   const [askLink] = useState<WorldAskLink>(() => ({
@@ -310,17 +320,23 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       setDoc(d)
     },
     whenComplete: async () => {
-      if (docRef.current?.provisional !== true) return
+      if (docRef.current?.provisional !== true) return true
       const at = rootRef.current as string
+      // False once the pane closed, or another world opened (rootRef is set as the pane renders, before the box's own
+      // effects run): the answer is then not for what the pane shows (fix round 3, N4 and N5).
+      const stillHere = (): boolean => mountedRef.current && rootRef.current === at
       const res = await window.termpolis.worldGet(at).catch(() => null)
+      if (!stillHere()) return false
       const got = res?.success === true ? res.data : null
-      // No complete world to be had (the run failed meanwhile), or the pane moved on: nothing to wait for.
-      if (got === null || got.provisional === true || rootRef.current !== at || docRef.current?.provisional !== true) return
+      // No complete world to be had: the run failed meanwhile, or worldGet itself failed. The tour then plays on the
+      // first map the person is looking at rather than not at all. That is by design, not a bug (fix round 3, N6).
+      if (got === null || got.provisional === true || docRef.current?.provisional !== true) return true
       const shown = new Promise<void>((resolve) => { completeWaitersRef.current.push(resolve) })
       heldDocRef.current = null
       setError(null)
       setDoc(got)
       await shown
+      return stillHere()
     },
   }))
 
@@ -638,10 +654,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // A tour waiting for the complete world (whenComplete) goes once the doc is no first map: it was loaded just above.
   useEffect(() => {
-    if (doc?.provisional === true) return
-    const waiting = completeWaitersRef.current
-    completeWaitersRef.current = []
-    for (const go of waiting) go()
+    if (doc?.provisional !== true) releaseWaiters()
   }, [doc])
 
   // In 2D the card is built from the doc: a newer world rebuilds the open one (or closes it when
