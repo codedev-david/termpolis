@@ -172,6 +172,8 @@ export interface Page {
   pick(id: string, kind: AskKind): void
   /** The Ask box (AskBox): its answer folds away while it would cover the open card or the part the card frames. */
   setAsk(ask: PageAsk): void
+  /** Removes the page's document and window listeners and stops watching its panels' sizes (boot, on a failure). */
+  dispose(): void
 }
 
 /** What the page needs of the Ask box (AskBox) to fold its answer away for a card and bring it back. */
@@ -452,11 +454,12 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     openPart(item.getAttribute('data-id') as string)
   })
   // Esc outside the 3D view (the viewer handles its own while it has focus): close the card, back to the overview.
-  document.addEventListener('keydown', (e) => {
+  const onKey = (e: KeyboardEvent): void => {
     if (e.key !== 'Escape' || viewHost.contains(e.target as Node)) return
     escClosing = true
     try { closeCard() } finally { escClosing = false }
-  })
+  }
+  document.addEventListener('keydown', onKey)
 
   const setFlat = (on: boolean): void => {
     flat = on
@@ -527,9 +530,10 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   // gains a scrollbar (the body's content box narrows), which the close button moves clear of. The fit runs on the
   // next frame, once per frame: fitting inside the observer's callback resizes the panels it watches, a loop WebKit
   // reports as a page error.
+  let watch: ResizeObserver | null = null
   if (typeof ResizeObserver === 'function') {
     let queued = false
-    const watch = new ResizeObserver(() => {
+    watch = new ResizeObserver(() => {
       if (queued) return
       queued = true
       requestAnimationFrame(() => { queued = false; layout() })
@@ -546,5 +550,11 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (tour) playTour(tour)
   }
 
-  return { askHost, viewHost, showCard, attach, pick, setAsk: (a) => { ask = a; layout() } }
+  const dispose = (): void => {
+    document.removeEventListener('keydown', onKey)
+    window.removeEventListener('resize', layout)
+    watch?.disconnect()
+  }
+
+  return { askHost, viewHost, showCard, attach, pick, setAsk: (a) => { ask = a; layout() }, dispose }
 }

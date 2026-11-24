@@ -545,6 +545,38 @@ describe('buildPage: the 2D map', () => {
   })
 })
 
+describe('buildPage: dispose', () => {
+  it('removes the document keydown and window resize listeners and stops watching the panels', () => {
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void { /* the elements are checked above */ }
+      disconnect(): void { disconnect() }
+    })
+    const onDocument = vi.spyOn(document, 'removeEventListener')
+    const onWindow = vi.spyOn(window, 'removeEventListener')
+    const { page, card, viewer } = setup()
+    page.showCard('<h3>x</h3>')
+    page.dispose()
+    expect(onDocument).toHaveBeenCalledWith('keydown', expect.any(Function))
+    expect(onWindow).toHaveBeenCalledWith('resize', expect.any(Function))
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    // Esc no longer closes the card, and a resize no longer fits the panels.
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(card().hidden).toBe(false)
+    viewer.setBottomReserve.mockClear()
+    window.dispatchEvent(new Event('resize'))
+    expect(viewer.setBottomReserve).not.toHaveBeenCalled()
+  })
+
+  it('removes the listeners in a browser without ResizeObserver', () => {
+    vi.stubGlobal('ResizeObserver', undefined)
+    const onWindow = vi.spyOn(window, 'removeEventListener')
+    const { page } = setup({ viewer: false })
+    page.dispose()
+    expect(onWindow).toHaveBeenCalledWith('resize', expect.any(Function))
+  })
+})
+
 describe('the Ask answer folds away while it would cover the open card or the part the card frames', () => {
   /** A box's place in the stage: left, top, width, height. */
   type Box = [number, number, number, number]

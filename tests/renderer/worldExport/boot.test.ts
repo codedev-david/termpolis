@@ -282,11 +282,16 @@ describe('boot', () => {
   it('removes the page and shows the damaged-page message on top for any other failure after the page is built', async () => {
     writePage()
     mountAskBox.mockImplementation(() => { throw new Error('ask box') })
+    const onDocument = vi.spyOn(document, 'removeEventListener')
+    const onWindow = vi.spyOn(window, 'removeEventListener')
     await boot()
     expect(await window.__worldExport.ready).toBe('failed')
     visibleBroken()
     const viewer = createWorldViewer.mock.results[0].value as ReturnType<typeof fakeViewer>
     expect(viewer.dispose).toHaveBeenCalledTimes(1)
+    // The removed page's listeners go with it.
+    expect(onDocument).toHaveBeenCalledWith('keydown', expect.any(Function))
+    expect(onWindow).toHaveBeenCalledWith('resize', expect.any(Function))
   })
 
   it.each([

@@ -82,6 +82,7 @@ async function boot(): Promise<AskState> {
   // Every block is gzip that only DecompressionStream reads: without it the data is fine but cannot be opened here.
   if (typeof DecompressionStream !== 'function') return showMessage(OLD_BROWSER)
   let viewer: WorldViewer | null = null
+  let page: Page | null = null
   try {
     const checked = validateWorld(await readJsonBlock<unknown>('world'))
     const meta = await readJsonBlock<unknown>('meta')
@@ -89,7 +90,7 @@ async function boot(): Promise<AskState> {
     const doc = checked.doc
     const { entries, vectors } = await readAskIndex(doc)
 
-    const page = buildPage(document.body, doc, meta)
+    page = buildPage(document.body, doc, meta)
     viewer = mountViewer(page, doc, meta)
     // Smart Ask only on a page that carries the model (and the vectors it ranks), and only after the city has painted.
     const smart: Promise<SmartAsk> | null = vectors && document.getElementById('model')
@@ -102,6 +103,7 @@ async function boot(): Promise<AskState> {
   } catch {
     // Never leave the message under the page: the page is fixed, full-window and opaque, so it goes.
     disposeQuietly(viewer)
+    page?.dispose()
     document.querySelector('.wx-page')?.remove()
     return showMessage(BROKEN_PAGE)
   }
