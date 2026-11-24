@@ -21,7 +21,7 @@
     "dev": "electron-vite dev",
     "grammars": "node scripts/copy-grammars.cjs",
     "build": "node scripts/copy-grammars.cjs && npm run build:world-viewer && electron-vite build",
-    "build:world-viewer": "vite build -c vite.world.config.ts && vite build -c vite.world.config.ts --mode export && node scripts/checkWorldExportBundle.cjs",
+    "build:world-viewer": "vite build -c vite.world.config.ts && vite build -c vite.world.config.ts --mode validate && vite build -c vite.world.config.ts --mode export && node scripts/checkWorldExportBundle.cjs && node scripts/checkWorldStandalone.cjs",
     "verify:child-imports": "node scripts/verifyChildEntryImports.cjs out/main",
     "gen:icon": "node scripts/gen-icon.cjs",
     "package": "npm run build && electron-builder",

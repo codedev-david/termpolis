@@ -1,40 +1,25 @@
 // Standalone Lumopolis bundles (npm run build:world-viewer), for termpolis.com and anything else
-// that embeds the world view outside the Electron app:
-//   dist-world/world-viewer.js   ESM, Three.js inlined: createWorldViewer, hasWebGL, the cards,
-//                                renderFallback and validateWorld. One self-contained file.
-//   dist-world/world-validate.js ESM, validateWorld only, no Three.js, importable from Node
-//                                (the website's validator script).
-// With --mode export it runs a second pass instead (it never empties dist-world):
-//   dist-world/world-export.js   one classic IIFE, the runtime an exported world page inlines
-//                                (src/world-export/boot.ts): engine, Three.js, controls, Ask and
-//                                onnxruntime-web's wasm glue. scripts/checkWorldExportBundle.cjs
-//                                then checks it can sit inside an inline <script>.
-import { readFileSync } from 'fs'
+// that embeds the world view outside the Electron app. Each file is built in its OWN vite pass, so
+// Rollup can never share a chunk between two of them, whatever module they come to have in common:
+//   (default mode)  dist-world/world-viewer.js   ESM, Three.js inlined: createWorldViewer, hasWebGL,
+//                                                the cards, renderFallback and validateWorld. One
+//                                                self-contained file. The only pass that empties
+//                                                dist-world, so it must run first.
+//   --mode validate dist-world/world-validate.js ESM, validateWorld only, no Three.js, importable
+//                                                from Node (the website's validator script).
+//   --mode export   dist-world/world-export.js   one classic IIFE, the runtime an exported world page
+//                                                inlines (src/world-export/boot.ts): engine,
+//                                                Three.js, controls, Ask and onnxruntime-web's wasm
+//                                                glue.
+// The validate and export passes never empty dist-world. scripts/checkWorldExportBundle.cjs checks
+// the export file can sit inside an inline <script>; scripts/checkWorldStandalone.cjs checks that
+// dist-world holds exactly those three .js files and that the two ESM files have no import.
 import { resolve } from 'path'
 import { defineConfig, type Plugin } from 'vite'
 
 const VALIDATE = resolve(__dirname, 'src/shared/world/validate.ts')
 const ENGINE_INDEX = resolve(__dirname, 'src/renderer/src/world/engine/index.ts')
-// A path that does not exist on disk, ending in .ts so the TypeScript transform still applies.
-const COPY = VALIDATE.replace(/\.ts$/, '.viewer-copy.ts')
 const EXPORT_ENTRY = resolve(__dirname, 'src/world-export/boot.ts')
-
-// Both entries need validate.ts. Left alone, Rollup would keep one copy in world-validate.js and
-// make world-viewer.js import it from there, so the viewer would no longer stand alone. This
-// gives the viewer entry its own private copy of the module instead.
-function privateValidateCopy(): Plugin {
-  return {
-    name: 'termpolis:world-viewer-private-validate',
-    enforce: 'pre',
-    async resolveId(source, importer) {
-      if (!importer || resolve(importer) !== ENGINE_INDEX || !/shared\/world\/validate$/.test(source)) return null
-      return COPY
-    },
-    load(id) {
-      return id === COPY ? readFileSync(VALIDATE, 'utf8') : null
-    },
-  }
-}
 
 // onnxruntime-web's wasm bundle (ort.wasm.bundle.min.mjs, what 'onnxruntime-web/wasm' resolves to) keeps one
 // non-literal dynamic import: the loader that fetches the wasm glue module from a URL when the glue is not
@@ -83,21 +68,22 @@ const exportPass = defineConfig({
   },
 })
 
-const viewerPass = defineConfig({
-  publicDir: false,
-  plugins: [privateValidateCopy()],
-  build: {
-    outDir: 'dist-world',
-    emptyOutDir: true,
-    target: 'es2020',
-    sourcemap: false,
-    reportCompressedSize: false,
-    lib: {
-      entry: { 'world-viewer': ENGINE_INDEX, 'world-validate': VALIDATE },
-      formats: ['es'],
-      fileName: (_format, name) => `${name}.js`,
+// One ESM single-entry pass. A lone entry cannot be split into chunks.
+function esmPass(entry: string, file: string, emptyOutDir: boolean) {
+  return defineConfig({
+    publicDir: false,
+    build: {
+      outDir: 'dist-world',
+      emptyOutDir,
+      target: 'es2020',
+      sourcemap: false,
+      reportCompressedSize: false,
+      lib: { entry, formats: ['es'], fileName: () => file },
     },
-  },
-})
+  })
+}
 
-export default defineConfig(({ mode }) => (mode === 'export' ? exportPass : viewerPass))
+const viewerPass = esmPass(ENGINE_INDEX, 'world-viewer.js', true)
+const validatePass = esmPass(VALIDATE, 'world-validate.js', false)
+
+export default defineConfig(({ mode }) => (mode === 'export' ? exportPass : mode === 'validate' ? validatePass : viewerPass))
