@@ -425,9 +425,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * The largest drawing buffer the GPU takes, [across, down]: the smallest of its biggest render buffer, its biggest
    * texture (the glow's passes draw into textures the buffer's size) and its biggest viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
    * clamps the canvas's buffer to what the GPU holds while the viewport is still set to the full size, so the picture
-   * over-runs the buffer and shows cropped or at the wrong scale.
+   * over-runs the buffer and shows cropped or at the wrong scale. Read again when the context comes back (it may come
+   * back on another GPU).
    */
-  const bufferCap = ((): [number, number] => {
+  const readCap = (): [number, number] => {
     const gl = renderer.getContext()
     const most = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE))
     const texture = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE))
@@ -435,7 +436,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const side = (k: number): number =>
       Math.min(most > 0 ? most : Infinity, texture > 0 ? texture : Infinity, dims && dims[k] > 0 ? dims[k] : Infinity)
     return [side(0), side(1)]
-  })()
+  }
+  let bufferCap = readCap()
   /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
   const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
@@ -465,6 +467,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** The context came back with nothing on it: the last world drawn is built again (as a theme change builds it). */
   const onContextRestored = (): void => {
     lost = false
+    bufferCap = readCap()
+    fitBuffer()
     if (lastModel && lastText) draw(lastModel, lastText, allLabels)
     wake()
     opts.onContextRestored?.()

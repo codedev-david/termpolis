@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createThreeRenderer, sameLayout, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
-import { bldg, boxCanvas, DEFAULT_OPTS, district, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
+import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
@@ -303,6 +303,26 @@ describe('threeRenderer lost WebGL context', () => {
     expect(r.drawnCounts().conduits).toBe(2)
     h.frames.step()
     expect(frames(r)).toBe(n + 1)
+    r.dispose()
+  })
+
+  it("a restore reads the GPU's buffer limits again and fits the buffer to them, a tighter cap first lowering the ratio (M5)", () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    resizeHost(h.host, 3840, 2160)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(rendererOf().pixelRatios).toEqual([2]) // 7680 x 4320 fits the 16384 cap
+    lose(r.canvas)
+    gpu.limits = { renderbuffer: 4096, texture: 16384, viewport: [16384, 16384] } // back on a smaller GPU
+    const from = rendererOf().buffers.length
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(rendererOf().getPixelRatio()).toBe(4096 / 3840)
+    expect(gpu.composers[0].pixelRatios).toEqual([4096 / 3840])
+    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([3840, 2160])
+    expect(rendererOf().buffers.slice(from).filter(([x, y]) => x > 4096 + 1e-6 || y > 4096 + 1e-6)).toEqual([])
+    lose(r.canvas)
+    gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] } // and on the big one again: the full ratio
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(rendererOf().getPixelRatio()).toBe(2)
     r.dispose()
   })
 
