@@ -127,8 +127,6 @@ export function defaultSaveName(title: string, kind: 'world' | 'document'): stri
   return `${stem} - Lumopolis${kind === 'world' ? '' : ' documentation'}.html`
 }
 
-/** How many numbered names (` (2)` to ` (100)`) a save tries before it takes a random one. */
-
 const field = (args: unknown, name: string): unknown => (args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined)
 const shortString = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim() !== '' && v.length <= max
 const localDay = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
