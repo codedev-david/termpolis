@@ -342,6 +342,9 @@ test.describe.serial('Session Restore', () => {
     // Change the default shell via the select dropdown
     const shellSelect = page.locator('select').first()
     await expect(shellSelect).toBeVisible()
+    // The options come from an async shell:available call made when Settings opens; until it
+    // answers the select holds the saved value with no option to match it and reads as "".
+    await expect(shellSelect.locator('option')).not.toHaveCount(0)
 
     // Get current value and pick a different one
     const currentShell = await shellSelect.inputValue()
@@ -371,6 +374,9 @@ test.describe.serial('Session Restore', () => {
     await page.waitForTimeout(500)
 
     const shellSelect2 = page.locator('select').first()
+    // Same async option list as above: read the value only once the options are in, or a slow
+    // first IPC answer after the relaunch reads as "" although the saved shell came back.
+    await expect(shellSelect2.locator('option')).not.toHaveCount(0)
     const restoredShell = await shellSelect2.inputValue()
     expect(restoredShell).toBe(newShell)
 
