@@ -39,17 +39,31 @@ beforeAll(() => {
     "renameSync(process.argv[2] + '.tmp', process.argv[2])",
     'setTimeout(() => {}, 120000)',
   ].join('\n'))
-  // The same tree, but its grandchild shrugs off SIGTERM and the stand-in prints far past maxBuffer once
-  // the pid file is written: only the SIGKILL after the grace (on Windows, taskkill /T /F) ends it.
+  // The same tree, but its grandchild shrugs off SIGTERM, so only the SIGKILL after the grace (on
+  // Windows, taskkill /T /F) ends it. It says so in files next to the pid file: `.ready` once its
+  // SIGTERM handler is on, `.term` when a SIGTERM reaches it, and `.beat` every 50 ms after that.
+  writeFileSync(join(dir, 'grandchild.cjs'), [
+    "const { writeFileSync } = require('fs')",
+    'const base = process.argv[2]',
+    "process.on('SIGTERM', () => {",
+    "  writeFileSync(base + '.term', String(Date.now()))",
+    "  setInterval(() => writeFileSync(base + '.beat', String(Date.now())), 50)",
+    '})',
+    "writeFileSync(base + '.ready', '')",
+    'setTimeout(() => {}, 120000)',
+  ].join('\n'))
+  // The stand-in prints far past maxBuffer, but only once the grandchild is ready: a cut that came
+  // first would end it by SIGTERM and prove nothing about the SIGKILL.
   flooder = join(dir, 'flooder.cjs')
   writeFileSync(flooder, [
     "const { spawn } = require('child_process')",
-    "const { renameSync, writeFileSync } = require('fs')",
-    "const grandchild = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 120000)\"], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
-    "writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
-    "renameSync(process.argv[2] + '.tmp', process.argv[2])",
-    // Long enough for the grandchild to have its SIGTERM handler on before the cut can signal it.
-    "setTimeout(() => process.stdout.write('x'.repeat(5000)), 1500)",
+    "const { existsSync, renameSync, writeFileSync } = require('fs')",
+    "const { join } = require('path')",
+    'const base = process.argv[2]',
+    "const grandchild = spawn(process.execPath, [join(__dirname, 'grandchild.cjs'), base], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
+    "writeFileSync(base + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
+    "renameSync(base + '.tmp', base)",
+    "const ready = setInterval(() => { if (!existsSync(base + '.ready')) return; clearInterval(ready); process.stdout.write('x'.repeat(5000)) }, 20)",
     'setTimeout(() => {}, 120000)',
   ].join('\n'))
 })
@@ -161,6 +175,13 @@ describe('a labelling exec with tree, on real processes', () => {
     expect(r.error).toMatchObject({ message: 'stdout maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
     expect(await waitDead(labeller)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
+    if (process.platform !== 'win32') {
+      // The group's SIGTERM reached the grandchild, which lived on past it (a beat after it) and still
+      // died: nothing but the SIGKILL after the grace could have ended it. Windows sends no SIGTERM.
+      const termAt = Number(readFileSync(`${pidFile}.term`, 'utf8'))
+      const beatAt = Number(readFileSync(`${pidFile}.beat`, 'utf8'))
+      expect(beatAt).toBeGreaterThan(termAt)
+    }
   }, 60_000)
 })
 
