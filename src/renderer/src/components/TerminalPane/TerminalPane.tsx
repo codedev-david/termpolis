@@ -2377,6 +2377,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           </div>
         )}
         <div className="absolute top-1.5 right-8 z-30 flex items-center gap-1.5">
+          {voiceEnabled && voice.notice && (
+            <span data-testid="voice-notice" role="status" className="text-[10px] text-[#9ca3af] bg-[#2d2d2d]/90 rounded px-2 py-1">{voice.notice}</span>
+          )}
           {voiceEnabled && (
             <button
               type="button"

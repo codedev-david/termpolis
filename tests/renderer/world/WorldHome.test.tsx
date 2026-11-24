@@ -7,13 +7,13 @@ import type { WorldEntry, WorldFolderPick, BuildItResult } from '../../../src/sh
 import { BAD_URL_MESSAGE, BAD_REF_MESSAGE } from '../../../src/shared/world/gitUrl'
 
 const vm = vi.hoisted(() => ({
-  status: 'idle' as string, errorMsg: null as string | null, toggle: vi.fn(),
+  status: 'idle' as string, errorMsg: null as string | null, notice: null as string | null, toggle: vi.fn(),
   sink: null as null | ((t: string) => void),
 }))
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   useVoiceInput: (...args: unknown[]) => {
     vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
-    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle }
+    return { status: vm.status, errorMsg: vm.errorMsg, notice: vm.notice, toggle: vm.toggle }
   },
 }))
 
@@ -69,6 +69,7 @@ const settle = async (): Promise<void> => {
 beforeEach(() => {
   vm.status = 'idle'
   vm.errorMsg = null
+  vm.notice = null
   vm.toggle = vi.fn()
   vm.sink = null
 })
@@ -550,6 +551,20 @@ describe('DesignStart', () => {
     vm.errorMsg = null
     mount()
     expect(screen.getByRole('button', { name: 'Describe by voice' }).className).toContain('animate-pulse')
+  })
+
+  it('shows the 5-minute cap note quietly, as a status and not an alert, and drops it once the hook clears it', () => {
+    bridge()
+    ;(navigator as any).mediaDevices = { getUserMedia: vi.fn() }
+    vm.notice = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+    mount()
+    expect(screen.getByRole('status')).toHaveTextContent('Recording stopped after 5 minutes.')
+    expect(screen.getByRole('status').className).not.toContain('f14c4c')
+    expect(screen.queryByRole('alert')).toBeNull()
+    cleanup()
+    vm.notice = null // the next start() clears it
+    mount()
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('Cancel while drafting stops the draft by its key and drops the late result', async () => {

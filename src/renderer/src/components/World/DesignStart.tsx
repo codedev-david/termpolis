@@ -88,6 +88,7 @@ export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): J
         )}
       </div>
       {mic.errorMsg && <p role="alert" className="text-xs text-[#f14c4c]">{mic.errorMsg}</p>}
+      {mic.notice && <p role="status" className="text-xs text-[#9ca3af]">{mic.notice}</p>}
       {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] animate-pulse">Drafting your design…</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">

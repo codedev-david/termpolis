@@ -380,6 +380,7 @@ import {
   CLAUDE_EXIT_AFTER_A_TURN, CLAUDE_EXIT_NO_TURN, AGY_EXIT_AFTER_A_TURN, CLAUDE_SESSION_ID, AGY_CONVERSATION_ID,
 } from '../fixtures/agentExitOutput'
 import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
+import { MAX_RECORDING_MS, RECORDING_CAP_MESSAGE } from '../../src/renderer/src/hooks/useVoiceInput'
 
 const defaultProps = {
   terminalId: 'term-1',
@@ -2729,6 +2730,29 @@ describe('TerminalPane', () => {
       await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')) })
       await waitFor(() => expect(screen.getByTestId('voice-groq-gate')).toBeInTheDocument())
       expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+    })
+
+    it('a recording that hits the 5-minute cap hands over its text, ends idle with a quiet note, and the next start clears it', async () => {
+      vi.useFakeTimers()
+      try {
+        withVoice()
+        render(<TerminalPane {...defaultProps} />)
+        await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')); await vi.advanceTimersByTimeAsync(0) })
+        expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument()
+        feedAudio()
+        await act(async () => { await vi.advanceTimersByTimeAsync(MAX_RECORDING_MS) })
+        expect(screen.queryByTestId('voice-listening-badge')).not.toBeInTheDocument()
+        expect(screen.getByTestId('voice-toggle-btn')).toHaveTextContent(/voice/i)
+        expect(screen.getByTestId('voice-confirm-bar')).toHaveTextContent('hi there') // a shell asks before running
+        expect(screen.getByTestId('voice-notice')).toHaveTextContent(RECORDING_CAP_MESSAGE)
+        expect(screen.getByTestId('voice-notice')).toHaveAttribute('role', 'status')
+        expect(screen.queryByTestId('voice-error-bar')).not.toBeInTheDocument()
+        await act(async () => { fireEvent.click(screen.getByTestId('voice-toggle-btn')); await vi.advanceTimersByTimeAsync(0) })
+        expect(screen.getByTestId('voice-listening-badge')).toBeInTheDocument()
+        expect(screen.queryByTestId('voice-notice')).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('clicking Voice WITH Groq connected starts capture and shows no gate', async () => {

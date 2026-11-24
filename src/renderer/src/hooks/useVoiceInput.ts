@@ -13,7 +13,7 @@ export interface VoiceConfirm {
 export const MAX_RECORDING_MS = 5 * 60 * 1000
 /** Shown when the mic's track ends mid-recording (unplugged). Pending David's sign-off. */
 export const MIC_DISCONNECTED_MESSAGE = 'The microphone was disconnected. Plug it back in, or choose another one in Settings → Voice.'
-/** Shown when a recording reaches MAX_RECORDING_MS. Pending David's sign-off. */
+/** The notice when a recording reaches MAX_RECORDING_MS. Pending David's sign-off. */
 export const RECORDING_CAP_MESSAGE = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
 
 /** What useVoiceInput hands its caller. */
@@ -24,11 +24,15 @@ export interface VoiceInputControls {
   lastCapture: CaptureAnalysis | null
   confirm: VoiceConfirm | null
   errorMsg: string | null
+  /** Information, not an error: the 5-minute cap stopped the recording. Show it quietly, whatever the
+   *  status. The next start() and cancel() clear it. */
+  notice: string | null
   toggle: () => void
   start: () => Promise<void>
   stop: () => Promise<void>
   /** Abandons whatever is in flight: a mic still starting, a recording (its audio is dropped, not
-   *  transcribed) and a transcription (its text, or error, never arrives). An error on show stays. */
+   *  transcribed) and a transcription (its text, or error, never arrives). An error on show stays;
+   *  the cap notice goes. */
   cancel: () => void
   confirmRun: (submit: boolean) => void
   cancelConfirm: () => void
@@ -81,6 +85,7 @@ export function useVoiceInput(
   // Human-readable reason when status === 'error'. Surfaced in the UI so a failed
   // transcription is never silent (the old behaviour: "I talk and nothing shows up").
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   // Live input level (0..1) for the on-screen meter while listening, and the
   // analysis of the last captured clip (level + verdict) for diagnostics. These
   // turn the previously-invisible capture path into something the user can SEE.
@@ -218,7 +223,7 @@ export function useVoiceInput(
     if (startingRef.current && !listeningRef.current) {
       cancelStartRef.current = true
       setStatus('idle')
-      focusActiveTerminal()
+      if (!sinkRef.current) focusActiveTerminal()
       return
     }
     if (!listeningRef.current) return
@@ -228,7 +233,7 @@ export function useVoiceInput(
     pcmChunksRef.current = []
     const sampleRate = ctx?.sampleRate ?? 48000
     cleanupCapture()
-    if (chunks.length === 0) { setStatus('idle'); focusActiveTerminal(); return }
+    if (chunks.length === 0) { setStatus('idle'); if (!sinkRef.current) focusActiveTerminal(); return }
     const total = chunks.reduce((n, c) => n + c.length, 0)
     const merged = new Float32Array(total)
     let off = 0
@@ -244,7 +249,7 @@ export function useVoiceInput(
     if (analysis.verdict !== 'speech') {
       setErrorMsg(noSpeechMessage(analysis))
       setStatus('error')
-      focusActiveTerminal()
+      if (!sinkRef.current) focusActiveTerminal()
       return
     }
     // Boost quiet (but real) capture toward a consistent level before transcribing.
@@ -272,6 +277,7 @@ export function useVoiceInput(
     // cancel() or dispose() moved the generation on while this start waited.
     const superseded = () => captureGenRef.current !== gen
     const abandoned = () => cancelStartRef.current || superseded()
+    setNotice(null)
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined') {
       setErrorMsg('Microphone capture is not available in this environment.')
       setStatus('error')
@@ -371,7 +377,7 @@ export function useVoiceInput(
       // A recording cannot run on forever: at the cap it stops, and what was said is transcribed.
       capTimerRef.current = setTimeout(() => {
         capTimerRef.current = null
-        setErrorMsg(RECORDING_CAP_MESSAGE)
+        setNotice(RECORDING_CAP_MESSAGE)
         void stopRef.current()
       }, MAX_RECORDING_MS)
       setStatus('listening')
@@ -417,6 +423,7 @@ export function useVoiceInput(
     listeningRef.current = false
     pcmChunksRef.current = []
     cleanupCapture()
+    setNotice(null)
     setStatus((s) => (s === 'error' ? s : 'idle'))
   }, [cleanupCapture])
 
@@ -441,6 +448,7 @@ export function useVoiceInput(
     lastCapture,
     confirm,
     errorMsg,
+    notice,
     toggle,
     start,
     stop,
