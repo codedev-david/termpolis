@@ -9,12 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Faults the adoption must survive: a rename that fails; lock files that cannot be made (`lock`: the codes, one per try;
 // `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
 // that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once); a file
-// another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times). `renames` counts every
-// rename tried, so a retry test asserts attempts, never the wall clock.
+// another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times); a rename onto a path ending
+// in `refuseTo` (EIO). `renames` counts every rename tried, so a retry test asserts attempts, never the wall clock, and
+// `renamedTo` lists where each rename that landed went, in order.
 const faults = vi.hoisted(() => ({
   rename: false, renameOnce: null as string[] | null, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
-  busy: '', busyReads: 0, renames: 0,
+  busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [] as string[],
 }))
+const resetFaults = (): void => {
+  Object.assign(faults, { rename: false, renameOnce: null, lock: null, lockAlways: null, lockWrite: 0, rmLock: null, busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [] })
+}
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
   const fail = (code: string): Error => (code === 'none' ? new Error('no code at all') : Object.assign(new Error(code), { code }))
@@ -32,7 +36,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       faults.renames++
       const once = faults.renameOnce?.shift()
       if (once || faults.rename) throw fail(once ?? 'EBUSY')
-      return real.rename(from, to)
+      if (faults.refuseTo && to.endsWith(faults.refuseTo)) throw fail('EIO')
+      await real.rename(from, to)
+      faults.renamedTo.push(to)
     },
     open: async (...a: Parameters<typeof real.open>) => {
       if (!isLock(a[0])) return real.open(...a)
@@ -100,8 +106,8 @@ describe('keys that must not move for a normal Windows root', () => {
 
 describe('adoptAnnotationAliases', () => {
   let dir = ''
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; faults.renames = 0 })
-  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; faults.renames = 0; await rm(dir, { recursive: true, force: true }) })
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); resetFaults() })
+  afterEach(async () => { resetFaults(); await rm(dir, { recursive: true, force: true }) })
   const folder = (): string => join(dir, 'world', 'annotations')
   const fileFor = (key: string): string => join(folder(), `${sha256(key)}.json`)
   const ms = (n: number): Promise<void> => new Promise((r) => { setTimeout(r, n) })
@@ -228,6 +234,50 @@ describe('adoptAnnotationAliases', () => {
       faults.rename = true
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
       expect((await readdir(folder())).sort()).toEqual([`${sha256('old-key')}.json`])
+    })
+
+    it('on a first adoption the record of a held key is written before the merged file (M2)', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('old-key', 'b1', claim('held'))
+      await store.add('other', 'b2', claim('read fine'))
+      holdOld()
+      faults.renamedTo = []
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['other'])
+      expect(faults.renamedTo).toEqual([pending(), fileFor('new-key')]) // the record first: a crash after it still retries
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['old-key'])
+      expect(Object.keys(await store.list('new-key')).sort()).toEqual(['b1', 'b2'])
+    })
+
+    it('a record that cannot be written on a first adoption means nothing is written, so the next open tries every key again (M2)', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('old-key', 'b1', claim('held'))
+      await store.add('other', 'b2', claim('read fine'))
+      holdOld()
+      faults.refuseTo = ADOPT_PENDING_SUFFIX
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual([])
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      faults.refuseTo = ''
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['old-key', 'other'])
+      expect(Object.keys(await store.list('new-key')).sort()).toEqual(['b1', 'b2'])
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it('a record that only shrinks goes after the merged file: one a crash left behind only merges the same claims again (M2)', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('old-key', 'b1', claim('held'))
+      holdOld()
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+      await store.add('new-key', 'b2', claim('since'))
+      faults.renamedTo = []
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual(['old-key'])
+      expect(faults.renamedTo).toEqual([fileFor('new-key')]) // the merged file; the record is then removed
+      const once = await readFile(fileFor('new-key'), 'utf8')
+      await writeFile(pending(), JSON.stringify(['old-key']), 'utf8') // as a crash before the removal would leave it
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual(['old-key'])
+      expect(await readFile(fileFor('new-key'), 'utf8')).toBe(once)
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
     it('waits between the reads of a held file with the real pause when no sleep is given', async () => {

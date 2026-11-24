@@ -240,13 +240,14 @@ async function readPending(file: string): Promise<string[] | null> {
   }
 }
 
-/** Records the older keys still to adopt, or removes the record when there are none. Best effort. */
-async function keepPending(file: string, keys: string[]): Promise<void> {
+/** Records the older keys still to adopt, or removes the record when there are none. Resolves whether that landed. */
+async function keepPending(file: string, keys: string[]): Promise<boolean> {
   try {
     if (keys.length > 0) await writeAtomic(file, JSON.stringify(keys))
     else await rm(file, { force: true })
+    return true
   } catch {
-    // a record that cannot be written loses only the retry of a file that could not be read
+    return false
   }
 }
 
@@ -263,6 +264,10 @@ async function keepPending(file: string, keys: string[]): Promise<void> {
  * on. Its key is recorded beside the new key's file (ADOPT_PENDING_SUFFIX), and every later open tries it again, even once
  * the new key has a file of its own: its claims then go in before the new key's own (which are newer), nothing of the new
  * key's file is lost, and the record goes once nothing is left to try. A new key's file that cannot be read keeps the record.
+ * WP3 round 3 (M2): a record that adds keys is written BEFORE the merged file, so no crash between the two leaves a new
+ * key's file without the record of what is still to try; a record that cannot be written means nothing is written, and the
+ * next open starts over. A record that only shrinks is written after the merged file: a crash between them leaves keys
+ * already merged in it, and merging them again changes nothing.
  */
 export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number; lock?: AnnotationLockDeps } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
@@ -300,6 +305,9 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
         own = await readOwn(target, sleep, now)
         if (!own) return [] // the record stays, so a later open tries again (a held-back merge never loses the new key's notes)
       }
+      // On a first adoption every key in `unread` is new to the record: it goes down before the merged file.
+      const first = !had && unread.length > 0
+      if (first && !(await keepPending(pendingFile, unread))) return []
       if (found.length > 0) {
         const merged: Record<string, Claim[]> = Object.create(null)
         for (const claims of [...found.map(([, c]) => c), ...(own ? [own] : [])]) {
@@ -312,7 +320,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
         for (const id of Object.keys(merged)) merged[id] = capClaims(merged[id])
         await writeAtomic(target, JSON.stringify(merged))
       }
-      await keepPending(pendingFile, unread)
+      if (!first) await keepPending(pendingFile, unread) // shrunk or gone: after the merged file
       return found.map(([old]) => old)
     }, deps.lock)
   } catch {
