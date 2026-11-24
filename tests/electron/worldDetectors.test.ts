@@ -149,22 +149,33 @@ db.exec('x'); re.exec('y'); exec('z'); other.fork('w'); cp.exec('v')`)).toEqual(
     expect(run(`import { exec } from 'child_process'
 exec(cmd); exec()`)).toEqual([])
   })
-  it('reads a destructured require with spaces, tabs or a line break around the name, in time linear in a long run of spaces', () => {
+  it('reads a destructured require or import with spaces, tabs or a line break around the name', () => {
     expect(run(`const { exec: go } = require(  'child_process'  )
 go('a')`).map((x) => x.key)).toEqual(['a'])
     expect(run(`const {\n  execSync,\n  fork\n} = require(\n\t"node:child_process")
 execSync('b'); fork('c')`).map((x) => x.key)).toEqual(['b', 'c'])
     expect(run(`import {\n  exec\n}\nfrom\n  'child_process'
 exec('d')`).map((x) => x.key)).toEqual(['d'])
-    // A require( with no module after a long run of spaces: the two `\s*` in a row split the run every way (3 s on
-    // main at 50k). Reading 8 times the run takes under 24 times as long (see _linearTime). The file names
-    // child_process in code (a comment is blanked first), so the rule runs.
-    const none = (found: unknown[]): void => expect(found).toEqual([])
-    for (const pad of [' ', '\n', '\r\n']) {
-      linear((n) => `child_process.x = 1\nconst {}=require(${fill(pad, n)}`, run, 64 * 1024, `require ${JSON.stringify(pad)}`, none)
-      linear((n) => `child_process.x = 1\nimport {}from${fill(pad, n)}`, run, 64 * 1024, `import ${JSON.stringify(pad)}`, none)
-    }
   })
+  // A require( with no module after a long run of spaces: the two `\s*` in a row split the run every way (3 s on main
+  // at 50k). Reading 8 times the run takes under 24 times as long (see _linearTime). The file names child_process in
+  // code (a comment is blanked first), so the rule runs. n is 32K so that 8n stays under MAX_DETECT_FILE_CHARS, over
+  // which detectBoundaries returns [] at once; the call after the run must be found, on the file's last line, which
+  // proves both sizes were read to the end. One test per input, so each stays well inside the test timeout under load.
+  const N = 32 * 1024
+  const after = "\nchild_process.exec('end')"
+  const atEnd = (found: Boundary[], src: string): void => {
+    expect(src.length).toBeLessThan(MAX_DETECT_FILE_CHARS)
+    expect(found).toEqual([b('spawn', 'end', 'consume', src.split('\n').length)])
+  }
+  const hostile: [string, (pad: string) => (n: number) => string][] = [
+    ['require', (pad) => (n) => `child_process.x = 1\nconst {}=require(${fill(pad, n)}${after}`],
+    ['import', (pad) => (n) => `child_process.x = 1\nimport {}from${fill(pad, n)}${after}`]
+  ]
+  it.each(hostile.flatMap(([form, make]) => [' ', '\n', '\r\n'].map((pad) => [form, JSON.stringify(pad), make(pad)] as const)))(
+    'reads a destructured %s with no module after a long run of %s in time linear in the run',
+    (form, pad, make) => linear(make, run, N, `${form} ${pad}`, atEnd)
+  )
 })
 
 describe('http', () => {
