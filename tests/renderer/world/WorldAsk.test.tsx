@@ -10,12 +10,14 @@ const vm = vi.hoisted(() => ({
   args: null as unknown[] | null,
   start: vi.fn(),
   stop: vi.fn(),
+  /** The hook's `cancel` (WP-VOICE): absent unless a test gives it one. */
+  cancel: undefined as ReturnType<typeof vi.fn> | undefined,
 }))
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   useVoiceInput: (...args: unknown[]) => {
     vm.args = args
     vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
-    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop }
+    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop, ...(vm.cancel ? { cancel: vm.cancel } : {}) }
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
@@ -1121,6 +1123,64 @@ describe('WorldAsk: speech stops with a different project and when the app is hi
     hidden = true
     document.dispatchEvent(new Event('visibilitychange'))
     expect(speech.cancel).not.toHaveBeenCalled()
+  })
+})
+
+describe('WorldAsk: a capture is dropped on Esc, a typed question, a different project and a close (T8)', () => {
+  beforeEach(() => { vm.cancel = vi.fn(); vm.status = 'idle' })
+  afterEach(() => { vm.cancel = undefined; vm.status = 'idle' })
+
+  it('Esc drops a capture that is listening or transcribing and says it used the key; an idle mic is not counted', async () => {
+    const l = makeLink()
+    const view = render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
+    await settle()
+    for (const status of ['listening', 'transcribing']) {
+      vm.status = status
+      view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
+      ;(vm.cancel as ReturnType<typeof vi.fn>).mockClear()
+      let used: unknown
+      act(() => { used = l.esc() })
+      expect(used).toBe(true)
+      expect(vm.cancel).toHaveBeenCalledTimes(1)
+    }
+    vm.status = 'idle'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
+    let used: unknown
+    act(() => { used = l.esc() })
+    expect(used).toBe(false)
+  })
+
+  it('a typed question, closing the answer, closing an error, a different project and unmount each drop it', async () => {
+    const c = (): ReturnType<typeof vi.fn> => vm.cancel as ReturnType<typeof vi.fn>
+    const view = await submit(makeViewer(), 'q')
+    expect(c()).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    expect(c()).toHaveBeenCalledTimes(2)
+    ask.mockImplementationOnce(async () => ({ success: false, error: 'boom' }))
+    fireEvent.change(input(), { target: { value: 'again' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(c()).toHaveBeenCalledTimes(3)
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    expect(c()).toHaveBeenCalledTimes(4)
+    view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r2" />)
+    expect(c()).toHaveBeenCalledTimes(5)
+    view.unmount()
+    expect(c()).toHaveBeenCalledTimes(6)
+  })
+
+  it('without the hook’s cancel (WP-VOICE not landed) a listening mic is not counted by Esc and nothing throws', async () => {
+    vm.cancel = undefined
+    vm.status = 'listening'
+    const l = makeLink()
+    const view = render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
+    await settle()
+    let used: unknown
+    act(() => { used = l.esc() })
+    expect(used).toBe(false)
+    vm.status = 'idle'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r2" link={l.link} />)
+    view.unmount()
   })
 })
 

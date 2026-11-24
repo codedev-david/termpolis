@@ -101,6 +101,14 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     },
   })
   const micListening = mic.status === 'listening'
+  // Drops a capture and what it heard: on Esc, a typed question, a different project, a close and unmount, so a
+  // late transcript never asks over what the person did since. The hook's `cancel` comes with WP-VOICE; until it
+  // lands these calls do nothing (T8).
+  const micCancel = (mic as { cancel?: () => void }).cancel
+  const dropMic = (): void => { micCancel?.() }
+  const dropMicRef = useRef(dropMic)
+  dropMicRef.current = dropMic
+  useEffect(() => () => dropMicRef.current(), [root])
   // Taken as the capture starts only: a root change while it listens must not move it to the new world.
   useEffect(() => { if (micListening) micRoot.current = rootRef.current }, [micListening])
   // A mic still listening when the pane moves to another world is stopped; what it heard is then dropped above.
@@ -213,10 +221,12 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   // three stop together, speech on or off, so the camera is left where the tour put it (T4).
   const onEscape = useRef<(() => boolean) | null>(null)
   onEscape.current = () => {
-    const used = state === 'thinking' || speaking || playing
+    const micBusy = micCancel !== undefined && (mic.status === 'listening' || mic.status === 'transcribing')
+    const used = state === 'thinking' || speaking || playing || micBusy
     hush()
     stop()
     cancel()
+    dropMic()
     if (used) refocus()
     return used
   }
@@ -235,6 +245,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   const submit = (q: string): void => {
     if (q.trim() === '') return
     hush()
+    dropMic()
     if (ask(q)) setText('')
   }
 
@@ -283,7 +294,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
           revealed={revealed}
           noMemory={noMemory}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
-          onClose={() => { hush(); dismiss(); refocus() }}
+          onClose={() => { hush(); dropMic(); dismiss(); refocus() }}
           onReplay={replay}
           partName={(id) => doc?.buildings.find((b) => b.id === id)?.name ?? doc?.edges.find((e) => e.id === id)?.label}
           onOpenPart={(id, highlight) => {
@@ -298,7 +309,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
         <div className="w-full rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] p-3 flex items-center gap-2" role="alert">
           <span className="flex-1 min-w-0 break-words">{error}</span>
           <button type="button" onClick={retry} className="text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">Retry</button>
-          <button type="button" aria-label="Close answer" onClick={() => { hush(); dismiss(); refocus() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
+          <button type="button" aria-label="Close answer" onClick={() => { hush(); dropMic(); dismiss(); refocus() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
         </div>
       )}
       {!design && text === '' && state === 'idle' && (
