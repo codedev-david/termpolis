@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup, waitFor, within } from '@testing-library/react'
 import { minimal } from './helpers'
 
 const vm = vi.hoisted(() => ({
@@ -113,7 +113,7 @@ describe('WorldAsk', () => {
     const v = makeViewer()
     await submit(v, 'What is this?')
     expect(ask.mock.calls[0][0]).toMatchObject({ question: 'What is this?', selection: ['b1'], cameraRegion: ['b1'], root: 'r' })
-    expect(screen.getByText('The answer.')).toBeInTheDocument()
+    expect(within(screen.getByTestId('world-answer')).getByText('The answer.')).toBeInTheDocument()
     expect(input().value).toBe('')
   })
 
@@ -253,7 +253,7 @@ describe('WorldAsk', () => {
     fireEvent.click(screen.getByText('Retry'))
     await settle()
     expect(ask.mock.calls[1][0].question).toBe('why?')
-    expect(screen.getByText('The answer.')).toBeInTheDocument()
+    expect(within(screen.getByTestId('world-answer')).getByText('The answer.')).toBeInTheDocument()
   })
 
   it('a viewer whose play or apply rejects causes no unhandled rejection', async () => {
@@ -290,7 +290,7 @@ describe('WorldAsk', () => {
     ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, evil))
     const { container } = await submit(v, 'q')
     expect(container.querySelector('img')).toBeNull()
-    expect(screen.getByText(evil)).toBeInTheDocument()
+    expect(within(screen.getByTestId('world-answer')).getByText(evil)).toBeInTheDocument()
   })
 
   describe('evidence chips', () => {
@@ -970,12 +970,160 @@ describe('WorldAsk on a design', () => {
     await settle()
     expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '', undefined)
     expect(setDoc).toHaveBeenCalledWith(doc)
-    expect(screen.getByText('Added Payments.')).toBeInTheDocument()
+    expect(within(screen.getByTestId('world-answer')).getByText('Added Payments.')).toBeInTheDocument()
   })
 
   it('a project box with no viewer stays off', async () => {
     render(<WorldAsk viewer={null} root="C:/repo" />)
     await settle()
     expect(input()).toBeDisabled()
+  })
+})
+
+describe('WorldAsk: the field, its keys and what a screen reader hears (U2, U7, U9, U10, U11, U12)', () => {
+  afterEach(() => { vi.useRealTimers(); vm.status = 'idle'; vm.stop.mockClear() })
+
+  it('Enter while an IME is composing, the keyCode 229 fallback and Shift+Enter send nothing and keep the text (U7)', async () => {
+    render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+    await settle()
+    fireEvent.change(input(), { target: { value: '日本' } })
+    fireEvent.keyDown(input(), { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input(), { key: 'Enter', keyCode: 229 })
+    fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })
+    await settle()
+    expect(ask).not.toHaveBeenCalled()
+    expect(input().value).toBe('日本')
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(input().value).toBe('')
+  })
+
+  it('a question that is not taken keeps its draft; the field holds no more than the limit (U9)', async () => {
+    render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+    await settle()
+    expect(input().maxLength).toBe(4000)
+    fireEvent.change(input(), { target: { value: '\u0000\u0007' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(ask).not.toHaveBeenCalled()
+    expect(input().value).toBe('\u0000\u0007')
+  })
+
+  it('the placeholder is legible (#9ca3af, over 4.5:1 on the bar) and names the field (U12)', () => {
+    const a = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+    expect(input()).toHaveAttribute('aria-label', 'Ask about this project…')
+    expect(input().className).toContain('placeholder:text-[#9ca3af]')
+    expect(input().className).not.toContain('placeholder:text-[#6b7280]')
+    a.unmount()
+    render(<WorldAsk viewer={null} root="design:d1" />)
+    expect(screen.getByPlaceholderText('Change the design…')).toHaveAttribute('aria-label', 'Change the design…')
+  })
+
+  it('a Cancel beside Thinking stops the question and puts the focus back in the field (U11)', async () => {
+    ask.mockImplementationOnce(() => new Promise(() => undefined))
+    await submit(makeViewer(), 'q')
+    expect(screen.getByRole('status')).toHaveTextContent('Thinking…')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(cancel).toHaveBeenCalledWith(ask.mock.calls[0][0].askId)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+    expect(document.activeElement).toBe(input())
+  })
+
+  it('closing an answer or an error, and an Esc that cancels, put the focus back in the field (U11)', async () => {
+    const l = makeLink()
+    const view = await submit(makeViewer(), 'q', { link: l.link })
+    ;(screen.getByText('Show me again') as HTMLElement).focus()
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    expect(document.activeElement).toBe(input())
+    view.unmount()
+    ask.mockResolvedValueOnce({ success: false, error: 'bridge down' })
+    const second = await submit(makeViewer(), 'q')
+    screen.getByText('Retry').focus()
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    expect(document.activeElement).toBe(input())
+    second.unmount()
+    const m = makeLink()
+    ask.mockImplementationOnce(() => new Promise(() => undefined))
+    await submit(makeViewer(), 'q', { link: m.link })
+    ;(document.activeElement as HTMLElement).blur()
+    act(() => { m.esc() })
+    expect(document.activeElement).toBe(input())
+  })
+
+  it('an Esc that cancelled nothing leaves the focus where it was (U11)', async () => {
+    const l = makeLink()
+    render(<WorldAsk viewer={makeViewer() as never} root="r" link={l.link} />)
+    await settle()
+    act(() => { l.esc() })
+    expect(document.activeElement).not.toBe(input())
+  })
+
+  it('says each newly revealed sentence once, politely, and nothing again on Show me again (U10)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const sentences = [{ text: 'One **two**.', actions: [], sep: '' }, { text: 'Three [E1].', actions: [], sep: ' ' }]
+    ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, 'One **two**. Three [E1].', {
+      answer: { text: 'One **two**. Three [E1].', sentences, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false }
+    }))
+    const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" />)
+    await flush()
+    const live = screen.getByTestId('world-ask-live')
+    expect(live).toHaveAttribute('aria-live', 'polite')
+    expect(live).toHaveClass('sr-only')
+    expect(live.textContent).toBe('')
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await flush(); await flush()
+    expect(live.textContent).toBe('One two.')
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(live.textContent).toBe('Three.')
+    fireEvent.click(screen.getByText('Show me again'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(live.textContent).toBe('Three.')
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    await flush()
+    expect(live.textContent).toBe('')
+    // A new answer is said from its first sentence.
+    fireEvent.change(input(), { target: { value: 'again' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await flush(); await flush()
+    expect(live.textContent).toBe('One two.')
+  })
+
+  it('a transcript from a capture begun on another project is dropped, and a root change stops a live mic (U2)', async () => {
+    vm.status = 'listening'
+    const view = render(<WorldAsk viewer={makeViewer() as never} root="C:/a" />)
+    await settle()
+    expect(vm.stop).not.toHaveBeenCalled()
+    vm.status = 'transcribing'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} root="C:/b" />)
+    expect(vm.stop).not.toHaveBeenCalled() // only a mic still listening is stopped
+    await act(async () => { vm.sink?.('where is memory stored') })
+    await settle()
+    expect(ask).not.toHaveBeenCalled()
+    expect(input().value).toBe('')
+    vm.status = 'listening'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} root="C:/b" />)
+    view.rerender(<WorldAsk viewer={makeViewer() as never} root="C:/c" />)
+    expect(vm.stop).toHaveBeenCalledTimes(1)
+    vm.status = 'idle'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} root="C:/c" />)
+    vm.status = 'listening'
+    view.rerender(<WorldAsk viewer={makeViewer() as never} root="C:/c" />)
+    await act(async () => { vm.sink?.('where is memory stored') })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect((ask.mock.calls[0][0] as AskRequest).root).toBe('C:/c')
+  })
+
+  it('a spoken question that is not taken stays in the field (U9)', async () => {
+    render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+    await settle()
+    await act(async () => { vm.sink?.('x'.repeat(4001)) })
+    await settle()
+    expect(ask).not.toHaveBeenCalled()
+    expect(input().value).toHaveLength(4001)
   })
 })

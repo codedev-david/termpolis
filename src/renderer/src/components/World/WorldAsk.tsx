@@ -16,6 +16,7 @@ import type { WorldAskLink } from './WorldView'
 import { WorldAnswerPanel } from './WorldAnswer'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { spokenText } from '../../../../shared/world/answerMarkdown'
+import { MAX_QUESTION_CHARS } from '../../../../shared/world/askLimits'
 import { isDesignKey, useWorldAsk } from './useWorldAsk'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -56,11 +57,32 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     utterance.current = null
     setSpeaking(false)
   }
+  const inputRef = useRef<HTMLInputElement>(null)
+  /** The focus goes back to the field after a cancel or a close, so the next question can be typed at once (U11). */
+  const refocus = (): void => { inputRef.current?.focus() }
+  const rootRef = useRef(root)
+  rootRef.current = root
+  /** The world the mic was listening for; a transcript that lands once the pane shows another one is dropped (U2). */
+  const micRoot = useRef<string | null>(null)
   // A spoken question fills the box and is asked straight away; nothing reaches a terminal.
   // The push-to-talk hotkey is deliberately not wired here: the terminal owns it at window level.
   const mic = useVoiceInput(null, false, {
-    onTranscript: (t) => { hush(); setText(t); ask(t) },
+    onTranscript: (t) => {
+      if (micRoot.current !== null && micRoot.current !== rootRef.current) return
+      hush(); setText(t); ask(t)
+    },
   })
+  const micListening = mic.status === 'listening'
+  // Taken as the capture starts only: a root change while it listens must not move it to the new world.
+  useEffect(() => { if (micListening) micRoot.current = rootRef.current }, [micListening])
+  // A mic still listening when the pane moves to another world is stopped; what it heard is then dropped above.
+  const stopListening = useRef(mic.stop)
+  stopListening.current = mic.stop
+  const listeningRef = useRef(micListening)
+  listeningRef.current = micListening
+  useEffect(() => {
+    if (listeningRef.current && micRoot.current !== root) stopListening.current()
+  }, [root])
   const micSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
   const voice = voiceOverride ?? { supported: micSupported, listening: mic.status === 'listening', toggle: mic.toggle, start: mic.start, stop: mic.stop }
   // Tap or hold (the default): a hold records until release, a tap starts and the next tap stops. In the
@@ -133,6 +155,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     const used = state === 'thinking' || speaking
     hush()
     cancel()
+    if (used) refocus()
     return used
   }
   useEffect(() => {
@@ -146,22 +169,49 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   useEffect(() => { link?.setBusy(busy) }, [link, busy])
   useEffect(() => () => link?.setBusy(false), [link])
 
+  // A question that is not taken (blank once cleaned, or over the limit) keeps its draft (U9).
   const submit = (q: string): void => {
     if (q.trim() === '') return
     hush()
-    ask(q)
-    setText('')
+    if (ask(q)) setText('')
   }
 
+  // What a screen reader hears: each sentence once, as it is revealed, without markers or markdown (U10).
+  // A replay of the same answer reveals nothing new, so it says nothing again.
+  const [heard, setHeard] = useState('')
+  const said = useRef<{ answer: unknown; count: number }>({ answer: null, count: 0 })
+  useEffect(() => {
+    if (state !== 'answered' || !answer) {
+      said.current = { answer: null, count: 0 }
+      setHeard('')
+      return
+    }
+    if (said.current.answer !== answer) said.current = { answer, count: 0 }
+    if (revealed <= said.current.count) return
+    setHeard(answer.sentences.slice(said.current.count, revealed).map((s) => spokenText(s.text)).join(' '))
+    said.current.count = revealed
+  }, [state, answer, revealed])
+
   const disabled = root === '' || (viewer === null && !design)
+  const placeholder = design ? 'Change the design…' : 'Ask about this project…'
   // A disabled button gets no release, so a press in progress ends here rather than firing late.
   useEffect(() => { if (disabled) endPressRef.current() }, [disabled])
 
   return (
     <div className="flex flex-col items-center gap-2 w-full" data-testid="world-ask">
+      <p className="sr-only" aria-live="polite" data-testid="world-ask-live">{heard}</p>
       {state === 'thinking' && (
-        <div role="status" className="animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
-          Thinking…
+        <div className="flex items-center gap-2">
+          <div role="status" className="animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
+            Thinking…
+          </div>
+          <button
+            type="button"
+            onClick={() => { hush(); cancel(); refocus() }}
+            className="text-xs px-2 py-1 rounded border border-[#3c3c3c] bg-[#252526] text-[#d4d4d4] hover:bg-[#2a2d2e]"
+          >
+            Cancel
+          </button>
         </div>
       )}
       {state === 'answered' && answer && (
@@ -171,7 +221,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
           revealed={revealed}
           noMemory={noMemory}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
-          onClose={() => { hush(); dismiss() }}
+          onClose={() => { hush(); dismiss(); refocus() }}
           onReplay={replay}
           partName={(id) => doc?.buildings.find((b) => b.id === id)?.name ?? doc?.edges.find((e) => e.id === id)?.label}
           onOpenPart={(id, highlight) => {
@@ -186,7 +236,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
         <div className="w-full rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] p-3 flex items-center gap-2" role="alert">
           <span className="flex-1 min-w-0 break-words">{error}</span>
           <button type="button" onClick={retry} className="text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">Retry</button>
-          <button type="button" aria-label="Close answer" onClick={() => { hush(); dismiss() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
+          <button type="button" aria-label="Close answer" onClick={() => { hush(); dismiss(); refocus() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
         </div>
       )}
       {!design && text === '' && state === 'idle' && (
@@ -206,12 +256,20 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
       )}
       <div className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1.5 w-full" data-testid="world-ask-row">
         <input
+          ref={inputRef}
           value={text}
           disabled={disabled}
-          placeholder={design ? 'Change the design…' : 'Ask about this project…'}
+          maxLength={MAX_QUESTION_CHARS}
+          placeholder={placeholder}
+          aria-label={placeholder}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') submit(text) }}
-          className="flex-1 min-w-0 bg-transparent outline-none text-sm text-[#d4d4d4] placeholder:text-[#6b7280] disabled:opacity-50"
+          // Enter that ends an IME composition (isComposing, or keyCode 229 where that is missing) only picks the
+          // characters; Shift+Enter does nothing (U7).
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return
+            submit(text)
+          }}
+          className="flex-1 min-w-0 bg-transparent outline-none text-sm text-[#d4d4d4] placeholder:text-[#9ca3af] disabled:opacity-50"
         />
         {voice?.supported && (
           <button
