@@ -385,6 +385,38 @@ describe('a tree run collects its output as execFile does', () => {
     expect(out.error).toMatchObject({ message: 'stderr maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
   })
 
+  it('ends the tree once when both pipes overrun, and keeps the first one\'s error', async () => {
+    const r = run({ maxBuffer: 1 })
+    child.stdout.emit('data', 'ab')
+    child.stderr.emit('data', 'cd')
+    expect(endTree).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
+    child.emit('close', null, 'SIGTERM')
+    expect(await r).toMatchObject({ stdout: 'a', stderr: 'c', error: { message: 'stdout maxBuffer length exceeded' } })
+  })
+
+  it('a cut after a stop, or after the answer, signals no group: the stop ended it, the answer forgot it', async () => {
+    const r = track(run({ maxBuffer: 2, timeout: 1_000 }))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(endTree).toHaveBeenCalledTimes(1)
+    // A survivor still writing to a pipe the stop left open, before and after the backstop answers.
+    child.stdout.emit('data', 'abc')
+    await vi.advanceTimersByTimeAsync(TREE_STOP_SETTLE_MS)
+    expect(r.value()).toMatchObject({ error: { message: 'timed out after 1000ms' } })
+    child.stderr.emit('data', 'abc')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(endTree).toHaveBeenCalledTimes(1)
+    // A run answered by its pipes closing: anything after it ends nothing either.
+    endTree.mockClear()
+    const closed = run({ maxBuffer: 2 })
+    child.emit('close', 0, null)
+    expect(await closed).toEqual({ stdout: '', stderr: '' })
+    child.stdout.emit('data', 'abc')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(endTree).not.toHaveBeenCalled()
+  })
+
   it('on Windows ends the tree at a cut while its root lives, and only the child once the root has exited', async () => {
     const live = run({ maxBuffer: 1 }, ['-p'], 'win32')
     child.stdout.emit('data', 'ab')

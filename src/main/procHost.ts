@@ -270,6 +270,9 @@ function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOpti
     const total = (stream === 'stdout' ? (outLen += length) : (errLen += length))
     if (total > base.maxBuffer) {
       chunks.push(chunk.slice(0, base.maxBuffer - (total - length)))
+      // Once only: the first stream to overrun names the error and ends the tree, and a second one
+      // (both pipes overrunning) ends nothing again.
+      if (killed) return
       ex = maxBufferError(stream)
       kill()
     } else {
@@ -345,7 +348,10 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
     }
     // Ends the tree (a stop, or output past maxBuffer); on Windows only while its root lives, as above.
     const endTree = (): unknown => (deps.endTree ?? endProcessTree)(child.pid, { platform: deps.platform, canRetry: () => !exited, ...(isWin ? {} : { leader }) })
-    const endLiveTree = (): unknown => (isWin && exited ? undefined : endTree())
+    // The cut's kill, and only while this run still owns its group. Not after a stop, which has ended
+    // the tree already, and not once the run is answered: the answer forgets the group, and a survivor
+    // still writing to a pipe a stop left open must not get a group signalled for it with no live handle.
+    const endLiveTree = (): unknown => (settled || stopped || (isWin && exited) ? undefined : endTree())
     const onAbort = (): void => stop('cancelled')
     const answer: ExecDone = (err, stdout, stderr) => {
       // Only a tree run is stopped, and spawnTree always hands over strings.
