@@ -531,12 +531,34 @@ async function litShare(): Promise<number> {
       hist[ys[p]]++
     }
     const bg = hist.indexOf(Math.max(...hist))
+    lastLitBackground = bg
     let lit = 0
     for (const y of ys) if (y > bg + 24) lit++
     return lit / n
   } finally {
     await style.evaluate((el) => (el as Element).remove())
   }
+}
+/** The background tone litShare last measured (0 black, 255 white), for mapCanvasState. */
+let lastLitBackground = -1
+
+/**
+ * What the map's canvas held, for the message of an unlit map: the shot's background tone, the canvas's size on the
+ * page and its drawing buffer's, whether its WebGL context is lost, and the GPU's MAX_RENDERBUFFER_SIZE and
+ * MAX_VIEWPORT_DIMS. Asking the canvas for webgl2 hands back the viewer's own context; it makes none.
+ */
+async function mapCanvasState(): Promise<string> {
+  const state = await page.evaluate(() => {
+    const c = document.querySelector<HTMLCanvasElement>('[data-testid="world-canvas-host"] canvas')
+    if (!c) return 'no canvas'
+    const gl = c.getContext('webgl2') as WebGL2RenderingContext | null
+    if (!gl) return `canvas ${c.clientWidth}x${c.clientHeight}, buffer ${c.width}x${c.height}, no webgl2 context`
+    const lost = gl.isContextLost()
+    const rb = lost ? '?' : String(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE))
+    const vp = lost ? '?' : Array.from(gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array).join('x')
+    return `canvas ${c.clientWidth}x${c.clientHeight}, buffer ${gl.drawingBufferWidth}x${gl.drawingBufferHeight} of ${c.width}x${c.height}, context lost ${lost}, max renderbuffer ${rb}, max viewport ${vp}`
+  })
+  return `background ${lastLitBackground}, ${state}`
 }
 
 /**
@@ -882,7 +904,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(bar.rows, `the toolbar keeps to two rows at ${tag}`).toBeLessThanOrEqual(2)
       expect.soft(bar.closeBeside, `the close button sits beside the toolbar's first row at ${tag}`).toBe(true)
       expect.soft(await faintLabels(), `no map label is drawn too faint to read at ${tag}`).toEqual([])
-      expect.soft(await litShare(), `the stars and the city are drawn on the map at ${tag}`).toBeGreaterThan(0.0005)
+      const lit = await litShare()
+      // An unlit map says what the canvas held (mapCanvasState), so a blank map in CI tells a lost WebGL context or an
+      // oversized drawing buffer apart from a slow capture.
+      const why = lit > 0.0005 ? '' : ` (${await mapCanvasState()})`
+      expect.soft(lit, `the stars and the city are drawn on the map at ${tag}${why}`).toBeGreaterThan(0.0005)
       const scale = uiScale(v.width, v.height, at.w)
       await expectLegendClear(`world at ${tag}`, scale)
       await shoot(`app-world-${name}`)
