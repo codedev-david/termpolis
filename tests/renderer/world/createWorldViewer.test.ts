@@ -182,14 +182,38 @@ describe('2D fallback: apply()', () => {
     expect(viewer.getSelection()).toEqual(['b1'])
   })
 
-  it('tour shows each caption escaped and clears a selection first', async () => {
-    const { viewer, sels, lastCard } = setup({ reducedMotion: true })
+  it('tour shows each caption escaped, for the same reading time under reduced motion, and clears it at the end', async () => {
+    vi.useFakeTimers()
+    const { viewer, sels, cards, lastCard } = setup({ reducedMotion: true })
     await viewer.apply({ type: 'openCard', id: 'b1' })
     sels.length = 0
-    await viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: '<b>two</b>' }] })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: '<b>two</b>' }] })
+    await vi.advanceTimersByTimeAsync(0)
     expect(sels).toEqual([null])
+    expect(lastCard()).toBe('<p class="tour-caption">one</p>')
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2 - 1)
+    expect(lastCard()).toBe('<p class="tour-caption">one</p>') // still being read: reduced motion drops the flight, not the dwell
+    await vi.advanceTimersByTimeAsync(1)
     expect(lastCard()).toBe('<p class="tour-caption">&lt;b&gt;two&lt;/b&gt;</p>')
+    const before = cards.length
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await done
+    expect(cards.slice(before)).toEqual([null]) // the finished tour takes its caption down
     expect(viewer.getSelection()).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('tour passes over a stop whose parts are all gone, silently, and shows a district stop', async () => {
+    vi.useFakeTimers()
+    const { viewer, cards } = setup({ reducedMotion: true })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['gone', 'tech:none'], caption: 'lost' }, { ids: ['d2'], caption: 'empty' }, { ids: ['d1'], caption: 'the app' }] })
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await done
+    expect(cards.filter((c) => c !== null)).toEqual(['<p class="tour-caption">the app</p>'])
+    // A tour with no stop left on the map shows nothing and waits for nothing.
+    cards.length = 0
+    await viewer.apply({ type: 'tour', steps: [{ ids: ['gone'], caption: 'lost' }] })
+    expect(cards).toEqual([null])
   })
 
   it('draftProposal redraws with the proposal; an unknown proposal is ignored', async () => {
@@ -251,16 +275,58 @@ describe('2D fallback: play and cancelActions', () => {
     expect(sels).toEqual([{ kind: 'building', id: 'b1' }])
   })
 
-  it('cancelActions stops a running tour between steps', async () => {
+  it('cancelActions stops a running tour between steps: its caption goes, and its dwell timer with it', async () => {
     vi.useFakeTimers()
     const { viewer, cards } = setup({ reducedMotion: false })
     const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
     await vi.advanceTimersByTimeAsync(0)
     expect(cards[cards.length - 1]).toContain('one')
     viewer.cancelActions()
+    expect(vi.getTimerCount()).toBe(0)
+    await done // settles at once, no time passed
+    expect(cards[cards.length - 1]).toBeNull()
     await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 10)
-    await done
     expect(cards.some((c) => c?.includes('two'))).toBe(false)
+    // With no tour under way, cancelActions leaves the card alone.
+    await viewer.apply({ type: 'openCard', id: 'b1' })
+    const n = cards.length
+    viewer.cancelActions()
+    expect(cards.length).toBe(n)
+  })
+
+  it('a newer play, a newer tour or a load ends the tour under way', async () => {
+    vi.useFakeTimers()
+    const { viewer, cards } = setup({ reducedMotion: false })
+    const steps = [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }]
+    const first = viewer.apply({ type: 'tour', steps })
+    await vi.advanceTimersByTimeAsync(0)
+    const played = viewer.play([])
+    await first
+    await played
+    expect(cards[cards.length - 1]).toBeNull()
+    const second = viewer.apply({ type: 'tour', steps })
+    await vi.advanceTimersByTimeAsync(0)
+    const third = viewer.apply({ type: 'tour', steps: [{ ids: ['b2'], caption: 'three' }] })
+    await second
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cards.slice(-2)).toEqual([null, '<p class="tour-caption">three</p>'])
+    viewer.load(rich())
+    await third
+    expect(cards[cards.length - 1]).toBeNull()
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 10)
+    expect(cards.some((c) => c?.includes('two'))).toBe(false)
+  })
+
+  it('dispose during a dwell clears its timer and draws no card', async () => {
+    vi.useFakeTimers()
+    const { viewer, cards } = setup({ reducedMotion: false })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    const n = cards.length
+    viewer.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    await done
+    expect(cards.length).toBe(n)
   })
 
   it('takes reduced motion from matchMedia when the option is not given (no gaps)', async () => {
@@ -457,6 +523,15 @@ function fakeRenderer(host: HTMLElement) {
 
 function withWebGL(): void {
   getContext.mockReturnValue({ getExtension: () => null } as never)
+}
+
+/** The viewer over the stand-in renderer, with a motion setting and a world of the test's own. */
+function setup3dWith(reducedMotion: boolean, doc: WorldDoc) {
+  withWebGL()
+  let fake: ReturnType<typeof fakeRenderer> | null = null
+  createThreeRenderer.mockImplementation((host: HTMLElement) => { fake = fakeRenderer(host); return fake.r })
+  const s = setup({ reducedMotion, doc })
+  return { ...s, ...(fake as unknown as ReturnType<typeof fakeRenderer>) }
 }
 
 describe('WebGL path (stand-in renderer)', () => {
@@ -949,11 +1024,69 @@ describe('WebGL path (stand-in renderer)', () => {
     const draws = r.draw.mock.calls.length
     await viewer.apply({ type: 'draftProposal', proposalId: 'p1' })
     expect(r.draw.mock.calls.length).toBe(draws + 1)
-    await viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'c' }] })
+    vi.useFakeTimers()
+    const toured = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'c' }] })
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await toured
     expect(r.frame).toHaveBeenLastCalledWith(['b1'], true)
     await viewer.apply({ type: 'reset' })
     expect(r.overview).toHaveBeenLastCalledWith(true)
     expect(viewer.cameraRegion()).toEqual(['b1'])
+  })
+
+  it('a district in a focus, highlight or tour stands for its buildings; ids the world lacks are dropped', async () => {
+    const { r, viewer } = setup3d()
+    const lastLit = (): string[] => [...(r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string> }).ids].sort()
+    await viewer.apply({ type: 'focus', ids: ['d1', 'gone'] })
+    expect(r.frame).toHaveBeenLastCalledWith(['b1', 'b2', 'b3', 'b4'], true)
+    expect(lastLit()).toEqual(['b1', 'b2', 'b3', 'b4'])
+    await viewer.apply({ type: 'highlight', ids: ['d1', 'b1'] })
+    expect(lastLit()).toEqual(['b1', 'b2', 'b3', 'b4'])
+    // Nothing left to show: the action does nothing, rather than dimming the whole city.
+    r.frame.mockClear()
+    const focusCalls = r.setFocus.mock.calls.length
+    await viewer.apply({ type: 'focus', ids: ['gone', 'd2'] })
+    await viewer.apply({ type: 'highlight', ids: ['gone'] })
+    expect(r.frame).not.toHaveBeenCalled()
+    expect(r.setFocus.mock.calls.length).toBe(focusCalls)
+  })
+
+  it('the district tour (How it fits together) frames and lights the buildings of each district, and ends lit by nothing', async () => {
+    vi.useFakeTimers()
+    const doc = rich()
+    doc.districts.push({ id: 'd3', name: 'Store', subtitle: 'Keeps things', hue: 200, members: [], nameState: 'observed' })
+    doc.buildings.find((b) => b.id === 'b3')!.districtId = 'd3'
+    const { r, viewer } = setup3dWith(true, doc)
+    // As compile builds it (compile.ts buildTours): one district id per step.
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['d1'], caption: 'Main' }, { ids: ['d2'], caption: 'Empty' }, { ids: ['d3'], caption: 'Store' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(r.frame).toHaveBeenLastCalledWith(['b1', 'b2', 'b4'], true)
+    expect(viewer.drawn().highlighted.sort()).toEqual(['b1', 'b2', 'b4', 'e1', 'e2'])
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2) // d2 has no buildings: passed over, straight to d3
+    expect(r.frame).toHaveBeenLastCalledWith(['b3'], true)
+    expect(viewer.drawn().highlighted).toEqual(['b3'])
+    expect(r.frame.mock.calls.every((c) => (c[0] as string[]).every((id) => !id.startsWith('d')))).toBe(true)
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await done
+    expect(viewer.drawn().highlighted).toEqual([])
+    expect(r.setFocus).toHaveBeenLastCalledWith(null)
+  })
+
+  it('a tour cancelled mid-flight stops its camera flight, clears its caption and its highlight', async () => {
+    vi.useFakeTimers()
+    const { r, viewer, lastCard } = setup3dWith(false, rich())
+    let land: () => void = () => undefined
+    r.frame.mockImplementationOnce(() => new Promise<void>((res) => { land = res }))
+    r.stopFlight.mockImplementation(() => land())
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(lastCard()).toBe('<p class="tour-caption">one</p>')
+    viewer.cancelActions()
+    await done
+    expect(r.stopFlight).toHaveBeenCalled()
+    expect(lastCard()).toBeNull()
+    expect(viewer.drawn().highlighted).toEqual([])
+    expect(r.frame).toHaveBeenCalledTimes(1)
   })
 
   it('drawn reports what a highlight lit, and nothing once the focus is gone', async () => {

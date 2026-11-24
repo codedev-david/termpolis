@@ -242,6 +242,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   /** The lit set the selection, a tour or an action asked for; a hovered building overrides it while hovered. */
   let baseFocus: RenderFocus | null = null
   let tourToken = 0
+  /** A tour is showing its captions: ending it clears the caption and the highlight. */
+  let tourActive = false
   let disposed = false
   const toast = createChangeToast(container)
   /** The ask bar's and the legend's strips: the toast keeps out of both (the fit gets them too, in 3D). */
@@ -656,7 +658,45 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   // ---------------- actions ----------------
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+  /** A tour's reading pause: cancelActions and dispose end it at once, its timer cleared. */
+  const dwells = new Set<{ timer: ReturnType<typeof setTimeout>; wake: () => void }>()
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const d = { timer: setTimeout(() => { dwells.delete(d); resolve() }, ms), wake: resolve }
+      dwells.add(d)
+    })
+  }
+  function wakeDwells(): void {
+    for (const d of dwells) { clearTimeout(d.timer); d.wake() }
+    dwells.clear()
+  }
+
+  /**
+   * The ids an action names, as the map can show them: a district stands for its buildings (the camera frames
+   * buildings, and a district id in the lit set would dim every building), and an id the world no longer has is dropped.
+   */
+  function shownIds(ids: string[]): string[] {
+    const d = doc as WorldDoc
+    const out = new Set<string>()
+    for (const id of ids) {
+      const kind = kindOf(id)
+      if (kind === 'building' || kind === 'edge') out.add(id)
+      else if (kind === 'district') for (const b of d.buildings) if (b.districtId === id) out.add(b.id)
+    }
+    return [...out]
+  }
+
+  /** Ends a tour under way, if any: its caption and highlight are cleared and its camera flight stopped. */
+  function endTour(): void {
+    tourToken++
+    wakeDwells()
+    if (!tourActive) return
+    tourActive = false
+    r3?.stopFlight()
+    if (disposed) return // the host is taking the view down: nothing is drawn again
+    renderCard(null)
+    setFocus(null)
+  }
 
   async function exec(a: WorldAction, o: { reducedMotion: boolean }): Promise<void> {
     if (!doc || disposed) return
@@ -665,8 +705,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       case 'focus':
       case 'highlight': {
         if (!r3) return
-        setFocus(groupFocus(a.ids))
-        if (a.type === 'focus') await r3.frame(a.ids, instant)
+        const ids = shownIds(a.ids)
+        if (ids.length === 0) return
+        setFocus(groupFocus(ids))
+        if (a.type === 'focus') await r3.frame(ids, instant)
         return
       }
       case 'flow': {
@@ -683,18 +725,25 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         return
       }
       case 'tour': {
-        const mine = ++tourToken
+        endTour()
+        const mine = tourToken
+        tourActive = true
         for (const step of a.steps) {
           if (mine !== tourToken || disposed) return
+          // A stop whose parts are all gone from the world is passed over.
+          const ids = shownIds(step.ids)
+          if (ids.length === 0) continue
           if (selection) { selection = null; emitSelect() }
           renderCard(`<p class="tour-caption">${escapeHtml(step.caption)}</p>`)
           if (r3) {
             r3.setSelected(null)
-            setFocus(groupFocus(step.ids))
-            await r3.frame(step.ids, instant)
+            setFocus(groupFocus(ids))
+            await r3.frame(ids, instant)
           }
-          if (!instant && mine === tourToken) await sleep(TOUR_STEP_MS)
+          // Reduced motion drops the flight, not the time to read the caption.
+          if (mine === tourToken) await sleep(TOUR_STEP_MS)
         }
+        if (mine === tourToken) endTour()
         return
       }
       case 'draftProposal': {
@@ -742,10 +791,13 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
   if (motionQuery && typeof motionQuery.addEventListener === 'function') motionQuery.addEventListener('change', onMotionChange)
 
-  /** Stops what is playing: the queue, a tour, a pulse, and the camera flight under way, which stops where it is (its promise settles). */
+  /**
+   * Stops what is playing: the queue, a tour (its caption and highlight cleared), a pulse, and the camera flight under
+   * way, which stops where it is (its promise settles).
+   */
   function cancelActions(): void {
     queue.cancel()
-    tourToken++
+    endTour()
     r3?.stopPulses()
     r3?.stopFlight()
   }
@@ -851,7 +903,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       r3?.setTheme(t, THEMES[t]) // redraws the current scene with the new palette
     },
     apply: (a) => exec(a, { reducedMotion: reduced }),
-    play: (actions) => queue.play(actions),
+    // A newer batch of actions ends a tour still under way, as a newer tour does.
+    play: (actions) => { endTour(); return queue.play(actions) },
     cancelActions,
     on,
     getSelection: () => (selection ? [selection.id] : []),
