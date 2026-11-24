@@ -8,6 +8,8 @@ import {
   embedBatch,
   bucketByTokens,
   setWorkerSpawner,
+  runAsBackgroundEmbeds,
+  BACKGROUND_WORKER_TIMEOUT_MS,
   isEmbedderReady,
   _setBackendForTests,
   _setOrtForTests,
@@ -364,6 +366,74 @@ describe('worker-backed embedding orchestration (BB11)', () => {
   it('with no spawner set, uses the in-process backend (byte-identical default)', async () => {
     _setBackendForTests(async (texts: string[]) => texts.map(() => [1, 2, 3]))
     expect(await embedBatch(['x'])).toEqual([[1, 2, 3]])
+  })
+
+  it('a backgroundOnly worker takes only the embeds run as background work, across their awaits; the rest stay in process (the memory host)', async () => {
+    const worker = vi.fn(async () => [1, 1, 1])
+    setWorkerSpawner(() => ({ embed: worker }), { backgroundOnly: true })
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [2, 2, 2]))
+    expect(await embedBatch(['an Ask search'])).toEqual([[2, 2, 2]])
+    expect(worker).not.toHaveBeenCalled()
+    const bg = runAsBackgroundEmbeds(async () => {
+      await Promise.resolve()
+      await new Promise((r) => setTimeout(r, 1))
+      return await embedText('an ingest passage')
+    })
+    // An embed started outside while the background one is under way stays in process.
+    expect(await embedBatch(['an agent search'])).toEqual([[2, 2, 2]])
+    expect(await bg).toEqual([1, 1, 1])
+    expect(worker).toHaveBeenCalledTimes(1)
+    expect(worker).toHaveBeenCalledWith('an ingest passage')
+  })
+
+  it('a backgroundOnly worker that fails hands the background embed back to the in-process backend', async () => {
+    setWorkerSpawner(() => ({ embed: async () => null }), { backgroundOnly: true })
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [7, 7, 7]))
+    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc']))).toEqual([[7, 7, 7]])
+  })
+
+  it('a background embed may take past the 10 s worker bound (a busy machine, 25 s measured) without the worker being dropped', async () => {
+    vi.useFakeTimers()
+    try {
+      let n = 0
+      const worker = vi.fn((text: string) => new Promise<number[]>((r) => setTimeout(() => r([text.length]), n++ === 0 ? 25_000 : 10)))
+      setWorkerSpawner(() => ({ embed: worker }), { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      const slow = runAsBackgroundEmbeds(() => embedBatch(['abcd']))
+      await vi.advanceTimersByTimeAsync(25_000)
+      expect(await slow).toEqual([[4]]) // from the worker
+      const next = runAsBackgroundEmbeds(() => embedBatch(['ab']))
+      await vi.advanceTimersByTimeAsync(10)
+      expect(await next).toEqual([[2]]) // the same worker, still in use
+      expect(worker).toHaveBeenCalledTimes(2)
+      expect(BACKGROUND_WORKER_TIMEOUT_MS).toBeGreaterThan(25_000)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a background embed that never comes back still gives the worker up after BACKGROUND_WORKER_TIMEOUT_MS', async () => {
+    vi.useFakeTimers()
+    try {
+      const dispose = vi.fn()
+      setWorkerSpawner(() => ({ embed: () => new Promise<number[]>(() => {}), dispose }), { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [5]))
+      const p = runAsBackgroundEmbeds(() => embedBatch(['x']))
+      await vi.advanceTimersByTimeAsync(BACKGROUND_WORKER_TIMEOUT_MS)
+      expect(await p).toEqual([[5]])
+      expect(dispose).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a plain worker (main, memory in process) still takes every embed, background or not, with the 10 s bound', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = vi.fn(() => new Promise<number[]>(() => {}))
+      setWorkerSpawner(() => ({ embed: worker }))
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [9]))
+      const p = embedBatch(['q'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await p).toEqual([[9]]) // timed out at 10 s and fell back
+      expect(worker).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
   })
 
   it('applies the query prefix before sending text to the worker', async () => {
