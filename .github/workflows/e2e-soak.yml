@@ -88,10 +88,14 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
-      # Linux only, as in Tests. Electron is the only browser a spec launches; on Linux the step
-      # stays for the system libraries --with-deps installs, which Electron's Chromium loads too.
+      # Linux and macOS, as in Tests (e2e-full, e2e-smoke-macos, e2e-lumopolis-macos; e2e-windows
+      # installs none). Electron is the only browser a spec launches, but the step also brings the
+      # ffmpeg a recorded launch needs (world-platform records its video on Linux and macOS): without
+      # it the window of a recording launch never loaded on a Mac (beforeAll timed out at 120 s, try
+      # and retry, on main 28d88a03 as on a branch). On Linux it also installs the system libraries
+      # (--with-deps) that Electron's Chromium loads.
       - name: Install Playwright browsers
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         run: npx playwright install --with-deps chromium
       - name: Install gdb
         if: runner.os == 'Linux'
