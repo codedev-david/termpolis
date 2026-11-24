@@ -73,6 +73,7 @@ import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 import type { CodeRef } from './codeGraph'
 import { killUtility } from './utilityKill'
 import { abortError, memoryTimeoutError, type HostLaneName } from './hostLane'
+import { probe } from './probeLog'
 import {
   resolveInprocGuard, measureMemoryStoreBytes, retryDelayMs, retryReadyTimeoutMs, RETRY_CAP_MS,
   unavailableMessage, setMemoryUnavailableState,
@@ -869,6 +870,19 @@ async function call<T>(fn: string, args: unknown[] = [], route: CallRoute = {}):
 export const _callForTests = (fn: string, args: unknown[] = []): Promise<unknown> => call(fn, args)
 
 async function callRaw<T>(fn: string, args: unknown[] = [], route: CallRoute = {}): Promise<T> {
+  const t0 = Date.now()
+  const before = pending.size
+  const fns = [...pending.values()].map((p) => p.fn).join(',')
+  try {
+    const r = await callRawInner<T>(fn, args, route)
+    probe(`mem ${fn} lane=${route.lane ?? '-'} ms=${Date.now() - t0} ok inflight=${before}[${fns}]`)
+    return r
+  } catch (e) {
+    probe(`mem ${fn} lane=${route.lane ?? '-'} ms=${Date.now() - t0} err=${e instanceof Error ? e.message.slice(0, 80) : String(e)} inflight=${before}[${fns}]`)
+    throw e
+  }
+}
+async function callRawInner<T>(fn: string, args: unknown[] = [], route: CallRoute = {}): Promise<T> {
   const { signal } = route
   // Await the handshake FIRST, then judge the mode.
   //
