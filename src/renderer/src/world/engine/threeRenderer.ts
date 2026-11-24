@@ -2801,6 +2801,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (host.clientWidth === 0 || host.clientHeight === 0) return
     // Drawn in software with only the looping motions moving and no change since: this frame is skipped until the
     // next looping frame is due (loopDue; the clock keeps the wall time, so the motions keep their speed).
+    // PROBE N2: drawn in software, no frame is drawn while the GPU still draws the last one (10 s at most).
+    if (software && fence) {
+      const gl = fences()
+      if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && performance.now() - drawnAt < 10_000) {
+        rp.skips++
+        raf = requestAnimationFrame(animate)
+        return
+      }
+    }
     if (software && loopOnly && !changed && !loopDue(performance.now())) {
       rp.skips++
       raf = requestAnimationFrame(animate)
