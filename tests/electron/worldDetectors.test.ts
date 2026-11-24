@@ -157,12 +157,12 @@ execSync('b'); fork('c')`).map((x) => x.key)).toEqual(['b', 'c'])
     expect(run(`import {\n  exec\n}\nfrom\n  'child_process'
 exec('d')`).map((x) => x.key)).toEqual(['d'])
     // A require( with no module after a long run of spaces: the two `\s*` in a row split the run every way (3 s on
-    // main at 50k). Reading 4 times the run takes under 8 times as long (see _linearTime). The file names
+    // main at 50k). Reading 8 times the run takes under 24 times as long (see _linearTime). The file names
     // child_process in code (a comment is blanked first), so the rule runs.
+    const none = (found: unknown[]): void => expect(found).toEqual([])
     for (const pad of [' ', '\n', '\r\n']) {
-      const none = (src: string): void => expect(run(src)).toEqual([])
-      linear((n) => `child_process.x = 1\nconst {}=require(${fill(pad, n)}`, none, 64 * 1024, `require ${JSON.stringify(pad)}`)
-      linear((n) => `child_process.x = 1\nimport {}from${fill(pad, n)}`, none, 64 * 1024, `import ${JSON.stringify(pad)}`)
+      linear((n) => `child_process.x = 1\nconst {}=require(${fill(pad, n)}`, run, 64 * 1024, `require ${JSON.stringify(pad)}`, none)
+      linear((n) => `child_process.x = 1\nimport {}from${fill(pad, n)}`, run, 64 * 1024, `import ${JSON.stringify(pad)}`, none)
     }
   })
 })

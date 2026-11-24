@@ -538,11 +538,13 @@ describe('byte-order marks and CRLF line endings', () => {
 })
 
 describe('hostile input stays linear', () => {
-  // Each input is read at n and 4n characters, and the larger must take under 8 times as long: a quadratic rule takes
-  // about 16 (see _linearTime). Each rule guarded here took seconds at these sizes before its fix.
+  // Each input is read at n and 8n characters, and the larger must take under 24 times as long: a quadratic rule takes
+  // about 64 (see _linearTime). Each rule guarded here took seconds at these sizes before its fix.
   const N = 64 * 1024
-  const grows = (make: (n: number) => string, read: (src: string) => unknown, label = ''): void => linear(make, read, N, label)
-  const reads = (file: string, want: string[]) => (src: string): void => expect(refs(file, src)).toEqual(want)
+  // What is timed, and what is then asserted on its result once, outside the timed runs.
+  interface Probe<R> { read: (src: string) => R; check: (result: R) => void }
+  const grows = <R>(make: (n: number) => string, probe: Probe<R>, label = ''): void => linear(make, probe.read, N, label, probe.check)
+  const reads = (file: string, want: string[]): Probe<string[]> => ({ read: (src) => refs(file, src), check: (found) => expect(found).toEqual(want) })
 
   it('reads an unclosed parenthesised Python list as its first line, without searching ahead from every one', () => {
     // 32,000 unclosed lists: the old bounded `\([^)]{0,4000}\)` searched 4,000 characters ahead from each one.
@@ -569,7 +571,7 @@ describe('hostile input stays linear', () => {
   })
 
   it("bounds a Kotlin file's declaration scan on one long line", () => {
-    const none = (src: string): void => expect(scanLangImports('a.kt', src)).toEqual({ refs: [] })
+    const none: Probe<unknown> = { read: (src) => scanLangImports('a.kt', src), check: (found) => expect(found).toEqual({ refs: [] }) }
     grows((n) => 'fun ' + 'a'.repeat(n), none)
     grows((n) => 'fun <' + '<'.repeat(n), none)
   })

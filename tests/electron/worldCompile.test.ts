@@ -1150,17 +1150,18 @@ describe('manifestServiceNames', () => {
   })
 
   it('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
-    // Reading 4 times the block takes under 8 times as long (see _linearTime); the regex before took seconds at 50k.
+    // Reading 8 times the block takes under 24 times as long (see _linearTime); the regex before took seconds at 50k.
     const N = 64 * 1024
-    const names = (want: string[]) => (src: string): void => expect(manifestServiceNames('k8s/a.yaml', src)).toEqual(want)
+    const read = (src: string): string[] => manifestServiceNames('k8s/a.yaml', src)
+    const names = (want: string[]) => (found: string[]): void => expect(found).toEqual(want)
     const head = 'kind: Deployment\nmetadata:\n'
     for (const body of ['\n', '\r\n', '  \n', ' \r\n', '  a: b\n', '  a\n\n', ' ']) {
-      linear((n) => head + fill(body, n), names([]), N, JSON.stringify(body))
-      linear((n) => head + fill(body, n) + '\nx: 1\n  name: late', names([]), N, `${JSON.stringify(body)} then a late name`)
+      linear((n) => head + fill(body, n), read, N, JSON.stringify(body), names([]))
+      linear((n) => head + fill(body, n) + '\nx: 1\n  name: late', read, N, `${JSON.stringify(body)} then a late name`, names([]))
     }
-    linear((n) => head + '\t'.repeat(n) + '\n', names([]), N, 'tabs')
-    linear((n) => 'kind: Service\n' + fill('metadata:\n  labels:\n', n), names([]), N, 'metadata blocks')
-    linear((n) => head + fill('  a: b\n\n', n) + '  name: found', names(['found']), N, 'found')
+    linear((n) => head + '\t'.repeat(n) + '\n', read, N, 'tabs', names([]))
+    linear((n) => 'kind: Service\n' + fill('metadata:\n  labels:\n', n), read, N, 'metadata blocks', names([]))
+    linear((n) => head + fill('  a: b\n\n', n) + '  name: found', read, N, 'found', names(['found']))
   })
 })
 
