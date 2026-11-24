@@ -920,6 +920,53 @@ describe('WorldAsk', () => {
   })
 })
 
+describe('WorldAsk: Esc and Close stop the answer tour, its timers and its speech together (T4)', () => {
+  const on = () => settingsGet.mockResolvedValue({ success: true, data: { worldLabelling: true, worldSpeakAnswers: true } })
+  /** An answer whose tour never lands on its own, so it is still playing when the key comes. */
+  async function touring(speak: boolean) {
+    if (speak) on()
+    const v = makeViewer()
+    v.play.mockImplementation(() => new Promise<undefined>(() => undefined))
+    const l = makeLink()
+    render(<WorldAsk viewer={v as never} doc={minimal()} root="r" link={l.link} />)
+    await settle()
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(v.play).toHaveBeenCalledTimes(1)
+    expect(lastBusy(l.link)).toBe(true)
+    v.cancelActions.mockClear()
+    speech.cancel.mockClear()
+    return { v, l }
+  }
+
+  for (const speak of [false, true]) {
+    it(`Esc stops the tour in the viewer and says it used the key, so the camera is left alone (speech ${speak ? 'on' : 'off'})`, async () => {
+      const { v, l } = await touring(speak)
+      let used: unknown
+      act(() => { used = l.esc() })
+      expect(used).toBe(true)
+      expect(v.cancelActions).toHaveBeenCalledTimes(1)
+      expect(speech.cancel).toHaveBeenCalled()
+      expect(lastBusy(l.link)).toBe(false)
+      expect(document.activeElement).toBe(input())
+      // The answer stays on show; a second Esc has nothing left to stop.
+      expect(screen.getByTestId('world-answer')).toBeInTheDocument()
+      act(() => { used = l.esc() })
+      expect(used).toBe(false)
+      expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    })
+  }
+
+  it('closing the answer stops its tour and its speech', async () => {
+    const { v, l } = await touring(true)
+    fireEvent.click(screen.getByLabelText('Close answer'))
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(speech.cancel).toHaveBeenCalled()
+    expect(lastBusy(l.link)).toBe(false)
+  })
+})
+
 describe('WorldAsk cost line', () => {
   it('shows the answer and session cost after two answers, and nothing after dismiss', async () => {
     ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, 'The answer.', { tokens: 1000 }))

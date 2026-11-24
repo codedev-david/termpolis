@@ -46,7 +46,7 @@ const SUGGESTIONS = [
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
+  const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -149,11 +149,13 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     window.speechSynthesis.speak(u)
   }, [speak, state, answer])
 
-  // Esc from WorldView: used (true) when it stopped the speech or a running question.
+  // Esc from WorldView: used (true) when it stopped the speech, the answer's tour or a running question. All
+  // three stop together, speech on or off, so the camera is left where the tour put it (T4).
   const onEscape = useRef<(() => boolean) | null>(null)
   onEscape.current = () => {
-    const used = state === 'thinking' || speaking
+    const used = state === 'thinking' || speaking || playing
     hush()
+    stop()
     cancel()
     if (used) refocus()
     return used

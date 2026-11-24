@@ -694,3 +694,80 @@ describe('useWorldAsk: cancels, closes and view switches that land mid-flight (U
     expect(ask.mock.calls[0][0]).toMatchObject({ question: 'Why is\tit slow?' })
   })
 })
+
+describe('useWorldAsk: one stop for the answer tour, and its sentences played in turn (T4)', () => {
+  const sentences = [{ text: 'One two.', actions: [0], sep: '' }, { text: 'Three four.', actions: [1], sep: ' ' }, { text: 'Last.', actions: [], sep: ' ' }]
+  const actions = [{ type: 'tour', steps: [{ ids: ['b1'], caption: 'Here.' }] }, { type: 'flow', edgeIds: ['e1'] }]
+  const touring = (askId: string): Res => ({
+    success: true,
+    data: { askId, ok: true, answer: { text: 'One two. Three four. Last.', sentences, actions, evidence: [], dropped: 0, unsupported: [], uncited: false }, summary: 's', cited: {} } as AskResult
+  })
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    ask.mockImplementation(async (req: AskRequest) => touring(req.askId))
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it("a sentence's actions start only once the sentence before has finished playing, never alongside it", async () => {
+    const v = makeViewer()
+    const first = deferred<undefined>()
+    v.play.mockImplementationOnce(() => first.promise)
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(v.play).toHaveBeenCalledTimes(1)
+    await tick(600)
+    // The text keeps its reading pace; the second sentence's flow waits for the first sentence's tour.
+    expect(result.current.revealed).toBe(2)
+    expect(v.play).toHaveBeenCalledTimes(1)
+    await act(async () => { first.resolve(undefined) })
+    expect(v.play).toHaveBeenCalledTimes(2)
+    expect(v.play.mock.calls[1][0]).toEqual([actions[1]])
+    await tick(600)
+    expect(result.current.revealed).toBe(3)
+    expect(result.current.playing).toBe(false)
+  })
+
+  it('stop ends the reveal and the tour in the viewer, shows the whole answer, and nothing queued plays later', async () => {
+    const v = makeViewer()
+    const first = deferred<undefined>()
+    v.play.mockImplementationOnce(() => first.promise)
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    await tick(600)
+    v.cancelActions.mockClear()
+    act(() => { result.current.stop() })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(result.current.playing).toBe(false)
+    expect(result.current.revealed).toBe(3)
+    expect(result.current.state).toBe('answered')
+    await act(async () => { first.resolve(undefined) })
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+  })
+
+  it('stop with no answer tour running leaves the viewer alone (a tour the person started is not theirs to stop)', async () => {
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    act(() => { result.current.stop() })
+    await act(async () => { result.current.ask('q') })
+    await tick(5000)
+    expect(result.current.playing).toBe(false)
+    v.cancelActions.mockClear()
+    act(() => { result.current.stop() })
+    expect(v.cancelActions).not.toHaveBeenCalled()
+    expect(result.current.revealed).toBe(3)
+  })
+
+  it('a different project mid-tour stops the tour in the viewer too', async () => {
+    const v = makeViewer()
+    v.play.mockImplementation(() => new Promise(() => undefined))
+    const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'r' } })
+    await act(async () => { result.current.ask('q') })
+    v.cancelActions.mockClear()
+    rerender({ root: 'r2' })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(result.current.playing).toBe(false)
+    expect(result.current.answer).toBeNull()
+  })
+})

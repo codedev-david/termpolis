@@ -10,7 +10,8 @@
 // A cancel, a newer question or a different project that lands while a request waits on its model lookup
 // stops it there: it never reaches main (U3). Closing the answer, or the viewer going (2D) or changing,
 // while its tour flies stops the tour in the viewer and lets the pane go at once; the rest of the answer
-// is then shown whole (U5, U6).
+// is then shown whole (U5, U6). `stop` is that same stop for Esc and a different project (T4). A sentence's
+// steps wait for the sentence before to finish playing, so two sentences' tours never fly at once (T4).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
 import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
@@ -29,6 +30,8 @@ export interface UseWorldAsk {
   replay(): void
   /** Closes the answer or error panel. */
   dismiss(): void
+  /** Stops the answer's tour and its pending reveal, and shows the answer whole; a tour not the answer's is left alone. */
+  stop(): void
   state: AskState
   answer: WorldAnswer | null
   /** The evidence labels (E1, E2, ...) cited by the answer text. */
@@ -124,7 +127,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     clearTimers()
     const gen = ++playGen.current
     const reduced = reducedMotion()
-    const plays: Promise<void>[] = []
+    /** The sentences' plays so far, one after another; null until a sentence has steps. */
+    let chain: Promise<void> | null = null
     setRevealed(0)
     setPlay(true)
     // Lifts the fog an earlier answer left; 'reset' would also close the card and move the camera.
@@ -132,12 +136,16 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     const step = (i: number): void => {
       setRevealed(i + 1)
       const steps = a.sentences[i].actions.map((n) => a.actions[n])
-      if (steps.length > 0) plays.push(v.play(steps).catch(noop))
+      if (steps.length > 0) {
+        const play = (): Promise<void> => v.play(steps).catch(noop)
+        // Stopped meanwhile (a newer play, Esc, a close): a queued sentence never starts.
+        chain = chain === null ? play() : chain.then(() => (playGen.current === gen ? play() : undefined))
+      }
       if (i + 1 < a.sentences.length) {
         timers.current.push(setTimeout(() => step(i + 1), revealMs(a.sentences[i].text, reduced)))
         return
       }
-      void Promise.all(plays).then(() => { if (playGen.current === gen) setPlay(false) })
+      void Promise.resolve(chain).then(() => { if (playGen.current === gen) setPlay(false) })
     }
     if (a.sentences.length === 0) setPlay(false)
     else step(0)
@@ -231,16 +239,27 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     reveal(viewer, answer)
   }, [viewer, answer, reveal])
 
-  const dismiss = useCallback((): void => {
-    // A tour still flying is stopped in the viewer, not left to land after the answer is gone (U5).
+  /** Stops the answer's tour in the viewer, if one is flying, and its reveal (U5, T4). */
+  const stopTour = useCallback((): void => {
     if (playingRef.current) (viewerRef.current as WorldViewer).cancelActions()
     clearTimers()
+  }, [clearTimers])
+
+  const stop = useCallback((): void => {
+    stopTour()
+    const a = answerRef.current
+    if (a) setRevealed(a.sentences.length)
+  }, [stopTour])
+
+  const dismiss = useCallback((): void => {
+    // A tour still flying is stopped in the viewer, not left to land after the answer is gone (U5).
+    stopTour()
     setAnswer(null)
     setCited({})
     setError(null)
     setNoMemory(null)
     setState('idle')
-  }, [clearTimers])
+  }, [stopTour])
 
   // The viewer went (2D) or changed mid-tour: stop the tour in the old one and show the answer whole (U6).
   const lastViewer = useRef(viewer)
@@ -262,7 +281,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     if (lastRoot.current === root) return
     lastRoot.current = root
     cancelCurrent()
-    clearTimers()
+    stopTour()
     summary.current = ''
     sessionTokens.current = 0
     setCost(null)
@@ -272,7 +291,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     setError(null)
     setNoMemory(null)
     setState('idle')
-  }, [root, cancelCurrent, clearTimers])
+  }, [root, cancelCurrent, stopTour])
 
-  return { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost, noMemory }
+  return { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory }
 }
