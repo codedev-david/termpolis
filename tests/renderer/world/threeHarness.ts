@@ -34,8 +34,8 @@ export const gpu = {
   failComposer: null as Error | null,
   /** Thrown by WebGLRenderer.dispose (an undo step that fails). */
   failDispose: null as Error | null,
-  /** What the renderer's context answers for MAX_RENDERBUFFER_SIZE and MAX_VIEWPORT_DIMS (a lost context: null). */
-  limits: { renderbuffer: 16384 as unknown, viewport: [16384, 16384] as unknown },
+  /** What the renderer's context answers for MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE and MAX_VIEWPORT_DIMS (a lost context: null). */
+  limits: { renderbuffer: 16384 as unknown, texture: 16384 as unknown, viewport: [16384, 16384] as unknown },
   reset(): void {
     gpu.renderers.length = 0
     gpu.composers.length = 0
@@ -43,7 +43,7 @@ export const gpu = {
     gpu.bloomPasses.length = 0
     gpu.outputPasses.length = 0
     gpu.failRenderer = gpu.failComposer = gpu.failDispose = null
-    gpu.limits = { renderbuffer: 16384, viewport: [16384, 16384] }
+    gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
   },
 }
 
@@ -92,8 +92,9 @@ export class FakeWebGLRenderer {
   }
   forceContextLoss(): void { this.contextLost++ }
   /** A context answering the buffer limits (gpu.limits) and nothing else. */
-  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_VIEWPORT_DIMS: number; getParameter(p: number): unknown } {
-    return { MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_VIEWPORT_DIMS: 0x0d3a, getParameter: (p) => (p === 0x84e8 ? gpu.limits.renderbuffer : p === 0x0d3a ? gpu.limits.viewport : null) }
+  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; getParameter(p: number): unknown } {
+    const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport }
+    return { MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, getParameter: (p) => (p in answers ? answers[p] : null) }
   }
 }
 

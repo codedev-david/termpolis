@@ -422,16 +422,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   const renderer = new THREE.WebGLRenderer({ antialias: high })
   /**
-   * The largest drawing buffer the GPU takes, [across, down]: the smaller of its biggest render buffer and its biggest
-   * viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
+   * The largest drawing buffer the GPU takes, [across, down]: the smallest of its biggest render buffer, its biggest
+   * texture (the glow's passes draw into textures the buffer's size) and its biggest viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
    * clamps the canvas's buffer to what the GPU holds while the viewport is still set to the full size, so the picture
    * over-runs the buffer and shows cropped or at the wrong scale.
    */
   const bufferCap = ((): [number, number] => {
     const gl = renderer.getContext()
     const most = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE))
+    const texture = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE))
     const dims = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as ArrayLike<number> | null
-    const side = (k: number): number => Math.min(most > 0 ? most : Infinity, dims && dims[k] > 0 ? dims[k] : Infinity)
+    const side = (k: number): number =>
+      Math.min(most > 0 ? most : Infinity, texture > 0 ? texture : Infinity, dims && dims[k] > 0 ? dims[k] : Infinity)
     return [side(0), side(1)]
   })()
   /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */

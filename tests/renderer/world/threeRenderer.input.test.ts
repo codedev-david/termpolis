@@ -279,7 +279,7 @@ describe('threeRenderer resize', () => {
   it("keeps the drawing buffer inside the GPU's largest one: a lower pixel ratio on a 4K view, the screen's back when it shrinks", () => {
     const ro = withObserver()
     vi.stubGlobal('devicePixelRatio', 2)
-    gpu.limits = { renderbuffer: 8192, viewport: [16384, 4096] } // the viewport's 4096 down is the tighter limit there
+    gpu.limits = { renderbuffer: 8192, texture: 16384, viewport: [16384, 4096] } // the viewport's 4096 down is the tighter limit there
     resizeHost(h.host, 3840, 2160)
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     // 3840 x 2 = 7680 fits 8192 across; 2160 x 2 = 4320 is past 4096 down: 4096 / 2160.
@@ -296,14 +296,24 @@ describe('threeRenderer resize', () => {
     r.dispose()
   })
 
+  it('keeps the drawing buffer inside the largest texture too, where that is the tightest limit (N1)', () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    gpu.limits = { renderbuffer: 16384, texture: 4096, viewport: [16384, 16384] }
+    resizeHost(h.host, 3840, 2160)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    // 3840 x 2 = 7680 is past the 4096 texture across: 4096 / 3840 (2160 down then fits).
+    expect(rendererOf().pixelRatios).toEqual([4096 / 3840])
+    r.dispose()
+  })
+
   it("a context that answers no buffer limits (lost, or a driver that leaves them out) holds the screen's ratio", () => {
     vi.stubGlobal('devicePixelRatio', 2)
-    gpu.limits = { renderbuffer: null, viewport: null }
+    gpu.limits = { renderbuffer: null, texture: null, viewport: null }
     resizeHost(h.host, 3840, 2160)
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     expect(rendererOf().pixelRatios).toEqual([2])
     r.dispose()
-    gpu.limits = { renderbuffer: 0, viewport: [0, 0] } // zeros are no limits either
+    gpu.limits = { renderbuffer: 0, texture: 0, viewport: [0, 0] } // zeros are no limits either
     const r2 = createThreeRenderer(h.host, DEFAULT_OPTS)
     expect(gpu.renderers[1].pixelRatios).toEqual([2])
     r2.dispose()
