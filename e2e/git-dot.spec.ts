@@ -35,6 +35,15 @@ let originDir: string | undefined
 // Every terminal carries a mark now — dim and inert outside a repo — so these assertions
 // select only the LIVE ones, which is what "the dot appeared" has always meant here.
 const anyDot = '[data-testid^="git-dot-"][data-repo="true"]'
+// Every mark, live or not: one per terminal. A live dot goes dim ("unknown") for a moment
+// whenever its terminal's cwd changes spelling, as it does on Windows when the shell's first
+// OSC 9;9 report turns the runner's short temp path (RUNNER~1) into the long one. So the
+// tests count terminals, never live dots, to know how many dots should be live.
+const everyDot = '[data-testid^="git-dot-"]'
+
+// The tests build on each other (one repo, terminals made earlier, a commit late in the file),
+// so a retry has to start from the first one: run alone, a later test finds no terminal at all.
+test.describe.configure({ mode: 'serial' })
 
 test.beforeAll(async () => {
   // Playwright never loads tests/setup.ts, so the harness's git resolution has to be asked
@@ -135,10 +144,12 @@ test('a second terminal inherits that repo, so its dot appears without choosing 
   // The folder field is left untouched: this is the inheritance half of the fix
   // (resolveNewTerminalCwd falling through to the active terminal's directory)
   // and the reason a new tab no longer lands in the home directory.
-  const before = await page.locator(anyDot).count()
+  // Every terminal so far was made in the repo, so once this one is too, every dot is live.
+  const terminals = await page.locator(everyDot).count()
   await createTerminal()
 
-  await expect(page.locator(anyDot)).toHaveCount(before + 1, { timeout: 30000 })
+  await expect(page.locator(everyDot)).toHaveCount(terminals + 1)
+  await expect(page.locator(anyDot)).toHaveCount(terminals + 1, { timeout: 30000 })
   const dots = page.locator(anyDot)
   for (let i = 0; i < await dots.count(); i++) {
     await expect(dots.nth(i)).toHaveAttribute('data-dirty', 'true')
@@ -156,7 +167,9 @@ test('a second terminal inherits that repo, so its dot appears without choosing 
  */
 test("a terminal that cd's into a repo grows a dot without being recreated", async () => {
   plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitdot-plain-'))
-  const before = await page.locator(anyDot).count()
+  // Every terminal so far is in the repo: that many dots are live (counted by terminal, not by
+  // live dot, which may be dim for a moment while a cwd report lands).
+  const before = await page.locator(everyDot).count()
 
   await createTerminal(plainDir)
   // Outside a repo there is nothing to report, so the count must not move yet.
