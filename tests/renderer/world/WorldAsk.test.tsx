@@ -1167,6 +1167,29 @@ describe('WorldAsk: speech stops with a different project and when the app is hi
     expect(lastBusy(l.link)).toBe(false)
   })
 
+  it('an answer that lands while the app is hidden is shown but not read, and coming back does not read it late', async () => {
+    let land!: () => void
+    ask.mockImplementation((req: AskRequest) => new Promise((r) => { land = () => r(okRes(req.askId, long, { cited: {} })) }))
+    const l = makeLink()
+    render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="C:/a" link={l.link} />)
+    await settle()
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    // Away while it thinks: the hide comes before there is any speech to stop.
+    hidden = true
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    await act(async () => { land() })
+    await settle()
+    expect(screen.getByTestId('world-answer-text')).toHaveTextContent('alpha')
+    expect(speech.speak).not.toHaveBeenCalled()
+    hidden = false
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    await settle()
+    expect(speech.speak).not.toHaveBeenCalled()
+    expect(lastBusy(l.link)).toBe(false)
+  })
+
   it('once unmounted, the app going hidden reaches nothing', async () => {
     const { view } = await speaking()
     view.unmount()

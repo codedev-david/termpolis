@@ -200,6 +200,9 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   useEffect(() => {
     if (!speak || state !== 'answered' || !answer || spoken.current === answer) return
     spoken.current = answer
+    // An answer that lands while the app is hidden is shown, never read: hidden stops speech, so it starts none either,
+    // and coming back does not read it late (T7).
+    if (document.visibilityState === 'hidden') return
     const synth = window.speechSynthesis
     if (!synth) return
     const pieces = speechPieces(spokenText(answer.text))
