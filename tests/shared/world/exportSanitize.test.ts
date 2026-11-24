@@ -1106,6 +1106,37 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(relativePath('C:\\Users\\~1\\x', dots)).toBe(`${OUTSIDE}/x`)
   })
 
+  it('hides the short (8.3) name of a dotted account, the name before the last dot with the first 3 letters after it', () => {
+    const at = (name: string): SanitizeContext => ({ root: null, home: `C:\\Users\\${name}`, userData: `C:\\Users\\${name}\\AppData\\Roaming\\Termpolis` })
+    const forms = (s: string): Array<[string, string]> => [
+      [`/c/Users/${s}/AppData/Local/Temp/x.txt`, `${OUTSIDE}/x.txt`],
+      [`\\Users\\${s}\\x`, `${OUTSIDE}/x`],
+      [`C:\\Users\\${s}`, OUTSIDE],
+      [`C:\\Users\\${s}:12`, `${OUTSIDE}:12`],
+      [`C%3A%5CUsers%5C${s}%5Cx`, `${OUTSIDE}/x`],
+      [`%2FUsers%2F${s}%2Fx`, `${OUTSIDE}/x`],
+      [`C:Users${s}x`, `${OUTSIDE}/x`],
+      [`//host/share/Users/${s}/x`, `${OUTSIDE}/x`],
+      [`smb://host/s/Users/${s}/x`, `${OUTSIDE}/x`],
+      [`/cygdrive/c/Users/${s}/x`, `${OUTSIDE}/x`],
+    ]
+    const both: Array<[SanitizeContext, string, string]> = []
+    // `david.engelhart` is `DAVID~1.ENG`, and `ann.lees` (its extension longer than 3) is `ANN~1.LEE`, with the
+    // extension or without it, and the first 6 letters of the whole name (`DAVIDE~1`, `ANNLEE~1`) are read too.
+    for (const s of ['DAVID~1.ENG', 'david~2.eng', 'DAVID~1', 'DAVIDE~1']) for (const [p, w] of forms(s)) both.push([at('david.engelhart'), p, w])
+    for (const s of ['ANN~1.LEE', 'ANN~3', 'ANNLEE~1']) for (const [p, w] of forms(s)) both.push([at('ann.lees'), p, w])
+    // More than one dot, and a sign Windows writes as `_`.
+    both.push([at('a.b.c'), 'C:\\Users\\AB~1.C\\x', `${OUTSIDE}/x`], [at('ann+lee'), 'C:\\Users\\ANN_LE~1\\x', `${OUTSIDE}/x`])
+    // Not another extension, nor a name running on, nor a name before the dot of dots and spaces alone.
+    both.push([at('david.engelhart'), 'C:\\Users\\DAVID~1.EN', `${OUTSIDE}/DAVID~1.EN`], [at('david.engelhart'), 'C:\\Users\\DAVID~1.ENGx', `${OUTSIDE}/DAVID~1.ENGx`],
+      [at('. .longername'), 'C:\\Users\\~1.LON', `${OUTSIDE}/~1.LON`],
+      [at('. .longername'), 'C:\\Users\\LONGER~1\\x', `${OUTSIDE}/x`], [at('ann.lee'), 'C:\\Users\\ANN~1.LEE', `${OUTSIDE}/ANN~1.LEE`])
+    for (const [ctx, path, want] of both) {
+      expect(relativePath(path, ctx), path).toBe(want)
+      expect(sanitizeText(`see ${path} now`, ctx), path).toBe(`see ${want} now`)
+    }
+  })
+
   it('takes a Windows home folder on a host written with forward slashes or as an smb: URL whole, host and share too', () => {
     const spaced: SanitizeContext = { root: null, home: 'C:\\Users\\Ann Lee', userData: 'C:\\Users\\Ann Lee\\AppData\\Roaming\\Termpolis' }
     const both: Array<[SanitizeContext, string, string]> = [

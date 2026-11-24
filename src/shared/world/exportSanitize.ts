@@ -22,7 +22,7 @@
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms, and a drive written the Git Bash or Cygwin way, `/c/...` or
 // `/cygdrive/c/...`), so a folder name holding a space never splits. On Windows the account's folder is also found
-// by its short (8.3) name (`DAVIDE~1`, shortSource), which Git Bash and temp paths write, and a folder below a drive
+// by its short (8.3) name (`DAVIDE~1`, `DAVID~1.ENG`, shortSource), which Git Bash and temp paths write, and a folder below a drive
 // on a host's share written with forward slashes or as an smb: URL (`//host/share/Users/ann`) is taken with the host.
 // Another account's path is found by the definition alone, so it is missed when a line break splits it, after
 // `<`, `|`, `+`, `@`, `&` or `*`, as a forward-slash UNC path (`//host/share`) or inside another scheme's URL
@@ -165,15 +165,30 @@ function under(p: string, base: string, ctx: SanitizeContext): string[] | null {
 const accountOf = (ctx: SanitizeContext): string => baseName(norm(ctx.home).split('/'))
 
 /**
- * The RegExp source of the short (8.3) names Windows gives the account's folder when its name does not fit 8.3 (longer
- * than 8 characters or holding a space): its first 6 characters without spaces and dots, `~` and a number
- * (`DavidEngelhart` is `DAVIDE~1`, Git Bash and temp paths write it so). Null on Linux and macOS, and for a name that
- * fits. Only the account's own folder is read this way, so `PROGRA~1` and another folder's `~2` keep their names.
+ * The RegExp source of the short (8.3) names Windows gives the account's folder when its name does not fit 8.3: a
+ * name longer than 8 characters, one whose part after its last dot is longer than 3, a space, more than one dot, or
+ * one of `+,;=[]`. The short name is the name before the last dot without spaces and dots, its first 6 characters, `~`
+ * and a number, then a dot and the first 3 characters after the last dot (`DavidEngelhart` is `DAVIDE~1`,
+ * `david.engelhart` is `DAVID~1.ENG`, `ann.lees` is `ANN~1.LEE`; Git Bash and temp paths write it so), each of
+ * `+,;=[]` an `_`. The extension may be left out, and the first 6 characters of the whole name, dots dropped
+ * (`DAVIDE~1` for `david.engelhart`), are read too. Null on Linux and macOS, and for a name that fits. Only the
+ * account's own folder is read this way, so `PROGRA~1` and another folder's `~2` keep their names.
  */
 function shortSource(ctx: SanitizeContext): string | null {
   const name = accountOf(ctx)
-  const head = name.replace(/[ .]/g, '').slice(0, 6)
-  return windowsLike(norm(ctx.home)) && head !== '' && (name.length > 8 || name.includes(' ')) ? `${escapeRe(head)}~[1-9][0-9]*` : null
+  const dot = name.lastIndexOf('.')
+  const base = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot + 1) : ''
+  // A name longer than 8 counts as not fitting even with a dot (`abcdefgh.ij`), as before the dotted form was read.
+  const fits = name.length <= 8 && ext.length <= 3 && !/[ +,;=[\]]/.test(name) && name.indexOf('.') === name.lastIndexOf('.')
+  const short = (s: string): string => s.replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_')
+  const head = short(base).slice(0, 6)
+  const ext3 = short(ext).slice(0, 3)
+  const whole = short(name).slice(0, 6)
+  if (!windowsLike(norm(ctx.home)) || fits || whole === '') return null
+  const dotted = head === '' ? null : `${escapeRe(head)}~[1-9][0-9]*${ext3 ? `(?:\\.${escapeRe(ext3)})?` : ''}`
+  const plain = `${escapeRe(whole)}~[1-9][0-9]*`
+  return dotted === null || dotted === plain ? plain : `(?:${dotted}|${plain})`
 }
 /** Per context: shortSource as a whole name. */
 const shortNames = new WeakMap<SanitizeContext, RegExp | null>()
