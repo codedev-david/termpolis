@@ -34,7 +34,6 @@ import {
   OLD_GIT_MESSAGE,
   parseGitVersion,
   safetyFlags,
-  withoutTrace,
   type LoginRun
 } from './gitLogin'
 
@@ -399,12 +398,12 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   if (version === 'missing') return { ok: false, error: NO_GIT_MESSAGE }
   if (version === 'failed') return { ok: false, error: VERSION_FAILED_MESSAGE }
   if (version === 'old') return { ok: false, error: OLD_GIT_MESSAGE }
-  // The login settings for this run (and whether git may prompt) go over the inherited environment, which
-  // for a token run first loses any git trace. The local steps (rev-parse, remote set-url) get that
+  // The login settings for this run (and whether git may prompt) go over the inherited environment, which has
+  // already lost any git trace, transport program, template folder and other config (inheritedEnv). The local steps (rev-parse, remote set-url) get that
   // login-free env; only the network steps (clone, fetch, and an update's reset) of a token run also get the
   // askpass, the token and the host it answers for. Both are built afresh for every run and dropped when it ends: nothing here
   // keeps or returns them.
-  const localEnv = { ...(run.mode === 'token' ? withoutTrace(env) : env), ...configEnv(loginConfig(run)), ...loginEnv(run) }
+  const localEnv = { ...env, ...configEnv(loginConfig(run)), ...loginEnv(run) }
   const netEnv = run.mode === 'token' ? { ...localEnv, ...loginEnv(run, deps.askpassPath, rawHttpsHost(url)) } : localEnv
 
   // Only a clone that finished (marker inside .git) is updated in place. Anything else is not trusted.

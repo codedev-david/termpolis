@@ -1,8 +1,8 @@
 // Lumopolis private repositories against a real git and a real signed-in https server
 // (tests/fixtures/gitHttps/server.ts). cloneRepo runs exactly as the world host runs it: the real git,
 // the real size check and remover, the askpass Termpolis ships. Only the git config differs: every git
-// run here has GIT_CONFIG_NOSYSTEM=1 and a temporary GIT_CONFIG_GLOBAL, so no login helper of this
-// computer (Git Credential Manager, the keychain) ever runs. The one helper git may meet is
+// run here has GIT_CONFIG_NOSYSTEM=1 and a temporary home (HOME, XDG_CONFIG_HOME) with its own ~/.gitconfig, so no
+// login helper of this computer (Git Credential Manager, the keychain) ever runs. The one helper git may meet is
 // tests/fixtures/gitHttps/fake-helper.sh, named by that temporary config, and the only host is 127.0.0.1.
 //
 // The token cases run only in CI (CI=true): git hands the askpass its prompt as a command line argument,
@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveGitBin } from '../../src/main/binPath'
 import { cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type LoginRun } from '../../src/main/world/gitSource'
@@ -58,8 +58,12 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
   beforeAll(async () => {
     work = await fsp.mkdtemp(join(tmpdir(), 'lumopolis-https-'))
     server = await startGitHttps({ user, reply, dir: join(work, 'server') })
-    helperConfig = join(work, 'helper.gitconfig')
-    emptyConfig = join(work, 'empty.gitconfig')
+    // Each config is a home's ~/.gitconfig: the app's git leaves an inherited GIT_CONFIG_GLOBAL out (gitSafety.ts
+    // INHERITED_GIT_DROP), so it finds the person's config, and their login helper, where git looks by default.
+    helperConfig = join(work, 'home-helper', '.gitconfig')
+    emptyConfig = join(work, 'home-empty', '.gitconfig')
+    await fsp.mkdir(dirname(helperConfig), { recursive: true })
+    await fsp.mkdir(dirname(emptyConfig), { recursive: true })
     helperLog = join(work, 'helper.log')
     await fsp.writeFile(helperConfig, fakeHelperConfig())
     await fsp.writeFile(emptyConfig, '')
@@ -70,12 +74,14 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     if (work) await removeDir(work)
   })
 
-  /** The environment the app's git would inherit: the fixture's CA, no system config and a temporary
-   *  global one. Any GCM_ or FAKE_HELPER_ variable of this shell is left out. */
+  /** The environment the app's git would inherit: the fixture's CA, no system config and a temporary home whose
+   *  ~/.gitconfig is `config` (GIT_CONFIG_GLOBAL names it too, for this test's own plain git). Any GCM_ or
+   *  FAKE_HELPER_ variable of this shell is left out. */
   const gitEnvFor = (config: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
     const env: NodeJS.ProcessEnv = {}
     for (const [k, v] of Object.entries(process.env)) if (!/^(GCM_|FAKE_HELPER_)/i.test(k)) env[k] = v
-    return { ...env, GIT_SSL_CAINFO: server.caFile, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, ...extra }
+    const home = dirname(config)
+    return { ...env, GIT_SSL_CAINFO: server.caFile, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, HOME: home, XDG_CONFIG_HOME: join(home, 'xdg'), ...extra }
   }
   /** gitEnvFor plus the fake helper's answers, for the runs whose config names the helper. A token run
    *  uses gitEnvFor alone, so the reply reaches git only as the token. */
@@ -167,6 +173,26 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     if (r.ok) return
     expect(r.error).toBe(TOKEN_REJECTED_MESSAGE)
     expect(JSON.stringify(r).includes(wrong)).toBe(false)
+  }, 60_000)
+
+  it('a clone inherits no template folder, git config file, transport program or trace from Termpolis’s environment', async () => {
+    const templates = join(work, 'planted-templates')
+    await fsp.mkdir(templates, { recursive: true })
+    await fsp.writeFile(join(templates, 'planted-template'), 'x\n')
+    const trace = join(work, 'planted-trace.log')
+    const other = join(work, 'planted-other.gitconfig')
+    await fsp.writeFile(other, '[core]\n\tautocrlf = false\n')
+    const planted = { GIT_TEMPLATE_DIR: templates, GIT_TRACE: trace, GIT_CONFIG: other, GIT_SSH_COMMAND: join(work, 'no-such-program') }
+    const r = await cloneRepo(server.url, undefined, await depsFor(envFor(helperConfig, planted)), { mode: 'machine', interactive: true })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(fs.existsSync(join(r.root, '.git', 'planted-template'))).toBe(false)
+    expect(fs.existsSync(trace)).toBe(false)
+    // Positive control: plain git with the same environment copies the template and writes the trace.
+    const plainDir = join(work, 'plain-init')
+    execFileSync('git', ['init', '-q', plainDir], { env: gitEnvFor(emptyConfig, planted) as Record<string, string> })
+    expect(fs.existsSync(join(plainDir, '.git', 'planted-template'))).toBe(true)
+    expect(fs.existsSync(trace)).toBe(true)
   }, 60_000)
 
   it('a pushed commit makes the next update report changed', async () => {

@@ -102,17 +102,24 @@ exit $LASTEXITCODE
 `)
   }
   // The local git server for the Use a token dialog, with the fake login helper as the only helper git knows
-  // (as lumopolis-private-repos.spec.ts runs it). The computer's own login helpers are kept out of the app.
+  // (as lumopolis-private-repos.spec.ts runs it). The computer's own login helpers are kept out of the app. The
+  // app's Lumopolis git leaves an inherited GIT_CONFIG_GLOBAL out, so the helper config is git's XDG global config
+  // ($XDG_CONFIG_HOME/git/config; GIT_CONFIG_GLOBAL names it too). On Windows HOME, which there moves only git's
+  // home, points at an empty folder as well, so no ~/.gitconfig of the computer is read.
   const gitEnv: Record<string, string> = {}
   if (missing === null) {
     gitWork = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-responsive-git-'))
     server = await startGitHttps({ user: gitUser, reply: gitReply, dir: path.join(gitWork, 'server') })
-    const config = path.join(gitWork, 'helper.gitconfig')
+    const gitHome = path.join(gitWork, 'home')
+    fs.mkdirSync(path.join(gitHome, 'xdg', 'git'), { recursive: true })
+    const config = path.join(gitHome, 'xdg', 'git', 'config')
     fs.writeFileSync(config, fakeHelperConfig())
     Object.assign(gitEnv, {
       GIT_SSL_CAINFO: server.caFile,
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: config,
+      XDG_CONFIG_HOME: path.join(gitHome, 'xdg'),
+      ...(process.platform === 'win32' ? { HOME: gitHome } : {}),
       FAKE_HELPER_LOG: path.join(gitWork, 'helper.log'),
       FAKE_HELPER_USER: gitUser,
       FAKE_HELPER_REPLY: gitReply,

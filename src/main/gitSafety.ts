@@ -137,6 +137,54 @@ export function guardGitEnv(args: readonly string[]): Record<string, string> {
   return sub !== null && MUTATING_SUBCOMMANDS.has(sub.name) ? {} : { GIT_NO_LAZY_FETCH: '1' }
 }
 
+/** The inherited variables every automatic git leaves out of its environment, by upper-case name (one ending in `*` is
+ *  a prefix): the guarded reads here (guardGitDropEnv) and Lumopolis's clone, update and helper check (world/gitLogin.ts
+ *  inheritedEnv). A git the person starts keeps them all.
+ *  - Another config: GIT_CONFIG makes `git config`, the filter scan, read only the file it names while status still
+ *    reads the repository's own config, so the scan would miss a filter the read then runs. GIT_CONFIG_GLOBAL and
+ *    GIT_CONFIG_SYSTEM swap in a file a parent process chose for the person's own, and the numbered or packed
+ *    command-line config (GIT_CONFIG_COUNT, _KEY_n, _VALUE_n, GIT_CONFIG_PARAMETERS) is a parent git's. Without them git
+ *    reads ~/.gitconfig and the system file, where it looks by default. GIT_CONFIG_NOSYSTEM stays: it only takes a
+ *    file away.
+ *  - Another repository: GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+ *    GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NAMESPACE move a run off the folder it was asked about.
+ *  - A program or a copy: GIT_SSH_COMMAND, GIT_SSH and GIT_PROXY_COMMAND name the program a transport starts,
+ *    GIT_TEMPLATE_DIR copies files (hooks among them) into a new clone, and GIT_TRACE* and GIT_CURL_VERBOSE write what
+ *    git does, request headers included, to a file or the error output. */
+export const INHERITED_GIT_DROP: readonly string[] = Object.freeze([
+  'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_*', 'GIT_CONFIG_VALUE_*',
+  'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM',
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE',
+  'GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'GIT_TRACE*', 'GIT_CURL_VERBOSE'
+])
+
+/** `env` without the variables `drop` names (compared in upper case, since Windows names are; a name ending in `*` is
+ *  a prefix) and without unset values, as a new object. */
+export function withoutEnv(env: NodeJS.ProcessEnv, drop: readonly string[]): Record<string, string> {
+  const exact = new Set<string>()
+  const prefixes: string[] = []
+  for (const d of drop) {
+    const name = d.toUpperCase()
+    if (name.endsWith('*')) prefixes.push(name.slice(0, -1))
+    else exact.add(name)
+  }
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue
+    const name = k.toUpperCase()
+    if (exact.has(name) || prefixes.some((p) => name.startsWith(p))) continue
+    out[k] = v
+  }
+  return out
+}
+
+/** The inherited variables a run of `args` leaves out (procHost.ts ProcOptions.dropEnv): INHERITED_GIT_DROP for a
+ *  read, none for a write, which runs in the environment the person's own git would. */
+export function guardGitDropEnv(args: readonly string[]): readonly string[] {
+  const sub = gitSubcommand(args)
+  return sub !== null && MUTATING_SUBCOMMANDS.has(sub.name) ? [] : INHERITED_GIT_DROP
+}
+
 /** The flags a read of `sub` adds after the subcommand. */
 export function displayFlags(sub: string): string[] {
   switch (sub) {

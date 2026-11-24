@@ -15,9 +15,9 @@ import {
   loginEnv,
   parseGitVersion,
   safetyFlags,
-  withoutTrace,
   type LoginRun
 } from '../../src/main/world/gitLogin'
+import { INHERITED_GIT_DROP } from '../../src/main/gitSafety'
 import type { ExecFn, ExecOpts, ExecResult } from '../../src/main/world/gitSource'
 import * as gitSource from '../../src/main/world/gitSource'
 
@@ -140,7 +140,7 @@ describe('login modes', () => {
     ).toEqual({ PATH: 'p' })
   })
 
-  it('withoutTrace drops every inherited git trace and curl verbosity, in any case, and nothing else', () => {
+  it('inheritedEnv drops every inherited git trace and curl verbosity, in any case, and nothing else', () => {
     const env: Record<string, string> = {
       PATH: 'p',
       GIT_TRACE: '1',
@@ -160,7 +160,7 @@ describe('login modes', () => {
       GIT_CURL_VERBOSE_X: 'kept',
       MY_GIT_TRACE: 'kept'
     }
-    const out = withoutTrace(env)
+    const out = inheritedEnv(env)
     expect(out).toEqual({ PATH: 'p', GIT_TERMINAL_PROMPT: '0', GIT_CURL_VERBOSE_X: 'kept', MY_GIT_TRACE: 'kept' })
     // A new object: the env it was given is left as it was.
     expect(out).not.toBe(env)
@@ -171,8 +171,29 @@ describe('login modes', () => {
     const src: NodeJS.ProcessEnv = { PATH: 'p', GONE: undefined, Git_Dir: 'x', GIT_CONFIG_KEY_0: 'core.askPass', git_config_value_0: 'evil', GIT_CONFIG_VALUE_ZZ: 'x' }
     for (const k of DROPPED_ENV) src[k] = 'x'
     expect(inheritedEnv(src)).toEqual({ PATH: 'p' })
-    // Only the numbered-config prefixes go: git's other config variables are left as they were.
-    expect(inheritedEnv({ GIT_CONFIG_GLOBAL: '/g', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEYS: 'x' })).toEqual({ GIT_CONFIG_GLOBAL: '/g', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEYS: 'x' })
+    // Only the numbered-config prefixes go: a variable that merely starts alike is left as it was.
+    expect(inheritedEnv({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEYS: 'x' })).toEqual({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEYS: 'x' })
+  })
+
+  it('inheritedEnv starts from the one list every automatic git shares (gitSafety.ts), so a clone, an update and the helper check never inherit a transport program, another config, templates or a trace', () => {
+    for (const name of INHERITED_GIT_DROP) expect(DROPPED_ENV).toContain(name)
+    const src: NodeJS.ProcessEnv = {
+      PATH: 'p',
+      HOME: '/h',
+      GIT_SSH_COMMAND: 'evil',
+      git_ssh: 'evil.exe',
+      GIT_PROXY_COMMAND: 'evil',
+      GIT_CONFIG: '/other',
+      GIT_CONFIG_GLOBAL: '/g',
+      GIT_CONFIG_SYSTEM: '/s',
+      GIT_TEMPLATE_DIR: '/t',
+      GIT_TRACE: '1',
+      GIT_TRACE_CURL: '/c',
+      git_trace2_event: '/e',
+      GIT_CURL_VERBOSE: '1',
+      GIT_CONFIG_NOSYSTEM: '1'
+    }
+    expect(inheritedEnv(src)).toEqual({ PATH: 'p', HOME: '/h', GIT_CONFIG_NOSYSTEM: '1' })
   })
 })
 
@@ -243,7 +264,11 @@ describe('hasLoginHelper', () => {
   })
 
   it('reads git config only: the argv, folder, ceiling and output cap', async () => {
-    const env: NodeJS.ProcessEnv = { PATH: 'p', GIT_DIR: '/elsewhere', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '' }
+    // GIT_CONFIG would make `git config --list` read only that file, unlike the clone it speaks for (gitSafety.ts).
+    const env: NodeJS.ProcessEnv = {
+      PATH: 'p', GIT_DIR: '/elsewhere', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
+      GIT_CONFIG: '/other', GIT_CONFIG_GLOBAL: '/g', GIT_TRACE: '1'
+    }
     const { deps, calls } = helperDeps({ stdout: listing('credential.helper\nmanager') }, env)
     expect(await hasLoginHelper(deps, 'github.com')).toBe(true)
     expect(calls).toHaveLength(1)

@@ -97,9 +97,22 @@ function dirty(dir: string, file: string, text: string): void {
 const opts = (cwd: string) => ({ cwd, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 })
 const quiet = async (p: Promise<unknown>): Promise<void> => { try { await p } catch { /* a refused read is fine; a marker is not */ } }
 
-/** Every automatic and display path, with the argument lists src/main writes, run against `dir`. */
-async function driveDisplayPaths(dir: string, file: string): Promise<void> {
+/** How one display path ended: what it handed back, or what it was refused with (the message and git's own stderr). */
+type Outcome = { ok: true; out: unknown } | { ok: false; error: string }
+const settle = async (p: Promise<unknown>): Promise<Outcome> => {
+  try {
+    return { ok: true, out: await p }
+  } catch (e) {
+    const err = e as { message?: unknown; stderr?: unknown } | null
+    return { ok: false, error: `${String(err?.message ?? e)} ${String(err?.stderr ?? '')}` }
+  }
+}
+
+/** Every automatic and display path, with the argument lists src/main writes, run against `dir`, and how each ended,
+ *  by its argument list (HEAD's id written `<sha>`) or its name. */
+async function driveDisplayPaths(dir: string, file: string): Promise<Record<string, Outcome>> {
   _resetGitBinForTests()
+  const got: Record<string, Outcome> = {}
   const o = opts(dir)
   const sha = git(dir, ['rev-parse', 'HEAD']).trim()
   // One of each kind of read src/main writes (gitSafetyGuard.test.ts checks every literal one goes through the same
@@ -120,29 +133,69 @@ async function driveDisplayPaths(dir: string, file: string): Promise<void> {
     ['archive', '--format=tar', 'HEAD'], ['describe', '--dirty', '--always'], ['diff-files'], ['diff-index', 'HEAD'],
     ['ls-files', '--eol'], ['grep', '-n', 'e'], ['cat-file', '--textconv', `HEAD:${file}`], ['grep', '--textconv', 'e']
   ]
-  await Promise.all(reads.map((args) => quiet(safeGitAsync(args, o))))
-  await quiet(cachedGit(['status', '--porcelain'], o))
+  await Promise.all(reads.map(async (args) => { got[args.join(' ').replace(sha, '<sha>')] = await settle(safeGitAsync(args, o)) }))
+  got['cachedGit status --porcelain'] = await settle(cachedGit(['status', '--porcelain'], o))
   // The commit and push gates read the staged patch and the unpushed log -p.
   // The world's label context reads the log of a group's files.
-  await Promise.all([
-    quiet(scanStagedDiff({ git: (a) => safeGitAsync(a, o) })),
-    quiet(scanPushRange({ git: (a) => safeGitAsync(a, o) })),
-    quiet(createLabelContext({ git: (a, cwd) => safeGitAsync(a, opts(cwd)), memory: async () => [] })(dir, [file, 'a.txt']))
+  const [staged, push, label] = await Promise.all([
+    settle(scanStagedDiff({ git: (a) => safeGitAsync(a, o) })),
+    settle(scanPushRange({ git: (a) => safeGitAsync(a, o) })),
+    settle(createLabelContext({ git: (a, cwd) => safeGitAsync(a, opts(cwd)), memory: async () => [] })(dir, [file, 'a.txt']))
   ])
-  // The CI lookup: remote, branch, then diff-tree of the judged commit (gh is faked: it only names the run).
+  Object.assign(got, { 'commit scan': staged, 'push scan': push, 'label context': label })
+  // The CI lookup: remote, branch, then diff-tree of the judged commit (gh is faked: it only names the run). A GitHub
+  // remote is added first, by plain `git config`, which runs nothing; without one the lookup stops at `remote -v`.
+  git(dir, ['config', 'remote.tp-ci.url', 'https://github.com/example/fixture'])
   const gh = join(progs, 'gh-not-run')
+  const ciGitErrors: string[] = []
   const ci = createWorldRuns({
     listTranscripts: async () => [], transcriptsAllowed: () => false, ciAllowed: async () => true,
     ghOnPath: async () => gh, gitBin: async () => gitBin, realpath: async (p) => p, now: () => Date.now(),
     exec: async (bin, args, eo) => {
       if (bin === gh) return { stdout: JSON.stringify([{ headSha: sha, workflowName: 'Tests', conclusion: 'success', createdAt: new Date().toISOString() }]) }
-      const r = await runExec(bin, args, eo)
+      // The harness's own time limit, not the app's 5 s: every vector runs at once here, and what is under test is
+      // what git runs, not how fast a loaded machine starts it. Each git the lookup runs must succeed.
+      const r = await runExec(bin, args, { ...eo, timeout: 30_000 })
+      if (r.error) ciGitErrors.push(`${args.slice(-4).join(' ')}: ${String((r.error as { message?: unknown }).message ?? r.error)}`)
       return { stdout: r.stdout, ...(r.error ? { error: r.error } : {}) }
     }
   })
-  await quiet(ci.ciRuns(dir))
+  got['CI lookup'] = await settle(ci.ciRuns(dir))
+  got['CI lookup git'] = ciGitErrors.length === 0 ? { ok: true, out: null } : { ok: false, error: ciGitErrors.join('\n') }
   // The code map's listing (repoFileList.ts builders).
-  await quiet(gitListFiles(dir))
+  got['code map listing'] = await settle(gitListFiles(dir))
+  return got
+}
+
+/** The reads every vector's repository refuses, and with what: no upstream is set, and a --textconv or --dirty ask is
+ *  never run (describe --dirty refreshes the index, which can run a filter and the post-index-change hook). */
+const ALWAYS_REFUSED = (file: string): Record<string, RegExp> => ({
+  'log --max-count=50 --format=%H%x00%s @{upstream}..HEAD': /no upstream configured/i,
+  [`cat-file --textconv HEAD:${file}`]: /a read may not ask for --textconv/,
+  'grep --textconv e': /a read may not ask for --textconv/,
+  'describe --dirty --always': /a read may not ask for --dirty/
+})
+
+/** Each display path did its job: a refusal only where one is expected, with that refusal's own message, and the
+ *  answers the panels show carry what this repository holds. A path that broke fails here, not just one that ran
+ *  something. */
+function expectDisplayPaths(v: Vector, got: Record<string, Outcome>, file: string): void {
+  const refused = { ...ALWAYS_REFUSED(file), ...v.refuses?.(file) }
+  for (const [label, outcome] of Object.entries(got)) {
+    const want = refused[label]
+    if (want === undefined) expect(outcome, label).toMatchObject({ ok: true })
+    else expect(outcome.ok ? `ran: ${String(outcome.out).slice(0, 200)}` : outcome.error, label).toMatch(want)
+  }
+  for (const label of Object.keys(refused)) expect(got, `${label} was run`).toHaveProperty([label])
+  const out = (label: string): unknown => { const o = got[label]; return o.ok ? o.out : undefined }
+  if (!(('status --porcelain -b -z') in refused)) expect(out('status --porcelain -b -z')).toMatch(/^## main(\u0000|$)/)
+  if (!(('log --oneline -5') in refused)) expect(out('log --oneline -5')).toMatch(/^[0-9a-f]{7,} /)
+  expect(String(out('rev-parse --git-path hooks')).trim()).toMatch(/hooks$/)
+  // The faked run passed on HEAD, so every file HEAD changed comes back as passed, from CI.
+  const ci = out('CI lookup') as Array<{ source?: unknown; passed?: unknown; file?: unknown }>
+  expect(ci.length, 'CI lookup found HEAD\'s files').toBeGreaterThan(0)
+  for (const run of ci) expect(run).toEqual(expect.objectContaining({ source: 'ci', passed: true, file: expect.any(String) }))
+  expect((out('code map listing') as { files?: string[] } | null)?.files).toContain('a.txt')
 }
 
 beforeAll(() => {
@@ -152,11 +205,17 @@ beforeAll(() => {
   mkdirSync(markers)
   mkdirSync(progs)
   // The person's own config, for the whole run: a global file this test writes, and no system file (git for Windows
-  // ships git-lfs's filter there), so what counts as "trusted" is exactly what the test says.
-  globalConfig = join(base, 'global.gitconfig')
+  // ships git-lfs's filter there), so what counts as "trusted" is exactly what the test says. It is the ~/.gitconfig
+  // of a temporary home, where git looks by default: Termpolis's reads leave an inherited GIT_CONFIG_GLOBAL out
+  // (gitSafety.ts INHERITED_GIT_DROP). GIT_CONFIG_GLOBAL names the same file for this test's own plain git.
+  const home = join(base, 'home')
+  mkdirSync(join(home, 'xdg'), { recursive: true })
+  globalConfig = join(home, '.gitconfig')
   writeFileSync(globalConfig, '[user]\n\tname = Harness\n\temail = harness@example.invalid\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n')
-  for (const k of ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) savedEnv[k] = process.env[k]
+  for (const k of ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'HOME', 'XDG_CONFIG_HOME']) savedEnv[k] = process.env[k]
   process.env.GIT_CONFIG_GLOBAL = globalConfig
+  process.env.HOME = home
+  process.env.XDG_CONFIG_HOME = join(home, 'xdg')
   process.env.GIT_CONFIG_NOSYSTEM = '1'
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete process.env[k]
 })
@@ -185,6 +244,8 @@ interface Vector {
   /** The markers the control must create. */
   expect: string[]
   only?: 'win32'
+  /** Display paths this repository refuses beyond ALWAYS_REFUSED, by label, and the error each must give. */
+  refuses?: (file: string) => Record<string, RegExp>
 }
 
 const VECTORS: Vector[] = [
@@ -402,7 +463,14 @@ const VECTORS: Vector[] = [
       return { dir, file: 'sub', redirty: () => undefined }
     },
     control: (dir) => git(dir, ['diff', '--no-ext-diff', '--no-textconv'], true),
-    expect: ['subdiff-external']
+    expect: ['subdiff-external'],
+    // The file looked at is a gitlink, not a file: git itself has no blob to blame, hash or put through a filter.
+    refuses: () => ({
+      'annotate sub': /fatal: unsupported file type sub/,
+      'blame --porcelain -- sub': /fatal: unsupported file type sub/,
+      'hash-object -- sub': /fatal: Unable to hash sub/,
+      'cat-file --filters HEAD:sub': /cannot read object [0-9a-f]{40} 'sub'/
+    })
   },
   {
     name: 'partial clone: a missing object fetched through core.sshCommand, the repository allowing ssh back on',
@@ -413,7 +481,8 @@ const VECTORS: Vector[] = [
     }),
     // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
     control: (dir) => git(dir, ['status', '--porcelain'], true),
-    expect: ['lazy-ssh']
+    expect: ['lazy-ssh'],
+    refuses: partialCloneRefuses
   },
   {
     name: 'partial clone: a missing object fetched through remote.<name>.uploadpack, the repository allowing file back on',
@@ -424,7 +493,8 @@ const VECTORS: Vector[] = [
     }),
     // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
     control: (dir) => git(dir, ['status', '--porcelain'], true),
-    expect: ['lazy-uploadpack']
+    expect: ['lazy-uploadpack'],
+    refuses: partialCloneRefuses
   },
   {
     name: 'partial clone: a missing object fetched through core.gitProxy, the repository allowing every protocol back on',
@@ -437,9 +507,33 @@ const VECTORS: Vector[] = [
     }),
     // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
     control: (dir) => git(dir, ['status', '--porcelain'], true),
-    expect: ['lazy-gitproxy']
+    expect: ['lazy-gitproxy'],
+    refuses: partialCloneRefuses
   }
 ]
+
+/** What a partial clone's missing blobs refuse, by display path: the guarded run turns lazy fetching off, so a read
+ *  that needs a missing blob fails on it (git says so) instead of fetching it through the planted program. Reads that
+ *  need no missing blob (log --oneline, ls-files, diff-files, grep of the worktree, the scans' log) still answer. */
+function partialCloneRefuses(): Record<string, RegExp> {
+  const lazyOff = /lazy fetching disabled; some objects may not be available[\s\S]*fatal: unable to read [0-9a-f]{40}/
+  return {
+    'status --porcelain -b -z': lazyOff,
+    'status --porcelain --untracked-files=no': lazyOff,
+    'cachedGit status --porcelain': lazyOff,
+    'diff --cached --numstat -z': lazyOff,
+    'diff --cached -- a.txt': lazyOff,
+    'diff --name-status <sha>': lazyOff,
+    'diff --no-color --no-ext-diff <sha>~0': lazyOff,
+    'show --format= --patch --no-color <sha>': lazyOff,
+    'log -p -1': lazyOff,
+    'commit scan': lazyOff,
+    'annotate a.txt': /fatal: Cannot read blob [0-9a-f]{40} for path a\.txt/,
+    'blame --porcelain -- a.txt': /fatal: Cannot read blob [0-9a-f]{40} for path a\.txt/,
+    'cat-file --filters HEAD:a.txt': /cannot read object [0-9a-f]{40} 'a\.txt'/,
+    'archive --format=tar HEAD': /invalid object 100644 [0-9a-f]{40} for 'a\.txt'/
+  }
+}
 
 /**
  * A partial clone (as `git clone --filter=blob:none` leaves one) whose promisor remote is reached through a program
@@ -492,9 +586,11 @@ describe.concurrent('git safety harness: a planted program never runs on an auto
       const { dir, file, redirty } = v.plant()
       redirty()
       expect(mine(), 'planting ran nothing').toEqual([])
-      await driveDisplayPaths(dir, file)
-      // The filter-driver read itself runs nothing either.
-      await quiet(runExec(gitBin, filterScanArgs(['status'], isWindows), { cwd: dir, timeout: 30_000 }))
+      expectDisplayPaths(v, await driveDisplayPaths(dir, file), file)
+      // The filter-driver read itself runs nothing either, and answers: the drivers it found, or none (git's exit 1).
+      const scan = await runExec(gitBin, filterScanArgs(['status'], isWindows), { cwd: dir, timeout: 30_000 })
+      if (scan.error !== undefined) expect([(scan.error as { code?: unknown }).code, scan.stdout]).toEqual([1, ''])
+      else expect(scan.stdout).toMatch(/^(local|worktree)\u0000filter\.[^\n]+\n/)
       expect(mine()).toEqual([])
       // Positive control: plain git does run it, so the read above really had something to refuse.
       redirty()
@@ -726,5 +822,89 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     expect(fired()).toEqual(['own-clean'])
     expect(git(dir, ['cat-file', '-p', ':y.dat'])).toBe('QUIET\n')
     expect(existsSync(join(dir, 'y.dat'))).toBe(true)
+  }, TIMEOUT)
+})
+
+describe('git safety harness: an inherited git environment', () => {
+  /** Sets `vars` in Termpolis's own environment for `body`, then puts back what was there. */
+  async function withEnv(vars: Record<string, string>, body: () => Promise<void>): Promise<void> {
+    const before: Record<string, string | undefined> = {}
+    for (const [k, v] of Object.entries(vars)) { before[k] = process.env[k]; process.env[k] = v }
+    try {
+      await body()
+    } finally {
+      for (const [k, v] of Object.entries(before)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  }
+
+  it('an inherited GIT_CONFIG_GLOBAL naming a filter program, or a GIT_TRACE file, reaches no read: status runs nothing and writes no trace', async () => {
+    clearMarkers()
+    const dir = newRepo('envglobal', { '.gitattributes': '*.dat filter=envg\n', 'x.dat': 'one\n' })
+    const plantedGlobal = join(base, 'planted-global.gitconfig')
+    writeFileSync(plantedGlobal, `[filter "envg"]\n\tclean = ${runs(plantProgram('env-global-clean', 'cat\n'))}\n\trequired = true\n`)
+    const trace = join(base, 'planted-read-trace.log')
+    _resetGitBinForTests()
+    await withEnv({ GIT_CONFIG_GLOBAL: plantedGlobal, GIT_TRACE: trace }, async () => {
+      dirty(dir, 'x.dat', 'two\n')
+      expect(await safeGitAsync(['status', '--porcelain'], opts(dir))).toBe(' M x.dat\n')
+      expect(await cachedGit(['status', '--porcelain', '-b', '-z'], opts(dir))).toBe('## main\u0000 M x.dat\u0000')
+      expect(fired()).toEqual([])
+      expect(existsSync(trace)).toBe(false)
+      // Positive control: plain git with the same environment runs the planted filter and writes the trace.
+      dirty(dir, 'x.dat', 'two\n')
+      git(dir, ['status', '--porcelain'], true)
+      expect(fired()).toEqual(['env-global-clean'])
+      expect(existsSync(trace)).toBe(true)
+    })
+  }, TIMEOUT)
+
+  it('an inherited GIT_CONFIG naming another file does not hide the repository’s own filter from the scan: status runs nothing', async () => {
+    clearMarkers()
+    const dir = newRepo('envconfig', { '.gitattributes': '*.dat filter=envc\n', 'x.dat': 'one\n' })
+    git(dir, ['config', 'filter.envc.clean', runs(plantProgram('env-config-clean', 'cat\n'))])
+    git(dir, ['config', 'filter.envc.required', 'true'])
+    const elsewhere = join(base, 'elsewhere.gitconfig')
+    writeFileSync(elsewhere, '[core]\n\tautocrlf = false\n')
+    _resetGitBinForTests()
+    await withEnv({ GIT_CONFIG: elsewhere }, async () => {
+      dirty(dir, 'x.dat', 'two\n')
+      // `git config` reads only the GIT_CONFIG file, and status still reads the repository's config.
+      expect(await safeGitAsync(['status', '--porcelain'], opts(dir))).toBe(' M x.dat\n')
+      expect(await safeGitAsync(['diff', '--numstat'], opts(dir))).toBe('1\t1\tx.dat\n')
+      expect(await cachedGit(['status', '--porcelain', '-b', '-z'], opts(dir))).toBe('## main\u0000 M x.dat\u0000')
+      expect(fired()).toEqual([])
+      // Positive control: plain git with the same environment runs it.
+      dirty(dir, 'x.dat', 'two\n')
+      git(dir, ['status', '--porcelain'], true)
+      expect(fired()).toEqual(['env-config-clean'])
+    })
+  }, TIMEOUT)
+
+  it('inherited GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_COMMON_DIR and GIT_CONFIG_* do not move a display read, and a write keeps them', async () => {
+    clearMarkers()
+    const dir = newRepo('envshown', { 'z.txt': 'z\n' })
+    const decoy = newRepo('envdecoy', { 'only-in-decoy.txt': 'd\n' })
+    dirty(dir, 'z.txt', 'Z\n')
+    dirty(decoy, 'only-in-decoy.txt', 'D\n')
+    const plain = git(dir, ['status', '--porcelain'])
+    expect(plain).toBe(' M z.txt\n')
+    const index = join(base, 'envshown.index')
+    _resetGitBinForTests()
+    await withEnv({
+      GIT_DIR: join(decoy, '.git'), GIT_WORK_TREE: decoy, GIT_INDEX_FILE: index, GIT_COMMON_DIR: join(decoy, '.git'),
+      GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'status.showUntrackedFiles', GIT_CONFIG_VALUE_0: 'no'
+    }, async () => {
+      writeFileSync(join(dir, 'new.txt'), 'new\n')
+      expect(await safeGitAsync(['status', '--porcelain'], opts(dir))).toBe(' M z.txt\n?? new.txt\n')
+      expect(await safeGitAsync(['diff', '--numstat'], opts(dir))).toBe('1\t1\tz.txt\n')
+      // A write is the person's git, environment and all: this add writes the index GIT_INDEX_FILE names, in the decoy.
+      await safeGitAsync(['add', '--', 'only-in-decoy.txt'], opts(dir))
+    })
+    expect(existsSync(index)).toBe(true)
+    expect(git(dir, ['status', '--porcelain'])).toBe(' M z.txt\n?? new.txt\n')
+    expect(fired()).toEqual([])
   }, TIMEOUT)
 })

@@ -185,13 +185,16 @@ describe('cloneRepo', () => {
     const base = await mkdtemp(join(tmpdir(), 'world-clone-login-'))
     try {
       const isWindows = process.platform === 'win32'
-      // Real git reads only a config this test wrote: no system config, so no login helper can ever run.
-      const gitconfig = join(base, 'gitconfig')
+      // Real git reads only a config this test wrote: no system config, so no login helper can ever run, and a home
+      // of its own (the app's git leaves an inherited GIT_CONFIG_GLOBAL out, gitSafety.ts INHERITED_GIT_DROP).
+      const home = join(base, 'home')
+      await mkdir(join(home, 'xdg'), { recursive: true })
+      const gitconfig = join(home, '.gitconfig')
       await writeFile(gitconfig, '')
       const real = mkDeps({
         baseDir: base,
         isWindows,
-        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitconfig },
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitconfig, HOME: home, XDG_CONFIG_HOME: join(home, 'xdg') },
         dirSize: async () => 10,
         rm: removeDir,
         listDir: listNames,

@@ -702,10 +702,41 @@ describe('cloneRepo token runs: fix round 1', () => {
         expect(c.opts.env.PATH).toBe('p')
       }
     }
-    // Only a token run is changed: a run without one keeps the person's own trace settings.
+    // A run without a token inherits no trace either (the shared list in gitSafety.ts), and sets none of its own.
     const none = fakeDeps({}, { env })
     await cloneRepo(HTTPS, undefined, none.deps)
-    expect(none.of('clone')[0].opts.env).toMatchObject({ GIT_TRACE_CURL: '/some/path', GIT_TRACE_REDACT: '0' })
+    for (const c of none.calls) expect(Object.keys(c.opts.env).filter((k) => /^GIT_(TRACE|CURL_VERBOSE)/i.test(k))).toEqual([])
+  })
+
+  it('no step of a clone or an update, the version check among them, inherits a transport program, another config, templates or a trace', async () => {
+    const env = {
+      PATH: 'p',
+      HOME: '/h',
+      GIT_SSH_COMMAND: 'evil',
+      Git_Ssh: 'evil.exe',
+      GIT_PROXY_COMMAND: 'evil',
+      GIT_CONFIG: '/other',
+      GIT_CONFIG_GLOBAL: '/g',
+      GIT_CONFIG_SYSTEM: '/s',
+      GIT_TEMPLATE_DIR: '/t',
+      GIT_TRACE: '1',
+      git_trace2_event: '/e',
+      GIT_CURL_VERBOSE: '1',
+      GIT_CONFIG_NOSYSTEM: '1'
+    }
+    const gone = /^(GIT_SSH_COMMAND|GIT_SSH|GIT_PROXY_COMMAND|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_TEMPLATE_DIR|GIT_TRACE.*|GIT_CURL_VERBOSE)$/i
+    for (const run of [undefined, { mode: 'machine', interactive: true } as const, TOKEN_RUN]) {
+      for (const exists of [false, true]) {
+        const f = fakeDeps({}, { env, exists: async () => exists })
+        await cloneRepo(HTTPS, undefined, f.deps, run)
+        expect(f.calls.length).toBeGreaterThan(1)
+        for (const c of f.calls) {
+          expect(Object.keys(c.opts.env).filter((k) => gone.test(k) && !(k === 'GIT_TRACE_REDACT' && run === TOKEN_RUN))).toEqual([])
+          // The person's own home (where git finds ~/.gitconfig and its login helper) and the no-system switch stay.
+          expect(c.opts.env).toMatchObject({ PATH: 'p', HOME: '/h', GIT_CONFIG_NOSYSTEM: '1' })
+        }
+      }
+    }
   })
 
   it('a token is only ever sent over https: any other address is refused before git runs', async () => {

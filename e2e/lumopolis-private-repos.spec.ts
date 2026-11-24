@@ -2,9 +2,10 @@
  * Lumopolis private repositories in the real app, against a local git server that wants a sign-in
  * (tests/fixtures/gitHttps/server.ts: https on 127.0.0.1, Basic auth checked in Node, then
  * `git http-backend`). The app's git trusts the server's self-signed certificate through
- * GIT_SSL_CAINFO, reads no system git config (GIT_CONFIG_NOSYSTEM=1) and a temporary global one
- * (GIT_CONFIG_GLOBAL), which either names tests/fixtures/gitHttps/fake-helper.sh as the login helper
- * or names nothing. No login helper of the computer the test runs on is ever involved, and nothing
+ * GIT_SSL_CAINFO, reads no system git config (GIT_CONFIG_NOSYSTEM=1) and a temporary global one (git's XDG
+ * config under a temporary XDG_CONFIG_HOME, since the app's Lumopolis git leaves an inherited
+ * GIT_CONFIG_GLOBAL out; on Windows HOME, which there moves only git's home, is an empty folder too), which
+ * either names tests/fixtures/gitHttps/fake-helper.sh as the login helper or names nothing. No login helper of the computer the test runs on is ever involved, and nothing
  * talks to any host but 127.0.0.1. The fixture's user and reply are random per run.
  *
  *   1. Sign in opens a private repository: with the fake helper, Open a git repository… meets the
@@ -40,8 +41,9 @@ test.beforeAll(async () => {
   ensureE2eBuild()
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-private-repos-'))
   server = await startGitHttps({ user, reply, dir: path.join(work, 'server') })
-  helperConfig = path.join(work, 'helper.gitconfig')
-  emptyConfig = path.join(work, 'empty.gitconfig')
+  helperConfig = path.join(work, 'home-helper', 'xdg', 'git', 'config')
+  emptyConfig = path.join(work, 'home-empty', 'xdg', 'git', 'config')
+  for (const c of [helperConfig, emptyConfig]) fs.mkdirSync(path.dirname(c), { recursive: true })
   fs.writeFileSync(helperConfig, fakeHelperConfig())
   fs.writeFileSync(emptyConfig, '')
 })
@@ -76,7 +78,8 @@ const helperEnv = (extra: Record<string, string> = {}): Record<string, string> =
 })
 
 /** Launches the app on `userData` with the fixture's git environment and `config` as the global git
- *  config; `extra` adds variables (the fake helper's, for a helper launch). */
+ *  config (git finds it as $XDG_CONFIG_HOME/git/config; GIT_CONFIG_GLOBAL names it too);
+ *  `extra` adds variables (the fake helper's, for a helper launch). */
 async function launch(userData: string, config: string, extra: Record<string, string> = {}): Promise<{ app: ElectronApplication; page: Page; errors: string[] }> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string' && !/^(GCM_|FAKE_HELPER_)/i.test(k)) env[k] = v
@@ -97,6 +100,8 @@ async function launch(userData: string, config: string, extra: Record<string, st
       GIT_SSL_CAINFO: server.caFile,
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: config,
+      XDG_CONFIG_HOME: path.dirname(path.dirname(config)),
+      ...(process.platform === 'win32' ? { HOME: path.dirname(path.dirname(path.dirname(config))) } : {}),
       ...extra,
     },
   })

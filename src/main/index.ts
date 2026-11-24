@@ -2757,7 +2757,7 @@ const worldRuns = createWorldRuns({
   realpath: (p) => fsPromises.realpath(p),
   exec: async (bin, args, opts) => {
     try {
-      const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024, addEnv: opts.addEnv })
+      const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024, addEnv: opts.addEnv, dropEnv: opts.dropEnv })
       return { stdout: String(out.stdout ?? ''), ...(out.error ? { error: out.error } : {}) }
     } catch (error) {
       return { stdout: '', error }

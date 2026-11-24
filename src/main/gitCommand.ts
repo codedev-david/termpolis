@@ -13,7 +13,7 @@ import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
 import { constants as fsConstants, promises as fsPromises } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path'
-import { filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan, runFilterScan, type FilterScan } from './gitSafety'
+import { filterScanArgs, guardGitArgs, guardGitDropEnv, guardGitEnv, needsFilterScan, runFilterScan, type FilterScan } from './gitSafety'
 import { PollBudgetSpent, withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps } from './gitSubmodules'
 import { OLD_GIT_MESSAGE } from './world/gitLogin'
 
@@ -68,8 +68,11 @@ async function guardedGit(args: string[], opts: GitOptions, fold: boolean, start
       cwd: opts.cwd,
       timeout: opts.timeout ?? 10000,
       maxBuffer: opts.maxBuffer ?? 1024 * 1024,
-      // GIT_NO_LAZY_FETCH for a read: a partial clone missing an object never starts a fetch (gitSafety.ts).
+      // GIT_NO_LAZY_FETCH for a read: a partial clone missing an object never starts a fetch. A read also leaves out the
+      // inherited GIT_CONFIG and the variables that move it to another repository, so it reads the config its scan
+      // read (gitSafety.ts). A write keeps the environment as it is.
       addEnv: guardGitEnv(args),
+      dropEnv: guardGitDropEnv(args),
     })
     // A status leaves each submodule's dirty state out (its own config would run); it is asked for here, one guarded
     // status per submodule, and written back in (gitSubmodules.ts). Any other command comes back as git wrote it.
@@ -123,7 +126,7 @@ async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions
   // A submodule walk counts this git against its poll's budget too, and starts nothing past it.
   if (start && !start()) throw new PollBudgetSpent()
   const value = runFilterScan(args, isWindows, (runArgs) =>
-    execOffThread(bin, runArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024, addEnv: guardGitEnv(runArgs) })
+    execOffThread(bin, runArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024, addEnv: guardGitEnv(runArgs), dropEnv: guardGitDropEnv(runArgs) })
       .catch((e: unknown) => {
         const code = (e as { code?: unknown } | null)?.code
         if (code === 1) return ''

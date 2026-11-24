@@ -24,6 +24,7 @@
 //     because gitCommand's install-location fallback keys on exactly that distinction.
 
 import { execFile, exec } from 'child_process'
+import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
 
 export interface ProcExecMsg {
@@ -49,6 +50,10 @@ export interface ProcOptions {
   /** Variables added to the child's environment (`env`, or else the runner's own), not a replacement for it: a git
    *  read adds GIT_NO_LAZY_FETCH and keeps everything else, the host's GIT_OPTIONAL_LOCKS=0 included. */
   addEnv?: Record<string, string>
+  /** Variables left out of the child's environment (`env`, or else the runner's own), by name in any case; a name
+   *  ending in `*` leaves out every variable it starts. A git read drops what would move it away from the repository
+   *  its filter scan read (gitSafety.ts guardGitDropEnv). Applied before `addEnv`. */
+  dropEnv?: readonly string[]
   /** argv form only: written to the child's stdin, which is then ended. For text that must not sit
    *  on a command line (process command lines are visible to every endpoint scanner), such as a
    *  prompt carrying repository source. Without it stdin is left as before. */
@@ -104,7 +109,7 @@ function baseOptions(opts: ProcOptions): {
     timeout: opts.timeout ?? DEFAULT_TIMEOUT,
     maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
     windowsHide: true,
-    ...(opts.env || opts.addEnv ? { env: { ...(opts.env ?? process.env), ...opts.addEnv } } : {}),
+    ...(opts.env || opts.addEnv || opts.dropEnv?.length ? { env: { ...withoutEnv(opts.env ?? process.env, opts.dropEnv ?? []), ...opts.addEnv } } : {}),
   }
 }
 

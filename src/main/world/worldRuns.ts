@@ -10,7 +10,7 @@
 // repository). Neither program runs if it lies inside the repository.
 
 import { binInside } from '../binPath'
-import { guardGitArgs, guardGitEnv } from '../gitSafety'
+import { guardGitArgs, guardGitDropEnv, guardGitEnv } from '../gitSafety'
 import type { TestRun } from './testStatus'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
@@ -48,8 +48,9 @@ export interface RunsDeps {
   gitBin: () => Promise<string | null>
   /** Resolves links, so a program reached through a junction into the repository still counts as inside it. */
   realpath: (p: string) => Promise<string>
-  /** Runs a command off the main thread, never throwing. `addEnv` is added to the child's environment. */
-  exec: (bin: string, args: string[], opts: { cwd: string; timeout: number; addEnv?: Record<string, string> }) => Promise<ExecOutcome>
+  /** Runs a command off the main thread, never throwing. `addEnv` is added to the child's environment and the variables
+   *  `dropEnv` names are left out of it (procHost.ts ProcOptions). */
+  exec: (bin: string, args: string[], opts: { cwd: string; timeout: number; addEnv?: Record<string, string>; dropEnv?: readonly string[] }) => Promise<ExecOutcome>
   now: () => number
 }
 
@@ -101,7 +102,8 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     const out = await d.exec(gitBin, guardGitArgs(args, process.platform === 'win32'), {
       cwd: root,
       timeout: GIT_TIMEOUT_MS,
-      addEnv: guardGitEnv(args)
+      addEnv: guardGitEnv(args),
+      dropEnv: guardGitDropEnv(args)
     })
     return out.error ? null : out.stdout.trim()
   }

@@ -21,7 +21,7 @@
 //
 // This runs inside the world host utilityProcess: no Electron imports (worldHostImports.test.ts).
 import type { CloneDeps } from './gitSource'
-import { safetyFlags } from '../gitSafety'
+import { INHERITED_GIT_DROP, safetyFlags, withoutEnv } from '../gitSafety'
 
 /** How one git run may log in. */
 export type LoginRun = { mode: 'none' } | { mode: 'machine'; interactive: boolean } | { mode: 'token'; value: string }
@@ -33,37 +33,23 @@ export type LoginRun = { mode: 'none' } | { mode: 'machine'; interactive: boolea
  */
 export { safetyFlags }
 
-/** Inherited variables that would point git at another repository, index, object store or config, or
- *  run a program to ask for a login, or answer the shipped askpass with a value nobody pasted. */
-export const DROPPED_ENV = [
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_CONFIG_COUNT',
-  'GIT_NAMESPACE',
-  'GIT_COMMON_DIR',
+/** Inherited variables a clone, an update or the helper check leaves out: the list every automatic git shares
+ *  (gitSafety.ts INHERITED_GIT_DROP: another repository or config, a transport program, templates, traces), and the
+ *  ones that would run a program to ask for a login or answer the shipped askpass with a value nobody pasted. A run's
+ *  own login settings are added after this (configEnv, loginEnv), so a machine login still finds the person's helper
+ *  in their own ~/.gitconfig or system config. Names are upper case; one ending in `*` is a prefix. */
+export const DROPPED_ENV: readonly string[] = Object.freeze([
+  ...INHERITED_GIT_DROP,
   'GIT_ASKPASS',
   'SSH_ASKPASS',
   'TERMPOLIS_GIT_ASKPASS_USER',
   'TERMPOLIS_GIT_ASKPASS_REPLY',
   'TERMPOLIS_GIT_ASKPASS_HOST'
-]
+])
 
-/** Inherited numbered config entries: a run sets its own, so none of the parent's may leak in beside them. */
-const DROPPED_PREFIXES = ['GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_']
-
-/** The environment a git run starts from: the given one without DROPPED_ENV or any numbered config, in any case. */
+/** The environment a git run starts from: the given one without DROPPED_ENV, in any case. */
 export function inheritedEnv(src: NodeJS.ProcessEnv): Record<string, string> {
-  const dropped = new Set(DROPPED_ENV)
-  const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(src)) {
-    const key = k.toUpperCase()
-    if (typeof v === 'string' && !dropped.has(key) && !DROPPED_PREFIXES.some((p) => key.startsWith(p))) env[k] = v
-  }
-  return env
+  return withoutEnv(src, DROPPED_ENV)
 }
 
 /** The login settings for one run. Only these four keys ever differ between modes. A token run also keeps
@@ -114,15 +100,6 @@ export function loginEnv(run: LoginRun, askpassPath?: string, host?: string): Re
     }
   }
   return env
-}
-
-/** A copy of env without any git trace or curl verbosity, in any case: GIT_TRACE and everything that starts
- *  with it (GIT_TRACE_CURL, GIT_TRACE_PACKET, GIT_TRACE2*, GIT_TRACE_REDACT, ...) and GIT_CURL_VERBOSE. A
- *  token run starts from this, so no inherited setting can write its headers anywhere. */
-export function withoutTrace(env: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(env)) if (!/^GIT_TRACE/i.test(k) && !/^GIT_CURL_VERBOSE$/i.test(k)) out[k] = v
-  return out
 }
 
 /** The first git that reads GIT_CONFIG_COUNT. */

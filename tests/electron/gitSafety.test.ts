@@ -10,6 +10,9 @@ import {
   filterScanArgs,
   gitSubcommand,
   guardGitArgs,
+  guardGitDropEnv,
+  INHERITED_GIT_DROP,
+  withoutEnv,
   guardGitEnv,
   needsFilterScan,
   nullDevice,
@@ -64,6 +67,49 @@ describe('guardGitEnv', () => {
 
   it('a write keeps lazy fetch: it runs exactly as the person’s git would', () => {
     for (const sub of MUTATING_SUBCOMMANDS) expect(guardGitEnv([sub, 'x'])).toEqual({})
+  })
+})
+
+describe('guardGitDropEnv', () => {
+  const LIST = [
+    'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_*', 'GIT_CONFIG_VALUE_*',
+    'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM',
+    'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE',
+    'GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'GIT_TRACE*', 'GIT_CURL_VERBOSE'
+  ]
+
+  it('a read leaves out the one shared list: config files and command-line config, repository-moving variables, transport programs, templates and traces', () => {
+    for (const args of [['status', '--porcelain'], ['-C', '/r', 'show', 'HEAD'], ['config', '--show-scope', '-z', '--get-regexp', '^filter\\.'], ['--version']]) {
+      expect(guardGitDropEnv(args)).toEqual(LIST)
+      expect(guardGitDropEnv(args)).toBe(INHERITED_GIT_DROP)
+    }
+    expect(Object.isFrozen(INHERITED_GIT_DROP)).toBe(true)
+  })
+
+  it('keeps GIT_CONFIG_NOSYSTEM, which only takes a file away, and every unrelated variable', () => {
+    const kept = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_KEYS: 'x', MY_GIT_TRACE: 'y', GIT_TERMINAL_PROMPT: '0', HOME: '/h', PATH: 'p' }
+    expect(withoutEnv(kept, INHERITED_GIT_DROP)).toEqual(kept)
+  })
+
+  it('a write keeps every inherited variable: it runs in the environment the person’s git would', () => {
+    for (const sub of MUTATING_SUBCOMMANDS) expect(guardGitDropEnv([sub, 'x'])).toEqual([])
+  })
+})
+
+describe('withoutEnv', () => {
+  it('drops names in any case, a trailing * as a prefix, and unset values, into a new object', () => {
+    const src: NodeJS.ProcessEnv = {
+      PATH: 'p', git_config: '/x', Git_Ssh_Command: 'evil', GIT_TRACE2_EVENT: '/e', git_trace: '1', GIT_CONFIG_KEY_0: 'a.b',
+      git_config_value_zz: 'v', GIT_TEMPLATE_DIR: '/t', GIT_CONFIG_GLOBAL: '/g', GONE: undefined, KEEP: 'k'
+    }
+    const out = withoutEnv(src, INHERITED_GIT_DROP)
+    expect(out).toEqual({ PATH: 'p', KEEP: 'k' })
+    expect(out).not.toBe(src)
+    expect(src.Git_Ssh_Command).toBe('evil')
+  })
+
+  it('with nothing to drop it is a copy without the unset values', () => {
+    expect(withoutEnv({ A: '1', B: undefined }, [])).toEqual({ A: '1' })
   })
 })
 

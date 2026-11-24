@@ -137,6 +137,29 @@ describe('runExec — argv form', () => {
     }
   })
 
+  it('leaves out the variables dropEnv names, in any case and by prefix, before addEnv, from env or its own environment', () => {
+    const drop = ['GIT_CONFIG', 'GIT_CONFIG_KEY_*', 'GIT_DIR']
+    void runExec('git', [], { env: { PATH: '/usr/bin', git_config: '/x', GIT_CONFIG_KEY_0: 'a.b', GIT_CONFIG_GLOBAL: '/g', Git_Dir: '/d' }, dropEnv: drop, addEnv: { GIT_NO_LAZY_FETCH: '1' } })
+    expect(lastExecFileOpts().env).toEqual({ PATH: '/usr/bin', GIT_CONFIG_GLOBAL: '/g', GIT_NO_LAZY_FETCH: '1' })
+    process.env.TP_PROC_HOST_DROP_ME = 'gone'
+    process.env.TP_PROC_HOST_KEEP = 'kept'
+    try {
+      void runExec('git', [], { dropEnv: ['tp_proc_host_drop_*'] })
+      expect(lastExecFileOpts().env).toMatchObject({ TP_PROC_HOST_KEEP: 'kept' })
+      expect('TP_PROC_HOST_DROP_ME' in lastExecFileOpts().env).toBe(false)
+      void runShell('git status', { dropEnv: ['TP_PROC_HOST_DROP_ME'] })
+      expect('TP_PROC_HOST_DROP_ME' in lastExecOpts().env).toBe(false)
+    } finally {
+      delete process.env.TP_PROC_HOST_DROP_ME
+      delete process.env.TP_PROC_HOST_KEEP
+    }
+  })
+
+  it('an empty dropEnv changes nothing: no env is sent', () => {
+    void runExec('git', [], { dropEnv: [] })
+    expect('env' in lastExecFileOpts()).toBe(false)
+  })
+
   it('coerces a null/undefined stream to the empty string, so callers never see null', async () => {
     H.execFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: ExecFileCb) =>
       cb(null, null as unknown as string, undefined as unknown as string))
