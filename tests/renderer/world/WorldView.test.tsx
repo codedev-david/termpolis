@@ -6,7 +6,7 @@ import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
 import { minimal, rich } from './helpers'
 
 // The engine is real except the two things jsdom cannot do: a WebGL probe and a WebGL viewer.
-const h = vi.hoisted(() => ({ webgl: true, viewers: [] as any[] }))
+const h = vi.hoisted(() => ({ webgl: true, software: false, viewers: [] as any[] }))
 vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../../src/renderer/src/world/engine')>()
   return {
@@ -29,7 +29,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
         linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
-        drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4 })),
+        drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software })),
         cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
         setCamera: vi.fn(async () => undefined),
       }
@@ -94,6 +94,7 @@ async function mount(props: Partial<{ root: string; onClose: () => void; askSlot
 
 beforeEach(() => {
   h.webgl = true
+  h.software = false
   h.viewers.length = 0
   localStorage.clear()
   vi.clearAllMocks()
@@ -1105,7 +1106,7 @@ describe('WorldView', () => {
       expect(probe().position('zz')).toBeNull()
       await probe().apply({ type: 'focus', ids: ['a'] })
       expect(viewer().apply).toHaveBeenCalledWith({ type: 'focus', ids: ['a'] })
-      expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
+      expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4, software: false })
       unmount()
       expect(probe()).toBeUndefined()
     })
@@ -2596,6 +2597,23 @@ describe('WorldView on a big monitor', () => {
 
 describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2D map, a hidden window', () => {
   const notice = () => screen.queryByTestId('world-notice')
+
+  it('a map drawn in software gets a solid card and legend, as the viewer says when made and when its graphics come back', async () => {
+    h.software = true
+    bridge()
+    await mount()
+    const v = viewer()
+    act(() => v.opts.renderCard('<h3>Store</h3>'))
+    expect(screen.getByTestId('world-card')).toHaveAttribute('data-solid', '')
+    expect(screen.getByTestId('world-legend').style.backdropFilter).toBe('none')
+    // The context comes back on a GPU: glass again.
+    act(() => { v.opts.onGraphics('lost') })
+    h.software = false
+    act(() => { v.opts.onGraphics('restored') })
+    act(() => v.opts.renderCard('<h3>Store</h3>'))
+    expect(screen.getByTestId('world-card')).not.toHaveAttribute('data-solid')
+    expect(screen.getByTestId('world-legend').style.backdropFilter).toBe('blur(10px)')
+  })
 
   it('a first loss shows a notice until the graphics come back; a second shows the 2D map for good', async () => {
     bridge()

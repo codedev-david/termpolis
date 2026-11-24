@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { rightInset } from '../../../src/renderer/src/world/engine/viewMath'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import { WorldLegend, LEGEND_ASIDE_PX, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveFrom, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
-import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
+import { SOLID_PANEL, WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { edge, minimal, rich } from './helpers'
 
@@ -53,6 +53,15 @@ describe('the legend state', () => {
     expect(legendMaxHeight(212.4)).toBe('calc(100% - 225px)') // 12 of top gap + the bar's reserve, rounded up
     render(<WorldLegend doc={minimal()} processes={false} open onToggle={() => {}} bottom={300} />)
     expect(screen.getByTestId('world-legend').style.maxHeight).toBe('calc(100% - 312px)')
+  })
+  it('is glass over a map a GPU draws, and solid with no backdrop blur over one drawn in software', () => {
+    const { rerender } = render(<WorldLegend doc={minimal()} processes={false} open onToggle={() => {}} />)
+    const panel = screen.getByTestId('world-legend')
+    expect(panel.style.backdropFilter).toBe('blur(10px)')
+    rerender(<WorldLegend doc={minimal()} processes={false} open onToggle={() => {}} solid />)
+    expect(panel.style.backdropFilter).toBe('none')
+    expect(panel.style.background).toBe('rgba(8, 12, 22, 0.94)') // SOLID_PANEL, as the style reads it back
+    expect(SOLID_PANEL).toBe('rgba(8,12,22,.94)')
   })
   it('a collapsed legend is a chip as wide as its reserve says', () => {
     render(<Legend doc={minimal()} processes={false} start={false} />)

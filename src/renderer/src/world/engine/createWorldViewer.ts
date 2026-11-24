@@ -135,6 +135,13 @@ export interface WorldDrawn {
   drawCalls: number
   /** Frames drawn since the 3D map was made: frames are drawn only while something moves (0 in 2D). */
   frames: number
+  /**
+   * The 3D map is drawn in software: no GPU draws it (a virtual machine, a remote session, a blocked driver), so the
+   * page is composited by the CPU too (false in 2D). A host then draws its panels over the map opaque rather than
+   * blurring what lies behind them: the blur is drawn again whenever anything on the page changes, and in software
+   * that takes every core while it lasts.
+   */
+  software: boolean
   /** Buildings in the world (drawn or under their slabs), districts, and slabs drawn now (the districts tier; 0 in 2D). */
   buildings: number
   districts: number
@@ -940,7 +947,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()

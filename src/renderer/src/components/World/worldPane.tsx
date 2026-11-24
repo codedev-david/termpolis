@@ -83,6 +83,14 @@ export function cardReserve(width: number, height: number): [number, number] {
 
 /** The card's width (WorldCard). */
 export const CARD_WIDTH_PX = 330
+
+/**
+ * The fill of a panel over a map drawn in software, the card's and the legend's: nearly opaque, with no backdrop blur.
+ * In software the compositor draws the blur again on every frame in which anything on the page changes (a pulsing
+ * status, a hover, the map's own looping motions), and that blur alone kept a 4-core machine at 100%.
+ */
+export const SOLID_PANEL = 'rgba(8,12,22,.94)'
+
 /** The least room the city keeps beside or below the card: viewMath's MIN_FREE_PX, kept equal by a test. */
 export const CARD_MIN_FREE_PX = 120
 /**

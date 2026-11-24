@@ -4,6 +4,7 @@
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
 import { createThreeRenderer, sameLayout, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { SOFTWARE_LOOP_MS } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
@@ -262,6 +263,107 @@ describe('threeRenderer frames on demand', () => {
     // The next frame draws the risen buildings and refills their batches.
     settle(h.frames)
     expect(h.frames.pending()).toBe(0)
+    r.dispose()
+  })
+})
+
+const SWIFTSHADER = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+const GEFORCE = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'
+
+// Drawn in software (SwiftShader where the GPU is blocklisted or missing, a VM, a remote desktop, the CI runners), a
+// city whose looping motions are drawn at the screen's rate takes every core the machine has for as long as it is
+// open: an Ask's hidden agent then took seconds to start (world-ask 6b ran out of its 30 s). The looping motions alone
+// are drawn every SOFTWARE_LOOP_MS there; a change, and every motion that ends, is still drawn on the next frame.
+describe('threeRenderer drawn in software', () => {
+  /** Frames drawn over `ms` of 16 ms frames. */
+  const drawnOver = (r: ThreeRenderer, ms: number): number => {
+    const n = frames(r)
+    h.frames.run(Math.round(ms / 16))
+    return frames(r) - n
+  }
+
+  it('draws the looping motions alone every SOFTWARE_LOOP_MS, at their own speed, and never sleeps', () => {
+    gpu.gpuName = SWIFTSHADER
+    const r = idle(DEFAULT_OPTS) // the opening turn, the dust, the rings, the packets: they never stop
+    const before = r.motionState().ringAngle
+    const drawn = drawnOver(r, 1600) // 100 frames of the screen's
+    // The first frame at least SOFTWARE_LOOP_MS after the last: 112 ms apart in 16 ms frames.
+    expect(drawn).toBeGreaterThanOrEqual(Math.floor(1600 / (SOFTWARE_LOOP_MS + 16)))
+    expect(drawn).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    expect(h.frames.pending()).toBe(1)
+    // Each frame drawn takes the time since the last one: the ring turns as far as it does at 60 frames a second.
+    const after = r.motionState().ringAngle
+    expect(before).not.toBe(0)
+    expect(after - before).toBeCloseTo(1.6 * 0.8, 1)
+    r.dispose()
+  })
+
+  it('a GPU, or a name it cannot tell, still draws the looping motions every frame', () => {
+    for (const name of [GEFORCE, null]) {
+      gpu.gpuName = name
+      const r = idle(DEFAULT_OPTS)
+      expect(drawnOver(r, 480), String(name)).toBe(30)
+      r.dispose()
+    }
+  })
+
+  it("a change is drawn on the next frame, not held back to the loop's pace", () => {
+    gpu.gpuName = SWIFTSHADER
+    const r = idle(DEFAULT_OPTS)
+    h.frames.run(3) // just after a looping frame: the next one is SOFTWARE_LOOP_MS away
+    const n = frames(r)
+    r.setHovered('a')
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    // Then the loop's pace again.
+    expect(drawnOver(r, 48)).toBe(0)
+    r.dispose()
+  })
+
+  it('a motion that ends (a flight) is drawn every frame until it lands, then the looping motions alone again', async () => {
+    gpu.gpuName = SWIFTSHADER
+    const r = idle(DEFAULT_OPTS)
+    let landed = false
+    void r.flyTo({ pos: [10, 50, 60], target: [0, 0, 0] }).then(() => { landed = true })
+    expect(drawnOver(r, 160)).toBe(10)
+    let n = 0
+    while (!landed && n++ < 600) { h.frames.step(); await Promise.resolve() }
+    expect(landed).toBe(true)
+    h.frames.run(20) // the settling frames
+    expect(drawnOver(r, 1600)).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    r.dispose()
+  })
+
+  it("the opening turn alone loops (at the loop's pace in software); ended, a calm city sleeps", () => {
+    // Low quality has no dust, and this city has no lines, rings, fog or pulses: only the turn moves.
+    for (const [name, every] of [[SWIFTSHADER, false], [GEFORCE, true]] as const) {
+      gpu.gpuName = name
+      const r = idle({ quality: 'low', reducedMotion: false }, still())
+      const turn = drawnOver(r, 1600)
+      if (every) expect(turn).toBe(100)
+      else expect(turn).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+      void r.overview(true) // a flight ends the turn
+      expect(settle(h.frames)).toBeLessThan(60)
+      expect(drawnOver(r, 1600)).toBe(0)
+      r.dispose()
+      h.host.remove()
+      h.host = makeHost(800, 600)
+    }
+  })
+
+  it('reads the name as RENDERER where the unmasked one is not given, and again when a lost context comes back', () => {
+    gpu.gpuName = SWIFTSHADER
+    gpu.debugInfo = false
+    const r = idle(DEFAULT_OPTS)
+    expect(r.drawnCounts().software).toBe(true) // the host draws its panels over the map opaque (WorldView)
+    expect(drawnOver(r, 1600)).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    // Back on a GPU (a driver came back): every frame again.
+    r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    gpu.gpuName = GEFORCE
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(r.drawnCounts().software).toBe(false)
+    h.frames.run(5)
+    expect(drawnOver(r, 480)).toBe(30)
     r.dispose()
   })
 })

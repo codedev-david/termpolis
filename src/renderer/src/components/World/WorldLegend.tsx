@@ -5,7 +5,7 @@
 // Layout and colours are inline styles so the panel looks the same whatever CSS the build ships.
 import type { CSSProperties } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
-import { useUiZoom } from './worldPane'
+import { SOLID_PANEL, useUiZoom } from './worldPane'
 
 export interface WorldLegendProps {
   doc: WorldDoc
@@ -16,6 +16,8 @@ export interface WorldLegendProps {
   onToggle(): void
   /** The ask bar's reserve at the stage's foot, in the legend's own pixels: an expanded legend stops above it and scrolls. */
   bottom?: number
+  /** The map is drawn in software (WorldDrawn.software): the legend is opaque, with no blur of the map behind it (SOLID_PANEL). */
+  solid?: boolean
 }
 
 const EDGE = 12
@@ -117,12 +119,12 @@ function CargoShape({ shape, color }: { shape: 'cube' | 'sphere' | 'octa' | 'tet
   )
 }
 
-export function WorldLegend({ doc, processes, open, onToggle, bottom = 0 }: WorldLegendProps): JSX.Element {
+export function WorldLegend({ doc, processes, open, onToggle, bottom = 0, solid = false }: WorldLegendProps): JSX.Element {
   const zoom = useUiZoom()
   const { shown: cargo, more } = busiestCargo(doc)
   const procs = usedKeys(doc.processes, new Set(doc.buildings.map((b) => b.process)))
   return (
-    <section aria-label="Lumopolis legend" data-testid="world-legend" style={{ ...PANEL, maxHeight: legendMaxHeight(bottom), ...(open ? {} : { width: CHIP_WIDTH, padding: '8px 12px', boxSizing: 'border-box' }), ...zoom }}>
+    <section aria-label="Lumopolis legend" data-testid="world-legend" style={{ ...PANEL, ...(solid ? { background: SOLID_PANEL, backdropFilter: 'none' } : {}), maxHeight: legendMaxHeight(bottom), ...(open ? {} : { width: CHIP_WIDTH, padding: '8px 12px', boxSizing: 'border-box' }), ...zoom }}>
       <button
         type="button"
         data-testid="world-legend-toggle"
