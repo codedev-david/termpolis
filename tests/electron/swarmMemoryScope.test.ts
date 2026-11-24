@@ -171,12 +171,24 @@ describe('WP5: keys that keep the case on Linux, and short Git Bash spellings (r
     }
   })
 
+  // Both folders exist on disk: with no folder at the lowercased spelling, that spelling's key is this folder's own key from
+  // before WP5 (fix I1, the test above), so a note filed under it rightly matches `Repo`. Two real folders are two projects.
   it.runIf(process.platform === 'linux')('Linux: two folders that differ only in case keep their notes apart', async () => {
-    initSwarmMemory(dir)
-    const upper = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes upper', project: '/srv/x/Repo' })
-    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes lower', project: '/srv/x/repo' })
-    expect(upper.projectKey).toBe(sha('/srv/x/Repo'))
-    expect(ids(await memorySearch({ query: 'tapir notes', project: '/srv/x/Repo', strictProject: true, limit: 5 }))).toEqual([upper.id])
+    const upperDir = path.join(dir, 'Repo')
+    const lowerDir = upperDir.toLowerCase() // the whole path, so it is the very spelling the key before WP5 was made from
+    fs.mkdirSync(upperDir)
+    const made = fs.mkdirSync(lowerDir, { recursive: true }) as string
+    try {
+      initSwarmMemory(dir)
+      const upper = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes upper', project: upperDir })
+      const lower = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes lower', project: lowerDir })
+      expect(upper.projectKey).toBe(sha(upperDir))
+      expect(lower.projectKey).toBe(sha(lowerDir))
+      expect(ids(await memorySearch({ query: 'tapir notes', project: upperDir, strictProject: true, limit: 5 }))).toEqual([upper.id])
+      expect(ids(await memorySearch({ query: 'tapir notes', project: lowerDir, strictProject: true, limit: 5 }))).toEqual([lower.id])
+    } finally {
+      fs.rmSync(made, { recursive: true, force: true })
+    }
   })
 
   it.runIf(process.platform === 'win32')('Windows: a Git Bash short spelling is read as the long folder, and a note keyed by the short spelling keeps matching', async () => {
