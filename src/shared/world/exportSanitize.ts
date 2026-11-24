@@ -22,11 +22,16 @@
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms, and a drive written the Git Bash or Cygwin way, `/c/...` or
 // `/cygdrive/c/...`), so a folder name holding a space never splits.
+// Another account's path is found by the definition alone, so it is missed when a line break splits it, after
+// `<`, `|`, `+`, `@`, `&` or `*`, as a forward-slash UNC path (`//host/share`) or inside another scheme's URL
+// (`vscode://file/home/<other>`), and it ends at a space in its folder name (`/home/Ann Lee/x`).
 //
-// Known limits (ruled acceptable): a percent-encoded path outside a file URL; a path split by a line break; a
-// path right after `<`, `|`, `+`, `@`, `&` or `*`; a forward-slash UNC path (`//host/share`); another scheme's
-// URL holding a path (`vscode://file/home/<other>`); and a space in another account's folder name (only this
-// machine's own folders are matched whole, so `/home/Ann Lee/x` ends at the space).
+// Known limits (ruled acceptable): a POSIX path field written `.\home\<account>\x` keeps its words (text gives
+// `.<outside the project>/x`); a path field whose last name equals the account becomes a bare
+// `<outside the project>` even when the folder is unrelated (`/usr/local/bin/node` with home `/home/node`); on a
+// volume without hard links (FAT, exFAT, some shares) a kill during the export can leave an empty file at the
+// claimed name (main/world/export.ts); and a UNC path right after a colon (`cwd:\\host\home\<account>`) loses the
+// letter before the colon (`cw<outside the project>`), though nothing of it shows.
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
