@@ -508,6 +508,28 @@ describe('threeRenderer line framing', () => {
     r.dispose()
   })
 
+  it('a line whose end shows only through a gap in the towers round it is framed through the gap, both ends clickable (CI: server -> api-foo.com)', async () => {
+    // Towers 8 out round p every 22.5 degrees, taller than any lift sees over, with one gap left open on the side away
+    // from q: straight across the line p is hidden at every lift and distance, and only a look turned -45 degrees
+    // comes through the gap. The clicks spent stepping back along the first look, which hides p from every distance,
+    // once used up the whole budget before the camera ever turned, and the close-up showed q beside a p no click
+    // could reach (world-visual's server -> api-foo.com in this repository's own world).
+    const walls = Array.from({ length: 16 }, (_, k) => k).filter((k) => k < 5 || k > 7)
+      .map((k) => bldg(`w${k}`, [8 * Math.cos((k * Math.PI) / 8), 0, 8 * Math.sin((k * Math.PI) / 8)], { floors: 10, height: 200 }))
+    const r = drawn({
+      districts: [district('d1', [0, 0, 0], 40)],
+      buildings: [bldg('p', [0, 0, 0]), bldg('q', [30, 0, 0]), ...walls],
+      conduits: [conduit('e', [0, 0, 0], [30, 0, 0])],
+      orbs: [],
+    })
+    r.setSelected('e')
+    await r.frame(['e'], true)
+    h.frames.step()
+    expect(r.screenPoint('q')).not.toBeNull()
+    expect(r.screenPoint('p')).not.toBeNull()
+    r.dispose()
+  })
+
   it('an upright line (its ends one above the other) is framed from the camera\'s side; a line to an orb, from either side', async () => {
     const m = smallCity()
     m.conduits.push(conduit('v', [-30, 0, 30], [-30, 20, 30]))

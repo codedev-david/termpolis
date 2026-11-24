@@ -211,8 +211,9 @@ const LINE_BACKS = [1, 1.4, 1.9]
 const LINE_CLEAR = 0.45
 /**
  * When no near, clear view of a line shows both its ends, the close-up looks again from more sides
- * (LINE_TURNS degrees off straight across the line), lower as well as higher (LINE_WIDE_LIFTS), and
- * further out (each LINE_BACK_STEP times the last, up to the controls' reach) until both ends show.
+ * (LINE_TURNS degrees off straight across the line), lower as well as higher (LINE_WIDE_LIFTS, each
+ * from every side before the next), and further out (each LINE_BACK_STEP times the last, up to the
+ * controls' reach, while no end is hidden behind something) until both ends show.
  */
 const LINE_TURNS = [0, 180, 45, -45, 135, -135]
 const LINE_WIDE_LIFTS = [0.45, ...LINE_LIFTS]
@@ -1598,9 +1599,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * How many of `ends` show nowhere from `eye` looking at `target`, with the card open. An end shows
    * where one of its probe points (probePoints) lies END_INSET_PX or more inside the part of the
    * view the panels leave free, and a click there picks that end (rayHit), not a tower or a line in
-   * front of it: the promise of a line's close-up, both ends in view beside the card.
+   * front of it: the promise of a line's close-up, both ends in view beside the card. `why.blocked` tells whether an
+   * end was hidden by what stands in front of it (it lies in the free area, but no click there picks it).
    */
-  function endsHidden(ends: NodeRec[], eye: THREE.Vector3, target: THREE.Vector3): number {
+  function endsHidden(ends: NodeRec[], eye: THREE.Vector3, target: THREE.Vector3, why?: { blocked: boolean }): number {
     const a = areaFor(true)
     lens(scout, a)
     scout.position.copy(eye)
@@ -1622,6 +1624,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       })
       if (!shows) hidden++
     })
+    if (why) why.blocked = hidden > 0
     return hidden
   }
 
@@ -1710,8 +1713,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     let bestShot: Shot | null = null
     let bestScore = Infinity
     rays.left = LINE_RAY_BUDGET
-    wide: for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
-      for (const lift of LINE_WIDE_LIFTS) {
+    const why = { blocked: false }
+    // Every side at one lift before climbing to the next: a tower in front of an end from one side
+    // stays in front of it from higher up on that side, while a turn moves it out of the way.
+    const turns = turnAcross([h.x, h.z], LINE_TURNS)
+    wide: for (const lift of LINE_WIDE_LIFTS) {
+      for (const [x, z] of turns) {
         const dir = new THREE.Vector3(x, lift, z).normalize()
         const fit = lineFit(dir)
         const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
@@ -1719,12 +1726,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
           const eye = target.clone().addScaledVector(dir, dist)
           // Clear of every roof, as in the near search: an eye grazing a roof whites the picture out.
           if (insideAny(eye) || !clearOf(eye, target, e)) continue
-          const hidden = endsHidden(ends, eye, target)
+          const hidden = endsHidden(ends, eye, target, why)
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
           if (midSeen) return { pos: eye, target }
           const score = hidden === 0 ? 0.5 : hidden
           if (score < bestScore) { bestShot = { pos: eye, target }; bestScore = score }
           if (rays.left <= 0) break wide
+          // An end hidden behind a tower or a line near it stays behind it further out along the same look: the
+          // clicks left go to the next side instead (spent stepping back, none were left to turn the camera).
+          if (why.blocked) break
         }
       }
     }
