@@ -518,10 +518,20 @@ export const SOFTWARE_LOOP_MS = 100
 export const SOFTWARE_LOOP_SHARE = 0.25
 
 /**
- * The longest time between two looping frames in software, however long one took: the motions still move twice a
- * second, and a frame whose fence never comes is drawn this long after the last.
+ * The longest time between two looping frames in software, however long one took once the GPU has finished it: the
+ * motions still move twice a second.
  */
 export const SOFTWARE_LOOP_MAX_MS = 500
+
+/**
+ * Drawn in software, no frame (a change's or the looping motions') is drawn while the GPU is still drawing the last
+ * one, its fence not yet signalled: a frame drawn then shows nothing sooner, it only waits behind the last in the GPU
+ * process. Each frame drawn while one was still being drawn added to that wait: on the Linux runners (world-responsive)
+ * a single draw call blocked the page for up to 18 s, every call into the page waited as long (screenshots, clicks),
+ * and Chromium's GPU watchdog ended the process (exit code 512; after two losses the map stays in 2D). A fence that is not signalled this long
+ * after its frame no longer holds the next one back, so a fence that never comes stops nothing.
+ */
+export const SOFTWARE_FENCE_MAX_MS = 10_000
 
 /** The longest frame step drawn in software: the longest wait between looping frames, and a spike's MAX_FRAME_DT. */
 export const SOFTWARE_FRAME_DT = SOFTWARE_LOOP_MAX_MS / 1000 + MAX_FRAME_DT
