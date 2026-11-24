@@ -235,6 +235,20 @@ describe('2D fallback: apply()', () => {
     expect(viewer.getSelection()).toEqual(['x1'])
   })
 
+  it('a reset during a tour ends it: its caption goes and no later stop is drawn', async () => {
+    vi.useFakeTimers()
+    const { viewer, cards } = setup({ reducedMotion: true })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cards[cards.length - 1]).toBe('<p class="tour-caption">one</p>')
+    const n = cards.length
+    await viewer.apply({ type: 'reset' })
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 6)
+    expect(cards.slice(n)).toEqual([null]) // taken down once, and no caption came back
+    await done
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('draftProposal redraws with the proposal; an unknown proposal is ignored', async () => {
     const { viewer, host } = setup({ reducedMotion: true })
     const marker = host.querySelector('section.world-fallback')
@@ -590,6 +604,26 @@ describe('WebGL path (stand-in renderer)', () => {
     at('click')
     expect(sels.pop()).toBeNull()
     expect(lastCard()).toBeNull()
+  })
+
+  it('an empty click during a tour ends it: its flight stops, its caption and highlight go, and no later stop is drawn', async () => {
+    vi.useFakeTimers()
+    const { r, aim, at, viewer, cards } = setup3d()
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cards[cards.length - 1]).toBe('<p class="tour-caption">one</p>')
+    const n = cards.length
+    const frames = r.frame.mock.calls.length
+    aim(null)
+    at('pointerdown'); at('click')
+    expect(r.stopFlight).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 6)
+    expect(cards.slice(n)).toEqual([null])
+    expect(r.frame.mock.calls.length).toBe(frames) // the second stop never flew
+    expect(r.setFocus).toHaveBeenLastCalledWith(null)
+    expect(viewer.drawn().highlighted).toEqual([])
+    await done
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('a double-click on the 3D view, or on a name drawn over it, never selects page text; a first press and the 2D list keep the default (film bug 5)', () => {

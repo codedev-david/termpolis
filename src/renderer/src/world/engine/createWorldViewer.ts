@@ -428,6 +428,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   function deselect(): void {
+    // Clearing the choice (an empty click, a reset) ends a tour under way too, as a choice does: the card and the
+    // highlight are taken down just below, so the tour's end leaves them to that.
+    tourCard = false
+    tourLit = false
+    endTour()
     const had = selection !== null
     selection = null
     renderCard(null)
