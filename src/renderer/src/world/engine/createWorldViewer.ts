@@ -6,6 +6,7 @@
 import { diffSummary, diffWorlds, riseIds } from '../../../../shared/world/diff'
 import { edgeSummary } from '../../../../shared/world/edgeText'
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
+import { hasHardwareWebgl } from '../../lib/webglSupport'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
 import { focusHolds } from './batching'
 import { createChangeToast } from './changeToast'
@@ -280,7 +281,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const before = new Set(Array.from(container.children))
     try {
       r3 = createThreeRenderer(container, {
-        quality: opts.quality ?? 'high',
+        quality: opts.quality ?? (hasHardwareWebgl() ? 'high' : 'low'),
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
         onContextLost: () => { if (++losses === 1) graphics('lost'); else dropToFlat() },
