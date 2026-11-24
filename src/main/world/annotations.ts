@@ -11,7 +11,7 @@ import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
 import { copyClaims } from './idMigration'
-import { moveAside, retryLocked, type Sleep } from './storeFiles'
+import { copyAside, moveAside, retryLocked, type Sleep } from './storeFiles'
 import { WorldReadError, type WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
@@ -204,13 +204,22 @@ async function readAlias(file: string, sleep: Sleep): Promise<Record<string, Cla
   }
 }
 
-/** The new key's own claims, or null when its file cannot be read or does not parse (then nothing is written over it). */
-async function readOwn(file: string, sleep: Sleep): Promise<Record<string, Claim[]> | null> {
+/** N1: whether writing `cleaned` back would lose part of what the file held (`parsed`). A file this version wrote reads back
+ *  the same; anything this version does not read (an evidence kind or claim state it does not know, a field or shape of a
+ *  later version, past a cap) makes it differ. */
+const loses = (cleaned: Record<string, Claim[]>, parsed: unknown): boolean => JSON.stringify(cleaned) !== JSON.stringify(parsed)
+
+/** The new key's own claims, or null when its file cannot be read, does not parse, or holds notes this version cannot read
+ *  that could not be backed up first (then nothing is written over it). */
+async function readOwn(file: string, sleep: Sleep, now: () => number): Promise<Record<string, Claim[]> | null> {
+  let parsed: unknown
   try {
-    return cleanFile(JSON.parse(await retryLocked(() => readFile(file, 'utf8'), sleep)))
+    parsed = JSON.parse(await retryLocked(() => readFile(file, 'utf8'), sleep))
   } catch {
     return null
   }
+  const claims = cleanFile(parsed)
+  return loses(claims, parsed) && !(await copyAside(file, { now, sleep })) ? null : claims
 }
 
 /** The older keys still to adopt, or null when nothing is pending (no marker, or one that cannot be read now). */
@@ -247,10 +256,11 @@ async function keepPending(file: string, keys: string[]): Promise<void> {
  * the new key has a file of its own: its claims then go in before the new key's own (which are newer), nothing of the new
  * key's file is lost, and the record goes once nothing is left to try. A new key's file that cannot be read keeps the record.
  */
-export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep } = {}): Promise<string[]> {
+export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
   if (!key || others.length === 0) return []
   const sleep = deps.sleep ?? pause
+  const now = deps.now ?? Date.now
   const target = annotationsFileOf(dir, key)
   const pendingFile = `${target}${ADOPT_PENDING_SUFFIX}`
   const exists = (f: string): Promise<boolean> => access(f).then(() => true, () => false)
@@ -279,8 +289,8 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
           await keepPending(pendingFile, unread)
           return []
         }
-        own = await readOwn(target, sleep)
-        if (!own) return [] // the record stays, so a later open tries again
+        own = await readOwn(target, sleep, now)
+        if (!own) return [] // the record stays, so a later open tries again (a held-back merge never loses the new key's notes)
       }
       if (found.length > 0) {
         const merged: Record<string, Claim[]> = Object.create(null)
@@ -346,7 +356,15 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
       console.warn("[world annotations] a world's annotations do not parse and could not be moved aside, so nothing was added")
       throw new WorldReadError('ANNOTATIONS_READ_FAILED')
     }
-    return cleanFile(parsed)
+    const cleaned = cleanFile(parsed)
+    // N1: the write after this keeps only what this version reads. A file holding more (an evidence kind or claim state it
+    // does not know, a field or shape of a later version, past a cap) goes into the backups first, untouched (once per
+    // distinct content); without that backup the add is refused. A file this version wrote reads back the same.
+    if (loses(cleaned, parsed) && !(await copyAside(file, { now, sleep }))) {
+      console.warn("[world annotations] a world's annotations hold notes this version cannot read and could not be backed up, so nothing was added")
+      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
+    }
+    return cleaned
   }
 
   return {

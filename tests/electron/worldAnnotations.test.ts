@@ -164,6 +164,60 @@ describe('annotation store', () => {
     }
   })
 
+  describe('a file that parses but holds notes this version cannot read is backed up before an add (N1)', () => {
+    const at = Date.UTC(2026, 10, 23, 1, 2, 3, 4)
+    const backup = (): string => `${fileFor('k')}.2026-11-23T01-02-03-004Z-1.bad`
+    const older = (over: Record<string, unknown>): Record<string, unknown> => ({ text: 'made by a person', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }], ...over })
+    const cases: Array<[string, unknown]> = [
+      ['an unknown evidence kind', { b1: [older({ evidence: [{ kind: 'review', ref: 'a later kind' }] })] }],
+      ['an unknown claim state', { b1: [older({ state: 'disputed' })] }],
+      ['another top-level shape', { version: 2, items: { b1: [older({})] } }],
+    ]
+    for (const [what, onDisk] of cases) {
+      it(`${what}: the file as it was goes to a numbered backup, then the add lands`, async () => {
+        const store = createAnnotationStore(dir, { now: () => at })
+        await mkdir(folder(), { recursive: true })
+        const bytes = JSON.stringify(onDisk)
+        await writeFile(fileFor('k'), bytes, 'utf8')
+        await store.add('k', 'b2', person('fresh'))
+        expect(await readFile(backup(), 'utf8')).toBe(bytes)
+        expect((await store.list('k')).b2).toEqual([person('fresh')])
+        // the file is clean now: a second add makes no second backup
+        await store.add('k', 'b2', person('again'))
+        expect((await readdir(folder())).filter((f) => f.endsWith('.bad'))).toEqual([`${hashOf('k')}.json.2026-11-23T01-02-03-004Z-1.bad`])
+      })
+    }
+
+    it('a file this version reads in full makes no backup', async () => {
+      const store = createAnnotationStore(dir, { now: () => at })
+      await store.add('k', 'b1', person('first'))
+      await store.add('k', 'b1', person('second'))
+      expect((await readdir(folder())).filter((f) => f.endsWith('.bad'))).toEqual([])
+    })
+
+    it('a backup that cannot be made refuses the add and leaves the file as it was', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const file = fileFor('k')
+        const crowded = (): number => {
+          for (let n = 1; n <= CLAIM_TRIES; n++) writeFileSync(`${file}.2026-11-23T01-02-03-004Z-${n}.bad`, 'taken')
+          return at
+        }
+        const store = createAnnotationStore(dir, { now: crowded })
+        await mkdir(folder(), { recursive: true })
+        const bytes = JSON.stringify(cases[0][1])
+        await writeFile(file, bytes, 'utf8')
+        const err = await store.add('k', 'b2', person('fresh')).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(WorldReadError)
+        expect(err).toMatchObject({ code: 'ANNOTATIONS_READ_FAILED', message: WORLD_READ_FAILED })
+        expect(await readFile(file, 'utf8')).toBe(bytes)
+        expect(warn).toHaveBeenCalledWith("[world annotations] a world's annotations hold notes this version cannot read and could not be backed up, so nothing was added")
+      } finally {
+        warn.mockRestore()
+      }
+    })
+  })
+
   it('a file another program holds is read again; held through every try, the add is refused and nothing is wiped (X1)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {

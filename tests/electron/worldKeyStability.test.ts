@@ -55,7 +55,8 @@ import {
   ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
   ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX,
 } from '../../src/main/world/annotations'
-import { LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
+import { CLAIM_TRIES, LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
+import { writeFileSync } from 'node:fs'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { entityDedupHash } from '../../src/main/swarmMemory'
 import { legacyProjectKeyOf, projectKeyAliases, projectKeyOf } from '../../src/main/projectKey'
@@ -195,6 +196,28 @@ describe('adoptAnnotationAliases', () => {
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
       expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{}')
       await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it("a new key file holding notes this version cannot read is backed up before the merge writes it, or left as it was (N1)", async () => {
+      const at = Date.UTC(2026, 10, 23, 1, 2, 3, 4)
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      await mkdir(folder(), { recursive: true })
+      const later = JSON.stringify({ b2: [{ text: 'a later note', state: 'verified', evidence: [{ kind: 'review', ref: 'a later kind' }] }] })
+      await writeFile(fileFor('new-key'), later, 'utf8')
+      await writeFile(pending(), JSON.stringify(['old-key']), 'utf8')
+      // every backup name taken: the merge is held back, the file and the record stay
+      const crowded = (): number => {
+        for (let n = 1; n <= CLAIM_TRIES; n++) writeFileSync(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`, 'taken')
+        return at
+      }
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { ...quick, now: crowded })).toEqual([])
+      expect(await readFile(fileFor('new-key'), 'utf8')).toBe(later)
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      for (let n = 1; n <= CLAIM_TRIES; n++) await rm(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`)
+      // a backup can be made: it holds the file as it was, and the merge lands
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { ...quick, now: () => at })).toEqual(['old-key'])
+      expect(await readFile(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-1.bad`, 'utf8')).toBe(later)
+      expect((await createAnnotationStore(dir).list('new-key')).b1[0].text).toBe('older')
     })
 
     it('a record that cannot be written costs only the retry, and never throws', async () => {
