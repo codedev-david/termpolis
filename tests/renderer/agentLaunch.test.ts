@@ -8,7 +8,10 @@ import {
   COMMAND_DELAY_MS,
   DISMISS_MS,
   SLOW_DISMISS_MS,
+  PROMPT_POLL_MS,
+  PROMPT_WAIT_MS,
 } from '../../src/renderer/src/lib/agentLaunch'
+import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
 
 describe('agentLaunch', () => {
   beforeEach(() => {
@@ -473,6 +476,147 @@ describe('agentLaunch', () => {
       expect(write).not.toHaveBeenCalledWith('p4', expect.stringContaining('codex'))
       expect(pendingOf('p4')).toBe(false)
       expect(failedOf('p4')).toBe(true)
+    })
+  })
+  // PowerShell on macOS and Linux starts slowly, and what is typed before its line editor is up is
+  // echoed by the terminal and then read again without its Enter: the agent's line sat unsent at
+  // the prompt, and the memory pointer was pasted onto it (the macOS soak of 2026-11-23, a restored
+  // workspace). Its shell integration reports each prompt (OSC 9;9), so the launch waits for the
+  // first one before it types anything.
+  describe('a PowerShell that is still starting, off Windows', () => {
+    const PROMPT = '\x1b]9;9;/Users/me/repo\x07PS /Users/me/repo> '
+    const reads = (...outputs: string[]) => {
+      let at = 0
+      return vi.fn(async (_id: string) => ({ success: true, data: { output: outputs[Math.min(at++, outputs.length - 1)], nextOffset: 0 } }))
+    }
+    const bridge = (readTerminalBuffer: unknown) => {
+      ;(window as never as { termpolis: unknown }).termpolis = { writeToTerminal: vi.fn(), claudeTrustWorkspace: vi.fn(), readTerminalBuffer }
+    }
+    const pendingOf = (id: string) => useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending
+
+    beforeEach(() => {
+      __setPlatformForTests('darwin')
+      useTerminalStore.setState({ terminals: [{ id: 'p1', name: 'a', color: '', shellType: 'powershell', cwd: '/', fontSize: 1, theme: '', fontFamily: '', agentCommand: 'claude' }] })
+    })
+    afterEach(() => {
+      __setPlatformForTests(null)
+      delete (window as never as { termpolis?: unknown }).termpolis
+    })
+
+    it('types nothing, the flush included, until its shell has printed its first prompt', async () => {
+      const read = reads('', '', PROMPT)
+      bridge(read)
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+      expect(read).toHaveBeenCalledTimes(1)
+      expect(read).toHaveBeenCalledWith('p1')
+      await vi.advanceTimersByTimeAsync(PROMPT_POLL_MS)
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(write).not.toHaveBeenCalled()
+      // The launch gate stays shut meanwhile: the terminal holds only its shell.
+      expect(pendingOf('p1')).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(PROMPT_POLL_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r']])
+      await vi.advanceTimersByTimeAsync(COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
+      expect(pendingOf('p1')).toBe(false)
+    })
+
+    it('types on the timer as before once its prompt is already there', async () => {
+      bridge(reads(PROMPT))
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r']])
+      await vi.advanceTimersByTimeAsync(COMMAND_DELAY_MS)
+      expect(write).toHaveBeenLastCalledWith('p1', 'claude\r')
+    })
+
+    it('finds the report after whatever the profile printed first', async () => {
+      bridge(reads('Loading personal and system profiles took 812ms.\r\n\x1b]9;9;/x\x07PS /x> '))
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'codex', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'codex\r']])
+    })
+
+    it('types it anyway once PROMPT_WAIT_MS has gone by with no prompt reported (the integration off)', async () => {
+      const read = reads('')
+      bridge(read)
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS - 1)
+      expect(write).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(PROMPT_POLL_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r']])
+      await vi.advanceTimersByTimeAsync(COMMAND_DELAY_MS)
+      expect(write).toHaveBeenLastCalledWith('p1', 'claude\r')
+      const looks = read.mock.calls.length
+      await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS)
+      expect(read).toHaveBeenCalledTimes(looks) // it stops looking
+    })
+
+    it.each([
+      ['the read fails', vi.fn(async () => ({ success: false, error: 'gone' }))],
+      ['the read rejects', vi.fn(async () => { throw new Error('ipc gone') })],
+      ['the read answers nothing', vi.fn(async () => undefined)],
+    ])('types on the timer as before when %s', async (_why, read) => {
+      bridge(read)
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
+    })
+
+    it('types on the timer as before on a preload without the buffer read', async () => {
+      bridge(undefined)
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
+    })
+
+    it('waits only for the PowerShell terminal: the others in the launch go on the timer', async () => {
+      const read = reads('')
+      bridge(read)
+      const write = vi.fn()
+      launchAgents(
+        [
+          { id: 'p1', agentCommand: 'claude', shellType: 'powershell' },
+          { id: 'z1', agentCommand: 'codex', shellType: 'zsh' },
+        ],
+        { write, accounts: null },
+      )
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['z1', '\r'], ['z1', 'codex\r']])
+      expect(read.mock.calls.every((c) => c[0] === 'p1')).toBe(true)
+    })
+
+    // Windows' console keeps what is typed before PowerShell reads it, with its Enter, so its
+    // launch stays on the timer.
+    it.each([['win32'], ['']])('does not wait on platform %j', async (platform) => {
+      __setPlatformForTests(platform)
+      const read = reads('')
+      bridge(read)
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
+      expect(read).not.toHaveBeenCalled()
+    })
+
+    it('waits on Linux as on macOS', async () => {
+      __setPlatformForTests('linux')
+      bridge(reads('', PROMPT))
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+      expect(write).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(PROMPT_POLL_MS + COMMAND_DELAY_MS)
+      expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
     })
   })
 })

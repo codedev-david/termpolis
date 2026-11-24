@@ -6,6 +6,7 @@ import { useTerminalStore } from '../store/terminalStore'
 import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
 import { onUnconnectedAccount } from '../lib/accountsView'
 import { psQuote } from '../../../shared/shellQuote'
+import { atShellPrompt, terminalOutput } from '../lib/promptReport'
 
 // Auto context-primer: point a freshly-launched agent at this project's memory digest via the
 // memory_primer MCP tool, so every invocation starts already knowing prior decisions and context
@@ -42,7 +43,9 @@ import { psQuote } from '../../../shared/shellQuote'
 // of "only the shell" before the paste is put to the OS again, a little later, before it is
 // believed (ALONE_ASKS): an agent that is still starting is not on the console yet either. Once
 // the OS has said so, a later answer that cannot tell counts the same (agentGone); an OS that
-// cannot tell from the start is no reason to hold anything back.
+// cannot tell from the start is no reason to hold anything back. Where it cannot tell, the shell's
+// own prompt reports are asked instead (shellAtPrompt): a shell at its prompt with nothing
+// submitted since started no agent, and its line may hold a launch line still unsent.
 //
 // That question takes a second or two on Windows, and a person starts typing or pasting into a
 // fresh agent in that time. So the idle check is not made once, ahead of it: it is made LAST,
@@ -179,6 +182,18 @@ export async function shellAloneNow(terminalId: string): Promise<boolean | null>
   }
 }
 
+/**
+ * What the shell's own prompt reports say where the OS cannot (shellAloneNow answers null: PowerShell
+ * or Nushell on macOS and Linux, WSL, a shell it does not read): true when the terminal's last prompt
+ * report has no line break after it, so the shell sits at its prompt and nothing was submitted there
+ * since, a launch line left unsent included; false when a line went in after it; null when no report
+ * can be read (atShellPrompt, promptReport.ts).
+ */
+export async function shellAtPrompt(terminalId: string): Promise<boolean | null> {
+  const output = await terminalOutput(terminalId)
+  return output === null ? null : atShellPrompt(output)
+}
+
 /** How long to wait before asking the OS again when it says only the shell runs, and how many
  *  answers in all it takes to believe that. An agent that is still starting is not on the console
  *  yet either (a slow start on a busy Windows laptop), and that early answer reads exactly like the
@@ -193,11 +208,12 @@ export const ALONE_ASKS = 3
  * OS does not read this shell: the pointer goes in as it always did). An answer that cannot tell
  * after one that said "only the shell" (the helper timed out under load, the shell was on its way
  * out) is no better news than that one, and counts the same: a dead agent is not typed at because
- * the next question failed.
+ * the next question failed. Where the OS cannot tell, the shell's prompt reports are asked instead
+ * (shellAtPrompt): a shell at its prompt with nothing submitted since started no agent.
  */
 async function agentGone(terminalId: string, asks: number, sleep: (ms: number) => Promise<void>): Promise<boolean> {
   for (let answered = 1; ; answered++) {
-    const alone = await shellAloneNow(terminalId)
+    const alone = (await shellAloneNow(terminalId)) ?? (await shellAtPrompt(terminalId))
     if (alone === false || (alone === null && answered === 1)) return false
     if (alone === null || answered >= asks) return true
     await sleep(ALONE_RECHECK_MS)

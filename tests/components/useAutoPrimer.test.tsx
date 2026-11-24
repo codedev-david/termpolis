@@ -12,6 +12,7 @@ import {
   selfRecordsLessons,
   promptShowing,
   shellAloneNow,
+  shellAtPrompt,
   ALONE_ASKS,
   ALONE_RECHECK_MS,
   PRIMER_GATE_POLL_MS,
@@ -791,7 +792,9 @@ describe('the pointer never answers a prompt', () => {
       const read = vi.fn()
         .mockResolvedValueOnce({ success: true, data: { output: IDLE_SCREEN } })
         .mockResolvedValue({ success: true, data: { output: TRUST_SCREEN } })
-      mockApi({ readTerminalBuffer: read })
+      // The OS sees the agent running, so the screen is read only for its prompts (where the OS
+      // cannot tell, the screen's prompt reports are read too: shellAtPrompt).
+      mockApi({ readTerminalBuffer: read, terminalShellAlone: vi.fn(async () => ({ success: true, data: false })) })
       expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, async () => {})).toBe(false)
       const w = (window as any).termpolis.writeToTerminal
       expect(w).toHaveBeenCalledTimes(1) // the paste went in; the Enter did not
@@ -2323,5 +2326,127 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
     expect(isClaudeAgent({ name: 'OpenAI Codex' })).toBe(false)
     expect(isClaudeAgent(null)).toBe(false)
     expect(isClaudeAgent({})).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// Where the OS cannot say what runs in a terminal (PowerShell or Nushell on macOS and Linux, WSL,
+// a shell it does not read), the shell's own prompt reports still can: Termpolis's integration
+// writes one each time the shell shows its prompt (OSC 9;9 from PowerShell and cmd, OSC 7 from
+// bash, zsh and fish). A report with no line break after it is a shell at its prompt, whatever is
+// on its line: nothing was submitted since, so no agent was started there. That is what the macOS
+// soak of 2026-11-23 caught: a restored workspace's PowerShell held the agent's launch line unsent
+// (typed before its line editor was up), and the pointer was pasted onto it and run with it.
+// ---------------------------------------------------------------------------------------------
+describe('a shell the OS cannot read, at its prompt', () => {
+  const PS_LINE = '\x1b]9;9;/Users/runner/work\x07PS /Users/runner/work> node e2e/mocks/mock-claude.cjs'
+  const quick = async (): Promise<void> => {}
+  const silentOs = () => vi.fn(async () => ({ success: true, data: null }))
+  const screen = (output: string) => vi.fn(async () => ({ success: true, data: { output, nextOffset: output.length } }))
+  const writes = (): string[] => (window as any).termpolis.writeToTerminal.mock.calls.map((c: unknown[]) => c[1] as string)
+
+  beforeEach(() => {
+    useTerminalStore.setState({ memoryNotice: null, terminals: [] })
+  })
+
+  describe('shellAtPrompt', () => {
+    it.each([
+      ['a PowerShell prompt holding an unsent line', PS_LINE, true],
+      ['an empty PowerShell prompt', '\x1b]9;9;C:\\repo\x07PS C:\\repo> ', true],
+      ['a bash prompt (OSC 7)', 'hi\r\n\x1b]7;file://mac/Users/me\x07me@mac repo $ claude', true],
+      ['a prompt drawn over a few chunks, carriage returns and all', '\x1b]7;file://h/x\x1b\\\r\x1b[K$ codex', true],
+      ['a launch line that was submitted', PS_LINE + '\r\n', false],
+      ['an agent drawing after its launch line', PS_LINE + '\r\n\x1b[?1049h\x1b[H>_ OpenAI Codex', false],
+      ['the last of several prompts, once its line is in', '\x1b]9;9;/a\x07PS /a> ls\r\nx\r\n\x1b]9;9;/a\x07PS /a> codex\r\n', false],
+      ['a second prompt after a failed launch', PS_LINE + '\r\nnode: not found\r\n\x1b]9;9;/a\x07PS /a> ', true],
+    ])('reads %s', async (_what, output, expected) => {
+      mockApi({ readTerminalBuffer: screen(output) })
+      expect(await shellAtPrompt('t1')).toBe(expected)
+      expect((window as any).termpolis.readTerminalBuffer).toHaveBeenCalledWith('t1')
+    })
+
+    it.each([
+      ['no prompt was ever reported (the integration is off)', screen('PS /x> node e2e/mocks/mock-claude.cjs')],
+      ['the read fails', vi.fn(async () => ({ success: false, error: 'gone' }))],
+      ['the read answers nothing', vi.fn(async () => undefined)],
+      ['the read rejects', vi.fn(async () => { throw new Error('ipc gone') })],
+    ])('cannot tell when %s', async (_why, readTerminalBuffer) => {
+      mockApi({ readTerminalBuffer })
+      expect(await shellAtPrompt('t1')).toBeNull()
+    })
+
+    it('cannot tell on a bridge without the read, or with no bridge at all', async () => {
+      mockApi({ readTerminalBuffer: undefined })
+      expect(await shellAtPrompt('t1')).toBeNull()
+      ;(window as any).termpolis = undefined
+      expect(await shellAtPrompt('t1')).toBeNull()
+    })
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('types nothing onto a launch line left unsent at the prompt, and says nothing', async () => {
+      const readTerminalBuffer = screen(PS_LINE)
+      mockApi({ terminalShellAlone: silentOs(), readTerminalBuffer })
+      expect(await injectAutoPrimer('t1', '/Users/runner/work', false, true, quick)).toBe(false)
+      expect(writes()).toEqual([])
+      expect((window as any).termpolis.terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('waits ALONE_RECHECK_MS between its looks, as it does for the OS', async () => {
+      mockApi({ terminalShellAlone: silentOs(), readTerminalBuffer: screen(PS_LINE) })
+      const sleep = vi.fn(async () => {})
+      expect(await injectAutoPrimer('t1', '/p', false, false, sleep)).toBe(false)
+      expect(sleep.mock.calls.filter((c) => c[0] === ALONE_RECHECK_MS)).toHaveLength(ALONE_ASKS - 1)
+    })
+
+    it('points the agent at memory as before once its launch line is in', async () => {
+      mockApi({ terminalShellAlone: silentOs(), readTerminalBuffer: screen(PS_LINE + '\r\n>_ OpenAI Codex\r\n\r\n› \r\n  ? for shortcuts') })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(true)
+      const sent = writes()
+      expect(sent).toHaveLength(2)
+      expect(sent[0]).toContain('memory_primer')
+      expect(sent[1]).toBe('\r')
+    })
+
+    it('pastes as before when nothing says the shell is at its prompt (no report, the integration off)', async () => {
+      mockApi({ terminalShellAlone: silentOs() }) // IDLE_SCREEN: no prompt report in it
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(true)
+      expect(writes()).toHaveLength(2)
+    })
+
+    it('starts once the line goes in while it looks again', async () => {
+      let reads = 0
+      const readTerminalBuffer = vi.fn(async () => {
+        reads++
+        const output = reads === 1 ? PS_LINE : PS_LINE + '\r\n>_ OpenAI Codex\r\n\r\n› \r\n  ? for shortcuts'
+        return { success: true, data: { output, nextOffset: output.length } }
+      })
+      mockApi({ terminalShellAlone: silentOs(), readTerminalBuffer })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(true)
+      expect(writes()).toHaveLength(2)
+    })
+
+    it('leaves the Enter out when the pasted pointer sits on a shell prompt', async () => {
+      // The OS said something runs, then could not tell; the screen shows the paste on a prompt line.
+      let asked = 0
+      const terminalShellAlone = vi.fn(async () => ({ success: true, data: asked++ === 0 ? false : null }))
+      mockApi({ terminalShellAlone, readTerminalBuffer: screen('\x1b]9;9;/a\x07PS /a> ') })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(false)
+      const sent = writes()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]).toContain('memory_primer')
+    })
+
+    it('believes the OS over the screen: an agent the OS sees running gets the pointer', async () => {
+      mockApi({ terminalShellAlone: vi.fn(async () => ({ success: true, data: false })), readTerminalBuffer: screen(PS_LINE) })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(true)
+    })
+
+    it('believes the OS over the screen: only the shell, even after a submitted line', async () => {
+      mockApi({ terminalShellAlone: vi.fn(async () => ({ success: true, data: true })), readTerminalBuffer: screen(PS_LINE + '\r\n') })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(false)
+      expect(writes()).toEqual([])
+    })
   })
 })
