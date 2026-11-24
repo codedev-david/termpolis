@@ -296,6 +296,28 @@ describe('threeRenderer resize', () => {
     r.dispose()
   })
 
+  it('never takes the drawing buffer past the cap between its calls: a ratio coming down is set before the size, one going up after (M3)', () => {
+    const ro = withObserver()
+    vi.stubGlobal('devicePixelRatio', 2)
+    gpu.limits = { renderbuffer: 8192, texture: 16384, viewport: [16384, 4096] }
+    resizeHost(h.host, 3840, 2160)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    const over = (bufs: Array<[number, number]>): Array<[number, number]> => bufs.filter(([x, y]) => x > 8192 + 1e-6 || y > 4096 + 1e-6)
+    const steps: Array<[number, number]> = [[5120, 1440], [800, 600], [7680, 4320], [800, 600], [7680, 4320], [7000, 4320], [1000, 700]]
+    for (const [w, hh] of steps) {
+      resizeHost(h.host, w, hh)
+      ro.fire()
+      expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([w, hh])
+      expect(gpu.composers[0].sizes[gpu.composers[0].sizes.length - 1]).toEqual([w, hh])
+    }
+    expect(over(rendererOf().buffers)).toEqual([])
+    expect(over(gpu.composers[0].buffers)).toEqual([])
+    // each ends at the full ratio the last size allows
+    expect(rendererOf().getPixelRatio()).toBe(2)
+    expect(gpu.composers[0].pixelRatios[gpu.composers[0].pixelRatios.length - 1]).toBe(2)
+    r.dispose()
+  })
+
   it('keeps the drawing buffer inside the largest texture too, where that is the tightest limit (N1)', () => {
     vi.stubGlobal('devicePixelRatio', 2)
     gpu.limits = { renderbuffer: 16384, texture: 4096, viewport: [16384, 16384] }

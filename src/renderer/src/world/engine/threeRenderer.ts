@@ -438,7 +438,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   })()
   /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
   const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
-  renderer.setPixelRatio(pixelRatio())
+  /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
+  const shown = { width, height, ratio: pixelRatio() }
+  renderer.setPixelRatio(shown.ratio)
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
@@ -2164,16 +2166,32 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   })
 
   // ---------------- resize ----------------
+  const setRatio = (r: number): void => {
+    if (r === shown.ratio) return
+    shown.ratio = r
+    renderer.setPixelRatio(r)
+    composer?.setPixelRatio(r)
+  }
+  /**
+   * The drawing buffer takes the view's size at the pixel ratio for it (a bigger view may need a lower ratio to stay
+   * inside the GPU's largest buffer, a smaller one allows the full one back). Each call resizes the buffer, and none
+   * takes it past the cap even for a moment: a ratio that comes down does so before the size changes (as far as the
+   * old size needs, too), one that goes up does so after.
+   */
+  const fitBuffer = (): void => {
+    const ratio = pixelRatio()
+    setRatio(Math.min(ratio, bufferRatio(shown.ratio, shown.width, shown.height, bufferCap)))
+    shown.width = width
+    shown.height = height
+    renderer.setSize(width, height)
+    composer?.setSize(width, height)
+    setRatio(ratio)
+  }
   const resize = (): void => {
     solids = null
     ;[width, height] = size()
     applyView()
-    // A bigger view may need a lower pixel ratio to stay inside the GPU's largest buffer (or allows the full one back).
-    const ratio = pixelRatio()
-    renderer.setPixelRatio(ratio)
-    renderer.setSize(width, height)
-    composer?.setPixelRatio(ratio)
-    composer?.setSize(width, height)
+    fitBuffer()
     labelRenderer.setSize(width, height)
     panelBoxes = null
     // The city is fitted again to the new shape; a camera at the overview moves to the new one, a

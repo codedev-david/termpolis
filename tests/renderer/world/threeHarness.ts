@@ -61,6 +61,10 @@ export class FakeWebGLRenderer {
   toneMappingExposure = 1
   readonly sizes: Array<[number, number]> = []
   readonly pixelRatios: number[] = []
+  /** The drawing buffer [across, down] after each setSize or setPixelRatio (each of which sizes it, as in three.js). */
+  readonly buffers: Array<[number, number]> = []
+  private ratio = 1
+  private size: [number, number] = [300, 150]
   readonly clearColors: unknown[] = []
   readonly renders: Array<{ scene: THREE.Object3D; camera: THREE.Camera; calls: number }> = []
   transparentSort: ((a: unknown, b: unknown) => number) | null = null
@@ -73,12 +77,19 @@ export class FakeWebGLRenderer {
   }
   setSize(w: number, h: number): void {
     this.sizes.push([w, h])
+    this.size = [w, h]
+    this.buffers.push([w * this.ratio, h * this.ratio])
     this.domElement.width = w
     this.domElement.height = h
     this.domElement.style.width = `${w}px`
     this.domElement.style.height = `${h}px`
   }
-  setPixelRatio(r: number): void { this.pixelRatios.push(r) }
+  setPixelRatio(r: number): void {
+    this.pixelRatios.push(r)
+    this.ratio = r
+    this.buffers.push([this.size[0] * r, this.size[1] * r])
+  }
+  getPixelRatio(): number { return this.ratio }
   setClearColor(c: unknown): void { this.clearColors.push(c) }
   setTransparentSort(f: (a: unknown, b: unknown) => number): void { this.transparentSort = f }
   render(scene: THREE.Object3D, camera: THREE.Camera): void {
@@ -109,12 +120,26 @@ export class FakeEffectComposer {
   constructor(renderer: FakeWebGLRenderer) {
     if (gpu.failComposer) { const e = gpu.failComposer; gpu.failComposer = null; throw e }
     this.renderer = renderer
+    this.ratio = renderer.getPixelRatio()
+    this.size = renderer.sizes.length ? renderer.sizes[renderer.sizes.length - 1] : [0, 0]
     gpu.composers.push(this)
   }
   readonly pixelRatios: number[] = []
+  /** Its buffers [across, down] after each setSize or setPixelRatio; it starts at the renderer's size and ratio. */
+  readonly buffers: Array<[number, number]> = []
+  private ratio = 1
+  private size: [number, number] = [0, 0]
   addPass(p: Pass): void { this.passes.push(p) }
-  setSize(w: number, h: number): void { this.sizes.push([w, h]) }
-  setPixelRatio(r: number): void { this.pixelRatios.push(r) }
+  setSize(w: number, h: number): void {
+    this.sizes.push([w, h])
+    this.size = [w, h]
+    this.buffers.push([w * this.ratio, h * this.ratio])
+  }
+  setPixelRatio(r: number): void {
+    this.pixelRatios.push(r)
+    this.ratio = r
+    this.buffers.push([this.size[0] * r, this.size[1] * r])
+  }
   /** As the real one: the render pass draws the scene (the bloom and output passes add full-screen quads). */
   render(): void {
     this.renders++
