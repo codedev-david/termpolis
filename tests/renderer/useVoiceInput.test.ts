@@ -822,3 +822,55 @@ describe('useVoiceInput cancel, generations and mic lifetime', () => {
     expect(result.current.errorMsg).toBeNull()
   })
 })
+
+describe('useVoiceInput after it is disposed (U1, U2)', () => {
+  it('a mic that comes up after unmount is released at once: no audio context, no listening (U1)', async () => {
+    const stopTrack = vi.fn()
+    let resolveMic!: (stream: unknown) => void
+    ;(navigator.mediaDevices.getUserMedia as unknown as { mockReturnValue: (v: unknown) => void }).mockReturnValue(new Promise((res) => { resolveMic = res }))
+    const made = vi.fn()
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext { constructor() { super(); made() } })
+    const { result, unmount } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    unmount()
+    await act(async () => { resolveMic({ getTracks: () => [{ stop: stopTrack }] }); await startCall })
+    expect(stopTrack).toHaveBeenCalled()
+    expect(made).not.toHaveBeenCalled()
+  })
+
+  it('a disposal while the audio context resumes tears the capture down (U1)', async () => {
+    const stopTrack = vi.fn()
+    ;(navigator.mediaDevices.getUserMedia as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] })
+    let resolveResume!: () => void
+    resumeGate = { promise: new Promise<void>((r) => { resolveResume = r }), resolve: () => resolveResume() }
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    await act(async () => { await Promise.resolve() })
+    act(() => { result.current.dispose() })
+    stopTrack.mockClear()
+    await act(async () => { resolveResume(); await startCall })
+    expect(createdProcessor).toBeNull()
+    expect(result.current.listening).toBe(false)
+    // A start after the disposal works again.
+    resumeGate = null
+    await act(async () => { await result.current.start() })
+    expect(result.current.status).toBe('listening')
+  })
+
+  it('a transcript that lands after unmount is dropped, never handed to the sink (U2)', async () => {
+    let finish!: (v: { text: string }) => void
+    h.transcribe.mockImplementationOnce(() => new Promise((r) => { finish = r }))
+    const sink = vi.fn()
+    const { result, unmount } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    let stopCall!: Promise<void>
+    act(() => { stopCall = result.current.stop() })
+    await vi.waitFor(() => expect(h.transcribe).toHaveBeenCalled())
+    unmount()
+    await act(async () => { finish({ text: 'hello world' }); await stopCall })
+    expect(sink).not.toHaveBeenCalled()
+  })
+})
