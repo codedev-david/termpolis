@@ -220,6 +220,27 @@ describe('threeRenderer labels', () => {
     tiny.remove()
   })
 
+  it('a name measured before its first projection is not left in the label layer, piled at its corner; projected, it is placed', () => {
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(80)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(18)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false) // its layout measures the district names (their half widths)
+    const names = labelsOf(world(), 'district')
+    expect(names.length).toBeGreaterThan(0)
+    expect(layer().querySelectorAll('.lw-district')).toHaveLength(0) // no frame yet: no name has a place
+    h.frames.step() // the overview
+    const on = names.filter((l) => l.visible)
+    expect(on.length).toBeGreaterThan(0)
+    for (const l of on) {
+      expect(l.element.parentNode).toBe(layer())
+      expect(l.element.style.transform).toMatch(/translate\(-?[\d.]+px,-?[\d.]+px\)$/)
+    }
+    // Only the names shown are in the layer: one measured and left off is not there at all.
+    expect(layer().querySelectorAll('.lw-district')).toHaveLength(on.length)
+    r.dispose()
+  })
+
   /** Sizes from the page: a district name `name` x 18, its subtitle making it `sub` x 36 while it shows; other labels 40 x 18. */
   function sized(sub: number, name = 40): void {
     vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {

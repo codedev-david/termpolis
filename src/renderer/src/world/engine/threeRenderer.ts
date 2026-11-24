@@ -2058,8 +2058,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const todo = els.filter((el) => !sizes.has(el))
     if (todo.length === 0) return
     const was = todo.map((el) => [el.style.display, el.style.visibility])
+    // A name not yet in the label layer goes in only to be measured, and leaves again after: it has no
+    // place there until CSS2DRenderer projects it (and adds it back), so it would sit at the layer's corner.
+    const added = todo.filter((el) => el.parentNode !== labelRenderer.domElement)
+    for (const el of added) labelRenderer.domElement.appendChild(el)
     for (const el of todo) {
-      if (el.parentNode !== labelRenderer.domElement) labelRenderer.domElement.appendChild(el)
       el.style.display = ''
       el.style.visibility = 'hidden'
     }
@@ -2077,6 +2080,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       if (sub) sub.style.display = subWas
     }
+    for (const el of added) el.remove()
     todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
   }
   function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean | 'vertical', pin?: boolean | 'edge'): LabelCandidate | null {
