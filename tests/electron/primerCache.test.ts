@@ -1,6 +1,6 @@
 // WPA item 1: the finished primer, cached per project in main, stale-while-revalidate, in memory only.
 import { describe, it, expect, vi } from 'vitest'
-import { createPrimerCache, PRIMER_FRESH_MS, PRIMER_CACHE_MAX, PRIMER_MAX_AGE_MS } from '../../src/main/primerCache'
+import { createPrimerCache, PRIMER_FRESH_MS, PRIMER_CACHE_MAX, PRIMER_MAX_AGE_MS, PRIMER_MAX_BUILDS } from '../../src/main/primerCache'
 import { projectKeyOf } from '../../src/main/projectKey'
 
 const ROOT = '/srv/work/termpolis'
@@ -60,7 +60,7 @@ describe('primerCache', () => {
     expect(await second).toBe(`primer 1 for ${ROOT} at 10`)
     await tick()
     expect(calls).toHaveLength(2)
-    expect(calls[1].signal).toBeUndefined() // a background refresh is nobody's to cancel
+    expect(calls[1].signal?.aborted).toBe(false) // a refresh is no ask's to cancel: its signal is the cache's own
     expect(calls.map((c) => c.lane)).toEqual(['interactive', 'background']) // an ask's build is interactive; the refresh is not
     expect(await cache.get(ROOT, 10)).toBe(`primer 2 for ${ROOT} at 10`)
   })
@@ -131,32 +131,86 @@ describe('primerCache', () => {
     expect(await cache.get(ROOT, 10)).toBe('ok')
   })
 
-  it('the first uncached ask builds with its own signal; a cancelled build is never cached', async () => {
+  it('the first uncached ask builds on the interactive lane; its cancel stops the build when nobody else waits; never cached', async () => {
     const d = deferred<string | null>()
     const { cache, calls } = harness(() => d.promise)
     const ctl = new AbortController()
     const p = cache.get(ROOT, 10, { signal: ctl.signal })
-    expect(calls[0].signal).toBe(ctl.signal)
+    expect(calls[0].lane).toBe('interactive')
+    expect(calls[0].signal?.aborted).toBe(false)
     ctl.abort()
+    expect(calls[0].signal?.aborted).toBe(true) // the memory reads stop with the only ask waiting on them
     d.resolve('built after the cancel')
     expect(await p).toBeNull()
     expect(cache.size()).toBe(0)
   })
 
-  it('an ask that joins a build another started waits for it, and leaves it running when it gives up', async () => {
+  it('an ask that finds a warm-up running takes over on the interactive lane, and the background build stops (WPA2 I4)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const warmed = cache.warm(ROOT, 10)
+    const p = cache.get(ROOT, 10, { signal: new AbortController().signal })
+    expect(calls.map((c) => c.lane)).toEqual(['background', 'interactive'])
+    expect(calls[0].signal?.aborted).toBe(true) // the warm-up's reads stop: the ask's build replaces them
+    await warmed // a warm-up that was taken over is done, and never throws
+    gates[0].resolve('the warm-up, too late')
+    gates[1].resolve('the ask build')
+    expect(await p).toBe('the ask build')
+    await tick()
+    expect(await cache.get(ROOT, 10)).toBe('the ask build')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('an ask whose build a warm-up joined leaves it running when it cancels, and the warm-up stores it', async () => {
     const d = deferred<string | null>()
     const { cache, calls } = harness(() => d.promise)
-    void cache.warm(ROOT, 10)
     const ctl = new AbortController()
     const p = cache.get(ROOT, 10, { signal: ctl.signal })
-    expect(calls).toHaveLength(1)
+    const warmed = cache.warm(ROOT, 10)
     ctl.abort()
     expect(await p).toBeNull()
-    d.resolve('warm one')
-    await tick()
-    expect(await cache.get(ROOT, 10)).toBe('warm one')
+    expect(calls[0].signal?.aborted).toBe(false) // the warm-up still wants it
+    d.resolve('kept')
+    await warmed
+    expect(await cache.get(ROOT, 10)).toBe('kept')
     expect(calls).toHaveLength(1)
   })
+
+  it('an ask that joined another ask build is not cancelled by that ask cancelling (WPA2 I4)', async () => {
+    const d = deferred<string | null>()
+    const { cache, calls } = harness(() => d.promise)
+    const first = new AbortController()
+    const a = cache.get(ROOT, 10, { signal: first.signal })
+    const b = cache.get(ROOT, 10, { signal: new AbortController().signal })
+    expect(calls).toHaveLength(1)
+    first.abort()
+    expect(await a).toBeNull()
+    expect(calls[0].signal?.aborted).toBe(false) // b still waits on it
+    d.resolve('shared')
+    expect(await b).toBe('shared')
+  })
+
+  it('when every ask waiting on a build cancels, the build stops, and the next ask never joins it (WPA2 I4)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const one = new AbortController()
+    const two = new AbortController()
+    const a = cache.get(ROOT, 10, { signal: one.signal })
+    const b = cache.get(ROOT, 10, { signal: two.signal })
+    one.abort()
+    expect(calls[0].signal?.aborted).toBe(false)
+    two.abort()
+    expect(calls[0].signal?.aborted).toBe(true)
+    expect(await a).toBeNull()
+    expect(await b).toBeNull()
+    const c = cache.get(ROOT, 10, { signal: new AbortController().signal }) // a re-ask: the old one was cancelled for it
+    expect(calls).toHaveLength(2)
+    expect(calls[1].lane).toBe('interactive')
+    gates[0].resolve(null) // the stopped build ends empty; that is not the re-ask's answer
+    gates[1].resolve('fresh')
+    expect(await c).toBe('fresh')
+  })
+
 
   it('an ask that joins a build waits for its result when nobody cancels', async () => {
     const d = deferred<string | null>()
@@ -247,14 +301,99 @@ describe('primerCache', () => {
     expect(cache.size()).toBe(0)
   })
 
-  it('a build that lands after an invalidate is not cached (it read the memory as it was before)', async () => {
-    const d = deferred<string | null>()
-    const { cache } = harness(() => d.promise)
-    const p = cache.get(ROOT, 10)
+  it('an ask waiting when the cache is cleared never gets the text read before the clear: it gets a build made after (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const p = cache.get(ROOT, 10, { signal: new AbortController().signal })
+    const plain = cache.get(ROOT, 10) // a waiter that cannot cancel is held to the same rule
     cache.clear()
-    d.resolve('read before the clear')
-    expect(await p).toBe('read before the clear') // that ask still gets its answer
+    expect(calls[0].signal?.aborted).toBe(true) // the reads that can no longer be used stop
+    gates[0].resolve('read before the clear')
+    await tick()
+    expect(calls).toHaveLength(2)
+    expect(calls[1].lane).toBe('interactive')
+    gates[1].resolve('read after the clear')
+    expect(await p).toBe('read after the clear')
+    expect(await plain).toBe('read after the clear')
+    expect(await cache.get(ROOT, 10)).toBe('read after the clear')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('the same holds after an invalidate of that project, and for a pre-invalidate build that failed (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const p = cache.get(ROOT, 10, { signal: new AbortController().signal })
+    const other = cache.get('/srv/other', 10)
+    cache.invalidate(projectKeyOf(ROOT) as string)
+    expect(calls[1].signal?.aborted).toBe(false) // another project's build is left alone
+    gates[0].reject(new Error('the store reloaded under it'))
+    await tick()
+    expect(calls).toHaveLength(3)
+    gates[2].resolve('after')
+    expect(await p).toBe('after')
+    gates[1].resolve('other')
+    expect(await other).toBe('other')
+  })
+
+  it('a build that lands just before a clear is not handed out after it (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const p = cache.get(ROOT, 10)
+    gates[0].resolve('read before the clear')
+    queueMicrotask(() => cache.clear()) // lands between the build settling and the waiter reading it
+    await tick()
+    expect(calls).toHaveLength(2)
+    gates[1].resolve('read after the clear')
+    expect(await p).toBe('read after the clear')
+  })
+
+  it('a forced warm that ends empty cannot let an older build refill the cache after a clear (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const older = cache.warm(ROOT, 10)
+    const forced = cache.warm(ROOT, 10, { force: true })
+    expect(calls).toHaveLength(2)
+    gates[1].resolve(null) // the forced one ends empty: no entry, and it was the tracked build
+    await forced
+    cache.clear()
+    gates[0].resolve('read before the clear')
+    await older
+    await tick()
     expect(cache.size()).toBe(0)
+    expect(cache.has(ROOT, 10)).toBe(false)
+  })
+
+  it('memory that keeps changing under every build is an error after PRIMER_MAX_BUILDS tries, never pre-clear text (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const p = cache.get(ROOT, 10, { signal: new AbortController().signal })
+    for (let i = 0; i < PRIMER_MAX_BUILDS; i++) {
+      await tick()
+      expect(calls).toHaveLength(i + 1)
+      cache.clear()
+      gates[i].resolve(`read before clear ${i + 1}`)
+    }
+    await expect(p).rejects.toThrow('the memory kept changing while the primer was read')
+    expect(calls).toHaveLength(PRIMER_MAX_BUILDS)
+  })
+
+  it('a bare name built across a clear is built again too, whether the old build answered or failed (WPA2 I2)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const p = cache.get('termpolis', 10)
+    cache.clear()
+    gates[0].reject(new Error('read across the clear'))
+    await tick()
+    expect(calls).toHaveLength(2)
+    gates[1].resolve('after')
+    expect(await p).toBe('after')
+    const q = cache.get('termpolis', 10)
+    for (let i = 2; i < 2 + PRIMER_MAX_BUILDS; i++) { await tick(); cache.clear(); gates[i].resolve('before') }
+    await expect(q).rejects.toThrow('the memory kept changing while the primer was read')
+    expect(calls).toHaveLength(2 + PRIMER_MAX_BUILDS)
+    const r = cache.get('termpolis', 10)
+    gates[2 + PRIMER_MAX_BUILDS].reject(new Error('plain failure'))
+    await expect(r).rejects.toThrow('plain failure') // a failure with no clear behind it is the caller's to see
   })
 
   it('an invalidate during a background refresh drops the stale entry and the refresh result too', async () => {
@@ -303,13 +442,19 @@ describe('primerCache', () => {
     const fresh = cache.warm(ROOT, 10)
     expect(calls).toHaveLength(2) // the running build read the memory before the clear: a new one starts
     gates[0].resolve('old')
-    expect(await asked).toBe('old')
-    expect(await plain).toBe('old')
-    gates[1].resolve('new')
+    await tick()
+    // The asks that waited on the pre-clear build never get 'old' (WPA2 I2): they take over from the fresh warm-up on the
+    // interactive lane (WPA2 I4), whose background reads stop.
+    expect(calls).toHaveLength(3)
+    expect(calls[2].lane).toBe('interactive')
+    expect(calls[1].signal?.aborted).toBe(true)
+    gates[2].resolve('new')
+    expect(await asked).toBe('new')
+    expect(await plain).toBe('new')
     await joined
     await fresh
     expect(await cache.get(ROOT, 10)).toBe('new')
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
   })
 
   it('a bare name built with a signal that fires is null', async () => {
