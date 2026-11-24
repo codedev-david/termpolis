@@ -947,10 +947,8 @@ describe('createWorldHost', () => {
     const compile = vi.fn(async (input: CompileInput) => doc(input.projectKey))
     const h = harness({ compile }, memStore({ k1: doc() }))
     await h.init(false)
-    const sent = Date.now()
     await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
-    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1), { timeout: 1000, interval: 5 })
-    expect(Date.now() - sent).toBeLessThan(1000)
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1), { timeout: 1000, interval: 5 }) // the timeout bounds it
   })
 
   it('a settings message switches labelling for the next compile and the next watcher recompile', async () => {

@@ -105,10 +105,18 @@ const codeOf = (e: unknown): string => String((e as { code?: unknown } | null)?.
  * (ENOENT) lost only the race to delete it. A lock made whose nonce cannot be written (a full disk) is ours and empty: it is
  * removed, so nobody waits on it, and the take is tried once more; a second such failure means no lock here.
  */
-export async function withAnnotationFileLock<T>(file: string, work: () => Promise<T>): Promise<T> {
+/** Seams for tests: the pause between looks at a held lock, and the clock its deadline and a lock's age are read on. */
+export interface AnnotationLockDeps {
+  sleep?: Sleep
+  now?: () => number
+}
+
+export async function withAnnotationFileLock<T>(file: string, work: () => Promise<T>, deps: AnnotationLockDeps = {}): Promise<T> {
+  const sleep = deps.sleep ?? pause
+  const now = deps.now ?? Date.now
   const lockFile = `${file}.lock`
   const nonce = `${process.pid}:${randomUUID()}`
-  const deadline = Date.now() + ANNOTATION_LOCK_DEADLINE_MS
+  const deadline = now() + ANNOTATION_LOCK_DEADLINE_MS
   let wait = ANNOTATION_LOCK_RETRY_MS
   let held = false
   let unwritten = false
@@ -131,15 +139,15 @@ export async function withAnnotationFileLock<T>(file: string, work: () => Promis
       unwritten = true
     } else {
       let age = -1
-      try { age = Date.now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
+      try { age = now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
       if (age >= ANNOTATION_LOCK_STALE_MS) {
         try { await rm(lockFile) } catch (err) {
           if (codeOf(err) !== 'ENOENT') break // a stale lock that cannot be removed: no lock can be had here
         } // ENOENT: another writer broke it first; try again
       }
     }
-    if (Date.now() >= deadline) break
-    await pause(wait)
+    if (now() >= deadline) break
+    await sleep(wait)
     wait = Math.min(wait * 2, ANNOTATION_LOCK_RETRY_MAX_MS)
   }
   try {
@@ -256,7 +264,7 @@ async function keepPending(file: string, keys: string[]): Promise<void> {
  * the new key has a file of its own: its claims then go in before the new key's own (which are newer), nothing of the new
  * key's file is lost, and the record goes once nothing is left to try. A new key's file that cannot be read keeps the record.
  */
-export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number } = {}): Promise<string[]> {
+export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number; lock?: AnnotationLockDeps } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
   if (!key || others.length === 0) return []
   const sleep = deps.sleep ?? pause
@@ -306,7 +314,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
       }
       await keepPending(pendingFile, unread)
       return found.map(([old]) => old)
-    })
+    }, deps.lock)
   } catch {
     return [] // the file could not be written: every older key's file stays as it was
   }

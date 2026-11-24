@@ -309,20 +309,21 @@ describe('adoptAnnotationAliases', () => {
     it('a lock let go between the try and the look at its age is tried again after a pause, each pause longer than the last (R2-I1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       faults.lock = ['EEXIST', 'EEXIST'] // two tries see a lock that is gone by the stat
-      const t0 = Date.now()
-      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
+      const pauses: number[] = []
+      const lock = { sleep: async (ms: number) => { pauses.push(ms) } }
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock })).toEqual(['old-key'])
       expect(faults.lock).toEqual([])
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(ANNOTATION_LOCK_RETRY_MS * 3 - 5) // 25 ms, then 50 ms (a timer may fire a ms early)
+      expect(pauses).toEqual([ANNOTATION_LOCK_RETRY_MS, ANNOTATION_LOCK_RETRY_MS * 2]) // 25 ms, then 50 ms
       expect(ANNOTATION_LOCK_RETRY_MAX_MS).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
     })
     it('EPERM or EACCES on making the lock (what Windows answers for a folder it will not let us write in) means no lock here: the work runs at once, without one (R2-I1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       for (const code of ['EPERM', 'EACCES']) {
         faults.lockAlways = code
-        const t0 = Date.now()
+        const pauses: number[] = []
         await rm(fileFor('new-key'), { force: true })
-        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
-        expect(Date.now() - t0).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual(['old-key'])
+        expect(pauses).toEqual([]) // no wait for a lock: the work ran on the first try
         await createAnnotationStore(dir).add('new-key', 'b2', claim(`an add with ${code}`)) // an add ends too
       }
       expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([])
@@ -341,24 +342,30 @@ describe('adoptAnnotationAliases', () => {
       const past = new Date(Date.now() - ANNOTATION_LOCK_STALE_MS - 1_000)
       await utimes(lock, past, past)
       faults.rmLock = 'EPERM'
-      const t0 = Date.now()
-      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
-      expect(Date.now() - t0).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
+      const pauses: number[] = []
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual(['old-key'])
+      expect(pauses).toEqual([]) // no wait: the work ran on the first try
       expect(await readFile(lock, 'utf8')).toBe('a dead holder')
     })
     it('a lock held past ANNOTATION_LOCK_DEADLINE_MS: the world open and an add both go on without it, and leave the holder its lock (R2-I1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       const lock = `${fileFor('new-key')}.lock`
       await writeFile(lock, 'a live holder that never lets go', 'utf8') // fresh: not stale for another 5 s
-      const t0 = Date.now()
+      // An injected clock that moves only by the pauses taken: the deadline is reached on it, not on the wall clock.
+      let at = Date.now()
+      const start = at
+      const order: string[] = []
+      const clock = { now: () => at, sleep: async (ms: number) => { order.push(`pause ${ms}`); at += ms } }
       const [adopted] = await Promise.all([
-        adoptAnnotationAliases(dir, 'new-key', ['old-key']),
+        adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: clock }).then((r) => { order.push('adopted'); return r }),
         createAnnotationStore(dir).add('other-key', 'b9', claim('unrelated')), // another file's lock: never waits
       ])
-      const took = Date.now() - t0
       expect(adopted).toEqual(['old-key'])
-      expect(took).toBeGreaterThanOrEqual(ANNOTATION_LOCK_DEADLINE_MS - 5)
-      expect(took).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS + ANNOTATION_LOCK_RETRY_MAX_MS + 1_000)
+      // 25, 50 and 100 ms, then 200 ms each until the deadline has passed, and only then the work, without the lock.
+      const expected = [ANNOTATION_LOCK_RETRY_MS, ANNOTATION_LOCK_RETRY_MS * 2, ANNOTATION_LOCK_RETRY_MS * 4, ...Array<number>(10).fill(ANNOTATION_LOCK_RETRY_MAX_MS)]
+      expect(order).toEqual([...expected.map((ms) => `pause ${ms}`), 'adopted'])
+      expect(at - start).toBeGreaterThanOrEqual(ANNOTATION_LOCK_DEADLINE_MS)
+      expect(at - start - ANNOTATION_LOCK_RETRY_MAX_MS).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS) // the last pause was the first past it
       await createAnnotationStore(dir).add('new-key', 'b2', claim('newer'))
       expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2'])
       expect(await readFile(lock, 'utf8')).toBe('a live holder that never lets go')
@@ -389,10 +396,10 @@ describe('adoptAnnotationAliases', () => {
       await expect(readFile(lock, 'utf8')).rejects.toThrow()
 
       faults.lockWrite = 2
-      const t0 = Date.now()
-      expect(await withAnnotationFileLock(file, async () => { await expect(readFile(lock, 'utf8')).rejects.toThrow(); return 5 })).toBe(5)
+      const pauses: number[] = []
+      expect(await withAnnotationFileLock(file, async () => { await expect(readFile(lock, 'utf8')).rejects.toThrow(); return 5 }, { sleep: async (ms) => { pauses.push(ms) } })).toBe(5)
       expect(faults.lockWrite).toBe(0)
-      expect(Date.now() - t0).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
+      expect(pauses).toEqual([ANNOTATION_LOCK_RETRY_MS]) // one pause, the take tried once more, then no lock: not a wait to the deadline
       expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([]) // no orphan for others to wait 2 s on
 
       // An empty lock of ours that cannot be removed either: no lock here, at once (not tried again on top of it).
