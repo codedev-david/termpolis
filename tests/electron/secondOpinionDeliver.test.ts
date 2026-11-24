@@ -11,7 +11,7 @@ import {
   type AgentChild,
   type SecondOpinionDeliverDeps,
 } from '../../src/main/secondOpinionDeliver'
-import { TREE_KILL_GRACE_MS } from '../../src/main/processTree'
+import { TREE_KILL_GRACE_MS, killProcessTree, type KillTreeOptions } from '../../src/main/processTree'
 import { DELIVER_GRACE_MS, PROMPT_TOKEN, SECOND_OPINION_TIMEOUT_MS, powershellPath, runSecondOpinion } from '../../src/main/secondOpinion'
 import { runHeadless } from '../../src/main/headlessExec'
 
@@ -260,7 +260,7 @@ describe('secondOpinionDeliver: cancelling a run', () => {
     c.stdout!.emit('data', 'half done')
     c.stderr!.emit('data', 'still going')
     ac.abort()
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false, canRetry: expect.any(Function) })
     c.emit('exit', null)
     c.emit('close', null)
     expect(await result).toEqual({ stdout: 'half done', stderr: 'cancelled\nstill going', code: 1 })
@@ -275,7 +275,7 @@ describe('secondOpinionDeliver: cancelling a run', () => {
     const result = h.deliver('agy', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000, signal: ac.signal })
     const state = track(result)
     ac.abort()
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false, canRetry: expect.any(Function) })
     vi.advanceTimersByTime(STOP_SETTLE_MS - 1)
     await Promise.resolve()
     expect(state.done()).toBe(false)
@@ -340,7 +340,7 @@ describe('secondOpinionDeliver: the deadline stops the whole tree', () => {
     vi.advanceTimersByTime(89_999)
     expect(h.killTree).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false, canRetry: expect.any(Function) })
     // The tree dies, so its pipes close.
     c.emit('exit', null)
     c.emit('close', null)
@@ -357,7 +357,7 @@ describe('secondOpinionDeliver: the deadline stops the whole tree', () => {
     const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 5_000 })
     vi.advanceTimersByTime(5_000)
     // taskkill /T walks down from a LIVE root: the wrapper must be the pid, and still running.
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false, canRetry: expect.any(Function) })
     // An agent that exits 0 on the kill is still a stopped run, not a review.
     h.children[0].emit('close', 0)
     expect(await result).toEqual({ stdout: '', stderr: 'claude did not finish within 5s and was stopped', code: 1 })
@@ -389,7 +389,7 @@ describe('secondOpinionDeliver: the deadline stops the whole tree', () => {
     const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
     h.children[0].emit('exit', 0)
     vi.advanceTimersByTime(1_000)
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false, canRetry: expect.any(Function) })
     vi.advanceTimersByTime(STOP_SETTLE_MS)
     expect((await result).code).toBe(1)
   })
@@ -458,8 +458,8 @@ describe('secondOpinionDeliver: stopAll (app quit)', () => {
     h.children[1].stdout!.emit('data', 'half a review')
     h.stopAll()
     expect(h.killTree.mock.calls).toEqual([
-      [4242, { platform: 'win32', sync: true }],
-      [4243, { platform: 'win32', sync: true }],
+      [4242, { platform: 'win32', sync: true, canRetry: expect.any(Function) }],
+      [4243, { platform: 'win32', sync: true, canRetry: expect.any(Function) }],
     ])
     // Synchronous: no timer fires again once the app is quitting.
     expect(h.unlink).toHaveBeenCalledTimes(2)
@@ -492,7 +492,7 @@ describe('secondOpinionDeliver: stopAll (app quit)', () => {
     const first = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000 })
     const second = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000 })
     h.stopAll()
-    expect(killTree.mock.calls).toEqual([[4242, { platform: 'linux', sync: true }]])
+    expect(killTree.mock.calls).toEqual([[4242, { platform: 'linux', sync: true, canRetry: expect.any(Function) }]])
     expect((await first).stderr).toBe('claude was stopped because Termpolis is quitting')
     // It ended on its own, so it keeps its own result.
     expect(await second).toEqual({ stdout: '', stderr: '', code: 0 })
@@ -502,7 +502,7 @@ describe('secondOpinionDeliver: stopAll (app quit)', () => {
     const h = harness()
     void h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000 })
     h.stopAll()
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: true })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: true, canRetry: expect.any(Function) })
   })
 
   it('does not taskkill a Windows wrapper that already exited, but still settles the run', async () => {
@@ -519,10 +519,10 @@ describe('secondOpinionDeliver: stopAll (app quit)', () => {
     const h = harness()
     const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 5_000 })
     vi.advanceTimersByTime(5_000)
-    expect(h.killTree).toHaveBeenLastCalledWith(4242, { platform: 'linux', sync: false })
+    expect(h.killTree).toHaveBeenLastCalledWith(4242, { platform: 'linux', sync: false, canRetry: expect.any(Function) })
     h.stopAll()
     // The quit still makes sure the group is dead, synchronously.
-    expect(h.killTree).toHaveBeenLastCalledWith(4242, { platform: 'linux', sync: true })
+    expect(h.killTree).toHaveBeenLastCalledWith(4242, { platform: 'linux', sync: true, canRetry: expect.any(Function) })
     expect(await result).toEqual({ stdout: '', stderr: 'claude did not finish within 5s and was stopped', code: 1 })
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -542,7 +542,7 @@ describe('secondOpinionDeliver through its callers', () => {
     const review = runSecondOpinion({ agent: 'claude', content: 'diff' }, h.deliver)
     await Promise.resolve()
     vi.advanceTimersByTime(SECOND_OPINION_TIMEOUT_MS)
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false, canRetry: expect.any(Function) })
     h.children[0].emit('close', 1)
     expect(await review).toEqual({ ok: false, error: 'claude did not finish within 90s and was stopped' })
   })
@@ -586,9 +586,104 @@ describe('secondOpinionDeliver through its callers', () => {
     expect(h.spawn.mock.calls[0][2].env).toMatchObject({ TERMPOLIS_LINKED_JOB: 'job1' })
     c.stdout!.emit('data', 'half done')
     ac.abort()
-    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false, canRetry: expect.any(Function) })
     c.emit('close', null)
     expect(await run).toMatchObject({ ok: false, code: 1, output: 'half done', error: 'cancelled' })
     expect(remember).not.toHaveBeenCalled()
+  })
+})
+
+describe('secondOpinionDeliver: a kill that is not confirmed', () => {
+  /** The options of the n-th killTree call, so a test can ask its canRetry. */
+  const killOpts = (killTree: ReturnType<typeof vi.fn>, n = 0): KillTreeOptions => killTree.mock.calls[n][1] as KillTreeOptions
+
+  it('lets a failed taskkill be tried again only while the wrapper is alive', () => {
+    vi.useFakeTimers()
+    const h = harness({ platform: 'win32' })
+    void h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
+    vi.advanceTimersByTime(1_000)
+    const { canRetry } = killOpts(h.killTree)
+    expect(canRetry!()).toBe(true)
+    // Past its exit, the wrapper's pid is no longer held for us and may name a stranger.
+    h.children[0].emit('exit', 1)
+    expect(canRetry!()).toBe(false)
+  })
+
+  it('does not retry the timed-out kill once the quit has killed the tree itself', () => {
+    vi.useFakeTimers()
+    const h = harness({ platform: 'win32' })
+    void h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
+    vi.advanceTimersByTime(1_000)
+    const { canRetry } = killOpts(h.killTree)
+    h.stopAll()
+    expect(canRetry!()).toBe(false)
+  })
+
+  it('keeps a stopping run in reach of the quit until it is stopped for sure, then lets it go', async () => {
+    vi.useFakeTimers()
+    const h = harness({ platform: 'win32' })
+    const ac = new AbortController()
+    const result = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000, signal: ac.signal })
+    ac.abort()
+    expect(h.killTree).toHaveBeenCalledTimes(1)
+    // A quit while the cancel's taskkill is still out reaches the same tree, synchronously.
+    vi.advanceTimersByTime(STOP_SETTLE_MS - 1)
+    h.stopAll()
+    expect(h.killTree).toHaveBeenLastCalledWith(4242, { platform: 'win32', sync: true, canRetry: expect.any(Function) })
+    expect(await result).toEqual({ stdout: '', stderr: 'cancelled', code: 1 })
+    // After the backstop the run is let go: a later quit has nothing to reach.
+    const late = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
+    vi.advanceTimersByTime(1_000 + STOP_SETTLE_MS)
+    expect(await late).toMatchObject({ code: 1 })
+    h.killTree.mockClear()
+    h.stopAll()
+    expect(h.killTree).not.toHaveBeenCalled()
+  })
+
+  it('with the real killProcessTree: a taskkill that fails twice is logged once, and the backstop still settles the run', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    const taskkills: EventEmitter[] = []
+    const spawnTaskkill = vi.fn(() => {
+      const tk = Object.assign(new EventEmitter(), { unref: vi.fn() })
+      taskkills.push(tk)
+      return tk
+    })
+    const h = harness({ platform: 'win32', killTree: (pid, opts) => killProcessTree(pid, opts, { spawn: spawnTaskkill, env: {}, log }) })
+    const result = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
+    const state = track(result)
+    vi.advanceTimersByTime(1_000)
+    expect(spawnTaskkill).toHaveBeenCalledTimes(1)
+    taskkills[0].emit('exit', 1, null)
+    await vi.waitFor(() => expect(spawnTaskkill).toHaveBeenCalledTimes(2))
+    // A failed kill is not a stopped run: it is still pending, and still in the quit's reach.
+    expect(state.done()).toBe(false)
+    taskkills[1].emit('exit', 1, null)
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1))
+    expect(log).toHaveBeenCalledWith('[processTree] taskkill did not end pid 4242 (exit 1)')
+    expect(state.done()).toBe(false)
+    vi.advanceTimersByTime(STOP_SETTLE_MS)
+    expect(await result).toEqual({ stdout: '', stderr: 'codex did not finish within 1s and was stopped', code: 1 })
+    expect(spawnTaskkill).toHaveBeenCalledTimes(2)
+  })
+
+  it('with the real killProcessTree: no retry once the wrapper exited, and the run settles when its pipes close', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    const taskkills: EventEmitter[] = []
+    const spawnTaskkill = vi.fn(() => {
+      const tk = Object.assign(new EventEmitter(), { unref: vi.fn() })
+      taskkills.push(tk)
+      return tk
+    })
+    const h = harness({ platform: 'win32', killTree: (pid, opts) => killProcessTree(pid, opts, { spawn: spawnTaskkill, env: {}, log }) })
+    const result = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000 })
+    vi.advanceTimersByTime(1_000)
+    h.children[0].emit('exit', null)
+    taskkills[0].emit('exit', 128, null)
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1))
+    expect(spawnTaskkill).toHaveBeenCalledTimes(1)
+    h.children[0].emit('close', null)
+    expect(await result).toEqual({ stdout: '', stderr: 'codex did not finish within 1s and was stopped', code: 1 })
   })
 })

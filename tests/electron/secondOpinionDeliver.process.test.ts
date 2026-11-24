@@ -3,9 +3,9 @@ import { spawn, spawnSync, type SpawnOptions } from 'child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vitest'
+import { describe, it, expect, vi, afterEach, afterAll, beforeAll } from 'vitest'
 import { createSecondOpinionDeliver, type AgentChild, type SecondOpinionDeliver } from '../../src/main/secondOpinionDeliver'
-import { taskkillPath } from '../../src/main/processTree'
+import { endProcessTree, killProcessTree, taskkillPath } from '../../src/main/processTree'
 import { PROMPT_TOKEN } from '../../src/main/secondOpinion'
 
 // The real-process proof that a stop ends the whole tree. The stand-in "agent" is a node script,
@@ -87,7 +87,7 @@ async function readPids(file: string, run: Promise<unknown>): Promise<{ agent: n
   throw new Error(ended ? 'the run ended before the stand-in agent started' : 'the stand-in agent never started')
 }
 
-function setup(over: { spawn?: (cmd: string, args: string[], opts: SpawnOptions) => AgentChild; settleMs?: number } = {}) {
+function setup(over: Partial<Pick<Parameters<typeof createSecondOpinionDeliver>[0], 'spawn' | 'settleMs' | 'killTree'>> = {}) {
   const pidFile = join(dir, `pids-${++seq}.json`)
   live = createSecondOpinionDeliver({ tempDir: () => dir, env: () => ({ ...process.env, TP_PIDS: pidFile }), ...over })
   return { runs: live, pidFile }
@@ -153,5 +153,43 @@ describe('secondOpinionDeliver with real processes', () => {
     expect(r.stdout).toContain('partial review of "review this"')
     expect(await waitDead(pids.agent)).toBe(true)
     expect(await waitDead(pids.grandchild)).toBe(true)
+  }, 60_000)
+})
+
+describe('ending a real tree, and a kill that fails', () => {
+  it('endProcessTree waits for the kill and resolves true, and the agent and its child are gone', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const pidFile = join(dir, `pids-${++seq}.json`)
+    // detached on POSIX, as deliver spawns it, so the agent leads the group that is signalled.
+    const agent = spawn(process.execPath, [agentScript, 'x'], {
+      env: { ...process.env, TP_PIDS: pidFile }, stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32',
+    })
+    let exited = false
+    const gone = new Promise<void>((r) => agent.on('exit', () => { exited = true; r() }))
+    const pids = await readPids(pidFile, gone)
+    try {
+      expect(await endProcessTree(agent.pid, { canRetry: () => !exited })).toBe(true)
+      await gone
+      expect(await waitDead(pids.agent)).toBe(true)
+      expect(await waitDead(pids.grandchild)).toBe(true)
+      expect(warn).not.toHaveBeenCalled()
+    } finally { warn.mockRestore() }
+  }, 60_000)
+
+  it.skipIf(process.platform !== 'win32')('a taskkill that cannot run is tried once more while the wrapper lives, logged once, and the run still settles', async () => {
+    const log = vi.fn()
+    // A Windows folder with no taskkill.exe in it: the real spawn fails, twice.
+    const nowhere = { SystemRoot: join(dir, 'no-windows') }
+    const { runs, pidFile } = setup({ settleMs: 1_000, killTree: (pid, o) => killProcessTree(pid, o, { env: nowhere, log }) })
+    const ac = new AbortController()
+    const run = runs.deliver(process.execPath, [agentScript, PROMPT_TOKEN], 'review this', PROMPT_TOKEN, { timeoutMs: 0, signal: ac.signal })
+    const pids = await readPids(pidFile, run)
+    ac.abort()
+    const r = await run
+    expect(r).toMatchObject({ code: 1, stderr: expect.stringContaining('cancelled') })
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    expect(log.mock.calls[0][0]).toMatch(/^\[processTree\] taskkill did not end pid \d+ \(exit ENOENT\)$/)
+    // The tree was never killed. The afterEach ends it through the pids it reported.
+    expect(isAlive(pids.agent)).toBe(true)
   }, 60_000)
 })

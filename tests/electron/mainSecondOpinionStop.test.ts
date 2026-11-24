@@ -37,7 +37,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll, t
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import type { McpToolHandlers } from '../../src/main/mcpServer'
-import { SYNC_TASKKILL_TIMEOUT_MS, TREE_KILL_GRACE_MS, taskkillPath } from '../../src/main/processTree'
+import { SYNC_TASKKILL_TIMEOUT_MS, TASKKILL_TIMEOUT_MS, TREE_KILL_GRACE_MS, taskkillPath } from '../../src/main/processTree'
 import { STOP_SETTLE_MS } from '../../src/main/secondOpinionDeliver'
 import { SECOND_OPINION_TIMEOUT_MS, powershellPath } from '../../src/main/secondOpinion'
 
@@ -349,7 +349,7 @@ class FakeAgent extends EventEmitter {
   }
 }
 
-/** What an asynchronous taskkill spawn returns: processTree listens for 'error' and unrefs it. */
+/** What an asynchronous taskkill spawn returns: processTree listens for 'error' and 'exit', and unrefs it. */
 class FakeTaskkill extends EventEmitter {
   readonly unref = vi.fn()
 }
@@ -698,7 +698,7 @@ describe('the deadline stops the whole tree, not only the process Termpolis spaw
       const tmp = (theAgentSpawn()[2].env as NodeJS.ProcessEnv).TP_SO_FILE
 
       vi.advanceTimersByTime(SECOND_OPINION_TIMEOUT_MS)
-      expect(taskkillSpawns()).toEqual([[TASKKILL, ['/pid', String(PID_A), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }]])
+      expect(taskkillSpawns()).toEqual([[TASKKILL, ['/pid', String(PID_A), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: TASKKILL_TIMEOUT_MS }]])
       expect(H.spawnSync).not.toHaveBeenCalled()
       vi.advanceTimersByTime(STOP_SETTLE_MS)
       expect(await review.result).toEqual({ success: false, error: TIMED_OUT })

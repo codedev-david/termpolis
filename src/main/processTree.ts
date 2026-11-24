@@ -16,7 +16,12 @@
 // its own process group. Signalling the negative pid then reaches the whole group: SIGTERM first,
 // then SIGKILL for whatever is still there after a grace period.
 //
-// Every failure is ignored. The usual one is that the tree is already gone.
+// Known gap (out of scope for 2.0): no Job Object (KILL_ON_JOB_CLOSE) or Linux cgroup, so a grandchild that detaches from the tree or calls setsid outlives a stop.
+//
+// Nothing here throws. A tree that is already gone is not a failure: ESRCH from a group, or a
+// taskkill the caller says not to repeat. Any other failure is logged once per kill, as one line
+// that names only the pid and the exit or error code, and a failed taskkill is tried once more
+// while the caller says its root is still alive.
 
 import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from 'child_process'
 import path from 'path'
@@ -30,6 +35,10 @@ export const TREE_KILL_GRACE_MS = 2_000
  *  leaves the rest of the tree running. So the cap is only there for a taskkill that hangs. */
 export const SYNC_TASKKILL_TIMEOUT_MS = 10_000
 
+/** The same cap for the asynchronous taskkill, so one that hangs still ends, is logged and can be
+ *  tried again, instead of waiting forever. */
+export const TASKKILL_TIMEOUT_MS = SYNC_TASKKILL_TIMEOUT_MS
+
 export interface KillTreeOptions {
   /** The platform the tree was started on. Defaults to this one. */
   platform?: NodeJS.Platform
@@ -41,14 +50,27 @@ export interface KillTreeOptions {
    *  ends our direct child (libuv's job), and `taskkill /T` finds the rest of the tree only
    *  through a live root, so Windows waits for taskkill. POSIX sends SIGKILL straight away. */
   sync?: boolean
+  /** Windows, asynchronous only: asked after a taskkill fails, just before it is tried once more.
+   *  Answer true only while the root is still the caller's own child and has not exited. Windows
+   *  reuses pids, and only the caller's open handle on a live child keeps the pid from naming a
+   *  stranger. Without it a failed taskkill is logged and not repeated. */
+  canRetry?: () => boolean
 }
 
-/** Injection seams for tests. Production uses the real child_process and process.kill. */
+/** The part of a spawned taskkill used here. */
+export interface TaskkillChild {
+  on(event: 'error', listener: (err: Error) => void): unknown
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
+  unref(): void
+}
+
+/** Injection seams for tests. Production uses the real child_process, process.kill and console. */
 export interface KillTreeDeps {
   env?: NodeJS.ProcessEnv
-  spawn?: (cmd: string, args: string[], opts: SpawnOptions) => { on(event: 'error', listener: (err: Error) => void): unknown; unref(): void }
+  spawn?: (cmd: string, args: string[], opts: SpawnOptions) => TaskkillChild
   spawnSync?: (cmd: string, args: string[], opts: SpawnSyncOptions) => unknown
   kill?: (pid: number, signal: NodeJS.Signals) => unknown
+  log?: (line: string) => void
 }
 
 /** taskkill by absolute path, so a taskkill.exe planted on PATH or in the cwd can't stand in. */
@@ -56,40 +78,118 @@ export function taskkillPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.win32.join(env.SystemRoot || env.windir || 'C:\\Windows', 'System32', 'taskkill.exe')
 }
 
-/**
- * End `pid` and every process under it. Returns false when there was no usable pid, and true once
- * a kill was sent, which says nothing about whether anything was still running. Never throws.
- */
-export function killProcessTree(pid: number | undefined, opts: KillTreeOptions = {}, deps: KillTreeDeps = {}): boolean {
-  // 0 and 1 are never ours to end: as a group, -0 is our OWN group and -1 is every process we
-  // are allowed to signal.
-  if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return false
-  if ((opts.platform ?? process.platform) === 'win32') {
-    // No shell: the pid is the only variable part, and it is an integer.
-    const args = ['/pid', String(pid), '/T', '/F']
+/** 0 and 1 are never ours to end: as a group, -0 is our OWN group and -1 is every process we are
+ *  allowed to signal. */
+function usablePid(pid: number | undefined): pid is number {
+  return pid !== undefined && Number.isInteger(pid) && pid > 1
+}
+
+/** What a taskkill ended with: 0 for success, else its exit code, the signal that ended it (the
+ *  timeout), or the error code of a spawn that failed. */
+type Outcome = number | string
+
+function errorCode(e: unknown): string {
+  return String((e as NodeJS.ErrnoException | undefined)?.code ?? 'error')
+}
+
+function logOf(deps: KillTreeDeps): (line: string) => void {
+  return deps.log ?? ((line: string): void => { console.warn(line) })
+}
+
+function logTaskkill(log: (line: string) => void, pid: number, outcome: Outcome): void {
+  log(`[processTree] taskkill did not end pid ${pid} (exit ${outcome})`)
+}
+
+// No shell: the pid is the only variable part, and it is an integer.
+const taskkillArgs = (pid: number): string[] => ['/pid', String(pid), '/T', '/F']
+
+/** One asynchronous taskkill, settled when it exits or fails to start. Never rejects. */
+function taskkillOnce(pid: number, deps: KillTreeDeps): Promise<Outcome> {
+  return new Promise((resolve) => {
+    let done = false
+    const end = (outcome: Outcome): void => { if (!done) { done = true; resolve(outcome) } }
     try {
-      if (opts.sync) {
-        ;(deps.spawnSync ?? spawnSync)(taskkillPath(deps.env), args, { windowsHide: true, stdio: 'ignore', timeout: SYNC_TASKKILL_TIMEOUT_MS })
-      } else {
-        // Asynchronous: a blocking spawn on the main thread stalls every terminal's echo.
-        const tk = (deps.spawn ?? spawn)(taskkillPath(deps.env), args, { windowsHide: true, stdio: 'ignore' })
-        tk.on('error', () => { /* no taskkill to run: nothing else to try */ })
-        tk.unref()
-      }
-    } catch { /* the same: nothing else to try */ }
-    return true
-  }
+      // Asynchronous: a blocking spawn on the main thread stalls every terminal's echo.
+      const tk = (deps.spawn ?? spawn)(taskkillPath(deps.env), taskkillArgs(pid), { windowsHide: true, stdio: 'ignore', timeout: TASKKILL_TIMEOUT_MS })
+      // An 'error' with no listener would be thrown as an uncaught exception in the main process.
+      tk.on('error', (e) => end(errorCode(e)))
+      tk.on('exit', (code, signal) => end(code ?? signal ?? 'none'))
+      tk.unref()
+    } catch (e) { end(errorCode(e)) }
+  })
+}
+
+/** Signals a process group, logging any failure but ESRCH once per kill. Returns false only on a
+ *  failure other than ESRCH. */
+function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signals) => boolean {
   const kill = deps.kill ?? ((p: number, signal: NodeJS.Signals) => process.kill(p, signal))
-  const signalGroup = (signal: NodeJS.Signals): void => {
-    try { kill(-pid, signal) } catch { /* ESRCH: the group is already gone */ }
+  const log = logOf(deps)
+  let logged = false
+  return (signal) => {
+    try {
+      kill(-pid, signal)
+      return true
+    } catch (e) {
+      const code = errorCode(e)
+      // ESRCH: the group is already gone, which is what a kill wants.
+      if (code === 'ESRCH') return true
+      if (!logged) { logged = true; log(`[processTree] ${signal} did not reach process group ${pid} (${code})`) }
+      return false
+    }
   }
-  if (opts.sync) {
-    signalGroup('SIGKILL')
-    return true
+}
+
+/**
+ * End `pid` and every process under it, asynchronously. Resolves true once the kill is confirmed
+ * sent: taskkill exited 0, or the POSIX group took SIGTERM or was already gone. Resolves false
+ * for an unusable pid or a kill that failed (after one retry where `canRetry` allows it), and
+ * logs that failure once. A true says the signal was delivered, not that every process has ended:
+ * the caller confirms that by its child's exit and its pipes closing. Never rejects.
+ */
+export async function endProcessTree(pid: number | undefined, opts: Omit<KillTreeOptions, 'sync'> = {}, deps: KillTreeDeps = {}): Promise<boolean> {
+  if (!usablePid(pid)) return false
+  if ((opts.platform ?? process.platform) === 'win32') {
+    let outcome = await taskkillOnce(pid, deps)
+    if (outcome !== 0) {
+      let again = false
+      try { again = opts.canRetry?.() === true } catch { /* no answer is a no */ }
+      if (again) outcome = await taskkillOnce(pid, deps)
+    }
+    if (outcome === 0) return true
+    logTaskkill(logOf(deps), pid, outcome)
+    return false
   }
-  signalGroup('SIGTERM')
+  const signalGroup = groupSignaller(pid, deps)
+  const delivered = signalGroup('SIGTERM')
   // A process group ID is not reused while any member lives, so a late SIGKILL can't hit a
   // stranger's group, and unref keeps it from holding a quitting process open.
   setTimeout(() => signalGroup('SIGKILL'), opts.graceMs ?? TREE_KILL_GRACE_MS).unref()
+  return delivered
+}
+
+/**
+ * End `pid` and every process under it. Returns false when there was no usable pid, and true once
+ * a kill was sent, which says nothing about whether anything was still running. Never throws.
+ * Without `sync` the kill finishes in the background, as endProcessTree.
+ */
+export function killProcessTree(pid: number | undefined, opts: KillTreeOptions = {}, deps: KillTreeDeps = {}): boolean {
+  if (!usablePid(pid)) return false
+  if (!opts.sync) {
+    void endProcessTree(pid, opts, deps)
+    return true
+  }
+  if ((opts.platform ?? process.platform) === 'win32') {
+    // At quit there is no retry: the app exits right after, and the child's 'exit' event, the
+    // only proof that the pid is still ours, can't arrive while this blocks.
+    let outcome: Outcome
+    try {
+      const r = (deps.spawnSync ?? spawnSync)(taskkillPath(deps.env), taskkillArgs(pid), { windowsHide: true, stdio: 'ignore', timeout: SYNC_TASKKILL_TIMEOUT_MS }) as
+        { status?: number | null; signal?: NodeJS.Signals | null; error?: Error } | undefined
+      outcome = r?.error ? errorCode(r.error) : (r?.status ?? r?.signal ?? 'none')
+    } catch (e) { outcome = errorCode(e) }
+    if (outcome !== 0) logTaskkill(logOf(deps), pid, outcome)
+    return true
+  }
+  groupSignaller(pid, deps)('SIGKILL')
   return true
 }

@@ -106,6 +106,7 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
     let exited = false
     let child: AgentChild | undefined
     let stopReason: string | null = null
+    let killedAtQuit = false
     let deadline: ReturnType<typeof setTimeout> | undefined
     let giveUp: ReturnType<typeof setTimeout> | undefined
     const finish = (r: { stdout: string; stderr?: string; code: number }): void => {
@@ -130,10 +131,19 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
         clearTimeout(deadline)
         clearTimeout(giveUp)
         // Windows: after the wrapper exits its pid can be reused, and `taskkill /T` can no longer
-        // find the tree under it anyway, so nothing is left that is safe to kill.
+        // find the tree under it anyway, so nothing is left that is safe to kill. Until its 'exit'
+        // event, libuv still holds the wrapper's process handle, and an open handle keeps Windows
+        // from giving its pid to another process. So `exited` is also what a retry asks: a failed
+        // taskkill is tried once more only while the wrapper is still ours and alive, and not
+        // after the quit's own synchronous kill.
         if (!(isWin && exited)) {
-          try { killTree(child?.pid, { platform, sync }) } catch { /* the run still settles below */ }
+          if (sync) killedAtQuit = true
+          try { killTree(child?.pid, { platform, sync, canRetry: () => !exited && !killedAtQuit }) } catch { /* the run still settles below */ }
         }
+        // The run stays in `running`, so a quit still reaches its tree, until it is stopped for
+        // sure: the wrapper exited and its pipes closed ('close' below), or the backstop fired.
+        // A confirmed taskkill alone is not enough, since a process outside the tree can still
+        // hold a pipe.
         if (sync) finish(stopped(note))
         else giveUp = setTimeout(() => finish(stopped(note)), settleMs)
       },
