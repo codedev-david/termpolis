@@ -704,9 +704,12 @@ describe('importing ~/.claude/accounts.sh', () => {
     writeText(join(sb.paths.claudeDir, '.limited-codedev'), `${at}\n`)
     let v = await list()
     expect(v.accounts.find((a) => a.label === 'codedev')?.limitedOutside).toBe(at * 1000)
+    // When the cooldown ends goes with it, so the renderer stops counting the marker then (1.63.1).
+    expect(v.accounts.find((a) => a.label === 'codedev')?.limitedOutsideEnds).toBe(at * 1000 + 3600 * 1000)
     clock += 3600 * 1000
     v = await list()
     expect(v.accounts.find((a) => a.label === 'codedev')?.limitedOutside).toBeUndefined()
+    expect(v.accounts.find((a) => a.label === 'codedev')?.limitedOutsideEnds).toBeUndefined()
     clock -= 3600 * 1000
     // A profile accounts.sh doesn't list: the hook would name the wrong account, so its markers are ignored.
     await ok(ACCOUNTS_IPC.add, { agent: 'claude', label: 'extra', folder: 'new', copy: false })
@@ -767,6 +770,7 @@ describe('usage limits', () => {
     const id = g.account.id
     const row = await ok<AccountRowView>(ACCOUNTS_IPC.noteLimit, { id, text: '✕ You have exhausted\nyour quota.', resetsAt: clock + 60_000, scope: 'model', window: 'session', email: 'g@example.test' })
     expect(row.limit).toEqual({ seenAt: clock, resetsAt: clock + 60_000, text: '✕ You have exhausted your quota.', scope: 'model', window: 'session', email: 'g@example.test' })
+    expect(row.limitEnds).toBe(clock + 60_000)
     clock += 60_001
     expect((await list()).accounts[0].limit).toBeUndefined()
     clock -= 60_001
@@ -778,12 +782,18 @@ describe('usage limits', () => {
   it('falls back to the cooldown with no reset time, and keeps a weekly limit 7 days (R15)', async () => {
     const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g' })
     const id = g.account.id
+    const seen = clock
     await ok(ACCOUNTS_IPC.noteLimit, { id, text: 'limit', resetsAt: 'soon', scope: 'bogus' })
+    // The renderer is told when it ends, so its labels clear by themselves then (1.63.1).
+    expect((await list()).accounts[0].limitEnds).toBe(seen + 18000 * 1000)
     clock += 18000 * 1000 - 1
     expect((await list()).accounts[0].limit).toMatchObject({ resetsAt: null, scope: 'account' })
     clock += 2
     expect((await list()).accounts[0].limit).toBeUndefined()
+    expect((await list()).accounts[0].limitEnds).toBeUndefined()
+    const weekSeen = clock
     await ok(ACCOUNTS_IPC.noteLimit, { id, text: 'You\'ve hit your weekly limit', window: 'weekly' })
+    expect((await list()).accounts[0].limitEnds).toBe(weekSeen + 7 * 86400 * 1000)
     clock += 6 * 86400 * 1000
     expect((await list()).accounts[0].limit).toBeDefined()
     clock += 86400 * 1000 + 1

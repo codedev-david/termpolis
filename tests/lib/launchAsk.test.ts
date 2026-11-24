@@ -55,6 +55,19 @@ describe('isAccountLimited: out of usage as Termpolis knows it now', () => {
 })
 
 describe('launchAccountAsked', () => {
+  it('asks nothing once the limit or the marker of the failover hook has ended, even with no reset time read (1.63.1)', async () => {
+    const ask = asks({ kind: 'cancel' })
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit({ resetsAt: null }), limitEnds: NOW }, CODEDEV, SPARE, WORK]) })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_a' })
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limitedOutside: NOW - 1000, limitedOutsideEnds: NOW }, CODEDEV, SPARE, WORK]) })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_a' })
+    expect(ask).not.toHaveBeenCalled()
+    // Inside the window it still asks.
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit({ resetsAt: null }), limitEnds: NOW + 1 }, CODEDEV, SPARE, WORK]) })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: true })
+    expect(ask).toHaveBeenCalledTimes(1)
+  })
+
   it('does not offer an account known to be signed out: the agent would open on its sign-in screen (UI-R1-B)', async () => {
     const signedOut = { ...CODEDEV, identity: { email: null, signedIn: false, checkedAt: NOW - 1000, source: 'auth-status' as const } }
     useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit() }, signedOut, SPARE, WORK]) })

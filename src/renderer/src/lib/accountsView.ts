@@ -3,6 +3,7 @@
 // reads a file or builds a path or an env value.
 import { isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
 import { agentNamed } from '../../../shared/launchCarry'
+import { limitedOutsideNow, liveLimit } from '../../../shared/accountLimits'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
 
 /** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
@@ -46,9 +47,10 @@ function resetTime(at: number): string {
 export function accountBadge(r: AccountRowView, now: number): { text: string; tone: BadgeTone } {
   if (!isProfileAgent(r.agent)) return { text: r.email ?? 'no email given', tone: 'muted' }
   if (!r.folderExists) return { text: 'folder missing', tone: 'bad' }
-  if (r.limit && r.limit.scope === 'model') return { text: 'a model is out of usage', tone: 'warn' }
-  if (r.limit) return { text: r.limit.resetsAt !== null && r.limit.resetsAt > now ? `out of usage · resets ${resetTime(r.limit.resetsAt)}` : 'out of usage', tone: 'warn' }
-  if (r.limitedOutside !== undefined) return { text: 'out of usage (seen by your failover hook)', tone: 'warn' }
+  const limit = liveLimit(r, now)
+  if (limit && limit.scope === 'model') return { text: 'a model is out of usage', tone: 'warn' }
+  if (limit) return { text: limit.resetsAt !== null && limit.resetsAt > now ? `out of usage · resets ${resetTime(limit.resetsAt)}` : 'out of usage', tone: 'warn' }
+  if (limitedOutsideNow(r, now)) return { text: 'out of usage (seen by your failover hook)', tone: 'warn' }
   const checked = r.identity && r.identity.signedIn !== null ? r.identity : null
   const actual = checked ? (checked.signedIn ? checked.email : null) : r.lastEmail
   if (r.email && actual && !sameEmail(r.email, actual)) return { text: `signed in to ${actual} instead!`, tone: 'bad' }

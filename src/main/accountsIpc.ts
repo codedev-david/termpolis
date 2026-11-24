@@ -38,7 +38,7 @@ import { claudeSignedInNow, codexSignedInNow, findOnPath, resolveCli, shimInvoca
 import type { CheckDeps, IdentityCheck } from './accountIdentity'
 import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
-  AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
+  AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder, limitEndsAt,
   claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected,
   lastSignedInAs, limitedMarker, liveProfileDir, liveProfileDirAsync, loadAccounts, loadAccountsAsync, newAccountId, previewAccountsSh, profileDirOf, reslotClaudeAccounts,
   readAccountsSh, updateAccounts,
@@ -833,11 +833,18 @@ function rowView(doc: AccountsDoc, a: AgentAccount, home: string, now: number, u
   const identity = doc.file.identity[a.id]
   if (identity) row.identity = identity
   const limit = activeLimit(doc, a, now)
-  if (limit) row.limit = limit
+  if (limit) {
+    row.limit = limit
+    row.limitEnds = limitEndsAt(limit, cooldownFor(doc, a.agent))
+  }
   // The ~/.claude StopFailure hook's own record, as a floor. Ignored while accounts.sh lacks a
   // registered profile: the hook then names the wrong account.
   const marker = a.agent === 'claude' && unlisted === 0 ? limitedMarker(home, a.importedAs, fsx) : null
-  if (marker !== null && now - marker * 1000 < cooldownFor(doc, 'claude') * 1000) row.limitedOutside = marker * 1000
+  const markerEnds = marker === null ? 0 : marker * 1000 + cooldownFor(doc, 'claude') * 1000
+  if (marker !== null && now < markerEnds) {
+    row.limitedOutside = marker * 1000
+    row.limitedOutsideEnds = markerEnds
+  }
   return row
 }
 

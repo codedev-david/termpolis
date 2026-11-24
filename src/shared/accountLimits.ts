@@ -9,7 +9,7 @@
 //                        message: "3pm (America/New_York)".
 //   Codex 0.153.4        "3:04 PM"; another day "Oct 24th, 2026 4:15 PM"; local time.
 import { isProfileAgent } from './agentAccounts'
-import type { AccountAgent, AccountLimit, AccountRowView } from './agentAccounts'
+import type { AccountAgent, AccountLimit, AccountRowView, AccountsView } from './agentAccounts'
 import type { AgentStatusResult } from './agentStatusDetector'
 
 /** What the chooser reads off a terminal (accounts:limit-look, main's limitLook.ts): one judgement of
@@ -213,18 +213,70 @@ export function unofferedLoginOwner(rows: readonly AccountRowView[], r: AccountR
   return rows.find((x) => x.agent === r.agent && x.id !== r.id && !x.autoOffer && sameEmail(x.email, email))
 }
 
-/** A recorded limit whose reset time has passed has lifted, whatever the view was last read as: main
- *  drops it when it next lists, and the view the renderer holds is only as new as its last read. A limit
- *  with no time read stays until main drops it (it knows the cooldown). */
-function liftedLimit(limit: { resetsAt: number | null }, now: number): boolean {
-  return limit.resetsAt !== null && limit.resetsAt <= now
+type LimitFields = Pick<AccountRowView, 'limit' | 'limitEnds' | 'limitedOutside' | 'limitedOutsideEnds'>
+
+/** When the row's recorded limit ends: main's word (its reset time, or with none read when it was seen
+ *  plus the cooldown), else its reset time; null when neither is known (it stays until main drops it). */
+function limitEnd(r: LimitFields): number | null {
+  return r.limitEnds ?? r.limit?.resetsAt ?? null
+}
+
+/** When the failover hook's marker stops counting (main's word: the marker's time plus the cooldown
+ *  the hook writes it for); null when there is none or main gave no end. */
+function outsideEnd(r: LimitFields): number | null {
+  return r.limitedOutside === undefined ? null : r.limitedOutsideEnds ?? null
+}
+
+/** The row's recorded limit while it lasts, whatever the view was last read as: main drops an ended one
+ *  when it next lists, and the view the renderer holds is only as new as its last read. */
+export function liveLimit(r: LimitFields, now: number): AccountLimit | undefined {
+  if (!r.limit) return undefined
+  const end = limitEnd(r)
+  return end !== null && end <= now ? undefined : r.limit
+}
+
+/** The failover hook marked the account out of usage, and that marker's cooldown has not ended. A
+ *  marker with no end given counts until main drops it. */
+export function limitedOutsideNow(r: LimitFields, now: number): boolean {
+  if (r.limitedOutside === undefined) return false
+  const end = outsideEnd(r)
+  return end === null || now < end
 }
 
 /** Is the account out of usage as Termpolis knows it now: a limit of the whole account that has not
- *  lifted, or one its failover hook saw. A model's limit leaves the account on offer (R15). */
-export function isAccountLimited(r: Pick<AccountRowView, 'limit' | 'limitedOutside'>, now: number): boolean {
-  if (r.limit && r.limit.scope === 'account' && !liftedLimit(r.limit, now)) return true
-  return r.limitedOutside !== undefined
+ *  lifted, or one its failover hook saw, inside its cooldown. A model's limit leaves the account on
+ *  offer (R15). */
+export function isAccountLimited(r: LimitFields, now: number): boolean {
+  const limit = liveLimit(r, now)
+  if (limit && limit.scope === 'account') return true
+  return limitedOutsideNow(r, now)
+}
+
+/** The view without the limits and markers that have ended by `now`: the same object when none has. */
+export function currentAccountsView(view: AccountsView, now: number): AccountsView {
+  let changed = false
+  const accounts = view.accounts.map((r) => {
+    const dropLimit = r.limit !== undefined && !liveLimit(r, now)
+    const dropOutside = r.limitedOutside !== undefined && !limitedOutsideNow(r, now)
+    if (!dropLimit && !dropOutside) return r
+    changed = true
+    const next = { ...r }
+    if (dropLimit) { delete next.limit; delete next.limitEnds }
+    if (dropOutside) { delete next.limitedOutside; delete next.limitedOutsideEnds }
+    return next
+  })
+  return changed ? { ...view, accounts } : view
+}
+
+/** The next moment after `now` a limit or a marker in the view ends; null when none will. */
+export function nextLimitEnd(view: AccountsView, now: number): number | null {
+  let next: number | null = null
+  for (const r of view.accounts) {
+    for (const end of [r.limit ? limitEnd(r) : null, outsideEnd(r)]) {
+      if (end !== null && end > now && (next === null || end < next)) next = end
+    }
+  }
+  return next
 }
 
 /**
@@ -246,7 +298,7 @@ export function limitTargets(
   const at = own.findIndex((r) => r.id === limited.accountId)
   const round = at < 0 ? own : [...own.slice(at + 1), ...own.slice(0, at)]
   // Sign-ins out of usage by Termpolis's records: an unexpired limit of the whole account.
-  const outEmails = own.filter((r) => r.limit && r.limit.scope === 'account' && r.limit.email && !liftedLimit(r.limit, now)).map((r) => r.limit!.email!)
+  const outEmails = own.map((r) => liveLimit(r, now)).filter((l) => l && l.scope === 'account' && l.email).map((l) => l!.email!)
   const targets: LimitTarget[] = []
   for (const r of round) {
     if (!r.autoOffer) continue
@@ -262,17 +314,18 @@ export function limitTargets(
 function targetOf(r: AccountRowView, limitedEmail: string | null, outEmails: readonly string[], now: number, check: TargetCheck | undefined): LimitTarget {
   if (isProfileAgent(r.agent) && !r.folderExists) return { row: r, state: 'folder-missing', text: 'its profile folder doesn\'t exist' }
   const email = check?.kind === 'signed-in' && check.email ? check.email : actualEmail(r)
-  if (r.limit && r.limit.scope === 'account' && !liftedLimit(r.limit, now)) {
-    const until = untilText(r.limit.resetsAt, now)
+  const limit = liveLimit(r, now)
+  if (limit && limit.scope === 'account') {
+    const until = untilText(limit.resetsAt, now)
     return { row: r, state: 'limited', text: until ? `out of usage ${until}` : 'out of usage' }
   }
-  if (r.limitedOutside !== undefined) return { row: r, state: 'limited', text: 'out of usage (seen by your failover hook)' }
+  if (limitedOutsideNow(r, now)) return { row: r, state: 'limited', text: 'out of usage (seen by your failover hook)' }
   if (outEmails.some((e) => sameEmail(e, email))) return { row: r, state: 'limited', text: `out of usage (signed in to ${email}, which ran out)` }
   if (sameEmail(email, limitedEmail)) return { row: r, state: 'same-sign-in', text: `signed in to ${email}, the same account` }
   if (check?.kind === 'signed-out') return { row: r, state: 'signed-out', text: 'signed out' }
   if (check?.kind === 'unknown') return { row: r, state: 'unknown', text: `couldn't tell whether it is signed in: ${check.why}` }
   let text = !isProfileAgent(r.agent) ? r.email ?? 'no email given' : check?.kind === 'signed-in' ? (check.email ? `signed in as ${check.email}` : 'signed in') : 'available'
   // A model's limit leaves the account on offer, with the CLI's words.
-  if (r.limit && r.limit.scope === 'model') text += ` · ${r.limit.text}`
+  if (limit && limit.scope === 'model') text += ` · ${limit.text}`
   return { row: r, state: 'available', text }
 }

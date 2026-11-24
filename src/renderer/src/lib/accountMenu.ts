@@ -4,7 +4,7 @@
 // moves; and where it opens, and where the keyboard goes back to when it closes.
 import { isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
-import { unofferedLoginOwner, untilText } from '../../../shared/accountLimits'
+import { limitedOutsideNow, liveLimit, unofferedLoginOwner, untilText } from '../../../shared/accountLimits'
 import { signedInElsewhere, signedInEmail } from './accountChip'
 import { AGENT_COLOR, workerBlocker } from './accountsView'
 
@@ -43,12 +43,13 @@ export function isSignedIn(r: AccountRowView): boolean {
 function statusOf(r: AccountRowView, now: number): { status: string; tone: MenuTone } {
   if (!isProfileAgent(r.agent)) return { status: r.autoOffer ? 'Google account' : 'Not offered automatically', tone: 'muted' }
   if (r.identity?.source === 'sign-in-screen' && r.identity.signedIn === false) return { status: 'Sign-in expired', tone: 'bad' }
-  if (r.limit && r.limit.scope !== 'model') {
-    const until = untilText(r.limit.resetsAt, now)
+  const limit = liveLimit(r, now)
+  if (limit && limit.scope !== 'model') {
+    const until = untilText(limit.resetsAt, now)
     return { status: until ? `Out of usage ${until}` : 'Out of usage', tone: 'warn' }
   }
-  if (r.limit) return { status: 'A model is out of usage', tone: 'warn' }
-  if (r.limitedOutside !== undefined) return { status: 'Out of usage (your failover hook)', tone: 'warn' }
+  if (limit) return { status: 'A model is out of usage', tone: 'warn' }
+  if (limitedOutsideNow(r, now)) return { status: 'Out of usage (your failover hook)', tone: 'warn' }
   const elsewhere = signedInElsewhere(r)
   if (elsewhere) return { status: `Signed in as ${elsewhere}`, tone: 'warn' }
   if (!isSignedIn(r)) return { status: 'Signed out', tone: 'muted' }

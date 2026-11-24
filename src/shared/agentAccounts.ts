@@ -207,9 +207,14 @@ export interface AccountRowView {
   identity?: AccountIdentity
   /** An unexpired usage limit Termpolis recorded. */
   limit?: AccountLimit
+  /** When `limit` ends (epoch ms): its reset time, or with none known when it was seen plus the
+   *  cooldown (7 days for a weekly or monthly one). The renderer drops the limit then by itself. */
+  limitEnds?: number
   /** When the ~/.claude StopFailure hook last marked this imported account limited (epoch ms),
    *  while still inside the cooldown and accounts.sh lists every registered profile. */
   limitedOutside?: number
+  /** When that marker's cooldown ends (epoch ms): the renderer stops counting it then. */
+  limitedOutsideEnds?: number
   /** Termpolis's own entries in this profile. null for agy and for a missing folder. */
   connection: { server: boolean; hook: boolean; allow: boolean } | null
   /** Its settings.json skips Claude Code's bypass-permissions warning, so a swarm worker can take
