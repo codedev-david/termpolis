@@ -76,9 +76,75 @@ describe('createHostLane', () => {
       expect(seen).toEqual([true, false])
     })
 
-    it('background calls waiting on the lane still start as soon as it empties, not after the linger', async () => {
+    it("background calls wait through the linger, so a write let in between an Ask's reads cannot hold the next read up (world-responsive t3)", async () => {
+      vi.useFakeTimers()
+      const seen: boolean[] = []
+      const lane = createHostLane((on) => seen.push(on), { lingerMs: 2_000, maxWaitMs: 5_000 })
+      const search = await lane.enter('interactive')
+      let started = false
+      const write = lane.enter('background').then((r) => { started = true; return r })
+      search()
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(started).toBe(false) // the lane is empty, but the Ask's next read may come any moment
+      expect(lane.waiting()).toBe(1)
+      const list = await lane.enter('interactive') // the recent listing: goes at once, the write still waits
+      list()
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(started).toBe(false) // the linger starts again from the listing's end
+      await vi.advanceTimersByTimeAsync(1)
+      expect(started).toBe(true) // the linger is over: the write goes, as the host drops back below normal
+      expect(seen).toEqual([true, false])
+      ;(await write)()
+      expect(lane.waiting()).toBe(0)
+    })
+
+    it('a background call that arrives inside the linger waits for it to end, and one after it starts at once', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane(() => {}, { lingerMs: 2_000, maxWaitMs: 5_000 })
+      ;(await lane.enter('interactive'))()
+      await vi.advanceTimersByTimeAsync(500)
+      let started = false
+      const write = lane.enter('background').then((r) => { started = true; return r })
+      await vi.advanceTimersByTimeAsync(1_499)
+      expect(started).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(started).toBe(true)
+      ;(await write)()
+      const later = await lane.enter('background') // no interactive call, no linger: no wait
+      later()
+      expect(lane.waiting()).toBe(0)
+    })
+
+    it("still never waits past the max wait: with the memory host's own figures a call inside the linger goes after BACKGROUND_MAX_WAIT_MS", async () => {
       vi.useFakeTimers()
       const lane = createHostLane(() => {}, { lingerMs: LANE_LINGER_MS })
+      ;(await lane.enter('interactive'))()
+      let started = false
+      const write = lane.enter('background').then((r) => { started = true; return r })
+      await vi.advanceTimersByTimeAsync(BACKGROUND_MAX_WAIT_MS - 1)
+      expect(started).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(started).toBe(true)
+      ;(await write)()
+      expect(BACKGROUND_MAX_WAIT_MS).toBeLessThan(LANE_LINGER_MS) // so the max wait, not the linger, bounds it
+    })
+
+    it('idle() inside the linger waits for it to end too (a Weave item is not started between two reads)', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane(() => {}, { lingerMs: 300, maxWaitMs: 5_000 })
+      ;(await lane.enter('interactive'))()
+      let done = false
+      const p = lane.idle().then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(299)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await p
+      expect(done).toBe(true)
+      await lane.idle() // the linger is over: at once
+    })
+
+    it('a lane with no linger lets its waiting background calls go the moment it empties, as before', async () => {
+      const lane = createHostLane()
       const i = await lane.enter('interactive')
       let started = false
       const bg = lane.enter('background').then((r) => { started = true; return r })
