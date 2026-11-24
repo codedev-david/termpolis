@@ -205,11 +205,16 @@ function maxBufferError(stream: 'stdout' | 'stderr'): Error {
  * `signal`; each gets `cmd`. No timer: runExec's own timeout ends the tree. procHost.process.test.ts
  * runs the same commands through execFile and through this and compares what comes back.
  *
- * The 'close' and 'error' listeners go on before anything else, and every use of a pipe allows for none,
- * as execFile's does: a spawn that hits EMFILE or ENFILE returns a child without stdout and stderr and
- * emits the error on the next tick, which must find its listener.
+ * Two departures, both safer than execFile:
+ * - Output past `maxBuffer` ends the whole tree (`endTree`, as a cancel does: SIGTERM, then SIGKILL after
+ *   the grace on macOS and Linux, taskkill /T on Windows) before the child is sent SIGTERM. execFile ends
+ *   the child only, and a grandchild holding the pipes lived on with nothing left to end it: the run is
+ *   answered at once, which drops its group from the host's and from main's lists.
+ * - The 'close' and 'error' listeners go on before anything else, and every use of a pipe allows for
+ *   none, as execFile's does: a spawn that hits EMFILE or ENFILE returns a child without stdout and stderr
+ *   and emits the error on the next tick, which must find its listener.
  */
-function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOptions>, detached: boolean, done: ExecDone): ChildProcess {
+function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOptions>, detached: boolean, done: ExecDone, endTree: () => unknown): ChildProcess {
   const child = spawn(bin, args, {
     cwd: base.cwd,
     env: base.env,
@@ -243,15 +248,21 @@ function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOpti
     child.stdout?.destroy()
     child.stderr?.destroy()
   }
-  const kill = (): void => {
-    destroyPipes()
-    killed = true
+  const term = (): void => {
     try {
       child.kill('SIGTERM')
     } catch (e) {
       ex = e as Error
       exitHandler()
     }
+  }
+  const kill = (): void => {
+    destroyPipes()
+    killed = true
+    // The tree first, while its root lives (taskkill /T walks down from a live root only), then the
+    // child itself, as execFile does, so it ends even when the tree kill could not end it. endProcessTree
+    // never rejects; an injected one is held to the same order either way.
+    void Promise.resolve(endTree()).then(term, term)
   }
   const collect = (stream: 'stdout' | 'stderr', chunks: string[], chunk: string): void => {
     if (base.maxBuffer === Infinity) { chunks.push(chunk); return }
@@ -328,11 +339,13 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       const answerStopped = (): void => finish(stoppedOutcome('', ''))
       const settle = (): void => { if (!settled) backstop = setTimeout(answerStopped, TREE_STOP_SETTLE_MS) }
       cap = setTimeout(answerStopped, TREE_STOP_MAX_MS)
-      const how = { platform: deps.platform, canRetry: () => !exited, ...(isWin ? {} : { leader }) }
       if (isWin && exited) return settle()
       // endProcessTree never rejects; an injected one is held to the same answer either way.
-      void Promise.resolve((deps.endTree ?? endProcessTree)(child.pid, how)).then(settle, settle)
+      void Promise.resolve(endTree()).then(settle, settle)
     }
+    // Ends the tree (a stop, or output past maxBuffer); on Windows only while its root lives, as above.
+    const endTree = (): unknown => (deps.endTree ?? endProcessTree)(child.pid, { platform: deps.platform, canRetry: () => !exited, ...(isWin ? {} : { leader }) })
+    const endLiveTree = (): unknown => (isWin && exited ? undefined : endTree())
     const onAbort = (): void => stop('cancelled')
     const answer: ExecDone = (err, stdout, stderr) => {
       // Only a tree run is stopped, and spawnTree always hands over strings.
@@ -341,7 +354,7 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
     }
     // With `tree` the timeout is this module's, so it ends the tree too; execFile's own would end the child only.
     // And spawnTree, not execFile, which drops `detached` (see spawnTree).
-    const child = tree ? spawnTree(bin, args, base, !isWin, answer) : execFile(bin, args, { ...base, shell: false }, answer)
+    const child = tree ? spawnTree(bin, args, base, !isWin, answer, endLiveTree) : execFile(bin, args, { ...base, shell: false }, answer)
     // macOS and Linux: should the group answer ESRCH while this child runs, it never was made, and the
     // signal goes to the child through its own handle (processTree's `leader`). Only until it exits: the
     // handle signals nobody once node has reaped it, and a group whose leader has exited may still be

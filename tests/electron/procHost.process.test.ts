@@ -17,6 +17,7 @@ import { endProcessTree, taskkillPath } from '../../src/main/processTree'
 
 let dir = ''
 let script = ''
+let flooder = ''
 let seq = 0
 const unverified = new Set<number>()
 
@@ -36,6 +37,19 @@ beforeAll(() => {
     "process.stderr.write('labeller up\\n')",
     "writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
     "renameSync(process.argv[2] + '.tmp', process.argv[2])",
+    'setTimeout(() => {}, 120000)',
+  ].join('\n'))
+  // The same tree, but its grandchild shrugs off SIGTERM and the stand-in prints far past maxBuffer once
+  // the pid file is written: only the SIGKILL after the grace (on Windows, taskkill /T /F) ends it.
+  flooder = join(dir, 'flooder.cjs')
+  writeFileSync(flooder, [
+    "const { spawn } = require('child_process')",
+    "const { renameSync, writeFileSync } = require('fs')",
+    "const grandchild = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 120000)\"], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
+    "writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
+    "renameSync(process.argv[2] + '.tmp', process.argv[2])",
+    // Long enough for the grandchild to have its SIGTERM handler on before the cut can signal it.
+    "setTimeout(() => process.stdout.write('x'.repeat(5000)), 1500)",
     'setTimeout(() => {}, 120000)',
   ].join('\n'))
 })
@@ -131,6 +145,20 @@ describe('a labelling exec with tree, on real processes', () => {
     // A timeout keeps what was printed, and the pipes closing (not the backstop) answered it.
     expect(r.stdout).toContain('half an answer')
     expect(r.stderr).toContain('labeller up')
+    expect(await waitDead(labeller)).toBe(true)
+    expect(await waitDead(grandchild)).toBe(true)
+  }, 60_000)
+
+  it('output past maxBuffer ends the whole tree, a grandchild that ignores SIGTERM included', async () => {
+    // execFile ends only the direct child here, and the answer drops the group from every list that
+    // could still end it, so a grandchild holding the pipes lived on with nothing left to end it.
+    const pidFile = join(dir, `pids-${++seq}.json`)
+    const r = await execCaptureOffThread(process.execPath, [flooder, pidFile], { tree: true, timeout: 60_000, maxBuffer: 1000 })
+    const { labeller, grandchild } = JSON.parse(readFileSync(pidFile, 'utf8')) as { labeller: number; grandchild: number }
+    unverified.add(labeller)
+    unverified.add(grandchild)
+    expect(r.stdout).toBe('x'.repeat(1000))
+    expect(r.error).toMatchObject({ message: 'stdout maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
     expect(await waitDead(labeller)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
   }, 60_000)

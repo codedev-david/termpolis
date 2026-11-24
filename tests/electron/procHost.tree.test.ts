@@ -279,8 +279,10 @@ describe('runExec with tree', () => {
 // spawnTree collects output the way execFile does (the real-process comparison against execFile itself
 // is in procHost.process.test.ts); these pin the paths a real child cannot be made to take on demand.
 describe('a tree run collects its output as execFile does', () => {
-  const run = (opts: Record<string, unknown> = {}, args: string[] = ['-p']): Promise<RunOutcome> =>
-    runExec('claude', args, { tree: true, ...opts }, undefined, { platform: 'linux', endTree: vi.fn() })
+  let endTree = vi.fn()
+  beforeEach(() => { endTree = vi.fn() })
+  const run = (opts: Record<string, unknown> = {}, args: string[] = ['-p'], platform: NodeJS.Platform = 'linux'): Promise<RunOutcome> =>
+    runExec('claude', args, { tree: true, ...opts }, undefined, { platform, endTree })
 
   it('reads both pipes as utf8 and answers a clean exit with no error', async () => {
     const r = run()
@@ -351,13 +353,21 @@ describe('a tree run collects its output as execFile does', () => {
     expect([child.stdout.destroyed, child.stderr.destroyed]).toEqual([true, true])
   })
 
-  it('cuts stdout at maxBuffer bytes, mid-chunk, and ends the child with SIGTERM as execFile does', async () => {
+  it('cuts stdout at maxBuffer bytes, mid-chunk, ends the whole tree, then the child with SIGTERM as execFile does', async () => {
+    let delivered: (ok: boolean) => void = () => {}
+    endTree.mockImplementation(() => new Promise<boolean>((res) => { delivered = res }))
     const r = run({ maxBuffer: 6 })
     child.stdout.emit('data', 'ab')
     // 'é' is two bytes, so 2 + 6 > 6 and the chunk is cut to 6 - 2 = 4 characters: execFile counts bytes but slices characters.
     child.stdout.emit('data', 'cdéfg')
-    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
     expect([child.stdout.destroyed, child.stderr.destroyed]).toEqual([true, true])
+    // The tree first, as a cancel ends it, and the child only once that kill is delivered.
+    expect(endTree).toHaveBeenCalledWith(4242, { platform: 'linux', canRetry: expect.any(Function), leader: LEADER })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill).not.toHaveBeenCalled()
+    delivered(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
     child.emit('close', null, 'SIGTERM')
     const out = await r
     expect(out.stdout).toBe('abcdéf')
@@ -375,6 +385,26 @@ describe('a tree run collects its output as execFile does', () => {
     expect(out.error).toMatchObject({ message: 'stderr maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
   })
 
+  it('on Windows ends the tree at a cut while its root lives, and only the child once the root has exited', async () => {
+    const live = run({ maxBuffer: 1 }, ['-p'], 'win32')
+    child.stdout.emit('data', 'ab')
+    expect(endTree).toHaveBeenCalledWith(4242, { platform: 'win32', canRetry: expect.any(Function) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
+    child.emit('close', null, 'SIGTERM')
+    expect((await live).error).toMatchObject({ code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
+    endTree.mockClear()
+    // Output still buffered after the root exited: its pid may already name a stranger.
+    const late = run({ maxBuffer: 1 }, ['-p'], 'win32')
+    child.emit('exit', 0)
+    child.stdout.emit('data', 'ab')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(endTree).not.toHaveBeenCalled()
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
+    child.emit('close', 0, null)
+    expect((await late).error).toMatchObject({ code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
+  })
+
   it('counts nothing with an infinite maxBuffer', async () => {
     const r = run({ maxBuffer: Infinity })
     child.stdout.emit('data', 'x'.repeat(2 * 1024 * 1024))
@@ -386,10 +416,12 @@ describe('a tree run collects its output as execFile does', () => {
   })
 
   it('answers with the kill\'s own error when SIGTERM throws, and ignores the close after', async () => {
+    endTree.mockRejectedValue(new Error('an injected endTree that rejects'))
     const r = run({ maxBuffer: 1 })
     const eperm = Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
     child.kill.mockImplementation(() => { throw eperm })
     child.stdout.emit('data', 'ab')
+    await vi.advanceTimersByTimeAsync(0)
     child.emit('close', 0, null)
     const out = await r
     expect(out.stdout).toBe('a')

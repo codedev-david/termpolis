@@ -209,7 +209,8 @@ export async function endProcessTree(pid: number | undefined, opts: Omit<KillTre
   const term = signalGroup('SIGTERM')
   // A process group ID is not reused while any member lives. Once SIGTERM finds no member (ESRCH)
   // and no leader the caller still holds, the ID is free, so no SIGKILL follows. A group whose last
-  // member dies during the grace leaves that window open for the SIGKILL. unref keeps the timer from holding a quitting process open.
+  // member dies during the grace leaves that window open for the SIGKILL. unref keeps the timer from
+  // holding a quitting process open.
   if (term !== 'gone') setTimeout(() => signalGroup('SIGKILL'), opts.graceMs ?? TREE_KILL_GRACE_MS).unref()
   return term !== 'failed'
 }
