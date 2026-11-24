@@ -351,6 +351,89 @@ describe('threeRenderer drawn in software', () => {
     }
   })
 
+  it("the opening turn keeps its speed at the loop's pace: the frame's time, not a fixed step per frame", () => {
+    const azimuth = (r: ThreeRenderer): number => { const c = r.getCamera(); return Math.atan2(c.pos[0] - c.target[0], c.pos[2] - c.target[2]) }
+    for (const name of [SWIFTSHADER, GEFORCE]) {
+      gpu.gpuName = name
+      const r = idle({ quality: 'low', reducedMotion: false }, still())
+      const a0 = azimuth(r)
+      drawnOver(r, 1600)
+      // OrbitControls' autoRotateSpeed 0.3 is 0.3 turns a minute: 2π/60·0.3 rad/s, over 1.6 s.
+      expect(Math.abs(azimuth(r) - a0), name).toBeCloseTo(1.6 * 2 * Math.PI / 60 * 0.3, 2)
+      r.dispose()
+      h.host.remove()
+      h.host = makeHost(800, 600)
+    }
+  })
+
+  it("an open building's flow dots loop at the loop's pace in software; a hand, a key, a hover and a flight are drawn every frame", async () => {
+    // Low quality has no dust and this city has no lines, rings, fog or pulses: once the turn ends, only the dots loop.
+    for (const [name, every] of [[SWIFTSHADER, false], [GEFORCE, true]] as const) {
+      gpu.gpuName = name
+      const r = idle({ quality: 'low', reducedMotion: false }, still())
+      void r.overview(true)
+      settle(h.frames)
+      r.setExploded('p')
+      h.frames.run(300) // the floors spread: an ease, drawn every frame until it settles
+      const flow = drawnOver(r, 1600)
+      if (every) expect(flow, name).toBe(100)
+      else expect(flow, name).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+      expect(h.frames.pending()).toBe(1) // the dots never stop while it is open
+      expect(r.motionState().exploded).toBe('p')
+      r.dispose()
+      h.host.remove()
+      h.host = makeHost(800, 600)
+    }
+    gpu.gpuName = SWIFTSHADER
+    const r = idle({ quality: 'low', reducedMotion: false }, still())
+    void r.overview(true)
+    settle(h.frames)
+    r.setExploded('p')
+    h.frames.run(300)
+    // A held movement key: every frame.
+    h.host.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }))
+    expect(drawnOver(r, 640)).toBe(40)
+    h.host.dispatchEvent(new KeyboardEvent('keyup', { key: 'w' }))
+    h.frames.run(60) // the step and the settling frames
+    // A drag on the canvas (OrbitControls' start and change): drawn on the next frame, each time.
+    const canvas = r.canvas
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 800 })
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 600 })
+    canvas.setPointerCapture = (): void => {}
+    canvas.releasePointerCapture = (): void => {}
+    h.frames.run(3) // just after a looping frame
+    let n = frames(r)
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, clientX: 100, clientY: 100, pointerType: 'mouse', bubbles: true }))
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    for (let x = 110; x <= 150; x += 10) {
+      n = frames(r)
+      canvas.ownerDocument.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 110, pointerType: 'mouse', bubbles: true }))
+      canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 110, pointerType: 'mouse', bubbles: true }))
+      h.frames.step()
+      expect(frames(r), `move to ${x}`).toBe(n + 1)
+    }
+    canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, button: 0, clientX: 150, clientY: 110, pointerType: 'mouse', bubbles: true }))
+    h.frames.run(120) // the glide after the hand lets go (damping) ends
+    // A hover: the next frame.
+    h.frames.run(3)
+    n = frames(r)
+    r.setHovered('q')
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    // A flight (the camera's tween): every frame until it lands.
+    let landed = false
+    void r.flyTo({ pos: [10, 50, 60], target: [0, 0, 0] }).then(() => { landed = true })
+    expect(drawnOver(r, 160)).toBe(10)
+    let k = 0
+    while (!landed && k++ < 600) { h.frames.step(); await Promise.resolve() }
+    expect(landed).toBe(true)
+    h.frames.run(20)
+    // Landed, with the building still open: the loop's pace again.
+    expect(drawnOver(r, 1600)).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    r.dispose()
+  })
+
   it('reads the name as RENDERER where the unmasked one is not given, and again when a lost context comes back', () => {
     gpu.gpuName = SWIFTSHADER
     gpu.debugInfo = false

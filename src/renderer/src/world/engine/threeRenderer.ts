@@ -2763,6 +2763,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
     tickChanges()
     let moving = changes.active() > 0
+    /** An open building's flow dots run (they loop for as long as it stays open). */
+    let flowing = false
     // Reduced motion reads a frozen clock and a zero step: the rings, the fog and the wireframe pulse stand still.
     const t = reduced ? 0 : clock.elapsedTime
     const mdt = reduced ? 0 : dt
@@ -2799,7 +2801,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (n.flow) {
         const on = n.exploded
         n.flow.line.visible = on
-        if (on && !reduced) moving = true // its flow dots run up the open building (they stand still under reduced motion)
+        if (on && !reduced) flowing = true // its flow dots run up the open building (they stand still under reduced motion)
         for (const d of n.flow.dots) {
           d.visible = on
           if (on) {
@@ -2812,7 +2814,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
     // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
     // draws them every SOFTWARE_LOOP_MS: see animate).
-    const looping = !reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true)
+    const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true))
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
@@ -2868,8 +2870,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       dustGeo.attributes.position.needsUpdate = true
     }
     // The slow opening turn (it loops until a hand, a key or a flight ends it), or the glide after a hand lets go (damping).
+    // The turn takes the frame's time, so it keeps its speed at any frame rate (the 60 fps turn of one call before).
     const turning = controls.autoRotate
-    if (controls.update() && !turning) moving = true
+    if (controls.update(dt) && !turning) moving = true
     // Semantic zoom: districts (blocks, district names), buildings (blocks, building names), floors (floors, seams, floor labels).
     retier()
     // Semantic zoom and no overlaps (layLabels); then how strongly each shown label reads. District

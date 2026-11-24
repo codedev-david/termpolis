@@ -377,7 +377,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
             // A mouse or touch press is handled above; a click with no pointer (Enter or Space) still toggles.
             onClick={(e) => { if (!hold || e.detail === 0) voice.toggle() }}
             disabled={disabled}
-            className={`px-1.5 ${voice.listening ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${transcribing ? ' animate-pulse' : ''}`}
+            className={`px-1.5 ${voice.listening ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${transcribing ? ' motion-safe:animate-pulse' : ''}`}
           >
             <i className="fa-solid fa-microphone" aria-hidden="true"></i>
           </button>

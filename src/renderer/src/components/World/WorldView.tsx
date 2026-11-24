@@ -149,7 +149,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [glGone, setGlGone] = useState(false)
   const webgl = webglFound && !glGone
   /** The 3D map is drawn in software (WorldDrawn.software): the card and the legend over it are opaque, not blurred glass. */
-  const [solid, setSolid] = useState(false)
+  const [software, setSoftware] = useState(false)
+  // With no WebGL at all (a blocklisted GPU, hardware acceleration off) the page is composited in software too, so the
+  // card over the 2D map is opaque as well. A GPU user who picks the 2D map keeps the glass.
+  const solid = software || !webgl
   // WebGL missing at the start (a GPU blocked for a while, a driver update) is looked for again when the window comes
   // back to the front, so the 3D map appears without reopening the pane. Only while it is missing: a live map's own
   // context is never crowded by a test context, and a map that loses its graphics says so itself (onGraphics).
@@ -614,13 +617,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           setNotice((n) => (n === GRAPHICS_LOST ? null : n))
           setGlPaused(false)
           // The context may come back on another GPU, or in software.
-          setSolid(v.drawn().software)
+          setSoftware(v.drawn().software)
         }
         else { setNotice(GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
       },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
-    setSolid(v.drawn().software)
+    setSoftware(v.drawn().software)
     setViewer(v)
     return () => {
       offSelect()
