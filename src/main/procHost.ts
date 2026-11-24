@@ -291,6 +291,18 @@ export interface HostExitDeps extends KillTreeDeps {
 }
 
 /**
+ * Tests only: the real-process suite sets this in a forked host's environment to lengthen its exit grace,
+ * so a stalled runner cannot outlast it. Nothing in the app sets it, so the host keeps TREE_KILL_GRACE_MS.
+ */
+export const HOST_GRACE_ENV = 'TERMPOLIS_TEST_PROC_HOST_GRACE_MS'
+
+/** The host's exit grace: HOST_GRACE_ENV when it is a whole number of ms from 1 to 60 000, else the 2 s default. */
+export function hostGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const ms = Number(env[HOST_GRACE_ENV])
+  return Number.isInteger(ms) && ms >= 1 && ms <= 60_000 ? ms : TREE_KILL_GRACE_MS
+}
+
+/**
  * The host ends the process groups of its `tree` runs on its way out (macOS and Linux). They are
  * detached, so they would outlive it: a SIGTERM or SIGINT to the host (shutdownProcHost's kill, a Ctrl+C
  * in a dev terminal) sends them SIGTERM, and the host exits after the grace; its 'exit', however it was
@@ -313,6 +325,8 @@ export interface HostExitDeps extends KillTreeDeps {
  * Job Object gap processTree.ts names.
  */
 export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDeps = {}): void {
+  // Read once, at startup.
+  const graceMs = deps.graceMs ?? hostGraceMs()
   let leaving = false
   /** The groups leave() sent SIGTERM that were there to get it: each gets its SIGKILL at the exit. */
   const termed = new Set<number>()
@@ -323,7 +337,7 @@ export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDep
     for (const pid of groupsInFlight) {
       if (signalProcessGroup(pid, 'SIGTERM', deps) !== 'gone') termed.add(pid)
     }
-    setTimeout(() => proc.exit(0), deps.graceMs ?? TREE_KILL_GRACE_MS)
+    setTimeout(() => proc.exit(0), graceMs)
   }
   proc.on('SIGTERM', leave)
   proc.on('SIGINT', leave)

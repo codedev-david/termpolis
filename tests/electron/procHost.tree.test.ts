@@ -18,7 +18,8 @@ vi.mock('child_process', () => ({ execFile: H.execFile, exec: H.exec }))
 vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree, signalProcessGroup: H.signalProcessGroup, TREE_KILL_GRACE_MS: 2_000 }))
 
 import {
-  runExec, handleProcMessage, installHostExitHandlers, treeGroupsInFlight, _resetProcHostForTests, TREE_STOP_SETTLE_MS, type RunOutcome,
+  runExec, handleProcMessage, installHostExitHandlers, treeGroupsInFlight, hostGraceMs, HOST_GRACE_ENV, _resetProcHostForTests,
+  TREE_STOP_SETTLE_MS, type RunOutcome,
 } from '../../src/main/procHost'
 
 type ExecFileCb = (e: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
@@ -303,7 +304,8 @@ describe('the host ends its groups on its way out', () => {
     expect(H.signalProcessGroup).not.toHaveBeenCalled()
   })
 
-  it('waits the default grace', () => {
+  it('waits the default grace: 2 s, with the test-only variable unset as it is in the app', () => {
+    expect(process.env[HOST_GRACE_ENV]).toBeUndefined()
     void group(4242)
     const proc = new FakeProc()
     installHostExitHandlers(proc)
@@ -312,6 +314,28 @@ describe('the host ends its groups on its way out', () => {
     expect(proc.exit).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
     expect(proc.exit).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes the grace from the test-only variable, read once when the handlers are installed', () => {
+    vi.stubEnv(HOST_GRACE_ENV, '10000')
+    void group(4242)
+    const proc = new FakeProc()
+    installHostExitHandlers(proc)
+    vi.stubEnv(HOST_GRACE_ENV, '50')
+    proc.emit('SIGTERM')
+    vi.advanceTimersByTime(9_999)
+    expect(proc.exit).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(proc.exit).toHaveBeenCalledTimes(1)
+    vi.unstubAllEnvs()
+  })
+
+  it.each([undefined, '', 'abc', '0', '-5', '1.5', '60001'])('hostGraceMs keeps the 2 s default for %j', (v) => {
+    expect(hostGraceMs(v === undefined ? {} : { [HOST_GRACE_ENV]: v })).toBe(2_000)
+  })
+
+  it.each([['1', 1], ['10000', 10_000], ['60000', 60_000]])('hostGraceMs takes %s', (v, ms) => {
+    expect(hostGraceMs({ [HOST_GRACE_ENV]: v })).toBe(ms)
   })
 
   it('on an exit it did not ask for (an unhandled rejection), SIGKILLs every group still unanswered, and none already answered', async () => {

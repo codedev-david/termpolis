@@ -28,7 +28,7 @@ import {
   setProcSpawner,
   type ProcTransport,
 } from '../../src/main/procClient'
-import type { ProcExecMsg, ProcResult, ProcTreeMsg } from '../../src/main/procHost'
+import { HOST_GRACE_ENV, type ProcExecMsg, type ProcResult, type ProcTreeMsg } from '../../src/main/procHost'
 import { taskkillPath } from '../../src/main/processTree'
 
 const isWin = process.platform === 'win32'
@@ -130,9 +130,10 @@ async function readPids(file: string): Promise<{ labeller: number; grandchild: n
   throw new Error('the stand-in never started')
 }
 
-/** Fork a host. Its pid joins the cleanup until it is seen to exit. */
-function forkHost(): { host: ChildProcess; exited: Promise<void> } {
-  const host = fork(runner, [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true })
+/** Fork a host, with its exit grace set when given. Its pid joins the cleanup until it is seen to exit. */
+function forkHost(graceMs?: number): { host: ChildProcess; exited: Promise<void> } {
+  const env = graceMs === undefined ? process.env : { ...process.env, [HOST_GRACE_ENV]: String(graceMs) }
+  const host = fork(runner, [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true, env })
   hosts.push(host)
   const exited = new Promise<void>((resolve) => host.once('exit', () => resolve()))
   return { host, exited }
@@ -181,21 +182,26 @@ describe.skipIf(isWin)('a host told to go ends its runs first (macOS and Linux)'
   }, 60_000)
 
   it('a member that ignores SIGTERM and let go of the run\'s pipes still gets SIGKILL, though the run was answered', async () => {
-    const { host, exited } = forkHost()
+    // The assertion that the member outlived the answer must land inside the host's grace. 2 s is the
+    // app's; 10 s here keeps a stalled runner from closing the grace before it is made.
+    const { host, exited } = forkHost(10_000)
     const pidFile = join(dir, `pids-${++seq}.json`)
     const reports: Array<ProcTreeMsg | ProcResult> = []
     host.on('message', (m) => { reports.push(m as ProcTreeMsg | ProcResult) })
     host.send(labelRequest(1, pidFile, 'stubborn'))
     const { labeller: lab, grandchild } = await readPids(pidFile)
     await vi.waitFor(() => expect(reports).toContainEqual({ kind: 'tree', id: 1, pid: lab }), { timeout: 5_000, interval: 20 })
+    const told = Date.now()
     host.kill('SIGTERM')
     // The stand-in dies on the SIGTERM, its pipes close, and the host answers the run within the grace.
     await vi.waitFor(() => expect(reports.some((r) => r.kind === 'result' && r.id === 1)).toBe(true), { timeout: 5_000, interval: 20 })
     expect(await waitDead(lab)).toBe(true)
     // Answered, and the member that ignored the SIGTERM is still there...
     expect(isAlive(grandchild)).toBe(true)
-    // ...until the host leaves at the end of the grace.
+    // ...until the host leaves at the end of the grace, which was the 10 s this test gave it (a lower
+    // bound only: the grace is a minimum, so this cannot fail on a slow runner).
     await exited
+    expect(Date.now() - told).toBeGreaterThanOrEqual(9_000)
     expect(await waitDead(grandchild)).toBe(true)
   }, 60_000)
 })
