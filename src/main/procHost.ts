@@ -27,7 +27,7 @@ import { execFile, exec, spawn, type ChildProcess } from 'child_process'
 import { getSystemErrorName } from 'util'
 import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
-import { endProcessTree, signalProcessGroup, TREE_KILL_GRACE_MS, type KillTreeDeps } from './processTree'
+import { endProcessTree, signalProcessGroup, TREE_KILL_GRACE_MS, type KillTreeDeps, type LeaderKill } from './processTree'
 
 export interface ProcExecMsg {
   kind: 'exec'
@@ -166,11 +166,11 @@ export interface RunExecDeps {
 
 /** macOS and Linux: the process groups `tree` runs lead, while their request is unanswered. They are
  *  detached (their own session), so nothing else ends them when this process goes: its own exit does. */
-const groupsInFlight = new Set<number>()
+const groupsInFlight = new Map<number, LeaderKill>()
 
 /** The groups a `tree` run in this process leads now: main sweeps its own (fallback runs) at quit. */
 export function treeGroupsInFlight(): number[] {
-  return [...groupsInFlight]
+  return [...groupsInFlight.keys()]
 }
 
 /** What execFile hands its callback, and what spawnTree hands its own. */
@@ -309,7 +309,8 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       if (settled || stopped) return
       stopped = why
       clearTimeout(limit)
-      if (!(isWin && exited)) void (deps.endTree ?? endProcessTree)(child.pid, { platform: deps.platform, canRetry: () => !exited })
+      const how = { platform: deps.platform, canRetry: () => !exited, ...(isWin ? {} : { leader }) }
+      if (!(isWin && exited)) void (deps.endTree ?? endProcessTree)(child.pid, how)
       backstop = setTimeout(() => finish(stoppedOutcome('', '')), TREE_STOP_SETTLE_MS)
     }
     const onAbort = (): void => stop('cancelled')
@@ -321,10 +322,15 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
     // With `tree` the timeout is this module's, so it ends the tree too; execFile's own would end the child only.
     // And spawnTree, not execFile, which drops `detached` (see spawnTree).
     const child = tree ? spawnTree(bin, args, base, !isWin, answer) : execFile(bin, args, { ...base, shell: false }, answer)
+    // macOS and Linux: should the group answer ESRCH while this child runs, it never was made, and the
+    // signal goes to the child through its own handle (processTree's `leader`). Only until it exits: the
+    // handle signals nobody once node has reaped it, and a group whose leader has exited may still be
+    // there (the members), so an ESRCH after the exit is the group being gone.
+    const leader: LeaderKill = (sig) => !exited && child.kill(sig)
     if (tree) {
       if (!isWin && child.pid !== undefined) {
         group = child.pid
-        groupsInFlight.add(group)
+        groupsInFlight.set(group, leader)
         deps.onGroup?.(group)
       }
       child.on('exit', () => { exited = true })
@@ -426,20 +432,20 @@ export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDep
   const graceMs = deps.graceMs ?? hostGraceMs()
   let leaving = false
   /** The groups leave() sent SIGTERM that were there to get it: each gets its SIGKILL at the exit. */
-  const termed = new Set<number>()
+  const termed = new Map<number, LeaderKill>()
   const leave = (): void => {
     if (leaving) return
     leaving = true
     if (groupsInFlight.size === 0) return proc.exit(0)
-    for (const pid of groupsInFlight) {
-      if (signalProcessGroup(pid, 'SIGTERM', deps) !== 'gone') termed.add(pid)
+    for (const [pid, leader] of groupsInFlight) {
+      if (signalProcessGroup(pid, 'SIGTERM', deps, leader) !== 'gone') termed.set(pid, leader)
     }
     setTimeout(() => proc.exit(0), graceMs)
   }
   proc.on('SIGTERM', leave)
   proc.on('SIGINT', leave)
   proc.on('exit', () => {
-    for (const pid of new Set([...termed, ...groupsInFlight])) signalProcessGroup(pid, 'SIGKILL', deps)
+    for (const [pid, leader] of new Map([...termed, ...groupsInFlight])) signalProcessGroup(pid, 'SIGKILL', deps, leader)
     termed.clear()
     groupsInFlight.clear()
   })

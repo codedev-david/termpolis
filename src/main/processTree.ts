@@ -14,14 +14,18 @@
 //
 // On macOS and Linux the child must have been spawned `detached`, which makes it the leader of
 // its own process group. Signalling the negative pid then reaches the whole group: SIGTERM first,
-// then SIGKILL for whatever is still there after a grace period.
+// then SIGKILL for whatever is still there after a grace period. A group that is not there (ESRCH)
+// while the caller's own handle still reaches its leader was never made (the child was not spawned
+// detached, as happened when execFile dropped the option), so with `leader` that ESRCH is not read
+// as "gone": the leader is signalled through the handle and SIGKILL still follows.
 //
 // Known gap (out of scope for 2.0): no Job Object (KILL_ON_JOB_CLOSE) or Linux cgroup, so a grandchild that detaches from the tree or calls setsid outlives a stop.
 //
-// Nothing here throws. A tree that is already gone is not a failure: ESRCH from a group, or a
-// taskkill the caller says not to repeat. Any other failure is logged once per kill, as one line
-// that names only the pid and the exit or error code, and a failed taskkill is tried once more
-// while the caller says its root is still alive, unless taskkill found no such process.
+// Nothing here throws. A tree that is already gone is not a failure: ESRCH from a group whose leader
+// the caller no longer holds, or a taskkill the caller says not to repeat. Any other failure is
+// logged once per kill, as one line that names only the pid and the exit or error code, and a
+// failed taskkill is tried once more while the caller says its root is still alive, unless taskkill
+// found no such process.
 
 import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from 'child_process'
 import path from 'path'
@@ -39,6 +43,11 @@ export const SYNC_TASKKILL_TIMEOUT_MS = 10_000
  *  tried again, instead of waiting forever. */
 export const TASKKILL_TIMEOUT_MS = SYNC_TASKKILL_TIMEOUT_MS
 
+/** macOS and Linux: the caller's own handle on a group's leader, as `(signal) => child.kill(signal)`. A
+ *  ChildProcess signals its pid only while it has not reaped the child (so the pid is still that child's
+ *  and nobody else's) and answers false after, which is what makes it safe to fall back to. */
+export type LeaderKill = (signal: NodeJS.Signals) => boolean
+
 export interface KillTreeOptions {
   /** The platform the tree was started on. Defaults to this one. */
   platform?: NodeJS.Platform
@@ -55,6 +64,11 @@ export interface KillTreeOptions {
    *  reuses pids, and only the caller's open handle on a live child keeps the pid from naming a
    *  stranger. Without it a failed taskkill is logged and not repeated. */
   canRetry?: () => boolean
+  /** macOS and Linux: the leader's handle (LeaderKill). When the group answers ESRCH while this still
+   *  reaches the leader, the group was never made: the signal goes to the leader through it (logged
+   *  once), and SIGKILL follows after the grace the same way. Only the leader is reached then: its own
+   *  children share the caller's group, which is never signalled. Without it, ESRCH reads as gone. */
+  leader?: LeaderKill
 }
 
 /** The part of a spawned taskkill used here. */
@@ -128,21 +142,34 @@ function taskkillOnce(pid: number, deps: KillTreeDeps): Promise<Outcome> {
 /** How a signal to a process group went: sent, the group was gone (ESRCH), or another failure. */
 export type GroupResult = 'sent' | 'gone' | 'failed'
 
-/** Signals a process group, logging any failure but ESRCH once per kill. */
-function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signals) => GroupResult {
+/** Signals a process group, logging any failure but ESRCH once per kill. An ESRCH while `leader` still
+ *  reaches the group's leader sends the signal to the leader instead (KillTreeOptions.leader). */
+function groupSignaller(pid: number, deps: KillTreeDeps, leader?: LeaderKill): (signal: NodeJS.Signals) => GroupResult {
   const kill = deps.kill ?? ((p: number, signal: NodeJS.Signals) => process.kill(p, signal))
   const log = logOf(deps)
   let logged = false
+  let fellBack = false
+  const failed = (line: string): GroupResult => {
+    if (!logged) { logged = true; log(line) }
+    return 'failed'
+  }
   return (signal) => {
     try {
       kill(-pid, signal)
       return 'sent'
     } catch (e) {
       const code = errorCode(e)
-      // ESRCH: the group is already gone, which is what a kill wants.
-      if (code === 'ESRCH') return 'gone'
-      if (!logged) { logged = true; log(`[processTree] ${signal} did not reach process group ${pid} (${code})`) }
-      return 'failed'
+      if (code !== 'ESRCH') return failed(`[processTree] ${signal} did not reach process group ${pid} (${code})`)
+      // ESRCH: no process is in the group. That is what a kill wants, unless the caller's handle still reaches
+      // the leader: a live leader would be in its own group had it been made, so the group never was.
+      if (!leader) return 'gone'
+      let reached: boolean
+      try { reached = leader(signal) === true } catch (le) {
+        return failed(`[processTree] ${signal} did not reach the leader of process group ${pid} (${errorCode(le)})`)
+      }
+      if (!reached) return 'gone'
+      if (!fellBack) { fellBack = true; log(`[processTree] process group ${pid} not found while its leader runs (ESRCH); signalling the leader`) }
+      return 'sent'
     }
   }
 }
@@ -153,9 +180,9 @@ function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signal
  * never signalled. For the callers that sequence the signals themselves: the proc host's own exit, and
  * main ending the groups a proc host left behind.
  */
-export function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals, deps: KillTreeDeps = {}): GroupResult {
+export function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals, deps: KillTreeDeps = {}, leader?: LeaderKill): GroupResult {
   if (!usablePid(pid)) return 'failed'
-  return groupSignaller(pid, deps)(signal)
+  return groupSignaller(pid, deps, leader)(signal)
 }
 
 /**
@@ -178,11 +205,11 @@ export async function endProcessTree(pid: number | undefined, opts: Omit<KillTre
     logTaskkill(logOf(deps), pid, outcome)
     return false
   }
-  const signalGroup = groupSignaller(pid, deps)
+  const signalGroup = groupSignaller(pid, deps, opts.leader)
   const term = signalGroup('SIGTERM')
   // A process group ID is not reused while any member lives. Once SIGTERM finds no member (ESRCH)
-  // the ID is free, so no SIGKILL follows. A group whose last member dies during the grace leaves
-  // that window open for the SIGKILL. unref keeps the timer from holding a quitting process open.
+  // and no leader the caller still holds, the ID is free, so no SIGKILL follows. A group whose last
+  // member dies during the grace leaves that window open for the SIGKILL. unref keeps the timer from holding a quitting process open.
   if (term !== 'gone') setTimeout(() => signalGroup('SIGKILL'), opts.graceMs ?? TREE_KILL_GRACE_MS).unref()
   return term !== 'failed'
 }
@@ -210,6 +237,6 @@ export function killProcessTree(pid: number | undefined, opts: KillTreeOptions =
     if (outcome !== 0) logTaskkill(logOf(deps), pid, outcome)
     return true
   }
-  groupSignaller(pid, deps)('SIGKILL')
+  groupSignaller(pid, deps, opts.leader)('SIGKILL')
   return true
 }

@@ -6,14 +6,14 @@
 // The stand-ins sleep longer than any test here may run, so a pid the cleanup kills is always
 // still theirs and never a recycled one. Liveness is read from the pids they report themselves:
 // nothing here lists processes.
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vitest'
 import { _resetProcClientForTests, execCaptureOffThread } from '../../src/main/procClient'
 import { runExec, type ProcOptions, type RunOutcome } from '../../src/main/procHost'
-import { taskkillPath } from '../../src/main/processTree'
+import { endProcessTree, taskkillPath } from '../../src/main/processTree'
 
 let dir = ''
 let script = ''
@@ -187,4 +187,36 @@ describe('a tree run answers as execFile does, on real processes', () => {
     // symlink, so the child's own cwd would not read back as `dir`).
     expect(r).toEqual({ stdout: 'from stdin|true|added', stderr: '', error: undefined })
   }, 60_000)
+})
+
+// macOS and Linux: a child that is NOT its own group's leader, as every tree run was while execFile
+// dropped `detached`. kill(-pid) answers ESRCH for it, which alone reads as "already gone". With the
+// caller's own handle (`leader`) that ESRCH is suspect: the signal goes to the child through the handle,
+// and a child that ignores SIGTERM still gets SIGKILL after the grace.
+describe.skipIf(process.platform === 'win32')('a group that was never made, on real processes (macOS and Linux)', () => {
+  async function stubborn(): Promise<ReturnType<typeof spawn>> {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('up'); setTimeout(() => {}, 120000)"], { stdio: ['ignore', 'pipe', 'ignore'] })
+    unverified.add(child.pid!)
+    await new Promise<void>((resolve) => child.stdout!.once('data', () => resolve()))
+    return child
+  }
+
+  it('without the handle, ESRCH reads as gone and the child is left running (the batch 2 failure)', async () => {
+    const child = await stubborn()
+    expect(await endProcessTree(child.pid, { graceMs: 200 })).toBe(true)
+    await new Promise((r) => setTimeout(r, 1_000))
+    expect(isAlive(child.pid!)).toBe(true)
+  }, 30_000)
+
+  it('with the handle, the child gets SIGTERM, then SIGKILL after the grace since it ignores SIGTERM', async () => {
+    const child = await stubborn()
+    const signals: string[] = []
+    const exit = new Promise<NodeJS.Signals | null>((resolve) => child.once('exit', (_c, sig) => resolve(sig)))
+    const lines: string[] = []
+    expect(await endProcessTree(child.pid, { graceMs: 200, leader: (sig) => { signals.push(sig); return child.kill(sig) } }, { log: (l) => lines.push(l) })).toBe(true)
+    expect(await exit).toBe('SIGKILL')
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(lines).toEqual([`[processTree] process group ${child.pid} not found while its leader runs (ESRCH); signalling the leader`])
+    expect(await waitDead(child.pid!)).toBe(true)
+  }, 30_000)
 })

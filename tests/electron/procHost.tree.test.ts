@@ -87,6 +87,8 @@ function track(p: Promise<RunOutcome>): { value: () => RunOutcome | undefined } 
 }
 
 const CANCELLED = { message: 'cancelled', code: 'ABORT_ERR' }
+/** The run's own handle on its child, handed to processTree with each POSIX group (KillTreeOptions.leader). */
+const LEADER = expect.any(Function)
 
 describe('runExec with tree', () => {
   // spawn, not execFile: execFile hands spawn only the options it knows and drops `detached`. The rest
@@ -176,6 +178,23 @@ describe('runExec with tree', () => {
     child.emit('exit', 0)
     ac.abort()
     expect(endTree).toHaveBeenCalledWith(4242, expect.objectContaining({ platform: 'darwin' }))
+  })
+
+  it('on POSIX hands processTree the handle on its child, which signals it only until it exits', () => {
+    const ac = new AbortController()
+    const endTree = vi.fn()
+    void runExec('claude', ['-p'], { tree: true }, ac.signal, { platform: 'linux', endTree })
+    ac.abort()
+    expect(endTree).toHaveBeenCalledWith(4242, { platform: 'linux', canRetry: expect.any(Function), leader: LEADER })
+    const { leader } = (endTree.mock.calls[0] as unknown as [number, { leader: (s: NodeJS.Signals) => boolean }])[1]
+    expect(leader('SIGTERM')).toBe(true)
+    expect(child.kill.mock.calls).toEqual([['SIGTERM']])
+    child.kill.mockReturnValue(false)
+    expect(leader('SIGKILL')).toBe(false)
+    // Once the child has exited its pid is not asked about at all.
+    child.emit('exit', null, 'SIGTERM')
+    expect(leader('SIGKILL')).toBe(false)
+    expect(child.kill).toHaveBeenCalledTimes(2)
   })
 
   it('the timeout ends the tree too, keeps what it printed, and reads as a timeout; a later cancel joins it', async () => {
@@ -385,7 +404,7 @@ describe('the host ends its groups on its way out', () => {
     const proc = new FakeProc()
     installHostExitHandlers(proc, deps)
     proc.emit(event)
-    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGTERM', deps], [4343, 'SIGTERM', deps]])
+    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGTERM', deps, LEADER], [4343, 'SIGTERM', deps, LEADER]])
     // A second signal neither signals again nor arms a second exit.
     proc.emit('SIGTERM')
     proc.emit('SIGINT')
@@ -395,7 +414,7 @@ describe('the host ends its groups on its way out', () => {
     vi.advanceTimersByTime(1)
     expect(proc.exit.mock.calls).toEqual([[0]])
     proc.emit('exit')
-    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[4242, 'SIGKILL', deps], [4343, 'SIGKILL', deps]])
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[4242, 'SIGKILL', deps, LEADER], [4343, 'SIGKILL', deps, LEADER]])
     expect(treeGroupsInFlight()).toEqual([])
   })
 
@@ -418,7 +437,21 @@ describe('the host ends its groups on its way out', () => {
     expect(treeGroupsInFlight()).toEqual([4343])
     vi.advanceTimersByTime(50)
     proc.emit('exit')
-    expect(H.signalProcessGroup.mock.calls.slice(3)).toEqual([[4242, 'SIGKILL', deps], [4343, 'SIGKILL', deps]])
+    expect(H.signalProcessGroup.mock.calls.slice(3)).toEqual([[4242, 'SIGKILL', deps, LEADER], [4343, 'SIGKILL', deps, LEADER]])
+  })
+
+  it('hands each group the handle of the run that leads it', () => {
+    void group(4242)
+    const first = child
+    void group(4343)
+    const second = child
+    const proc = new FakeProc()
+    installHostExitHandlers(proc, deps)
+    proc.emit('SIGTERM')
+    const leaders = H.signalProcessGroup.mock.calls.map((c) => (c as unknown as [number, string, unknown, (s: NodeJS.Signals) => boolean])[3])
+    leaders[0]('SIGTERM')
+    leaders[1]('SIGINT' as NodeJS.Signals)
+    expect([first.kill.mock.calls, second.kill.mock.calls]).toEqual([[['SIGTERM']], [['SIGINT']]])
   })
 
   it('exits at once with no group in flight, signalling nothing', () => {
@@ -489,6 +522,6 @@ describe('the host ends its groups on its way out', () => {
     const proc = new FakeProc()
     installHostExitHandlers(proc, deps)
     proc.emit('exit')
-    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGKILL', deps]])
+    expect(H.signalProcessGroup.mock.calls).toEqual([[4242, 'SIGKILL', deps, LEADER]])
   })
 })

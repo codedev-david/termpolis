@@ -390,6 +390,85 @@ describe('killProcessTree on macOS and Linux', () => {
   })
 })
 
+// The leader's handle (KillTreeOptions.leader): an ESRCH from the group while the caller's own child runs
+// means the group was never made (the child was not spawned detached, which execFile did to every tree run
+// on macOS and Linux). Read as gone, nothing would be signalled and no SIGKILL would follow.
+describe('a group that answers ESRCH while its leader runs', () => {
+  const esrch = (): never => { throw errno('ESRCH') }
+
+  it('signals the leader through its handle, logs that once, and still sends SIGKILL after the grace', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    const kill = vi.fn(esrch)
+    const leader = vi.fn((_s: NodeJS.Signals) => true)
+    expect(await endProcessTree(700, { platform: 'linux', leader }, { kill, log })).toBe(true)
+    expect(kill.mock.calls).toEqual([[-700, 'SIGTERM']])
+    expect(leader.mock.calls).toEqual([['SIGTERM']])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS - 1)
+    expect(leader).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(1)
+    // The SIGKILL goes to the group first, and to the leader again when the group is still not there.
+    expect(kill.mock.calls).toEqual([[-700, 'SIGTERM'], [-700, 'SIGKILL']])
+    expect(leader.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']])
+    expect(log.mock.calls).toEqual([['[processTree] process group 700 not found while its leader runs (ESRCH); signalling the leader']])
+  })
+
+  it('reads ESRCH as gone once the handle reaches no one (the leader exited), and arms no SIGKILL', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    const leader = vi.fn(() => false)
+    expect(await endProcessTree(700, { platform: 'darwin', leader }, { kill: esrch, log })).toBe(true)
+    expect(leader.mock.calls).toEqual([['SIGTERM']])
+    expect(vi.getTimerCount()).toBe(0)
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('a SIGTERM the leader took and a SIGKILL that finds it gone: no second log, nothing more', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    let alive = true
+    const leader = vi.fn(() => { const was = alive; alive = false; return was })
+    expect(await endProcessTree(700, { platform: 'linux', leader, graceMs: 10 }, { kill: esrch, log })).toBe(true)
+    vi.advanceTimersByTime(10)
+    expect(leader).toHaveBeenCalledTimes(2)
+    expect(log).toHaveBeenCalledTimes(1)
+  })
+
+  it('a handle that throws is a failed kill, logged once by pid and code', async () => {
+    vi.useFakeTimers()
+    const log = vi.fn()
+    const leader = vi.fn(() => { throw errno('EINVAL') })
+    expect(await endProcessTree(700, { platform: 'linux', leader }, { kill: esrch, log })).toBe(false)
+    vi.runAllTimers()
+    expect(leader).toHaveBeenCalledTimes(2)
+    expect(log.mock.calls).toEqual([['[processTree] SIGTERM did not reach the leader of process group 700 (EINVAL)']])
+  })
+
+  it('is never asked while the group takes the signal', async () => {
+    vi.useFakeTimers()
+    const leader = vi.fn(() => true)
+    expect(await endProcessTree(700, { platform: 'linux', leader }, { kill: vi.fn() })).toBe(true)
+    vi.runAllTimers()
+    expect(leader).not.toHaveBeenCalled()
+  })
+
+  it('is used at quit, and by signalProcessGroup', () => {
+    const leader = vi.fn(() => true)
+    expect(killProcessTree(700, { platform: 'linux', sync: true, leader }, { kill: esrch, log: vi.fn() })).toBe(true)
+    expect(leader.mock.calls).toEqual([['SIGKILL']])
+    expect(signalProcessGroup(700, 'SIGTERM', { kill: esrch, log: vi.fn() }, leader)).toBe('sent')
+    expect(signalProcessGroup(700, 'SIGTERM', { kill: esrch }, () => false)).toBe('gone')
+    expect(leader.mock.calls).toEqual([['SIGKILL'], ['SIGTERM']])
+  })
+
+  it('is never asked on Windows, where taskkill does the work', async () => {
+    const { spawn } = scriptedTaskkill({ exit: 0 })
+    const leader = vi.fn(() => true)
+    expect(await endProcessTree(55, { platform: 'win32', leader }, { spawn, env: {} })).toBe(true)
+    expect(leader).not.toHaveBeenCalled()
+  })
+})
+
 describe('killProcessTree defaults to the platform it runs on', () => {
   it('uses taskkill on Windows', () => {
     const { spawn } = fakeTaskkill()
