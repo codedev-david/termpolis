@@ -681,9 +681,9 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(relativePath('a\\b.ts', { root: null, home: 'relative', userData: '' })).toBe('a/b.ts')
   })
 
-  it('lets no traversal through on POSIX: a backslash `..` is part of one name, and every other form still climbs or leaves', () => {
-    // On POSIX `..\..\x` is one file named that; it climbs nothing, so nothing outside the project is named.
-    expect(relativePath('..\\..\\etc\\passwd', posix)).toBe('..\\..\\etc\\passwd')
+  it('lets no traversal through on POSIX: every form, with either slash, still climbs or leaves', () => {
+    // On POSIX `..\..\x` could be one file named that, but read the way Windows wrote it, it climbs: it is outside.
+    expect(relativePath('..\\..\\etc\\passwd', posix)).toBe(`${OUTSIDE}/passwd`)
     expect(relativePath('../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
     expect(relativePath('src/../../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
     expect(relativePath('/home/dev/repo/../other/y.ts', posix)).toBe(`${OUTSIDE}/y.ts`)
@@ -701,13 +701,39 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // Climbing out with `/..`, the name after it keeps only its last backslash part.
     expect(relativePath('../a\\..\\..\\home\\dev\\x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
     expect(relativePath('/home/dev/repo/../a\\dev\\x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
-    expect(relativePath('../a\\', posix)).toBe(OUTSIDE)
+    expect(relativePath('../a\\', posix)).toBe(`${OUTSIDE}/a`)
     // An absolute path not inside the project is read as before: the home folder and its children are still found.
     expect(relativePath('/home/dev\\secret\\x', posix)).toBe(`${OUTSIDE}/x`)
     expect(relativePath('/home/dev\\', posix)).toBe(OUTSIDE)
     expect(relativePath('/home/dev/repo\\src\\a.ts', posix)).toBe('src/a.ts')
     expect(sanitizeText('wrote /home/dev\\notes\\n.md today', posix)).toBe(`wrote ${OUTSIDE}/n.md today`)
     expect(sanitizeText('wrote /home/dev/repo\\src\\a.ts today', posix)).toBe('wrote src/a.ts today')
+  })
+
+  it('reads a backslash as a separator on POSIX whenever that reading roots the path or climbs out of the project', () => {
+    const mac: SanitizeContext = { root: '/Users/ann/repo', home: '/Users/ann', userData: '/Users/ann/Library/Application Support/Termpolis' }
+    for (const [ctx, home] of [[posix, '\\home\\dev'], [design, '\\home\\dev'], [mac, '\\Users\\ann']] as const) {
+      // Rooted by a backslash: the home folder, its children, and other roots.
+      expect(relativePath(`${home}\\secret.txt`, ctx)).toBe(`${OUTSIDE}/secret.txt`)
+      expect(relativePath(home, ctx)).toBe(OUTSIDE)
+      expect(relativePath('\\etc\\passwd', ctx)).toBe(`${OUTSIDE}/passwd`)
+      // Climbing with `..\`, at the start or after a name.
+      expect(relativePath(`src\\..\\..\\..${home}\\.ssh\\id_rsa`, ctx)).toBe(`${OUTSIDE}/id_rsa`)
+      expect(relativePath('a\\..\\..\\x', ctx)).toBe(`${OUTSIDE}/x`)
+      // In text: the machine's own folders, whichever slash wrote them.
+      expect(sanitizeText(`see ${home}\\secret.txt now`, ctx)).toBe(`see ${OUTSIDE}/secret.txt now`)
+      expect(sanitizeText(`see ${home}\\Documents\\plan.md now`, ctx)).toBe(`see ${OUTSIDE}/plan.md now`)
+    }
+    // Mixed separators: an absolute path inside the project that climbs out through backslashes.
+    expect(relativePath('/home/dev/repo/a\\..\\..\\..\\ann\\x', posix)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('/Users/ann/repo/a\\..\\..\\..\\bob\\x', mac)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('src/a\\..\\..\\..\\x', posix)).toBe(`${OUTSIDE}/x`)
+    expect(sanitizeText('wrote /home/dev/repo/a\\..\\..\\..\\ann\\x today', posix)).toBe(`wrote ${OUTSIDE}/x today`)
+    // A backslash that stays inside the project either way is still a name character.
+    expect(relativePath('a\\..\\b.ts', posix)).toBe('a\\..\\b.ts')
+    expect(relativePath('/Users/ann/repo/a\\b.ts', mac)).toBe('a\\b.ts')
+    // Read as names it climbs out, read as separators it does not: the stricter answer wins.
+    expect(relativePath('a\\b/../../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
   })
 
   it('lets no traversal through on Windows either', () => {

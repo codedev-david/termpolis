@@ -161,14 +161,20 @@ function resolveRelative(segments: string[]): string {
  * name never shows. `~` stands for the home folder; `~user` is another account's, so it is outside.
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
-  // On Linux and macOS a path inside the project keeps a backslash in a name; any other path is read as on Windows,
-  // so a mixed or Windows-written path outside the project is still found to be outside (and the home folder too).
-  if (backslashKept(p, ctx)) {
-    const kept = plainPath(p, true)
-    if (!kept.startsWith('/')) return kept ? resolveRelative(kept.split('/')) : ''
-    const inRoot = ctx.root === null ? null : under(kept.replace(/\/+$/, ''), norm(ctx.root))
-    if (inRoot) return resolveRelative(inRoot)
-  }
+  // Every path is first read as Windows would write it, a backslash being a separator. If that reading roots it
+  // (`\home\dev\x`) or climbs out (`..\x`, `a\..\..\x`), it is outside on any platform. Only a path that stays
+  // in the project that way keeps its backslashes as name characters, on Linux and macOS.
+  const read = separatorReading(p, ctx)
+  if (!p.includes('\\') || read.startsWith(OUTSIDE) || !backslashKept(p, ctx)) return read
+  const kept = plainPath(p, true)
+  if (!kept.startsWith('/')) return resolveRelative(kept.split('/'))
+  // An absolute path read as inside the project has a project folder to be inside of.
+  const inRoot = under(kept.replace(/\/+$/, ''), norm(ctx.root as string))
+  return inRoot ? resolveRelative(inRoot) : read
+}
+
+/** relativePath with every backslash read as a separator. */
+function separatorReading(p: string, ctx: SanitizeContext): string {
   let n = plainPath(p, false)
   if (n === '~' || n.startsWith('~/')) n = norm(ctx.home) + n.slice(1)
   else if (n.startsWith('~')) return outside(n.split('/').slice(1))
