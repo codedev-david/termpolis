@@ -4,6 +4,7 @@
 // OrbitControls plus WASD/QE, double-click explode, flow pulses, fat invisible picking tubes and
 // focus dimming. Unit-tested with only the GPU boundary faked (WebGLRenderer and the composer's
 // passes: tests/renderer/world/threeHarness.ts) under the 100% coverage gate; e2e checks the pixels.
+import { hasHardwareWebgl } from '../../lib/webglSupport'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
@@ -423,7 +424,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const size = (): [number, number] => [Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)]
   let [width, height] = size()
 
-  const renderer = new THREE.WebGLRenderer({ antialias: high })
+  const renderer = new THREE.WebGLRenderer({ antialias: high && hasHardwareWebgl() })
   /**
    * The largest drawing buffer the GPU takes, [across, down]: the smallest of its biggest render buffer, its biggest
    * texture (the glow's passes draw into textures the buffer's size) and its biggest viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
