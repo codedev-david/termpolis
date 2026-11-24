@@ -510,20 +510,43 @@ describe('ending a session: the tree first, then the PTY', () => {
     expect(order).toEqual(['tree', 'pty'])
   })
 
-  it('at quit, closes the PTY of a session whose tree kill is still on its way, once', async () => {
+  it('at quit, a session whose tree kill is still on its way gets the sync kill first, then its PTY closes, once', async () => {
     quiet()
     const k = heldKill()
     const { sessionId } = startSignInSession(spec(), deps)
-    let kills = 0
-    ptys[0].kill = () => { kills++ }
+    const order: string[] = []
+    deps.killTreeNow = vi.fn(() => { order.push('tree') })
+    ptys[0].kill = () => { order.push('pty') }
     await signInInput(sessionId, { kind: 'cancel' })
-    expect(kills).toBe(0)
+    expect(order).toEqual([])
     endSignIns()
-    expect(kills).toBe(1)
-    expect(deps.killTreeNow).not.toHaveBeenCalled()
+    expect(deps.killTreeNow).toHaveBeenCalledWith(4000)
+    expect(order).toEqual(['tree', 'pty'])
+    // The async kill settling later closes nothing twice.
     k.settle()
     await advance(0)
-    expect(kills).toBe(1)
+    expect(order).toEqual(['tree', 'pty'])
+  })
+
+  it('at quit, a pending tree kill whose CLI exited meanwhile gets no sync kill, and its PTY is left alone', async () => {
+    const cli = quiet()
+    heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    await signInInput(sessionId, { kind: 'cancel' })
+    cli.exit(1)
+    endSignIns()
+    expect(deps.killTreeNow).not.toHaveBeenCalled()
+    expect(ptys[0].killed).toBe(false)
+  })
+
+  it('at quit, a sync kill that throws still closes the PTY', async () => {
+    quiet()
+    heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    deps.killTreeNow = vi.fn(() => { throw new Error('taskkill missing') })
+    await signInInput(sessionId, { kind: 'cancel' })
+    endSignIns()
+    expect(ptys[0].killed).toBe(true)
   })
 
   it('at quit, ends nothing of a CLI that has exited already', () => {

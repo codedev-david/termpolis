@@ -551,10 +551,18 @@ export function endSignInsOf(owner: unknown): void {
   for (const s of [...sessions.values()]) if (s.spec.owner === owner) end(s, s.deps)
 }
 
-/** Ends every session (quit), and closes the PTYs of those whose tree kill is still on its way. */
+/** Ends every session (quit). A session whose asynchronous tree kill is still on its way gets the
+ *  synchronous one too, before its PTY closes: nothing is awaited at quit, and the PTY close ends
+ *  the root that taskkill walks the tree from. Its CLI has not exited (a PTY whose CLI exited is
+ *  left alone), so the root is still ours and alive while the sync kill runs. */
 export function endSignIns(): void {
   for (const s of [...sessions.values()]) end(s, s.deps, true)
-  for (const s of [...ending]) killPty(s)
+  for (const s of [...ending]) {
+    if (!s.exited) {
+      try { s.deps.killTreeNow(s.pty.pid) } catch { /* gone already */ }
+    }
+    killPty(s)
+  }
   ending.clear()
 }
 
