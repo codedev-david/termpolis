@@ -258,6 +258,9 @@ const CLOSERS = `"')]}”’»」』`
 /** Abbreviations whose full stop ends nothing: Latin ones in any case, titles only as written. */
 const LATIN_ABBREVIATIONS = new Set(['vs', 'etc', 'approx'])
 const TITLES = new Set(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'No', 'Inc', 'Ltd', 'Co', 'Jr', 'Sr'])
+/** For prose: abbreviations that always have something after them, and ones that may end a sentence. */
+const PREFIX_TITLES = new Set(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St'])
+const SUFFIX_TITLES = new Set(['Inc', 'Ltd', 'Co', 'Jr', 'Sr'])
 const isLetter = (c: string): boolean => /\p{L}/u.test(c)
 
 /** Whether the full stop at `dot` closes an abbreviation: the last dot of a dotted chain (U.S., e.g., a.k.a.) or a listed word. */
@@ -270,12 +273,33 @@ function abbreviation(s: string, dot: number): boolean {
 }
 
 /**
+ * For prose, where an uncited second sentence must never get through: whether the single full stop at `dot`
+ * leaves the sentence open, given the first character after it and its following spaces (`next`, '' at the end).
+ * Only after an abbreviation: Mr., Dr., St., vs., e.g. and i.e. always; No. before a digit; and etc., approx.,
+ * Inc., Ltd., Co., Jr., Sr. or a chain of single letters (U.S., a.k.a.) before a lowercase letter or a digit.
+ * The look-back covers the dotted word before the stop only, so the scan stays linear.
+ */
+function continuesProse(s: string, dot: number, next: string): boolean {
+  let w = dot
+  while (w > 0 && (isLetter(s[w - 1]) || s[w - 1] === '.')) w--
+  const word = s.slice(w, dot)
+  const chain = /^(?:\p{L}\.)+\p{L}$/u.test(word)
+  const lower = word.toLowerCase()
+  if (PREFIX_TITLES.has(word) || lower === 'vs' || (chain && (lower === 'e.g' || lower === 'i.e'))) return true
+  const digit = /\d/.test(next)
+  if (word === 'No') return digit
+  const suffix = chain || SUFFIX_TITLES.has(word) || lower === 'etc' || lower === 'approx'
+  return suffix && (digit || /\p{Ll}/u.test(next))
+}
+
+/**
  * The index just past the first sentence's end (its stops and closers), or -1 when none starts at or before
  * `limit`. One pass, so a long run of stops costs linear time. A stop glued to the next character (a file name, a
- * version) ends nothing; "!" and "?" always end one before a space; a single "." does not after an abbreviation,
- * and a "." or "…" does not when a lowercase letter follows.
+ * version) ends nothing, and "!" and "?" always end one before a space. Leniently (names), a single "." does not
+ * after an abbreviation, and a "." or "…" does not when a lowercase letter follows. Strictly (prose), every other
+ * stop ends one unless `continuesProse` says the single "." closes an abbreviation the sentence goes on after.
  */
-function sentenceEnd(s: string, limit = s.length): number {
+function sentenceEnd(s: string, limit = s.length, strict = false): number {
   for (let i = 0; i < s.length && i <= limit; i++) {
     if (CJK_STOPS.includes(s[i])) {
       let k = i + 1
@@ -290,19 +314,21 @@ function sentenceEnd(s: string, limit = s.length): number {
     let n = k
     while (n < s.length && /\s/.test(s[n])) n++
     const glued = n === k && n < s.length
-    const ends =
-      !glued &&
-      (/[!?]/.test(s.slice(i, j)) || (!(j === i + 1 && s[i] === '.' && abbreviation(s, i)) && (n === s.length || !/\p{Ll}/u.test(s[n]))))
+    const single = j === i + 1 && s[i] === '.'
+    // Only a stop that is not glued looks back, so each word is looked back over once at most.
+    const open = (): boolean =>
+      strict ? single && continuesProse(s, i, s.slice(n, n + 1)) : (single && abbreviation(s, i)) || (n < s.length && /\p{Ll}/u.test(s[n]))
+    const ends = !glued && (/[!?]/.test(s.slice(i, j)) || !open())
     if (ends) return k
     i = j - 1
   }
   return -1
 }
 
-/** Prose keeps its first sentence; one that ends past `limit` is cut by the cap anyway, so the scan stops there. */
+/** Prose keeps its first sentence, split strictly; one that ends past `limit` is cut by the cap anyway, so the scan stops there. */
 function firstSentence(s: string, limit: number): string {
   const t = s.trim()
-  const end = sentenceEnd(t, limit)
+  const end = sentenceEnd(t, limit, true)
   return end < 0 ? t : t.slice(0, end)
 }
 

@@ -2100,25 +2100,65 @@ describe('label review 1: sentences, names and chips', () => {
     expect(l.edges[E].cargo).toBe('Carries the parsed rows.')
   })
 
-  // I2: prose keeps its abbreviations whole, and names and chips are never cut as if they were sentences.
+  // I2: prose keeps an abbreviation whole when the sentence plainly goes on after it, and names and chips are
+  // never cut as if they were sentences.
   it.each([
     'Rejects requests from U.S. users without a key.',
     'Chooses CSV vs. JSON per file.',
     'Handles CSV, JSON, etc. for imports.',
     'Uses a.k.a. aliases.',
     'Reads, i.e. Parses the file.',
-    'Parses CSV. then encrypts every record.',
-    'Loads index.ts. and v1.5.2 too.'
+    'Picks a format, e.g. JSON, per file.',
+    'Drains queue No. 2 first.',
+    'Takes 3 ms approx. per row.',
+    'Bills Acme Inc. once a month.'
   ])('keeps the prose claim %j whole', async (text) => {
     expect(await howOf(text)).toEqual([text])
   })
 
-  it.each(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'No', 'Inc', 'Ltd', 'Co', 'Jr', 'Sr', 'vs', 'etc', 'approx', 'VS', 'Etc', 'Approx'])(
-    'does not end a sentence at the abbreviation %s.',
-    async (abbr) => {
-      expect(await howOf(`Calls ${abbr}. Smith first. Then more.`)).toEqual([`Calls ${abbr}. Smith first.`])
-    }
-  )
+  // These always have something after them, so in prose they never end a sentence.
+  it.each(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'vs', 'VS'])('does not end a sentence at the abbreviation %s.', async (abbr) => {
+    expect(await howOf(`Calls ${abbr}. Smith first. Then more.`)).toEqual([`Calls ${abbr}. Smith first.`])
+  })
+
+  // Review 2 (NI1): these may close a sentence, so in prose they end one unless a lowercase word or a digit follows.
+  it.each(['No', 'Inc', 'Ltd', 'Co', 'Jr', 'Sr', 'etc', 'approx', 'Etc', 'Approx', 'U.S', 'a.k.a'])('ends a sentence at %s. before a capital', async (abbr) => {
+    expect(await howOf(`Calls ${abbr}. Smith first. Then more.`)).toEqual([`Calls ${abbr}.`])
+  })
+
+  it.each(['Inc', 'Ltd', 'Co', 'Jr', 'Sr', 'etc', 'approx', 'Etc', 'Approx', 'U.S', 'a.k.a'])('does not end a sentence at %s. before a lowercase word or a digit', async (abbr) => {
+    expect(await howOf(`Calls ${abbr}. for 2 rows. Then more.`)).toEqual([`Calls ${abbr}. for 2 rows.`])
+    expect(await howOf(`Calls ${abbr}. 2 rows. Then more.`)).toEqual([`Calls ${abbr}. 2 rows.`])
+  })
+
+  // Review 2 (NI1): a second sentence the old lenient rules let through, uncited, is cut in prose.
+  it.each([
+    ['Parses CSV, JSON, etc. Encrypts every record.', 'Parses CSV, JSON, etc.'],
+    ['Compiles main.c. Links the binary.', 'Compiles main.c.'],
+    ['Declares the API in api.h. Implements it in api.c.', 'Declares the API in api.h.'],
+    ['Serves users in the U.S. Encrypts every record.', 'Serves users in the U.S.'],
+    ['Bills Acme Inc. Then emails the receipt.', 'Bills Acme Inc.'],
+    ['Returns Yes or No. Callers then retry.', 'Returns Yes or No.'],
+    ['Loads the config. useEffect subscribes to changes.', 'Loads the config.'],
+    ['Runs the build. npm then publishes it.', 'Runs the build.'],
+    ['Parses CSV. then encrypts every record.', 'Parses CSV.'],
+    ['Loads index.ts. and v1.5.2 too.', 'Loads index.ts.'],
+    ['Builds v1.2.x. then ships.', 'Builds v1.2.x.'],
+    ['Loading... then parse.', 'Loading...'],
+    ['Parses CSV… then encrypts all.', 'Parses CSV…']
+  ])('cuts the prose claim %j after its first sentence', async (text, first) => {
+    expect(await howOf(text)).toEqual([first])
+  })
+
+  it('looks back over a long dotted word once, so strict splitting stays linear', async () => {
+    const chain = `${'a.'.repeat(100_000)} x`
+    const t0 = performance.now()
+    const l = await withA({ how: [claim(chain), claim(`${'etc. '.repeat(50_000)}x`)] }, { district: { subtitle: F(chain) } })
+    expect(performance.now() - t0).toBeLessThan(2000)
+    // Each stop is followed by a lowercase letter after an abbreviation, so neither ends: both are capped.
+    expect(l.buildings.a.how.map((c) => c.text)).toEqual([chain.slice(0, 400), 'etc. '.repeat(80)])
+    expect(l.districts.d1.subtitle).toBe(chain.slice(0, 120))
+  })
 
   it.each([
     ['Calls Smith. Then more.', 'Calls Smith.'],
@@ -2134,7 +2174,6 @@ describe('label review 1: sentences, names and chips', () => {
     ['Parses CSV. `run` is next.', 'Parses CSV.'],
     // M2: the ellipsis character and CJK terminators end a sentence; CJK needs no space after it.
     ['Parses CSV… Encrypts all.', 'Parses CSV…'],
-    ['Parses CSV… then encrypts all.', 'Parses CSV… then encrypts all.'],
     ['解析CSV。加密每条记录。', '解析CSV。'],
     ['解析！加密。', '解析！'],
     ['解析？加密。', '解析？'],
