@@ -26,6 +26,7 @@
 import { execFile, exec } from 'child_process'
 import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
+import { endProcessTree } from './processTree'
 
 export interface ProcExecMsg {
   kind: 'exec'
@@ -58,9 +59,24 @@ export interface ProcOptions {
    *  on a command line (process command lines are visible to every endpoint scanner), such as a
    *  prompt carrying repository source. Without it stdin is left as before. */
   input?: string
+  /** argv form only: the command may start processes of its own (an agent CLI), so a cancel and the timeout
+   *  end its whole tree, not only the direct child. On macOS and Linux it is spawned detached, to lead its
+   *  own process group; on Windows taskkill /T runs while the child is still alive and ours. A cancelled
+   *  request answers with no output and a `cancelled` error (code ABORT_ERR). */
+  tree?: boolean
 }
 
 export type ProcRequest = ProcExecMsg | ProcShellMsg
+
+/** Stop an exec request still in flight, by its id. A request already answered, a shell request, or one
+ *  started without `tree` is left as it is. */
+export interface ProcCancelMsg {
+  kind: 'cancel'
+  id: number
+}
+
+/** Everything main posts to the host. */
+export type ProcHostMessage = ProcRequest | ProcCancelMsg
 
 export interface SerializedProcError {
   message: string
@@ -122,12 +138,65 @@ export interface RunOutcome {
   error?: unknown
 }
 
-/** argv form: no shell, so a file name full of metacharacters is one literal argument. */
-export function runExec(bin: string, args: string[], opts: ProcOptions): Promise<RunOutcome> {
+/** How long a stopped tree has to close its pipes before its request is answered anyway: a process
+ *  outside the tree (one that broke away) can hold them open for good. */
+export const TREE_STOP_SETTLE_MS = 3_000
+
+export interface RunExecDeps {
+  platform?: NodeJS.Platform
+  endTree?: typeof endProcessTree
+}
+
+/** The error a cancelled request answers with: AbortError's code, and no output. */
+export function cancelledError(): Error {
+  return Object.assign(new Error('cancelled'), { code: 'ABORT_ERR' })
+}
+
+/** argv form: no shell, so a file name full of metacharacters is one literal argument. With
+ *  `opts.tree`, `signal` cancels it, and a cancel or the timeout ends its whole tree. */
+export function runExec(bin: string, args: string[], opts: ProcOptions, signal?: AbortSignal, deps: RunExecDeps = {}): Promise<RunOutcome> {
   return new Promise((resolve) => {
-    const child = execFile(bin, args, { ...baseOptions(opts), shell: false }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), ...(err ? { error: err } : {}) })
+    const tree = opts.tree === true
+    const base = baseOptions(opts)
+    if (tree && signal?.aborted) return resolve({ stdout: '', stderr: '', error: cancelledError() })
+    const isWin = (deps.platform ?? process.platform) === 'win32'
+    let settled = false
+    let stopped: 'cancelled' | 'timeout' | null = null
+    let exited = false
+    let limit: ReturnType<typeof setTimeout> | undefined
+    let backstop: ReturnType<typeof setTimeout> | undefined
+    const finish = (r: RunOutcome): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(limit)
+      clearTimeout(backstop)
+      signal?.removeEventListener('abort', onAbort)
+      resolve(r)
+    }
+    const stoppedOutcome = (stdout: string, stderr: string): RunOutcome => stopped === 'cancelled'
+      ? { stdout: '', stderr, error: cancelledError() }
+      : { stdout, stderr, error: Object.assign(new Error(`timed out after ${base.timeout}ms`), { killed: true, signal: 'SIGTERM' }) }
+    // The tree first, while its root lives: `taskkill /T` walks down from a live root only, and once the
+    // child's 'exit' has run its pid may name a stranger. A POSIX group outlives its leader, so it is
+    // still signalled. The request is answered when the pipes close, or by the backstop.
+    const stop = (why: 'cancelled' | 'timeout'): void => {
+      if (settled || stopped) return
+      stopped = why
+      clearTimeout(limit)
+      if (!(isWin && exited)) void (deps.endTree ?? endProcessTree)(child.pid, { platform: deps.platform, canRetry: () => !exited })
+      backstop = setTimeout(() => finish(stoppedOutcome('', '')), TREE_STOP_SETTLE_MS)
+    }
+    const onAbort = (): void => stop('cancelled')
+    // With `tree` the timeout is this module's, so it ends the tree too; execFile's own would end the child only.
+    const child = execFile(bin, args, { ...base, ...(tree ? { timeout: 0, detached: !isWin } : {}), shell: false }, (err, stdout, stderr) => {
+      if (stopped) return finish(stoppedOutcome(String(stdout ?? ''), String(stderr ?? '')))
+      finish({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), ...(err ? { error: err } : {}) })
     })
+    if (tree) {
+      child.on('exit', () => { exited = true })
+      if (base.timeout > 0) limit = setTimeout(() => stop('timeout'), base.timeout)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }
     if (opts.input !== undefined && child.stdin) {
       // A child that exits before reading everything raises EPIPE here; its exit already reports it.
       child.stdin.on('error', () => undefined)
@@ -146,18 +215,31 @@ export function runShell(cmd: string, opts: ProcOptions): Promise<RunOutcome> {
   })
 }
 
-export async function handleProcMessage(msg: ProcRequest): Promise<ProcResult | null> {
+/** The exec requests in flight, by id, so a cancel can reach the one it names. */
+const inFlight = new Map<number, AbortController>()
+
+export async function handleProcMessage(msg: ProcHostMessage): Promise<ProcResult | null> {
+  if (msg?.kind === 'cancel') {
+    inFlight.get(msg.id)?.abort()
+    return null
+  }
   if (!msg || (msg.kind !== 'exec' && msg.kind !== 'shell')) return null
-  const { stdout, stderr, error } = msg.kind === 'exec'
-    ? await runExec(msg.bin, msg.args, msg.opts)
-    : await runShell(msg.cmd, msg.opts)
+  let run: Promise<RunOutcome>
+  if (msg.kind === 'exec') {
+    const ctl = new AbortController()
+    inFlight.set(msg.id, ctl)
+    run = runExec(msg.bin, msg.args, msg.opts, ctl.signal).finally(() => { inFlight.delete(msg.id) })
+  } else {
+    run = runShell(msg.cmd, msg.opts)
+  }
+  const { stdout, stderr, error } = await run
   return error
     ? { kind: 'result', id: msg.id, ok: false, stdout, stderr, error: serializeProcError(error) }
     : { kind: 'result', id: msg.id, ok: true, stdout, stderr }
 }
 
 interface ParentPortLike {
-  on(event: 'message', cb: (e: { data: ProcRequest }) => void): void
+  on(event: 'message', cb: (e: { data: ProcHostMessage }) => void): void
   postMessage(msg: ProcResult): void
 }
 

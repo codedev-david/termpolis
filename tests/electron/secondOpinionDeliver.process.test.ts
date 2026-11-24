@@ -29,7 +29,9 @@ beforeAll(() => {
   writeFileSync(agentScript, [
     "const { spawn } = require('child_process')",
     "const { renameSync, writeFileSync } = require('fs')",
-    "const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true })",
+    // detached on Windows only: libuv puts a node process's plain children in a job that dies with it,
+    // which would end the grandchild with the agent alone. An agent's deeper descendants are in no such job.
+    "const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
     // The prompt arrives as the last argument, the same way it reaches a real agent.
     "process.stdout.write('partial review of ' + JSON.stringify(process.argv[2]) + '\\n')",
     "writeFileSync(process.env.TP_PIDS + '.tmp', JSON.stringify({ agent: process.pid, grandchild: grandchild.pid }))",

@@ -97,7 +97,7 @@ describe('with no host — the in-process fallback', () => {
   it('runs the command here rather than reporting that git is unavailable', async () => {
     H.runExec.mockResolvedValue({ stdout: 'on branch main', stderr: '' })
     await expect(execOffThread('git', ['status'], { cwd: '/repo' })).resolves.toBe('on branch main')
-    expect(H.runExec).toHaveBeenCalledWith('git', ['status'], { cwd: '/repo' })
+    expect(H.runExec).toHaveBeenCalledWith('git', ['status'], { cwd: '/repo' }, undefined)
     expect(procHostActive()).toBe(false)
   })
 
@@ -441,5 +441,82 @@ describe('shutting the host down for a quit', () => {
     void execCaptureOffThread('git', [], {}).catch(() => {})
     expect(() => shutdownProcHost()).not.toThrow()
     expect(procHostActive()).toBe(false)
+  })
+})
+
+describe('cancelling a tree exec', () => {
+  it('starts nothing when the signal is already aborted, and answers cancelled', async () => {
+    const { spawn } = install()
+    const ac = new AbortController()
+    ac.abort()
+    expect(await execCaptureOffThread('claude', ['-p'], { tree: true }, ac.signal)).toEqual({
+      stdout: '', stderr: '', error: { message: 'cancelled', code: 'ABORT_ERR' },
+    })
+    expect(spawn).not.toHaveBeenCalled()
+    expect(H.runExec).not.toHaveBeenCalled()
+  })
+
+  it('tells the host to cancel that request by its id, and settles with the host\'s answer', async () => {
+    const { transports } = install()
+    const ac = new AbortController()
+    const call = execCaptureOffThread('claude', ['-p'], { tree: true, timeout: 60_000 }, ac.signal)
+    const [t] = transports
+    const id = t.sent[0].id
+    ac.abort()
+    expect(t.sent[1]).toEqual({ kind: 'cancel', id })
+    // The call waits for the host, which answers once the tree is stopped.
+    t.reply({ id, ok: false, stdout: '', stderr: '', error: { message: 'cancelled', code: 'ABORT_ERR' } })
+    expect(await call).toEqual({ stdout: '', stderr: '', error: { message: 'cancelled', code: 'ABORT_ERR' } })
+    // Settled: a late abort posts nothing more.
+    ac.abort()
+    expect(t.sent).toHaveLength(2)
+  })
+
+  it('stops listening once the call settles, and never throws on a host that is gone', async () => {
+    const { transports } = install()
+    const ac = new AbortController()
+    const call = execCaptureOffThread('claude', ['-p'], { tree: true }, ac.signal)
+    const [t] = transports
+    t.answer({ stdout: 'labels' })
+    expect(await call).toEqual({ stdout: 'labels', stderr: '' })
+    const again = new AbortController()
+    const second = execCaptureOffThread('claude', ['-p'], { tree: true }, again.signal)
+    t.postMessage = () => { throw new Error('host gone') }
+    expect(() => again.abort()).not.toThrow()
+    t.reply({ id: t.sent[1].id, ok: false, error: { message: 'cancelled', code: 'ABORT_ERR' } })
+    expect((await second).error?.code).toBe('ABORT_ERR')
+    ac.abort()
+    expect(t.sent).toHaveLength(2)
+  })
+
+  it('adds no listener when the request could not be posted', async () => {
+    const { transports } = install()
+    const ac = new AbortController()
+    const add = vi.spyOn(ac.signal, 'addEventListener')
+    const call = execCaptureOffThread('git', ['status'], { tree: true }, ac.signal)
+    void call.catch(() => undefined)
+    // The first post happens inside the promise; make the transport refuse it for the next call.
+    transports[0].postMessage = () => { throw new Error('closed') }
+    const refused = execCaptureOffThread('git', ['status'], { tree: true }, ac.signal)
+    await expect(refused).rejects.toThrow('closed')
+    expect(add).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the signal to the in-process fallback, and ignores it without tree', async () => {
+    const ac = new AbortController()
+    await execCaptureOffThread('claude', ['-p'], { tree: true }, ac.signal)
+    expect(H.runExec).toHaveBeenLastCalledWith('claude', ['-p'], { tree: true }, ac.signal)
+    ac.abort()
+    await execCaptureOffThread('git', ['status'], {}, ac.signal)
+    expect(H.runExec).toHaveBeenLastCalledWith('git', ['status'], {}, undefined)
+  })
+})
+
+describe('ProcError', () => {
+  it('leaves code and signal unset when the error carried neither', () => {
+    const e = new ProcError({ message: 'boom' })
+    expect(e.code).toBeUndefined()
+    expect(e.signal).toBeUndefined()
+    expect(e.stderr).toBe('')
   })
 })

@@ -8,11 +8,11 @@
 // The transport is injected so the orchestration below — correlation, timeouts, restart budget,
 // the in-process fallback — is testable without forking anything.
 
-import type { ProcOptions, ProcRequest, ProcResult, SerializedProcError } from './procHost'
-import { runExec, runShell, serializeProcError } from './procHost'
+import type { ProcHostMessage, ProcOptions, ProcRequest, ProcResult, SerializedProcError } from './procHost'
+import { cancelledError, runExec, runShell, serializeProcError } from './procHost'
 
 export interface ProcTransport {
-  postMessage(msg: ProcRequest): void
+  postMessage(msg: ProcHostMessage): void
   onMessage(cb: (msg: ProcResult) => void): void
   onExit(cb: (code: number) => void): void
   kill(): void
@@ -158,7 +158,9 @@ function ensureTransport(): ProcTransport | null {
   }
 }
 
-async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'id'>, timeout: number): Promise<ProcOutcome> {
+async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'id'>, timeout: number, signal?: AbortSignal): Promise<ProcOutcome> {
+  // Cancelled before it was asked: nothing starts.
+  if (signal?.aborted) return { stdout: '', stderr: '', error: serializeProcError(cancelledError()) }
   const t = ensureTransport()
   if (!t) {
     // No host: do it here. This is the fallback, taken only while the host is down or after it has used up
@@ -167,13 +169,16 @@ async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'i
     // taskkill and a few user-started actions are others): tests/electron/main-thread-allowlist.json lists every
     // one and why it may stay, and tests/electron/mainThreadScan.test.ts fails on a new one.
     const r = req.kind === 'exec'
-      ? await runExec(req.bin, req.args, req.opts)
+      ? await runExec(req.bin, req.args, req.opts, signal)
       : await runShell(req.cmd, req.opts)
     // Same shape either way, so a caller can never tell (or accidentally depend on) which path ran.
     return { stdout: r.stdout, stderr: r.stderr, ...(r.error ? { error: serializeProcError(r.error) } : {}) }
   }
   const id = nextId++
-  return new Promise((resolve, reject) => {
+  // A cancel is the host's to carry out: it ends the request's tree and answers it, so the call settles
+  // once the tree is stopped (or by the host's backstop), never while the CLI still runs.
+  const onAbort = (): void => { try { t.postMessage({ kind: 'cancel', id }) } catch { /* the host is gone, and the call with it */ } }
+  return new Promise<ProcOutcome>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`proc host call timed out after ${timeout + CLIENT_TIMEOUT_SLACK_MS}ms`))
@@ -185,8 +190,10 @@ async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'i
       pending.delete(id)
       clearTimeout(timer)
       reject(e)
+      return
     }
-  })
+    signal?.addEventListener('abort', onAbort, { once: true })
+  }).finally(() => signal?.removeEventListener('abort', onAbort))
 }
 
 type ProcExecRequest = Extract<ProcRequest, { kind: 'exec' }>
@@ -211,9 +218,10 @@ export async function execShellOffThread(cmd: string, opts: ProcOptions = {}): P
 }
 
 /** Non-throwing variants, for the caller that reports a failed command's own output as its result
- *  rather than treating failure as an exception. */
-export function execCaptureOffThread(bin: string, args: string[], opts: ProcOptions = {}): Promise<ProcOutcome> {
-  return send({ kind: 'exec', bin, args, opts }, opts.timeout ?? DEFAULT_TIMEOUT)
+ *  rather than treating failure as an exception. With `opts.tree`, `signal` cancels the command and
+ *  ends its whole tree; the call then settles with a `cancelled` error (code ABORT_ERR) and no output. */
+export function execCaptureOffThread(bin: string, args: string[], opts: ProcOptions = {}, signal?: AbortSignal): Promise<ProcOutcome> {
+  return send({ kind: 'exec', bin, args, opts }, opts.timeout ?? DEFAULT_TIMEOUT, opts.tree ? signal : undefined)
 }
 
 export function execShellCaptureOffThread(cmd: string, opts: ProcOptions = {}): Promise<ProcOutcome> {

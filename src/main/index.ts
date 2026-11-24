@@ -2696,7 +2696,9 @@ const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WO
 // Loaded off the main thread at startup; until it lands get() answers the defaults, and a labelling call waits for it.
 void worldSettings.ready()
 /** `claude -p` for labelling, with the same launch environment (token proxy included) an agent gets in
- *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
+ *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label.
+ *  `tree`: a cancel (the call's signal) or the timeout ends claude's whole tree in the proc host, and a
+ *  cancelled call answers no output, so nothing it printed is labelled. */
 const worldClaudeExec = (root: string, signal?: AbortSignal): ExecFn => async (cmd, args, opts) => {
   try {
     // READ_ONLY_RUN_ENV last: labelling is a Lumopolis run, and the memory hook stays quiet for it.
@@ -2704,7 +2706,8 @@ const worldClaudeExec = (root: string, signal?: AbortSignal): ExecFn => async (c
     // Consent again at the last moment: labelling may have been turned off, or the call cancelled (its world
     // removed, its compile ended), while the env was built.
     if (worldSettings.get().worldLabelling === false || signal?.aborted) return { stdout: '', code: 1 }
-    const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env, ...(opts.input !== undefined ? { input: opts.input } : {}) })
+    const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env, tree: true, ...(opts.input !== undefined ? { input: opts.input } : {}) }, signal)
+    if (signal?.aborted) return { stdout: '', code: 1 }
     const code = out.error ? (typeof out.error.code === 'number' ? out.error.code : 1) : 0
     return { stdout: String(out.stdout ?? ''), code }
   } catch {
