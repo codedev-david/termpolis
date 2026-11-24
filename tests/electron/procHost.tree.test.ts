@@ -4,6 +4,7 @@
 // each to main, and ends them on its own way out. The real-process proofs are procHost.process.test.ts
 // and procHost.exit.process.test.ts.
 import { EventEmitter } from 'events'
+import { getSystemErrorMap } from 'util'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const H = vi.hoisted(() => ({
@@ -302,7 +303,9 @@ describe('a tree run collects its output as execFile does', () => {
 
   it('names a negative status as the system error it is, and a signal with a null code; no args, no trailing space', async () => {
     const neg = run({}, [])
-    child.emit('close', -4058, null)
+    // libuv's number for ENOENT differs by platform: -4058 on Windows, -2 on Linux and macOS.
+    const enoent = [...getSystemErrorMap()].find(([, [name]]) => name === 'ENOENT')?.[0]
+    child.emit('close', enoent, null)
     expect((await neg).error).toMatchObject({ message: 'Command failed: claude\n', code: 'ENOENT', cmd: 'claude' })
     const sig = run()
     child.killed = true
