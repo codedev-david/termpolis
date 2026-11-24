@@ -12,12 +12,15 @@
 //    not in the unit suite — the testable spawn/timeout/fallback orchestration lives in
 //    localEmbedder.ts behind the injectable transport. Excluded from coverage.
 import { parentPort, Worker } from 'worker_threads'
+import * as osProbe from 'os'
+import { probe } from './probeLog'
 import { fileURLToPath } from 'url'
 import { embedText, type WorkerTransport } from './localEmbedder'
 
 // ── Worker side ──────────────────────────────────────────────────────────────
 // `parentPort` is null in the main process, so importing this module there is a no-op.
 parentPort?.on('message', async (msg: { id: number; text: string }) => {
+  try { const t0 = Date.now(); void t0; probe(`worker msg nice=${osProbe.getPriority(0)} len=${String(msg?.text ?? '').length}`) } catch { /* probe */ }
   let vec: number[] | null = null
   try { vec = await embedText(msg?.text ?? '') } catch { vec = null }
   parentPort?.postMessage({ id: msg?.id, vec })
