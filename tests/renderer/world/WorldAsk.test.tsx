@@ -22,6 +22,7 @@ import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 import { ANSWER_TEXT_CEILING, ANSWER_TEXT_MAX_HEIGHT, NO_MEMORY_NOTE, answerTextMaxHeight, evidenceReach } from '../../../src/renderer/src/components/World/WorldAnswer'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
+import { spokenText } from '../../../src/shared/world/answerMarkdown'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
 const okRes = (askId: string, text: string, over: Record<string, unknown> = {}): Res => ({
@@ -963,6 +964,102 @@ describe('WorldAsk: Esc and Close stop the answer tour, its timers and its speec
     fireEvent.click(screen.getByLabelText('Close answer'))
     expect(v.cancelActions).toHaveBeenCalledTimes(1)
     expect(speech.cancel).toHaveBeenCalled()
+    expect(lastBusy(l.link)).toBe(false)
+  })
+})
+
+describe('WorldAsk: speech in bounded pieces that always ends (T6)', () => {
+  const on = () => settingsGet.mockResolvedValue({ success: true, data: { worldLabelling: true, worldSpeakAnswers: true } })
+  type U = { text: string; onend: () => void; onerror: () => void }
+  const said = (): U[] => speech.speak.mock.calls.map((c) => c[0] as U)
+  const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
+  const words = (w: string, n: number): string => Array.from({ length: n }, () => w).join(' ')
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); on() })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function answered(text: string) {
+    ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, text, { cited: {} }))
+    const l = makeLink()
+    const view = render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
+    await flush()
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await flush(); await flush()
+    return { l, view }
+  }
+
+  it('a long answer is read in pieces of at most 220 characters, one after another, broken after sentences', async () => {
+    const a = words('alpha', 30) + '.'
+    const b = words('bravo', 30) + '.'
+    const text = `${a} ${b} Charlie ends.`
+    const { l } = await answered(text)
+    expect(said().map((u) => u.text)).toEqual([a])
+    act(() => { said()[0].onend() })
+    expect(said().map((u) => u.text)).toEqual([a, `${b} Charlie ends.`])
+    // A late second end of the first piece does not read the second twice.
+    act(() => { said()[0].onend() })
+    expect(speech.speak).toHaveBeenCalledTimes(2)
+    expect(lastBusy(l.link)).toBe(true)
+    act(() => { said()[1].onend() })
+    expect(speech.speak).toHaveBeenCalledTimes(2)
+    expect(lastBusy(l.link)).toBe(false)
+    expect(said().map((u) => u.text).join(' ')).toBe(spokenText(text))
+  })
+
+  it('a run-on sentence is broken between words, and a word longer than a piece is cut', async () => {
+    const run = words('delta', 100) + ' ' + 'x'.repeat(300) + ' end.'
+    await answered(run)
+    for (let i = 0; i < 20 && said()[i]; i++) act(() => { said()[i].onend() })
+    const pieces = said().map((u) => u.text)
+    expect(pieces.length).toBeGreaterThan(3)
+    for (const p of pieces) expect(p.length).toBeLessThanOrEqual(220)
+    expect(pieces.join('').replace(/ /g, '')).toBe(spokenText(run).replace(/ /g, ''))
+  })
+
+  it('an engine that never ends a piece is given up on, so a newer world is not held off for ever', async () => {
+    const { l } = await answered('The answer.')
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    speech.cancel.mockClear()
+    // Two words: 2 x 800 ms, plus 5 s for the engine to start.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6599) })
+    expect(lastBusy(l.link)).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(lastBusy(l.link)).toBe(false)
+    expect(speech.cancel).toHaveBeenCalled()
+    // The end that comes after all changes nothing.
+    act(() => { said()[0].onend() })
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    expect(lastBusy(l.link)).toBe(false)
+  })
+
+  it('a piece that ends before the watchdog clears it; the watchdog of a hushed answer changes nothing later', async () => {
+    const { l } = await answered('One. ' + words('two', 40) + '. ' + words('three', 40) + '.')
+    act(() => { said()[0].onend() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(6599) })
+    expect(lastBusy(l.link)).toBe(true)
+    act(() => { l.esc() })
+    expect(lastBusy(l.link)).toBe(false)
+    speech.cancel.mockClear()
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(speech.cancel).not.toHaveBeenCalled()
+  })
+
+  it('an engine that throws on a new utterance or on speak reads nothing and is not left speaking', async () => {
+    ;(window as any).SpeechSynthesisUtterance = class { constructor() { throw new Error('no voices') } }
+    const first = await answered('The answer.')
+    expect(speech.speak).not.toHaveBeenCalled()
+    expect(lastBusy(first.l.link)).toBe(false)
+    first.view.unmount()
+    ;(window as any).SpeechSynthesisUtterance = class { text: string; constructor(t: string) { this.text = t } }
+    speech.speak.mockImplementationOnce(() => { throw new Error('busy') })
+    const second = await answered('The answer.')
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    expect(lastBusy(second.l.link)).toBe(false)
+  })
+
+  it('an answer with nothing to say aloud says nothing and is not left speaking', async () => {
+    const { l } = await answered('[E1]')
+    expect(speech.speak).not.toHaveBeenCalled()
     expect(lastBusy(l.link)).toBe(false)
   })
 })

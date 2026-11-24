@@ -45,16 +45,44 @@ const SUGGESTIONS = [
 
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
+/** The longest stretch read as one utterance: engines cut a long one off part way, or never end it (T6). */
+const SPOKEN_PIECE_CHARS = 220
+/** The spoken line in pieces of at most SPOKEN_PIECE_CHARS: broken after a sentence where it can be, between
+ *  words where it cannot, and inside a word (a path, a hash) only when the word alone is longer than a piece. */
+const speechPieces = (line: string): string[] => {
+  const out: string[] = []
+  let cur = ''
+  const add = (piece: string): void => {
+    if (cur === '') cur = piece
+    else if (cur.length + 1 + piece.length <= SPOKEN_PIECE_CHARS) cur += ' ' + piece
+    else { out.push(cur); cur = piece }
+  }
+  for (const sentence of line.split(/(?<=[.!?]) /)) {
+    if (sentence.length <= SPOKEN_PIECE_CHARS) { add(sentence); continue }
+    for (const word of sentence.split(' ')) {
+      for (let i = 0; i < word.length; i += SPOKEN_PIECE_CHARS) add(word.slice(i, i + SPOKEN_PIECE_CHARS))
+    }
+  }
+  if (cur !== '') out.push(cur)
+  return out
+}
+/** How long a piece may take before it is given up on: twice a slow 400 ms a word, plus 5 s for the engine to start. */
+const pieceBudget = (piece: string): number => piece.split(' ').length * 800 + 5000
+
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
   const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
-  /** The utterance being read: an end event from an older one changes nothing. */
-  const utterance = useRef<unknown>(null)
+  /** The reading under way: a hush moves it on first, so an end event from an older reading changes nothing. */
+  const speechGen = useRef(0)
+  /** Ends a piece the engine never ends, so `speaking` (and a newer world held off by it) always clears (T6). */
+  const watchdog = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hush = (): void => {
+    speechGen.current++
+    if (watchdog.current !== null) clearTimeout(watchdog.current)
+    watchdog.current = null
     stopSpeech()
-    utterance.current = null
     setSpeaking(false)
   }
   const inputRef = useRef<HTMLInputElement>(null)
@@ -126,27 +154,51 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     window.termpolis.worldSettingsGet?.()
       ?.then((res) => { if (live && res.success) setSpeak(res.data.worldSpeakAnswers === true) })
       ?.catch(() => undefined)
-    return () => { live = false; stopSpeech() }
+    // The refs themselves, not their values: the cleanup must see the reading under way at unmount.
+    const gen = speechGen
+    const dog = watchdog
+    return () => {
+      live = false
+      gen.current++
+      if (dog.current !== null) clearTimeout(dog.current)
+      stopSpeech()
+    }
   }, [])
 
-  // Read the answer aloud once, with the [E<n>] markers left out.
+  // Read the answer aloud once, with the [E<n>] markers left out, piece by piece (T6).
   const spoken = useRef<unknown>(null)
+  const hushRef = useRef(hush)
+  hushRef.current = hush
   useEffect(() => {
     if (!speak || state !== 'answered' || !answer || spoken.current === answer) return
     spoken.current = answer
-    if (!window.speechSynthesis) return
-    const line = spokenText(answer.text)
-    const u = new SpeechSynthesisUtterance(line)
-    const done = (): void => {
-      if (utterance.current !== u) return
-      utterance.current = null
-      setSpeaking(false)
+    const synth = window.speechSynthesis
+    if (!synth) return
+    const pieces = speechPieces(spokenText(answer.text))
+    if (pieces.length === 0) return
+    const gen = ++speechGen.current
+    /** Ends this reading, unless a newer one (or a hush) has taken over. */
+    const end = (): void => { if (speechGen.current === gen) hushRef.current() }
+    let at = -1
+    const say = (i: number): void => {
+      if (speechGen.current !== gen || i !== at + 1) return
+      at = i
+      if (watchdog.current !== null) clearTimeout(watchdog.current)
+      watchdog.current = null
+      if (i === pieces.length) { setSpeaking(false); return }
+      try {
+        // A missing voice or a busy engine throws here; the answer then stays on show unread.
+        const u = new SpeechSynthesisUtterance(pieces[i])
+        u.onend = () => say(i + 1)
+        u.onerror = end
+        watchdog.current = setTimeout(end, pieceBudget(pieces[i]))
+        synth.speak(u)
+      } catch {
+        end()
+      }
     }
-    u.onend = done
-    u.onerror = done
-    utterance.current = u
     setSpeaking(true)
-    window.speechSynthesis.speak(u)
+    say(0)
   }, [speak, state, answer])
 
   // Esc from WorldView: used (true) when it stopped the speech, the answer's tour or a running question. All
