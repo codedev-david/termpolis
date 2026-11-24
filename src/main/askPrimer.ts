@@ -10,6 +10,7 @@
 //     alone. A digest of nothing but white space is no digest (headlessExec trims the primer and drops an empty one).
 // A cancelled ask asks nothing further and is owed no reason. PURE: every read is injected.
 import { memoryUnavailable } from './world/askRunner'
+import { probe } from './probeLog'
 import { isMemoryTimeout } from './hostLane'
 import type { PrimerBuild, PrimerCache } from './primerCache'
 
@@ -36,12 +37,17 @@ async function reasonOf(err: unknown, isLocked: () => Promise<boolean>): Promise
 
 export function createAskPrimer(deps: AskPrimerDeps): (cwd: string, signal?: AbortSignal) => Promise<string | null> {
   return async (cwd, signal) => {
+    const pa = Date.now()
     const root = deps.expand ? await deps.expand(cwd) : cwd
+    probe(`primer expand ms=${Date.now() - pa}`)
     if (signal?.aborted) return null
     let text: string | null
     try {
+      const pb = Date.now()
       text = await deps.cache.get(root, deps.limit(), signal ? { signal } : {})
+      probe(`primer cache.get ms=${Date.now() - pb} text=${text === null ? 'null' : text.length}`)
     } catch (err) {
+      probe(`primer cache.get threw ${err instanceof Error ? err.message.slice(0, 80) : ''}`)
       if (signal?.aborted) return null
       throw await reasonOf(err, deps.isLocked)
     }
@@ -61,8 +67,9 @@ export function createAskPrimer(deps: AskPrimerDeps): (cwd: string, signal?: Abo
  */
 export function lockAwareBuild(build: PrimerBuild, isLocked: () => Promise<boolean>): PrimerBuild {
   return async (root, limit, signal, lane) => {
-    const locked = isLocked().catch(() => false)
-    const text = await build(root, limit, signal, lane)
+    const l0 = Date.now()
+    const locked = isLocked().catch(() => false).finally(() => probe(`primer build isLocked ms=${Date.now() - l0}`))
+    const text = await build(root, limit, signal, lane).finally(() => probe(`primer build ${lane ?? '-'} ms=${Date.now() - l0}`))
     if (text !== null && await locked) throw memoryUnavailable('locked')
     return text
   }
