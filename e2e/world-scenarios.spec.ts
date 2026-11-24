@@ -118,9 +118,6 @@ function realKey(p: string): string {
   return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
 }
 
-/** The longest worldKey asks the app again for a repository's top: the shortest test that asks runs 90 s. */
-const WORLD_KEY_WAIT_MS = 30_000
-
 /**
  * The key the app stores `dir`'s world under, and nothing else: a folder opened as a folder under the folder as the
  * dialog gave it, a project under its repository's top as git spells it (which can differ from `dir`: a long name for
@@ -139,12 +136,14 @@ async function worldKey(dir: string, asFolder: boolean): Promise<string> {
   // The app's look-up gives up after 3 s and answers null (an uncached git on a busy machine), and null reads as "no
   // repository": the test would then map `dir`'s own spelling while the pane maps the top, two entries for one
   // folder. git run here says whether there is a repository; while there is, the app is asked again until it answers,
-  // each ask bounded by the app's own 3 s, for up to a third of the test's time and never more than WORLD_KEY_WAIT_MS:
-  // past that the test fails here, naming the look-up, rather than at its own timeout (fix round 4, M2). The last ask
-  // can start just before the deadline, so the wait runs at most one ask and one pause (5 s) past it.
+  // each ask bounded by the app's own 3 s, for up to two thirds of the test's own time: past that the test fails here,
+  // naming the look-up, rather than at its timeout (fix round 4, M2). No fixed clock of its own, so a loaded machine
+  // gets the time the test allows, which a fixed 20 s did not (the round 2 flake; minor sweep, R4-3). The last ask can
+  // start just before the deadline, so the wait runs at most one ask and one pause (5 s) past it, still inside the test.
   let found = await findRoot()
   if (found === null && gitTopOf(dir) !== null) {
-    const deadline = Date.now() + Math.min(WORLD_KEY_WAIT_MS, test.info().timeout / 3)
+    // A timeout of 0 means the test has none: then neither has this wait, as before round 4.
+    const deadline = Date.now() + (test.info().timeout > 0 ? (test.info().timeout * 2) / 3 : Infinity)
     for (let tries = 1; found === null && Date.now() < deadline; tries++) {
       await page.waitForTimeout(Math.min(2000, 250 * tries))
       found = await findRoot()
