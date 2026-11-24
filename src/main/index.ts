@@ -2472,6 +2472,7 @@ ipcMain.handle('memory:search', async (_, opts: { query: string; limit?: number;
       agentId: opts.agentId,
       kind: opts.kind as MemoryEntry['kind'] | undefined,
       taskId: opts.taskId,
+      lane: 'interactive', // WPA fix I5: a person is waiting on this, so it goes ahead of the host's background work
     })
     // Reliability/receipt SLIs: a UI recall is a real recall — record it so the
     // dashboard reflects actual usage, not just agent-side MCP tool calls.
@@ -4116,7 +4117,7 @@ async function headlessPrimer(cwd: string): Promise<string | null> {
 }
 
 /** WPA: the Ask's primer. The same digest as headlessPrimer's, made the fast way for a person who is waiting: one combined
- *  search with rerank off, both reads in the memory host's interactive lane and under the ask's cancel signal, no deeper
+ *  search with rerank off, both reads in the build's memory lane and under its cancel signal (the primer cache's own), no deeper
  *  re-reads (fillVisible) behind them. Corrections still apply. */
 const askPrimerSearch = (lane: HostLaneName): PrimerSearch => async (o) => applyCorrections(await memorySearch({ ...o, rerank: false, lane }))
 const askPrimerRecent = (signal: AbortSignal | undefined, lane: HostLaneName): PrimerRecent =>

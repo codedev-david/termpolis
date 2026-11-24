@@ -685,8 +685,15 @@ describe('memory:search', () => {
     const r = await invoke('memory:search', { query: 'flaky test', limit: 3, agentId: 'codex', kind: 'lesson', taskId: 't1' })
     expect(r).toEqual({ success: true, data: [{ id: 'h1', score: 0.9 }] })
     expect(mem.memorySearch).toHaveBeenCalledWith({
-      query: 'flaky test', limit: 3, agentId: 'codex', kind: 'lesson', taskId: 't1',
+      query: 'flaky test', limit: 3, agentId: 'codex', kind: 'lesson', taskId: 't1', lane: 'interactive',
     })
+  })
+
+  it('rides the interactive lane: a person is waiting on a search from the UI (WPA fix I5)', async () => {
+    mem.memorySearch.mockResolvedValueOnce([])
+    await invoke('memory:search', { query: 'q' })
+    expect(mem.memorySearch).toHaveBeenCalledTimes(1)
+    expect(mem.memorySearch.mock.calls[0][0]).toMatchObject({ lane: 'interactive' })
   })
 
   it('records a recall metric carrying the hit count and top score', async () => {
