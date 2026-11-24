@@ -27,7 +27,7 @@ import { execFile, exec, spawn, type ChildProcess } from 'child_process'
 import { getSystemErrorName } from 'util'
 import { withoutEnv } from './gitSafety'
 import { lowerHostPriority } from './hostPriority'
-import { endProcessTree, signalProcessGroup, TREE_KILL_GRACE_MS, type KillTreeDeps, type LeaderKill } from './processTree'
+import { endProcessTree, signalProcessGroup, TASKKILL_TIMEOUT_MS, TREE_KILL_GRACE_MS, type KillTreeDeps, type LeaderKill } from './processTree'
 
 export interface ProcExecMsg {
   kind: 'exec'
@@ -154,8 +154,16 @@ export interface RunOutcome {
 }
 
 /** How long a stopped tree has to close its pipes before its request is answered anyway: a process
- *  outside the tree (one that broke away) can hold them open for good. */
+ *  outside the tree (one that broke away) can hold them open for good. Counted from the kill being
+ *  delivered (endTree settling), not from the stop: taskkill alone takes 1.2 s on an idle Windows 11
+ *  machine and over 3 s under load, and a backstop counted from the stop then answered a timeout with
+ *  none of the output the tree printed, before taskkill had ended it (batch 2, the timeout flake). */
 export const TREE_STOP_SETTLE_MS = 3_000
+
+/** The longest a stopped tree run waits to be answered, from the stop: two taskkills that each hit their
+ *  cap (the first try and the one retry) and the settle time after them. A kill that takes longer still is
+ *  answered then. procClient gives a tree request this much more time, so the host answers first. */
+export const TREE_STOP_MAX_MS = 2 * TASKKILL_TIMEOUT_MS + TREE_STOP_SETTLE_MS
 
 export interface RunExecDeps {
   platform?: NodeJS.Platform
@@ -282,6 +290,7 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
     let exited = false
     let limit: ReturnType<typeof setTimeout> | undefined
     let backstop: ReturnType<typeof setTimeout> | undefined
+    let cap: ReturnType<typeof setTimeout> | undefined
     let group: number | undefined
     const finish = (r: RunOutcome): void => {
       if (settled) return
@@ -289,6 +298,7 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       if (group !== undefined) groupsInFlight.delete(group)
       clearTimeout(limit)
       clearTimeout(backstop)
+      clearTimeout(cap)
       signal?.removeEventListener('abort', onAbort)
       resolve(r)
     }
@@ -297,7 +307,7 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       : { stdout, stderr, error: Object.assign(new Error(`timed out after ${base.timeout}ms`), { killed: true, signal: 'SIGTERM' }) }
     // The tree first, while its root lives: `taskkill /T` walks down from a live root only, and once the
     // child's 'exit' has run its pid may name a stranger. The request is answered when the pipes close,
-    // or by the backstop.
+    // or by the backstop, armed once the kill is delivered (TREE_STOP_SETTLE_MS), or by the cap.
     //
     // On POSIX the group is signalled even after its leader has exited, ON PURPOSE: do not gate it on
     // `exited` the way Windows is. A process group outlives its leader, and the members still in it
@@ -309,9 +319,13 @@ export function runExec(bin: string, args: string[], opts: ProcOptions, signal?:
       if (settled || stopped) return
       stopped = why
       clearTimeout(limit)
+      const answerStopped = (): void => finish(stoppedOutcome('', ''))
+      const settle = (): void => { if (!settled) backstop = setTimeout(answerStopped, TREE_STOP_SETTLE_MS) }
+      cap = setTimeout(answerStopped, TREE_STOP_MAX_MS)
       const how = { platform: deps.platform, canRetry: () => !exited, ...(isWin ? {} : { leader }) }
-      if (!(isWin && exited)) void (deps.endTree ?? endProcessTree)(child.pid, how)
-      backstop = setTimeout(() => finish(stoppedOutcome('', '')), TREE_STOP_SETTLE_MS)
+      if (isWin && exited) return settle()
+      // endProcessTree never rejects; an injected one is held to the same answer either way.
+      void Promise.resolve((deps.endTree ?? endProcessTree)(child.pid, how)).then(settle, settle)
     }
     const onAbort = (): void => stop('cancelled')
     const answer: ExecDone = (err, stdout, stderr) => {

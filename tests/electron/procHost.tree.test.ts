@@ -16,11 +16,11 @@ const H = vi.hoisted(() => ({
 
 vi.mock('child_process', () => ({ execFile: H.execFile, exec: H.exec, spawn: H.spawn }))
 // The fake child's pid is made up: the real endProcessTree must never be handed it.
-vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree, signalProcessGroup: H.signalProcessGroup, TREE_KILL_GRACE_MS: 2_000 }))
+vi.mock('../../src/main/processTree', () => ({ endProcessTree: H.endProcessTree, signalProcessGroup: H.signalProcessGroup, TREE_KILL_GRACE_MS: 2_000, TASKKILL_TIMEOUT_MS: 10_000 }))
 
 import {
   runExec, handleProcMessage, installHostExitHandlers, treeGroupsInFlight, hostGraceMs, HOST_GRACE_ENV, _resetProcHostForTests,
-  TREE_STOP_SETTLE_MS, type RunOutcome,
+  TREE_STOP_SETTLE_MS, TREE_STOP_MAX_MS, type RunOutcome,
 } from '../../src/main/procHost'
 
 type ExecFileCb = (e: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
@@ -158,6 +158,50 @@ describe('runExec with tree', () => {
     done(null, undefined as unknown as string, undefined as unknown as string)
     await vi.advanceTimersByTimeAsync(0)
     expect(run.value()).toMatchObject({ stdout: '', stderr: '', error: CANCELLED })
+  })
+
+  it('counts the backstop from the kill being delivered, so a slow taskkill still lets the output through', async () => {
+    let delivered: (ok: boolean) => void = () => {}
+    const endTree = vi.fn(() => new Promise<boolean>((r) => { delivered = r }))
+    const run = track(runExec('claude', ['-p'], { tree: true, timeout: 1_000 }, undefined, { platform: 'win32', endTree }))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(endTree).toHaveBeenCalledTimes(1)
+    // taskkill is still walking the tree well past the settle time: the request waits for it.
+    await vi.advanceTimersByTimeAsync(TREE_STOP_SETTLE_MS + 2_000)
+    expect(run.value()).toBeUndefined()
+    delivered(true)
+    await vi.advanceTimersByTimeAsync(TREE_STOP_SETTLE_MS - 1)
+    expect(run.value()).toBeUndefined()
+    // The pipes close once the tree is ended, and the timeout carries what the tree printed.
+    done(Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), 'started', 'err')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(run.value()).toMatchObject({ stdout: 'started', stderr: 'err', error: { message: 'timed out after 1000ms', killed: true } })
+  })
+
+  it('arms the backstop when the kill is refused too, and is answered by the cap when it never comes back', async () => {
+    const refused = track(runExec('claude', ['-p'], { tree: true, timeout: 1_000 }, undefined, { platform: 'linux', endTree: vi.fn(() => Promise.reject(new Error('no'))) }))
+    await vi.advanceTimersByTimeAsync(1_000 + TREE_STOP_SETTLE_MS)
+    expect(refused.value()?.error).toMatchObject({ message: 'timed out after 1000ms' })
+    const ac = new AbortController()
+    const hung = track(runExec('claude', ['-p'], { tree: true }, ac.signal, { platform: 'win32', endTree: vi.fn(() => new Promise<boolean>(() => {})) }))
+    ac.abort()
+    await vi.advanceTimersByTimeAsync(TREE_STOP_MAX_MS - 1)
+    expect(hung.value()).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(hung.value()).toMatchObject({ stdout: '', stderr: '', error: CANCELLED })
+  })
+
+  it('arms no backstop once the request is answered while the kill was on its way', async () => {
+    let delivered: (ok: boolean) => void = () => {}
+    const ac = new AbortController()
+    const run = track(runExec('claude', ['-p'], { tree: true }, ac.signal, { platform: 'linux', endTree: vi.fn(() => new Promise<boolean>((r) => { delivered = r })) }))
+    ac.abort()
+    done(null, '', '')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(run.value()?.error).toMatchObject(CANCELLED)
+    delivered(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('on Windows never ends a tree whose root has exited, since its pid may name a stranger', async () => {

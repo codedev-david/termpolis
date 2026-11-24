@@ -9,7 +9,7 @@
 // the in-process fallback — is testable without forking anything.
 
 import type { ProcHostMessage, ProcOptions, ProcRequest, ProcResult, ProcTreeMsg, SerializedProcError } from './procHost'
-import { cancelledError, runExec, runShell, serializeProcError, treeGroupsInFlight } from './procHost'
+import { cancelledError, runExec, runShell, serializeProcError, treeGroupsInFlight, TREE_STOP_MAX_MS } from './procHost'
 import { signalProcessGroup, TREE_KILL_GRACE_MS } from './processTree'
 
 export interface ProcTransport {
@@ -270,11 +270,14 @@ async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'i
   // A cancel is the host's to carry out: it ends the request's tree and answers it, so the call settles
   // once the tree is stopped (or by the host's backstop), never while the CLI still runs.
   const onAbort = (): void => { try { t.postMessage({ kind: 'cancel', id }) } catch { /* the host is gone, and the call with it */ } }
+  // A tree run that is stopped (cancelled, or at its timeout) is answered once its tree is ended, which on
+  // Windows can take two taskkills: up to TREE_STOP_MAX_MS after the stop. The host answers it, not this timer.
+  const limit = timeout + CLIENT_TIMEOUT_SLACK_MS + (req.kind === 'exec' && req.opts.tree ? TREE_STOP_MAX_MS : 0)
   return new Promise<ProcOutcome>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id)
-      reject(new Error(`proc host call timed out after ${timeout + CLIENT_TIMEOUT_SLACK_MS}ms`))
-    }, timeout + CLIENT_TIMEOUT_SLACK_MS)
+      reject(new Error(`proc host call timed out after ${limit}ms`))
+    }, limit)
     pending.set(id, { resolve, reject, timer })
     try {
       t.postMessage({ ...req, id } as ProcRequest)

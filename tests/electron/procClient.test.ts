@@ -37,6 +37,7 @@ vi.mock('../../src/main/processTree', async (importOriginal) => {
 })
 
 import type { ProcRequest, ProcResult, ProcTreeMsg } from '../../src/main/procHost'
+import { TREE_STOP_MAX_MS } from '../../src/main/procHost'
 import { TREE_KILL_GRACE_MS } from '../../src/main/processTree'
 import {
   setProcSpawner,
@@ -280,6 +281,18 @@ describe('settlement — a call always ends, one way or another', () => {
     const caught = execCaptureOffThread('git', [], {}).catch((e: Error) => e)
     await vi.advanceTimersByTimeAsync(15_001)
     expect((await caught).message).toBe('proc host call timed out after 15000ms')
+  })
+
+  it('gives a tree call the time its host may take to end the tree after the timeout', async () => {
+    vi.useFakeTimers()
+    install()
+    const caught = execCaptureOffThread('claude', ['-p'], { tree: true, timeout: 10_000 }).catch((e: Error) => e)
+    let settled = false
+    void caught.then(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(15_000 + TREE_STOP_MAX_MS - 1)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(2)
+    expect((await caught).message).toBe(`proc host call timed out after ${15_000 + TREE_STOP_MAX_MS}ms`)
   })
 
   it('does not fire the timeout for a call that already came back', async () => {
