@@ -23,6 +23,7 @@ import { languageForFile } from '../codeGraphExtract'
 import { mergeAnnotations } from './annotations'
 import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
+import { goModulePath, resolveLangImports, scanLangImports, type GoModule } from './langImports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
 import { BUILDINGS_PER_BATCH, codeLabels, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
@@ -316,6 +317,34 @@ function manifestNames(g: Grouping, found: Array<[string, string[]]>): Map<strin
     if (best) out.set(best.id, [...(out.get(best.id) ?? []), ...names])
   }
   return out
+}
+
+/** Folders whose go.mod one compile looks for: the shallowest first, so a project's own modules come before deep ones. */
+const MAX_GO_MODULE_DIRS = 1000
+
+/**
+ * The Go modules a project's Go files are in: a go.mod in a folder of Go files or any folder above one, up to the
+ * root, with the module path it declares. Looked for by name rather than by a walk of the tree, so it needs no glob.
+ */
+async function goModules(deps: CompileDeps, root: string, files: readonly string[]): Promise<GoModule[]> {
+  const dirs = new Set<string>()
+  for (const f of files) {
+    if (!f.endsWith('.go')) continue
+    // Every folder above one already in the set is in it too, so the climb stops there.
+    for (let d = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : ''; !dirs.has(d); d = d.includes('/') ? d.slice(0, d.lastIndexOf('/')) : '') dirs.add(d)
+  }
+  const depth = (d: string): number => (d === '' ? 0 : d.split('/').length)
+  // `files` has no file under node_modules or another ignored folder (isIgnored), so no such folder is looked in.
+  // The sort is stable and `files` is sorted, so folders of one depth stay in path order.
+  const look = [...dirs].sort((a, z) => depth(a) - depth(z)).slice(0, MAX_GO_MODULE_DIRS)
+  const found = await Promise.all(
+    look.map(async (dir): Promise<GoModule | null> => {
+      const text = await safeRead(deps.readFile, `${root}/${dir === '' ? '' : `${dir}/`}go.mod`)
+      const path = text === null || text.length > MAX_MANIFEST_CHARS ? null : goModulePath(text)
+      return path === null ? null : { dir, path }
+    })
+  )
+  return found.filter((m): m is GoModule => m !== null)
 }
 
 /** A CI run names a file the commit changed: a test file stands for itself, any other becomes a run of each test linked to it. */
@@ -706,12 +735,15 @@ export function scanFile(f: string, text: string | null): StageFile | null {
   if (text === null || text.length > MAX_DETECT_FILE_CHARS) return null
   const found = serviceNames(f, text)
   const packages = packageImports(f, text)
+  const lang = scanLangImports(f, text)
   return {
     hash: contentHash(text),
     boundaries: detectBoundaries(f, text),
     imports: relativeImports(f, text),
     ...(packages.length > 0 ? { packages } : {}),
-    ...(found.length > 0 ? { names: found } : {})
+    ...(found.length > 0 ? { names: found } : {}),
+    ...(lang && lang.refs.length > 0 ? { refs: lang.refs } : {}),
+    ...(lang?.pkg !== undefined ? { pkg: lang.pkg } : {})
   }
 }
 
@@ -919,6 +951,9 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     if (e.imports.length > 0) scanned.set(f, e.imports)
     if (e.names) names.set(f, e.names)
   }
+  // Python, Go, Rust, Java and Kotlin imports, as specifiers to the project files they name.
+  const goMods = [...entries.values()].some((e) => e.refs?.some((r) => r.startsWith('go:'))) ? await goModules(deps, root, files) : []
+  for (const [f, specs] of resolveLangImports(files, entries, goMods)) scanned.set(f, [...(scanned.get(f) ?? []), ...specs])
 
   // The graph's tree-sitter path keeps no import specifiers; the text's own fill the gap.
   snap = withImports(snap, scanned)

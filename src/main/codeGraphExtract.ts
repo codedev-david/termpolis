@@ -128,6 +128,20 @@ const JAVA: LangRules = {
   imports: [/^[ \t]*import\s+(?:static\s+)?([\w.]+)/gm],
 }
 
+// Kotlin. `fun` covers free functions, methods and extension functions (`fun Foo.bar()`); objects
+// (and companion objects with a name) are classes too.
+const KOTLIN_MOD = '(?:companion|public|private|protected|internal|open|final|abstract|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun|\\s)*'
+const KOTLIN: LangRules = {
+  lang: 'kotlin',
+  block: 'brace',
+  defs: [
+    { kind: 'function', re: /^[ \t]*(?:@[\w.]+(?:\([^)\n]*\))?\s+)*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|operator|infix|inline|tailrec|external|expect|actual)\s+)*fun\s+(?:<[^>\n]*>\s*)?(?:[A-Za-z_][\w.<>?, ]*\.)?([A-Za-z_]\w*)\s*\(/gm },
+    { kind: 'class', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}(?:class|object)\\s+([A-Za-z_]\\w*)`, 'gm') },
+    { kind: 'interface', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}interface\\s+([A-Za-z_]\\w*)`, 'gm') },
+  ],
+  imports: [/^[ \t]*import\s+([\w.]+)/gm],
+}
+
 // C# (.NET). Braces + typed signatures, so the paren-aware block detection applies.
 const CSHARP: LangRules = {
   lang: 'csharp',
@@ -209,6 +223,7 @@ const BY_EXT: Array<{ ext: RegExp; rules: LangRules }> = [
   { ext: /\.go$/i, rules: GO },
   { ext: /\.rs$/i, rules: RUST },
   { ext: /\.java$/i, rules: JAVA },
+  { ext: /\.kt$/i, rules: KOTLIN },
   { ext: /\.(cs|csx)$/i, rules: CSHARP },
   { ext: /\.rb$/i, rules: RUBY },
   { ext: /\.tf$/i, rules: TERRAFORM },

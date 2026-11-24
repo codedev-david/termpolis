@@ -48,6 +48,8 @@ interface Row {
   absent?: string[]
   /** Opened through the home's Open a folder button (world:open-folder) rather than world:map-project. */
   openFolder?: boolean
+  /** Imports that must be lines: the building of the first file joined to the building of the second. */
+  lines?: [string, string][]
 }
 
 const ROWS: Row[] = [
@@ -62,7 +64,10 @@ const ROWS: Row[] = [
   },
   { name: 'vendored-untracked', parts: ['src/main.ts', 'src/util.ts'], absent: UNTRACKED_VENDORED },
   { name: 'submodule', parts: ['src/app.ts', 'libs/shared/index.ts', 'libs/shared/helper.ts'] },
-  { name: 'nested-repo', parts: ['src/app.ts', 'nested/lib.ts', 'nested/helper.ts'], openFolder: true }
+  { name: 'nested-repo', parts: ['src/app.ts', 'nested/lib.ts', 'nested/helper.ts'], openFolder: true },
+  // Python's relative imports and Go's module-path imports are lines too, not only JS and TS.
+  { name: 'python-only', parts: ['app/main.py', 'app/service.py', 'app/store.py'], lines: [['app/main.py', 'app/service.py'], ['app/service.py', 'app/store.py']] },
+  { name: 'go-only', parts: ['main.go', 'server/server.go', 'store/store.go'], lines: [['main.go', 'server/server.go'], ['server/server.go', 'store/store.go']] }
 ]
 
 test.beforeAll(async () => {
@@ -176,6 +181,19 @@ async function members(key: string): Promise<string[] | null> {
     const api = (window as unknown as { termpolis: { worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
     const res = await api.worldGet(k)
     return res.success && res.data ? res.data.buildings.flatMap((b) => b.members) : null
+  }, key)
+}
+
+/**
+ * The complete world under `key` as its buildings and the lines between them; null: no world yet, or only the first
+ * map drawn from the listing, which reads no file and so has no lines.
+ */
+async function linesOf(key: string): Promise<{ buildings: { id: string; members: string[] }[]; edges: { from: string; to: string }[] } | null> {
+  return page.evaluate(async (k) => {
+    interface Doc { buildings: { id: string; members: string[] }[]; edges: { from: string; to: string }[]; provisional?: boolean }
+    const api = (window as unknown as { termpolis: { worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
+    const res = await api.worldGet(k)
+    return res.success && res.data && res.data.provisional !== true ? { buildings: res.data.buildings.map((b) => ({ id: b.id, members: b.members })), edges: res.data.edges.map((e) => ({ from: e.from, to: e.to })) } : null
   }, key)
 }
 
@@ -294,6 +312,17 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       for (const file of row.parts) expect(got, `${file} is a part of ${row.name}'s world`).toContain(file)
       for (const prefix of row.absent ?? []) {
         expect(got.filter((m) => m.startsWith(prefix)), `nothing under ${prefix} in ${row.name}'s world`).toEqual([])
+      }
+      if (row.lines) {
+        await expect.poll(() => linesOf(key), { message: `the complete world for ${row.name}`, timeout: 60_000 }).not.toBeNull()
+        const doc = (await linesOf(key))!
+        const home = (f: string): string | undefined => doc.buildings.find((b) => b.members.includes(f))?.id
+        const drawn = new Set(doc.edges.map((e) => `${e.from} -> ${e.to}`))
+        expect(doc.edges.length, `${row.name}'s world has lines`).toBeGreaterThan(0)
+        for (const [from, to] of row.lines) {
+          expect(home(from), `${from} and ${to} are in different buildings`).not.toBe(home(to))
+          expect(drawn.has(`${home(from)} -> ${home(to)}`), `a line from ${from}'s building to ${to}'s`).toBe(true)
+        }
       }
       await expect(page.locator('[data-testid="world-error"]')).toHaveCount(0)
 

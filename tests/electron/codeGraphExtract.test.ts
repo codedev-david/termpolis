@@ -121,6 +121,34 @@ describe('codeGraphExtract', () => {
       expect(names(ex.symbols)).toEqual(expect.arrayContaining(['M', 'I']))
       expect(ex.imports).toContain('java.util.List')
     })
+    it('maps Kotlin and extracts its classes, objects, interfaces, functions and imports', () => {
+      expect(languageForFile('app/Main.kt')).toBe('kotlin')
+      const src = [
+        'package com.acme.app',
+        'import com.acme.store.Repo',
+        'data class User(val name: String)',
+        'sealed class State',
+        'object Registry {',
+        '  companion object Factory {}',
+        '  @JvmStatic fun create(): Registry = this',
+        '}',
+        'fun interface Handler { fun handle() }',
+        'interface Store {',
+        '  suspend fun load(id: String): User',
+        '}',
+        'fun <T> List<T>.second(): T = this[1]',
+        'private fun helper(x: Int) {',
+        '  helper(x)',
+        '}'
+      ].join('\n')
+      const ex = extractFile('Main.kt', src)!
+      expect(ex.lang).toBe('kotlin')
+      expect(names(ex.symbols)).toEqual(expect.arrayContaining(['User', 'State', 'Registry', 'Factory', 'create', 'Handler', 'Store', 'load', 'second', 'helper']))
+      expect(byName(ex.symbols, 'Store')!.kind).toBe('interface')
+      expect(byName(ex.symbols, 'Registry')!.kind).toBe('class')
+      expect(byName(ex.symbols, 'second')!.kind).toBe('function')
+      expect(ex.imports).toEqual(['com.acme.store.Repo'])
+    })
   })
 
   describe('robustness', () => {

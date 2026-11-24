@@ -17,6 +17,10 @@ export interface StageFile {
   packages?: string[]
   /** OpenTelemetry service names declared in the file, when any. */
   names?: string[]
+  /** Python, Go, Rust, Java and Kotlin imports, tagged and not yet resolved (langImports.ts); absent when none. */
+  refs?: string[]
+  /** The package a Java or Kotlin file declares, when it declares one. */
+  pkg?: string
 }
 
 /**
@@ -61,7 +65,16 @@ function isBoundary(v: unknown): v is Boundary {
 const boundaries = (v: unknown): v is Boundary[] => Array.isArray(v) && v.every(isBoundary)
 
 function isStageFile(v: unknown): v is StageFile {
-  return isObj(v) && isStr(v.hash) && boundaries(v.boundaries) && strings(v.imports) && (v.packages === undefined || strings(v.packages)) && (v.names === undefined || strings(v.names))
+  return (
+    isObj(v) &&
+    isStr(v.hash) &&
+    boundaries(v.boundaries) &&
+    strings(v.imports) &&
+    (v.packages === undefined || strings(v.packages)) &&
+    (v.names === undefined || strings(v.names)) &&
+    (v.refs === undefined || strings(v.refs)) &&
+    (v.pkg === undefined || isStr(v.pkg))
+  )
 }
 
 function isGrouping(v: unknown): v is Grouping {
