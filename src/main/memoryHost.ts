@@ -55,6 +55,8 @@ import { routerClassify, routerLearn, routerWarm } from './routerModel'
 // v1.63: search reranking — the cross-encoder runs on a worker_thread this process spawns (rerankWorker.ts).
 import { setRerankEnabled, prewarmRerank, setRerankWorkerSpawner } from './crossEncoderRerank'
 import { createRerankWorkerTransport } from './rerankWorker'
+import { setWorkerSpawner, runAsBackgroundEmbeds } from './localEmbedder'
+import { createWorkerTransport } from './embedWorker'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 // Discriminated on `kind` rather than "the first message is init, the rest are calls" — an ordering
@@ -371,6 +373,16 @@ const inflight = new Map<number, AbortController>()
 
 /** Run one call against the whitelist. Sync and async exports are handled uniformly (`await` on a
  *  non-promise is the value itself), so the client only ever sees Promises. */
+/** Whether a call's embeds go to the embedding worker (wired in the host block below) rather than this thread: a call on the
+ *  background lane, or a bulk call sent with no lane. One ingest passage takes seconds to embed on a busy machine, and on this
+ *  thread it held every call behind it (world-responsive t3). A read sent with no lane (an agent's search) and every
+ *  interactive or single call embed here, as before: a query embed takes about 140 ms, and on the worker it would queue behind
+ *  the passages. */
+export function embedsOffThread(msg: Pick<HostCallMsg, 'fn' | 'lane'>): boolean {
+  if (msg.lane === 'background') return true
+  return msg.lane === undefined && !LANE_FREE_CALLS.has(msg.fn) && !CANCELLABLE_READS.has(msg.fn)
+}
+
 export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   const handler = HOST_HANDLERS[msg.fn]
   if (typeof handler !== 'function') {
@@ -393,7 +405,8 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
     else if (msg.lane === 'background' || !LANE_FREE_CALLS.has(msg.fn)) release = await lane.enter('background', ctl?.signal)
     if (ctl?.signal.aborted) throw abortError()
     const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
-    const result = await (handler as (...a: unknown[]) => unknown)(...args)
+    const run = async (): Promise<unknown> => await (handler as (...a: unknown[]) => unknown)(...args)
+    const result = embedsOffThread(msg) ? await runAsBackgroundEmbeds(run) : await run()
     return { kind: 'result', id: msg.id, ok: true, result }
   } catch (err) {
     return { kind: 'result', id: msg.id, ok: false, error: serializeError(err) }
@@ -501,6 +514,12 @@ if (parentPort) {
   // Search reranking runs its model on a worker_thread of this process (several WASM threads of its own), so a
   // rerank never blocks the thread that serves writes, the primer and every other memory call.
   setRerankWorkerSpawner(() => createRerankWorkerTransport())
+  // The same for the embeds of background calls (ingest's writes, the notes pass, Weave, a sync reload): they run on an
+  // embedding worker_thread, while an interactive or a single call embeds here as before. One ingest passage was measured
+  // at 3.5 to 4.6 s to embed (median), up to 25 s, on a Windows runner drawing the map in software; on this thread it held
+  // every call behind it, and an Ask arriving during it ran past its 10 s budget and answered without the project's memory
+  // (world-responsive t3). The worker falls back to this thread if it cannot start or fails, as in main.
+  setWorkerSpawner(() => createWorkerTransport(), { backgroundOnly: true })
   // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
   // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
   // a child in an unknown state goes away. So it still does. Inside this block, not at the top:

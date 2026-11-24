@@ -21,6 +21,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { AsyncLocalStorage } from 'async_hooks'
 import { BertTokenizer } from './bertTokenizer'
 import { BGE_QUERY_PREFIX } from '../shared/world/askIndex'
 
@@ -264,13 +265,33 @@ export interface WorkerTransport {
 let workerTransport: WorkerTransport | null = null
 let workerTried = false
 let workerSpawner: (() => WorkerTransport | null) | null = null
+let workerBackgroundOnly = false
 const WORKER_TIMEOUT_MS = 10_000
+/** How long a background embed may take on the worker before the worker is given up. A busy machine was measured at up to
+ *  25 s for one ingest passage (a Windows runner drawing the map in software), and nothing waits on a background embed, so
+ *  the 10 s bound would drop the worker (and put every later passage back on the calling thread) for no gain. */
+export const BACKGROUND_WORKER_TIMEOUT_MS = 60_000
 
-/** Set the worker spawner (the app wires this to a real worker_thread; tests inject a mock). */
-export function setWorkerSpawner(fn: (() => WorkerTransport | null) | null): void {
+/** Set the worker spawner (the app wires this to a real worker_thread; tests inject a mock). With `backgroundOnly`, only the
+ *  embeds run inside runAsBackgroundEmbeds go to the worker; the rest stay on the calling thread (the memory host: see there). */
+export function setWorkerSpawner(fn: (() => WorkerTransport | null) | null, opts: { backgroundOnly?: boolean } = {}): void {
   workerSpawner = fn
   workerTransport = null
   workerTried = false
+  workerBackgroundOnly = opts.backgroundOnly === true
+}
+
+const backgroundEmbeds = new AsyncLocalStorage<true>()
+
+/** Runs `fn` with every embed it starts (across its awaits) marked as background work: bulk ingest, the notes pass. Under a
+ *  backgroundOnly spawner those embeds run on the worker, so the calling thread stays free for the calls someone waits on. */
+export function runAsBackgroundEmbeds<T>(fn: () => Promise<T>): Promise<T> {
+  return backgroundEmbeds.run(true, fn)
+}
+
+/** Whether the code running now is inside runAsBackgroundEmbeds. */
+export function inBackgroundEmbeds(): boolean {
+  return backgroundEmbeds.getStore() === true
 }
 
 function resetWorker(): void {
@@ -278,6 +299,7 @@ function resetWorker(): void {
   workerTransport = null
   workerTried = false
   workerSpawner = null
+  workerBackgroundOnly = false
 }
 
 async function ensureWorker(): Promise<WorkerTransport | null> {
@@ -289,14 +311,14 @@ async function ensureWorker(): Promise<WorkerTransport | null> {
 
 /** Embed one (already-prepared) text via the worker, with a timeout. `ok=false` means
  *  the worker is unavailable/failed and the caller must fall back to in-process. */
-async function tryWorkerEmbed(text: string): Promise<{ ok: boolean; vec: number[] | null }> {
+async function tryWorkerEmbed(text: string, timeoutMs: number): Promise<{ ok: boolean; vec: number[] | null }> {
   const w = await ensureWorker()
   if (!w) return { ok: false, vec: null }
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const vec = await Promise.race([
       w.embed(text),
-      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('worker timeout')), WORKER_TIMEOUT_MS) }),
+      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('worker timeout')), timeoutMs) }),
     ])
     // F9: a worker that RESOLVES null (crash/exit/model-absent — embedWorker's failAll
     // resolves pending with null) is a MISS, not a success. Report ok:false so embedBatch
@@ -365,12 +387,15 @@ export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<
   const prepared = opts?.isQuery ? texts.map((t) => BGE_QUERY_PREFIX + t) : texts
   // BB11: try the off-thread worker first (single-text protocol). If it embeds every
   // text we're done; any miss disables it for this call and we use the in-process path.
-  const worker = await ensureWorker()
+  // A backgroundOnly worker (the memory host) takes only the background embeds.
+  const background = inBackgroundEmbeds()
+  const worker = !workerBackgroundOnly || background ? await ensureWorker() : null
   if (worker) {
     const out: (number[] | null)[] = []
     let ok = true
+    const timeoutMs = background ? BACKGROUND_WORKER_TIMEOUT_MS : WORKER_TIMEOUT_MS
     for (const p of prepared) {
-      const r = await tryWorkerEmbed(p)
+      const r = await tryWorkerEmbed(p, timeoutMs)
       if (!r.ok) { ok = false; break }
       out.push(r.vec)
     }
