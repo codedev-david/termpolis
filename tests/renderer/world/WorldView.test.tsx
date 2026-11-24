@@ -2435,8 +2435,19 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     expect(notice()).toBeNull()
     act(() => { v.opts.onGraphics('lost') })
     expect(notice()).toHaveTextContent(GRAPHICS_LOST)
+    // While the graphics are away the 2D map shows in the 3D map's place, so a context that never comes back never
+    // leaves a blank map: the 3D map is hidden and paused, the legend gone, and the ask works on the 2D map.
+    expect(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]')).not.toBeNull()
+    expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('hidden')
+    expect(v.setPaused).toHaveBeenLastCalledWith(true)
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
     act(() => { v.opts.onGraphics('restored') })
     expect(notice()).toBeNull()
+    // Back: the 3D map shows and draws again, without the 2D switch ever being touched.
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('visible')
+    expect(v.setPaused).toHaveBeenLastCalledWith(false)
+    expect(screen.getByTestId('world-map2d')).toHaveAttribute('aria-checked', 'false')
     act(() => { v.opts.onGraphics('lost') })
     act(() => { v.opts.onGraphics('flat') })
     await settle()

@@ -158,8 +158,15 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [shown, setShown] = useState(true)
   useEffect(() => window.windowControls?.onShown?.(setShown), [])
   const [map2d, setMap2d] = useState(readMap2d)
-  /** The flat map shows: no WebGL, or the switch is on. */
-  const flat = !webgl || map2d
+  /**
+   * The 3D map's graphics stopped and have not come back yet (the first loss): the 2D map shows meanwhile, so a context
+   * that never comes back never leaves a blank map, and the 3D map returns by itself when they do.
+   */
+  const [glPaused, setGlPaused] = useState(false)
+  /** The 2D map shows in place of a live 3D map: the switch is on, or its graphics are lost for now. */
+  const shows2d = map2d || glPaused
+  /** The flat map shows: no WebGL, or the 2D map in place of the 3D one. */
+  const flat = !webgl || shows2d
   const [viewer, setViewer] = useState<WorldViewer | null>(null)
   const [resolvedRoot, setResolvedRoot] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -530,11 +537,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         setCard(html)
         setClickThrough(fromClick === true)
       },
-      // A lost WebGL context: the first is waited out, the second leaves the 2D map for good.
+      // A lost WebGL context: the first is waited out on the 2D map, the second leaves the 2D map for good.
       onGraphics: (g) => {
-        if (g === 'lost') setNotice(GRAPHICS_LOST)
-        else if (g === 'restored') setNotice((n) => (n === GRAPHICS_LOST ? null : n))
-        else { setNotice(GRAPHICS_FLAT); setGlGone(true) }
+        if (g === 'lost') { setNotice(GRAPHICS_LOST); setGlPaused(true) }
+        else if (g === 'restored') { setNotice((n) => (n === GRAPHICS_LOST ? null : n)); setGlPaused(false) }
+        else { setNotice(GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
       },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
@@ -550,7 +557,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc
-  useEffect(() => { viewer?.setPaused(covered || map2d || !shown) }, [viewer, covered, map2d, shown])
+  useEffect(() => { viewer?.setPaused(covered || shows2d || !shown) }, [viewer, covered, shows2d, shown])
 
   // The e2e probe, while this viewer is up (and only under the test flag).
   useEffect(() => {
@@ -578,9 +585,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // its part is gone).
   useEffect(() => {
     const id = fallbackIdRef.current
-    if ((viewer && !map2d) || !doc || id === null) return
+    if ((viewer && !shows2d) || !doc || id === null) return
     setCard((c) => (c === null ? null : partCard(doc, id)))
-  }, [viewer, map2d, doc])
+  }, [viewer, shows2d, doc])
 
   // Saved views of this world.
   const projectKey = doc ? doc.projectKey : null
@@ -643,7 +650,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }
   const onTour = (tour: Tour): void => {
     armedRef.current = false
-    if (viewer && !map2d) { void viewer.play([{ type: 'tour', steps: tour.steps }]); return }
+    if (viewer && !shows2d) { void viewer.play([{ type: 'tour', steps: tour.steps }]); return }
     // The 2D map has no camera to fly: the tour shows as its captions in order (T3).
     fallbackIdRef.current = null
     setCard(tourCard(tour))
@@ -656,7 +663,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** Open a part's card: through the viewer (it flies there), or straight from the doc in 2D. */
   const openPart = (id: string): void => {
     armedRef.current = false
-    if (viewer && !map2d) { void viewer.apply({ type: 'openCard', id }); return }
+    if (viewer && !shows2d) { void viewer.apply({ type: 'openCard', id }); return }
     const d = docRef.current as WorldDoc
     fallbackIdRef.current = id
     setCard(partCard(d, id))
@@ -665,7 +672,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const openTech = (techId: string): void => {
     armedRef.current = false
     const d = docRef.current as WorldDoc
-    if (viewer && !map2d) {
+    if (viewer && !shows2d) {
       void viewer.apply({ type: 'openCard', id: 'tech:' + techId })
       void viewer.apply({ type: 'highlight', ids: usesTech(d, techId) })
       return
@@ -928,7 +935,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             data-testid="world-canvas-host"
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
-            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !map2d ? 'visible' : 'hidden' }}
+            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden' }}
             onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
             onWheel={cancelBookmark}
           />
@@ -955,7 +962,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {webgl && !map2d && doc && !home && !legendAside && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
+        {webgl && !shows2d && doc && !home && !legendAside && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"
@@ -1032,7 +1039,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3, ...zoom }} data-testid="world-ask-slot">
-            {askSlot(map2d ? null : viewer, doc, worldKey, askLink, proposal)}
+            {askSlot(shows2d ? null : viewer, doc, worldKey, askLink, proposal)}
           </div>
         )}
       </div>
