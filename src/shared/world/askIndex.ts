@@ -82,6 +82,7 @@ const STOP = new Set(('a an and are as at be by can do does for from has have ho
 export function tokenize(text: string): string[] {
   return text
     .normalize('NFC')
+    .replace(/[\uFE0E\uFE0F]/g, '')
     .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, '$1 $2')
     .toLowerCase()
     .split(/[^\p{L}\p{N}\p{M}]+/u)

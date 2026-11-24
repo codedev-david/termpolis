@@ -435,6 +435,16 @@ describe('names in every script', () => {
     expect(nameFit(e, '\u2764\u2764\uFE0F')).toEqual([0, 0, 0, 0])
   })
 
+  it('nameFit fits a digit keycap typed with or without a variation selector, on either side', () => {
+    const one = '1\uFE0F\u20E3'
+    const bare = '1\u20E3'
+    expect(tokenize(one)).toEqual(tokenize(bare))
+    const e = [named('one', one), named('bare', bare), named('two', '2\uFE0F\u20E3')]
+    expect(nameFit(e, bare)).toEqual([WHOLE_NAME, WHOLE_NAME, 0])
+    expect(nameFit(e, one)).toEqual([WHOLE_NAME, WHOLE_NAME, 0])
+    expect(nameFit(e, `what is ${one}`)).toEqual([WHOLE_NAME, WHOLE_NAME, 0])
+  })
+
   it('rankAsk adds a part whose whole name is the question even when no keyword finds it, within the limit', () => {
     const e = [named('a', 'A'), named('b', 'B'), named('c', 'C')]
     expect(rankAsk(e, { keyword: [1, 0, 0], named: [0, 0, WHOLE_NAME] }).map((h) => h.id)).toEqual(['c', 'a'])
