@@ -66,14 +66,20 @@ let nextId = 1
 
 /**
  * macOS and Linux: the process groups the host's `tree` runs lead, by request id, from the host's
- * ProcTreeMsg until that request's result. They are detached, so a host that dies leaves them running:
- * a host killed outright cannot end them itself. Main then does, with process.kill(-pid) only (no
- * spawn, nothing listed): SIGTERM, then SIGKILL after the grace, and SIGKILL for any left at quit.
+ * ProcTreeMsg on. They are detached, so a host that dies leaves them running: a host killed outright
+ * cannot end them itself. Main then does, with process.kill(-pid) only (no spawn, nothing listed):
+ * SIGTERM, then SIGKILL after the grace, and SIGKILL for any left at quit.
  *
- * Only a pid the host reported, and whose result it has not sent, is ever signalled: the result is the
- * host's word that the run is over, after which the pid may be someone else's. A group stays reserved
- * while any member lives, so the one window left is a group whose last member dies in the grace before
- * its SIGKILL, the window processTree accepts too. Windows never reports one (see ProcTreeMsg).
+ *   * A group whose host is alive is kept until that request's result, the host's word that the run is
+ *     over, and then forgotten: after that the pid may be someone else's.
+ *   * A group main is ending (its host exited or was shut down) is kept until its SIGKILL, even if a
+ *     result arrives first: a result only means the run's pipes closed, and a member that ignores
+ *     SIGTERM and let go of them is still there. A group the SIGTERM found gone is dropped at once.
+ *   * A group reported after its host's exit (a child's last message can trail its exit) is ended at once.
+ *
+ * A group stays reserved while any member lives, so the one window left is a group whose last member dies
+ * in the grace before its SIGKILL, the window processTree accepts too. Windows never reports one (see
+ * ProcTreeMsg).
  */
 interface TrackedGroup {
   pid: number

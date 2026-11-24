@@ -80,9 +80,12 @@ export interface ProcCancelMsg {
 export type ProcHostMessage = ProcRequest | ProcCancelMsg
 
 /** macOS and Linux: the host tells main the process group a `tree` exec leads, as soon as it is spawned.
- *  Main keeps it until that request's result arrives (the host's word that the run is over) and ends the
- *  group itself if the host goes away first, a host that crashed included. Windows sends none: there the
- *  child is in the host's kill-on-close job, which ends it with the host however the host ends. */
+ *  Main ends the group itself if the host goes away first, a host that crashed included: SIGTERM, then
+ *  SIGKILL after the grace, kept until that SIGKILL even if the result arrives in between, and at once
+ *  for a group reported after the host's exit. While the host lives, the result (its word that the run is
+ *  over) is when main forgets it. The host, told to go, does the same on its own way out: SIGTERM, and
+ *  SIGKILL at its exit (installHostExitHandlers). Windows sends none: there the child is in the host's
+ *  kill-on-close job, which ends it with the host however the host ends. */
 export interface ProcTreeMsg {
   kind: 'tree'
   id: number
