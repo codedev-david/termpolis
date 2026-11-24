@@ -160,6 +160,17 @@ exit $LASTEXITCODE
   app.process().stdout?.on('data', (d) => { try { fs.appendFileSync(path.join(PROBE_DIR, 'stdout.log'), d) } catch { /* probe */ } })
   app.process().stderr?.on('data', (d) => { try { fs.appendFileSync(path.join(PROBE_DIR, 'stdout.log'), d) } catch { /* probe */ } })
   page = await app.firstWindow()
+  page.on('console', (m) => { const t = m.text(); if (t.startsWith('[rprobe]')) mark(t) })
+  // THROWAWAY PROBE N: how long the page takes to answer, every 2 s.
+  if (!pollOn) {
+    pollOn = true
+    setInterval(() => {
+      const t0 = Date.now()
+      let done = false
+      const late = setTimeout(() => { if (!done) mark('eval late >5000') }, 5000)
+      page.evaluate(() => 1).then(() => { done = true; clearTimeout(late); const ms = Date.now() - t0; if (ms > 300) mark(`eval ms=${ms}`) }, () => { done = true; clearTimeout(late) })
+    }, 2000).unref()
+  }
   await page.waitForLoadState('domcontentloaded')
   // The session stays attached: Chromium drops a session's emulation when it detaches.
   cdp = await page.context().newCDPSession(page)
@@ -370,8 +381,10 @@ async function openCard(): Promise<boolean> {
       }
       return null
     })
+    mark(`openCard found=${!!at} attempt=${attempt}`)
     if (!at) return false
     await page.mouse.click(at.x, at.y)
+    mark('openCard clicked')
     // The card opens once the camera has flown to the building: frames are slow in the test's software-rendered window.
     if (await page.locator('[data-testid="world-card"]').waitFor({ state: 'visible', timeout: 15_000 * slowness }).then(() => true, () => false)) return true
   }
@@ -907,6 +920,7 @@ async function checkDialog(testid: string, label: string, open: () => Promise<vo
 // THROWAWAY PROBE (t24/resp): step marks beside the app's own probe lines.
 const PROBE_DIR = path.resolve('test-results', `probe-${Date.now()}-${process.pid}`)
 fs.mkdirSync(PROBE_DIR, { recursive: true })
+let pollOn = false
 const mark = (s: string): void => { try { fs.appendFileSync(path.join(PROBE_DIR, 'probe.log'), `${new Date().toISOString()} spec ${s}
 `) } catch { /* probe */ } }
 
@@ -993,8 +1007,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
         await check(`legend toggled at ${tag}`)
         await expectLegendClear(`legend toggled at ${tag}`, scale)
         await shoot(`app-legend-${name}`)
+        mark(`legend shot done ${tag}`)
         await click(toggle)
+        mark(`legend closed click ${tag}`)
         await expect(toggle).toHaveAttribute('aria-expanded', before ?? '')
+        mark(`legend closed ${tag}`)
       }
 
       expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)

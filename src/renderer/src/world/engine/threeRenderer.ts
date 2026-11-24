@@ -2756,7 +2756,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const since = now - drawnAt
     if (fence) {
       const gl = fences()
-      if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && since < SOFTWARE_LOOP_MAX_MS) return false
+      const sig = gl.getSyncParameter(fence, gl.SYNC_STATUS) === gl.SIGNALED
+      if (!sig && since < SOFTWARE_LOOP_MAX_MS) return false
+      if (!sig) rp.forced++
+      else rp.fenceMax = Math.max(rp.fenceMax, since)
       loopGap = softwareLoopGap(since) // at most a frame of the screen's late: the fence is read once a frame
       dropFence(true)
     }
@@ -2784,16 +2787,28 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     changes.tick(performance.now())
   }
   // dispose(), setPaused(true) and a lost context cancel the queued frame, so a frame never runs after any of them.
+  // THROWAWAY PROBE N (never land): a summary of the frames each second on the console.
+  const rp = { frames: 0, loop: 0, forced: 0, fenceMax: 0, drawMax: 0, gapMax: 0, last: 0, t0: performance.now(), skips: 0 }
+  const rpFlush = (now: number): void => {
+    if (now - rp.t0 < 1000) return
+    console.log(`[rprobe] frames=${rp.frames} loop=${rp.loop} forced=${rp.forced} skips=${rp.skips} fenceMax=${Math.round(rp.fenceMax)} drawMax=${Math.round(rp.drawMax)} gapMax=${Math.round(rp.gapMax)} buf=${renderer.domElement.width}x${renderer.domElement.height} sw=${software} high=${high}`)
+    rp.frames = rp.loop = rp.forced = rp.skips = 0; rp.fenceMax = rp.drawMax = rp.gapMax = 0; rp.t0 = now
+  }
   function animate(): void {
     raf = 0
+    { const now = performance.now(); if (rp.last) rp.gapMax = Math.max(rp.gapMax, now - rp.last); rp.last = now; rpFlush(now) }
     // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
     if (host.clientWidth === 0 || host.clientHeight === 0) return
     // Drawn in software with only the looping motions moving and no change since: this frame is skipped until the
     // next looping frame is due (loopDue; the clock keeps the wall time, so the motions keep their speed).
     if (software && loopOnly && !changed && !loopDue(performance.now())) {
+      rp.skips++
       raf = requestAnimationFrame(animate)
       return
     }
+    if (loopOnly && !changed) rp.loop++
+    rp.frames++
+    const rd0 = performance.now()
     changed = false
     let motion: FrameMotion = 'moving' // a frame that throws keeps the loop going, as it always did
     drawing = true
@@ -2801,6 +2816,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       motion = drawFrame()
     } finally {
       drawing = false
+      rp.drawMax = Math.max(rp.drawMax, performance.now() - rd0)
       loopOnly = motion === 'looping'
       drawnAt = performance.now()
       if (software) putFence()
