@@ -33,6 +33,16 @@ describe('AddTerminalModal', () => {
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
+  it('on Escape calls the onCancel of the latest render, not the first one', () => {
+    const first = vi.fn()
+    const latest = vi.fn()
+    const { rerender } = render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={vi.fn()} onCancel={first} />)
+    rerender(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={vi.fn()} onCancel={latest} />)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(latest).toHaveBeenCalledTimes(1)
+    expect(first).not.toHaveBeenCalled()
+  })
+
   it('calls onCreate with name, shellType, color when Create clicked', () => {
     const onCreate = vi.fn()
     render(<AddTerminalModal shells={shells} nextIndex={1} defaultShell="bash" onCreate={onCreate} onCancel={vi.fn()} />)
