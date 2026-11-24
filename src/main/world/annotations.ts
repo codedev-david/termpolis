@@ -258,8 +258,8 @@ async function keepPending(file: string, keys: string[]): Promise<boolean> {
  * first time the world opens. Fix round 2 (R-M2): it runs under the annotation store's lock on the new key's file (so an add
  * in the world host cannot replace the copy, nor the copy an add); every older key that has a file is merged in, in the order
  * given, a claim found under two keys kept once, each item capped as an add caps it; the file is written whole (a temp file,
- * then a rename). It never overwrites a file the new key already has (that file is the newer one), never deletes an older
- * one, and never throws. Resolves with the older keys it merged, or an empty list.
+ * then a rename). A file the new key already has keeps every claim it holds (they are the newer ones), no older file is
+ * ever deleted, and it never throws. Resolves with the older keys it merged, or an empty list.
  * WP3 round 2: an older file that exists but cannot be read (held by another program through the retries) is not given up
  * on. Its key is recorded beside the new key's file (ADOPT_PENDING_SUFFIX), and every later open tries it again, even once
  * the new key has a file of its own: its claims then go in before the new key's own (which are newer), nothing of the new
@@ -268,6 +268,9 @@ async function keepPending(file: string, keys: string[]): Promise<boolean> {
  * key's file without the record of what is still to try; a record that cannot be written means nothing is written, and the
  * next open starts over. A record that only shrinks is written after the merged file: a crash between them leaves keys
  * already merged in it, and merging them again changes nothing.
+ * WP3 round 3 (M3): a new key's file that appears while the older files are read (the world host saved it meanwhile) is
+ * merged into the same way, its own claims last, so what was read is not dropped. When that file cannot be read, every key
+ * read or held goes in the record instead, for a later open to try again.
  */
 export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number; lock?: AnnotationLockDeps } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
@@ -297,13 +300,14 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
     return await withAnnotationFileLock(target, async () => {
       let own: Record<string, Claim[]> | null = null
       if (await exists(target)) {
-        if (!had) {
-          // the world host saved the new key's own file while we read: it is the newer one, left as it is
-          await keepPending(pendingFile, unread)
+        // The new key's own claims, newer than any older key's; when `had` is false, the world host saved them while we read.
+        own = await readOwn(target, sleep, now)
+        if (!own) {
+          // A held-back merge never loses the new key's notes. The record stays, or (for a file that appeared while we read)
+          // is made of every key read or held, so a later open tries again.
+          if (!had) await keepPending(pendingFile, [...found.map(([old]) => old), ...unread])
           return []
         }
-        own = await readOwn(target, sleep, now)
-        if (!own) return [] // the record stays, so a later open tries again (a held-back merge never loses the new key's notes)
       }
       // On a first adoption every key in `unread` is new to the record: it goes down before the merged file.
       const first = !had && unread.length > 0

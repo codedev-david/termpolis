@@ -280,6 +280,43 @@ describe('adoptAnnotationAliases', () => {
       await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
+    /** The world host saves the new key's file while the older one is read: the read is refused once, and the pause before
+     *  the next try writes `text` as the new key's file. */
+    const hostSavesDuringRead = (text: string): { sleep: () => Promise<void> } => {
+      faults.busy = `${sha256('old-key')}.json`
+      faults.busyReads = 1
+      let saved = false
+      return { sleep: async () => { if (!saved) { saved = true; writeFileSync(fileFor('new-key'), text) } } }
+    }
+
+    it("a new key's file the world host saves while the older ones are read is merged into, not left without them (M3)", async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      const host = JSON.stringify({ b2: [claim('saved by the host meanwhile')] })
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], hostSavesDuringRead(host))).toEqual(['old-key'])
+      const got = await createAnnotationStore(dir).list('new-key')
+      expect(got.b1.map((c) => c.text)).toEqual(['older'])
+      expect(got.b2.map((c) => c.text)).toEqual(['saved by the host meanwhile'])
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([]) // the common case from now on
+    })
+
+    it("one that does not read is left as it is, and every key read or held goes in the record for a later open (M3)", async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      await createAnnotationStore(dir).add('held', 'b3', claim('held'))
+      // old-key reads at once; held is refused every try, and the first pause between its tries is when the host saves
+      let saved = false
+      const sleep = async (): Promise<void> => { if (!saved) { saved = true; writeFileSync(fileFor('new-key'), '{"b2": [') } }
+      faults.busy = `${sha256('held')}.json`
+      faults.busyReads = LOCKED_ATTEMPTS
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'held'], { sleep })).toEqual([])
+      expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{"b2": [')
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key', 'held'])
+      await writeFile(fileFor('new-key'), JSON.stringify({ b2: [claim('the host')] }), 'utf8') // reads now
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'held'], quick)).toEqual(['old-key', 'held'])
+      expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2', 'b3'])
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
     it('waits between the reads of a held file with the real pause when no sleep is given', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       faults.busy = `${sha256('old-key')}.json`
@@ -322,17 +359,19 @@ describe('adoptAnnotationAliases', () => {
   })
 
   describe('the annotation store lock holds across processes (R-M2)', () => {
-    it('the copy waits while another process holds the lock on the new key, and never overwrites the file that one saved', async () => {
+    it('the copy waits while another process holds the lock on the new key, then merges into the file that one saved, keeping all of it (M3)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       await writeFile(`${fileFor('new-key')}.lock`, '', 'utf8') // the world host is adding to the new key
       const adopt = adoptAnnotationAliases(dir, 'new-key', ['old-key'])
       await ms(ANNOTATION_LOCK_RETRY_MS * 4)
       await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow() // still waiting: nothing written
-      // The host's add lands and lets go: its file is the newer one.
+      // The host's add lands and lets go: its file is the newer one, and the older claims go in before its own.
       await writeFile(fileFor('new-key'), JSON.stringify({ b2: [claim('added in the host')] }), 'utf8')
       await rm(`${fileFor('new-key')}.lock`)
-      expect(await adopt).toEqual([])
-      expect(Object.keys(await createAnnotationStore(dir).list('new-key'))).toEqual(['b2'])
+      expect(await adopt).toEqual(['old-key'])
+      const got = await createAnnotationStore(dir).list('new-key')
+      expect(Object.keys(got).sort()).toEqual(['b1', 'b2'])
+      expect(got.b2.map((c) => c.text)).toEqual(['added in the host'])
     })
     it('an add waits while the copy holds the lock, then adds on top of the copy', async () => {
       const store = createAnnotationStore(dir)
