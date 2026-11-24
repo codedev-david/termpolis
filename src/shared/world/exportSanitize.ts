@@ -44,6 +44,11 @@
 // `Ann++Lee`, `+Ann+Lee` and `Ann%2BLee` keep theirs. The hashed short name Windows gives a folder once several
 // share a head (`DA1F2B~1`, its first 2 letters, 4 hex digits from a hash of the long name, then `~N`) is not
 // read: the hash cannot be worked out from the name, so it keeps its words, though it shows only those 2 letters.
+// Taking the account's folder below its parent anywhere has two more effects. What follows the folder up to its
+// last name goes with it, so entries joined by `;` or `:` before that name are lost (`a/Users/<account>/x;b=c/d`
+// gives `a/<outside the project>/d`, and `x/home/<account>/bin:/usr/bin:/sbin` gives `x/<outside the project>/sbin`).
+// And a web address with that folder in its path is rewritten too (`https://example.com/Users/<account>/profile`
+// gives `https://example.com/<outside the project>/profile`).
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
