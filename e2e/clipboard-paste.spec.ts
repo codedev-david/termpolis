@@ -55,8 +55,7 @@ async function terminalText(): Promise<string> {
 async function terminalLogicalText(): Promise<string> {
   return await page.evaluate(() => {
     const lines = (window as unknown as { __termpolis_terminal_lines?: (id?: string) => string[] }).__termpolis_terminal_lines?.() ?? []
-    return lines.join('
-')
+    return lines.join('\n')
   })
 }
 
