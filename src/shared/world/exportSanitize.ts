@@ -93,7 +93,11 @@ function plainPath(p: string, keepBackslash: boolean): string {
   if (!keepBackslash) n = n.replace(/\\/g, '/')
   n = (n.startsWith('//') ? '/' : '') + n.replace(/\/{2,}/g, '/')
   const long = /^\/\/[?.]\/(unc\/)?/i.exec(n)
-  if (long) n = (long[1] ? '//' : '') + n.slice(long[0].length)
+  if (long) {
+    // `\\?\C:\x` is the drive path; with no drive after the prefix (`\\.\home\x`) the path is still rooted.
+    const rest = n.slice(long[0].length)
+    n = (long[1] ? '//' : /^[A-Za-z]:/.test(rest) ? '' : '/') + rest
+  }
   const share = /^\/\/[^/]+\/([A-Za-z])\$(?=\/|$)/.exec(n)
   if (share) n = `${share[1]}:${n.slice(share[0].length)}`
   return n
@@ -112,11 +116,13 @@ function mappedOnWindows(ctx: SanitizeContext): boolean {
 
 /**
  * Whether a backslash in `p` is a name character rather than a separator: on Linux and macOS `a\b.ts` is one file.
+ * A path that starts with a backslash (`\home\dev\x`, `\\host\x`) is rooted the Windows way instead, so it is found
+ * inside the project or outside it like any absolute path, never shown as one long name.
  * A drive, UNC, long-form, `~` or file-URL path is written the Windows way (or a shell's), so its backslashes stay
  * separators on any platform and such a path is still found to leave the project.
  */
 function backslashKept(p: string, ctx: SanitizeContext): boolean {
-  return !/^(?:[A-Za-z]:|\\\\|~|file:)/i.test(p) && !mappedOnWindows(ctx)
+  return !/^(?:[A-Za-z]:|\\|~|file:)/i.test(p) && !mappedOnWindows(ctx)
 }
 
 /** Whether `p` (normalised) lies in or is `base` (normalised), by whole folder names; gives the segments past it. */
@@ -181,12 +187,21 @@ function separatorReading(p: string, ctx: SanitizeContext): string {
   // On Windows (a drive home folder) `/c/x` and `/cygdrive/c/x` are Git Bash and Cygwin for `C:/x`.
   const bash = /^\/(?:cygdrive\/)?([A-Za-z])(?=\/|$)/i.exec(n)
   if (bash && /^[A-Za-z]:/.test(ctx.home)) n = `${bash[1]}:${n.slice(bash[0].length)}`
+  // On Windows `\x` is rooted on the current drive: read on the drive of the project, userData or home folder it is
+  // in, or else on home's drive.
+  else if (/^\/(?!\/)/.test(n) && /^[A-Za-z]:/.test(ctx.home)) n = onDrive(n, ctx) + n
   if (!isAbsolute(n)) return n ? resolveRelative(n.split('/')) : ''
   const n2 = norm(n)
   const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root))
   if (inRoot) return resolveRelative(inRoot)
   if ([ctx.home, ctx.userData].some((b) => under(n2, norm(b))?.length === 0)) return OUTSIDE
   return outside(n2.split('/'))
+}
+
+/** The drive (`C:`) a drive-less rooted path `n` is read on, for a context whose home folder has one. */
+function onDrive(n: string, ctx: SanitizeContext): string {
+  const base = [ctx.root ?? '', ctx.userData, ctx.home].find((b) => /^[A-Za-z]:/.test(b) && under(b.slice(0, 2) + n, norm(b)) !== null)
+  return (base ?? ctx.home).slice(0, 2)
 }
 
 const SEP = '[\\\\/]+'
@@ -205,10 +220,15 @@ function baseSource(base: string): string {
     // Git Bash and Cygwin write the drive as a folder (`/c/...`, `/cygdrive/c/...`). Only below the drive itself:
     // a drive-root project would otherwise claim any `/c/` in the text.
     const bash = rest ? `|[\\\\/]+(?:cygdrive${SEP})?${drive[1]}` : ''
-    return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash})${rest}`
+    // Rooted on the current drive, the drive left out (`\Users\ann`): not right after a drive, a share's `$`, a name
+    // or another slash, so `D:\Users\ann` and `x\Users\ann` are not taken for it. Only below the drive itself too.
+    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])|(?<![\\w.$:\\\\/-])` : ''
+    return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash}${bare})${rest}`
   }
   if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
-  return parts.map(escapeRe).join(SEP)
+  // A POSIX folder, also in the long form with no drive after the prefix (`\\?\home\ann`). Written with a backslash
+  // it is rooted only where no name or slash comes before it: in `\\host\home\ann` it is a folder on that host.
+  return `(?:[\\\\/]{2}[?.]|(?=/)|(?<![\\w.$:\\\\/-]))` + parts.map(escapeRe).join(SEP)
 }
 
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */

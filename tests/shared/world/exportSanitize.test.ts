@@ -736,6 +736,55 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(relativePath('a\\b/../../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
   })
 
+  it('reads a path that a backslash roots inside the project as project-relative, never with the home folder', () => {
+    const mac: SanitizeContext = { root: '/Users/ann/repo', home: '/Users/ann', userData: '/Users/ann/Library/Application Support/Termpolis' }
+    // Linux and macOS: a Windows-written absolute path into the project.
+    expect(relativePath('\\home\\dev\\repo\\src\\a.ts', posix)).toBe('src/a.ts')
+    expect(relativePath('\\home\\dev\\repo', posix)).toBe('.')
+    expect(relativePath('\\home\\dev/repo/x.ts', posix)).toBe('x.ts')
+    expect(relativePath('\\Users\\ann\\repo\\plan.md', mac)).toBe('plan.md')
+    expect(sanitizeText('see \\home\\dev\\repo\\src\\a.ts now', posix)).toBe('see src/a.ts now')
+    expect(sanitizeText('see \\Users\\ann\\repo\\plan.md now', mac)).toBe('see plan.md now')
+    expect(sanitizeText('cwd=\\home\\dev\\repo done', posix)).toBe('cwd=. done')
+    // A name led by a backslash is read as rooted: shown split, the safe side.
+    expect(relativePath('\\a.ts', posix)).toBe(`${OUTSIDE}/a.ts`)
+  })
+
+  it('reads a path rooted on the current drive, its drive letter left out, like the drive path on Windows', () => {
+    expect(relativePath('\\Users\\dev\\repo\\src\\a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('/Users/dev/repo/src/a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('\\Users\\dev', win)).toBe(OUTSIDE)
+    expect(relativePath('\\Users\\dev\\Documents\\plan.md', win)).toBe(`${OUTSIDE}/plan.md`)
+    expect(relativePath('\\etc\\hosts', win)).toBe(`${OUTSIDE}/hosts`)
+    expect(sanitizeText('see \\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
+    expect(sanitizeText('see \\Users\\dev\\Documents\\plan.md now', win)).toBe(`see ${OUTSIDE}/plan.md now`)
+    expect(sanitizeText('cwd=\\Users\\dev\\repo done', win)).toBe('cwd=. done')
+    // The project on another drive than home: each folder is read on its own drive.
+    const onD: SanitizeContext = { root: 'D:\\work\\repo', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
+    expect(relativePath('\\work\\repo\\src\\a.ts', onD)).toBe('src/a.ts')
+    expect(relativePath('\\Users\\dev\\x.ts', onD)).toBe(`${OUTSIDE}/x.ts`)
+    expect(sanitizeText('see \\work\\repo\\src\\a.ts and \\Users\\dev\\x.ts', onD)).toBe(`see src/a.ts and ${OUTSIDE}/x.ts`)
+    // A design world (no project) on Windows: the drive-less home folder is still outside.
+    const winDesign: SanitizeContext = { root: null, home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
+    expect(relativePath('\\Users\\dev\\repo\\x.ts', winDesign)).toBe(`${OUTSIDE}/x.ts`)
+    // Another drive, an admin share or a name in front is not the drive-less form, and stays as before.
+    expect(sanitizeText('see D:\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('see \\\\host\\D$\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe('a key x\\Users\\dev stays')
+    // A drive-root project names no folder to find without its drive.
+    const driveRoot: SanitizeContext = { root: 'C:\\', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
+    expect(sanitizeText('see \\tmp\\a.ts now', driveRoot)).toBe('see \\tmp\\a.ts now')
+  })
+
+  it('reads the long forms with no drive after them as rooted on this machine, and a host\'s share as another machine\'s', () => {
+    expect(relativePath('\\\\?\\home\\dev\\repo\\src\\a.ts', posix)).toBe('src/a.ts')
+    expect(relativePath('\\\\.\\home\\dev\\x', posix)).toBe(`${OUTSIDE}/x`)
+    expect(sanitizeText('see \\\\?\\home\\dev\\repo\\src\\a.ts now', posix)).toBe('see src/a.ts now')
+    expect(sanitizeText('see \\\\.\\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
+    expect(relativePath('\\\\host\\home\\dev\\repo\\a.ts', posix)).toBe(`${OUTSIDE}/a.ts`)
+    expect(sanitizeText('see \\\\host\\home\\dev\\repo\\a.ts now', posix)).toBe(`see ${OUTSIDE}/a.ts now`)
+  })
+
   it('lets no traversal through on Windows either', () => {
     expect(relativePath('..\\..\\etc\\passwd', win)).toBe(`${OUTSIDE}/passwd`)
     expect(relativePath('src\\..\\..\\x.ts', win)).toBe(`${OUTSIDE}/x.ts`)
