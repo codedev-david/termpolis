@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Faults the adoption must survive: a rename that fails; lock files that cannot be made (`lock`: the codes, one per try;
 // `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
 // that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once); a file
-// another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times).
+// another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times). `renames` counts every
+// rename tried, so a retry test asserts attempts, never the wall clock.
 const faults = vi.hoisted(() => ({
   rename: false, renameOnce: null as string[] | null, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
-  busy: '', busyReads: 0,
+  busy: '', busyReads: 0, renames: 0,
 }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
@@ -28,6 +29,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       return real.readFile(...a)
     },
     rename: async (from: string, to: string) => {
+      faults.renames++
       const once = faults.renameOnce?.shift()
       if (once || faults.rename) throw fail(once ?? 'EBUSY')
       return real.rename(from, to)
@@ -98,8 +100,8 @@ describe('keys that must not move for a normal Windows root', () => {
 
 describe('adoptAnnotationAliases', () => {
   let dir = ''
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0 })
-  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; await rm(dir, { recursive: true, force: true }) })
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; faults.renames = 0 })
+  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; faults.renames = 0; await rm(dir, { recursive: true, force: true }) })
   const folder = (): string => join(dir, 'world', 'annotations')
   const fileFor = (key: string): string => join(folder(), `${sha256(key)}.json`)
   const ms = (n: number): Promise<void> => new Promise((r) => { setTimeout(r, n) })
@@ -253,20 +255,19 @@ describe('adoptAnnotationAliases', () => {
       expect(Object.keys(await createAnnotationStore(dir).list('k')).sort()).toEqual(['b-EACCES', 'b-EBUSY', 'b-EPERM'])
       expect((await readdir(folder())).filter((f) => f.endsWith('.tmp'))).toEqual([])
     })
-    it('a rename that keeps being refused gives up after about a second, throws, and leaves no temp file', async () => {
+    it('a rename that keeps being refused is tried five times, pausing about a second in all, then throws and leaves no temp file', async () => {
       faults.rename = true
       const t0 = Date.now()
       await expect(createAnnotationStore(dir).add('k', 'b1', claim('never saved'))).rejects.toMatchObject({ code: 'EBUSY' })
-      const took = Date.now() - t0
-      expect(took).toBeGreaterThanOrEqual(ANNOTATION_RENAME_RETRY_TOTAL_MS - 20)
-      expect(took).toBeLessThan(ANNOTATION_RENAME_RETRY_TOTAL_MS + 1_500)
+      // the pauses are real timers, which never fire early: only a lower bound on the time is safe under load
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(ANNOTATION_RENAME_RETRY_TOTAL_MS - 20)
+      expect(faults.renames).toBe(5)
       expect((await readdir(folder())).filter((f) => f.endsWith('.tmp'))).toEqual([])
     })
     it('any other rename error is not tried again', async () => {
       faults.renameOnce = ['ENOENT']
-      const t0 = Date.now()
       await expect(createAnnotationStore(dir).add('k', 'b1', claim('gone'))).rejects.toMatchObject({ code: 'ENOENT' })
-      expect(Date.now() - t0).toBeLessThan(90)
+      expect(faults.renames).toBe(1)
     })
   })
 
