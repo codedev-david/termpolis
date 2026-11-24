@@ -676,6 +676,20 @@ describe('the process groups a host reports (macOS and Linux)', () => {
     expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
   })
 
+  it('a group reported after its host\'s exit (the last message can trail the exit) is ended at once', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const { call, id, t } = treeCall(transports)
+    t.exit(9)
+    void call.catch(() => undefined)
+    expect(H.signalProcessGroup).not.toHaveBeenCalled()
+    t.tree(id, A)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM']])
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [A, 'SIGKILL']])
+    expect(_trackedGroupsForTests()).toEqual([])
+  })
+
   it('at quit also SIGKILLs the groups of runs main started itself while the host was down', () => {
     H.treeGroupsInFlight.mockReturnValue([A])
     endProcHostGroupsNow()

@@ -82,6 +82,11 @@ interface TrackedGroup {
   escalation?: ReturnType<typeof setTimeout>
 }
 const groups = new Map<number, TrackedGroup>()
+/**
+ * Hosts whose exit main has seen. Neither Node nor Electron promises that a child's last message
+ * arrives before its exit, so a group can be reported after its host is gone: it is ended at once.
+ */
+const exitedHosts = new WeakSet<ProcTransport>()
 
 function forgetGroup(id: number): void {
   const g = groups.get(id)
@@ -181,6 +186,7 @@ function withinRestartBudget(now: number): boolean {
 
 function onHostExit(host: ProcTransport, code: number): void {
   if (transport === host) transport = null
+  exitedHosts.add(host)
   // Its labelling runs' groups did not die with it (they are detached): end them here.
   endGroupsOf(host)
   // Everything in flight died with it. Reject rather than hang: a git dot that reports nothing is
@@ -206,7 +212,11 @@ function ensureTransport(): ProcTransport | null {
     const t = spawner()
     t.onMessage((msg) => {
       if (msg?.kind === 'tree') {
-        if (typeof msg.id === 'number' && Number.isInteger(msg.pid) && msg.pid > 1) groups.set(msg.id, { pid: msg.pid, host: t })
+        if (typeof msg.id === 'number' && Number.isInteger(msg.pid) && msg.pid > 1) {
+          const g: TrackedGroup = { pid: msg.pid, host: t }
+          groups.set(msg.id, g)
+          if (exitedHosts.has(t)) endGroup(msg.id, g)
+        }
         return
       }
       if (!msg || msg.kind !== 'result') return
