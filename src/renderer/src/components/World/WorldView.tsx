@@ -366,13 +366,26 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // A repository update that brought new files down: map the world again. The compile saves it and main
   // pushes it through the listener below, so the new map arrives like any other change.
+  // A recompile that fails says so over the saved map, which stays up, and Try again maps the folder again.
+  const [recompileError, setRecompileError] = useState<{ at: string; message: string } | null>(null)
+  const recompile = (at: string): void => {
+    setRecompileError(null)
+    // A recompile that fails pushes no world: its last progress must not read as a run still going. A world
+    // opened meanwhile has its own runs, so only this folder's progress is cleared, and only it hears the failure.
+    const settled = (): boolean => {
+      if (!mountedRef.current || rootRef.current !== at) return false
+      setProgress(null)
+      return true
+    }
+    window.termpolis.worldCompile(at).then(
+      (c) => { if (settled() && !c.success) setRecompileError({ at, message: c.error }) },
+      (e: unknown) => { if (settled()) setRecompileError({ at, message: messageOf(e) }) },
+    )
+  }
   useEffect(() => {
     const at = rootRef.current
     if (repoChanged === 0 || at === null) return
-    // A recompile that fails pushes no world: its last progress must not read as a run still going. A world
-    // opened meanwhile has its own runs, so only this folder's progress is cleared.
-    const settled = (): void => { if (rootRef.current === at) setProgress(null) }
-    window.termpolis.worldCompile(at).then(settled, settled)
+    recompile(at)
   }, [repoChanged])
 
   // Pushes from main: compile progress, and a saved world (a compile, or a watched change).
@@ -615,29 +628,36 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     fallbackIdRef.current = null
     setCard(techCard(d, techId))
   }
+  /** True while the world an annotation write started in is still the one open: its answer belongs to that world only. */
+  const stillOn = (d: WorldDoc): (() => boolean) => {
+    const at = rootRef.current
+    return () => mountedRef.current && docRef.current?.projectKey === d.projectKey && rootRef.current === at
+  }
   /** Confirm on an inferred claim: a person's verified copy is stored and the pane shows the doc that comes back. */
   const confirmClaim = (itemId: string, text: string): void => {
     // A claim that reads as service names is changed with the Edit button, never confirmed into a hidden note.
     if (isRuntimeText(text)) { setNotice('Use Edit on the Service names line to change them.'); return }
     const d = docRef.current as WorldDoc
+    const still = stillOn(d)
     window.termpolis.worldAnnotate(d.projectKey, itemId, text)
       .then((res) => {
-        if (!mountedRef.current) return
+        if (!still()) return
         if (res.success) setDoc(res.data)
         else setNotice(`Couldn't confirm: ${res.error}`)
       })
-      .catch((e: unknown) => { if (mountedRef.current) setNotice(`Couldn't confirm: ${messageOf(e)}`) })
+      .catch((e: unknown) => { if (still()) setNotice(`Couldn't confirm: ${messageOf(e)}`) })
   }
   /** The "Service names" editor saved: the names are stored as an annotation, and the pane shows the doc that comes back. */
   const saveRuntimeNames = (itemId: string, names: string[]): void => {
     const d = docRef.current as WorldDoc
+    const still = stillOn(d)
     window.termpolis.worldAnnotate(d.projectKey, itemId, runtimeText(names))
       .then((res) => {
-        if (!mountedRef.current) return
+        if (!still()) return
         if (res.success) setDoc(res.data)
         else setNotice(`Couldn't save the service names: ${res.error}`)
       })
-      .catch((e: unknown) => { if (mountedRef.current) setNotice(`Couldn't save the service names: ${messageOf(e)}`) })
+      .catch((e: unknown) => { if (still()) setNotice(`Couldn't save the service names: ${messageOf(e)}`) })
   }
   const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => {
     const item = (e.target as Element).closest('[data-kind][data-id]')
@@ -727,6 +747,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** The world as opened, before its folder resolves: a followed folder changes it on every cd. */
   const openedAs = designKey !== null ? `design ${designKey}` : `root ${target}`
   let empty: 'loading' | 'mapping' | 'error' | null = null
+  const recompileShown = recompileError !== null && recompileError.at === worldRoot ? recompileError : null
   if (home) empty = null
   else if (error !== null) empty = 'error'
   else if (!doc) empty = mapping ? 'mapping' : 'loading'
@@ -902,7 +923,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             </div>
           </div>
         )}
-        {(repoUpdate || busy || notice || saved) && (
+        {(repoUpdate || busy || notice || saved || recompileShown) && (
           <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', maxWidth: 'calc(100% - 24px)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (
               <SignInNeededNotice
@@ -914,6 +935,21 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 onUseToken={() => { clearRepoError(); setTokenOpen(true) }}
                 onDismiss={dismissRepoUpdate}
               />
+            )}
+            {recompileShown && (
+              <div
+                role="alert"
+                data-testid="world-recompile-error"
+                className="text-xs px-2 py-1 rounded border border-[#3c3c3c] flex items-center gap-2 text-[#cccccc]"
+                style={{ background: '#252526' }}
+              >
+                <span>Lumopolis could not map this project. <span className="text-[#f48771] break-words">{recompileShown.message}</span></span>
+                <button
+                  type="button"
+                  className="px-2 py-0.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
+                  onClick={() => recompile(recompileShown.at)}
+                >Try again</button>
+              </div>
             )}
             {(busy || notice || saved) && (
               <div

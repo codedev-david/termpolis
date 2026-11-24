@@ -475,6 +475,57 @@ describe('WorldView sign in needed', () => {
     expect(screen.getByTestId('world-view')).toBeInTheDocument()
   })
 
+  // U8: a recompile after a repository update that fails says so, over the saved map, and can be tried again.
+  it('a recompile that throws after a changed update says so with the compile error, and Try again maps it again', async () => {
+    const api = gitBridge(ok({ changed: true }), { worldCompile: vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValueOnce(ok(minimal())) })
+    await openGit()
+    const failed = screen.getByTestId('world-recompile-error')
+    expect(failed).toHaveTextContent('Lumopolis could not map this project.')
+    expect(failed).toHaveTextContent('down')
+    expect(screen.queryByTestId('world-empty')).toBeNull()
+    fireEvent.click(within(failed).getByRole('button', { name: 'Try again' }))
+    expect(screen.queryByTestId('world-recompile-error')).toBeNull()
+    await settle()
+    expect(api.worldCompile).toHaveBeenCalledTimes(2)
+    expect(api.worldCompile).toHaveBeenLastCalledWith('C:/data/r')
+    expect(screen.queryByTestId('world-recompile-error')).toBeNull()
+  })
+
+  it('a recompile that answers with a failure says what main said', async () => {
+    gitBridge(ok({ changed: true }), { worldCompile: vi.fn(async () => fail('The disk is full.')) })
+    await openGit()
+    expect(screen.getByTestId('world-recompile-error')).toHaveTextContent('The disk is full.')
+  })
+
+  it('a recompile that fails after another world opened says nothing over that world', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    gitBridge(ok({ changed: true }), {
+      worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT, FOLDER])),
+      worldCompile: vi.fn(() => compile.promise),
+    })
+    await openGit()
+    switchTo('kf')
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    await act(async () => { compile.resolve(fail('down')) })
+    await settle()
+    expect(screen.queryByTestId('world-recompile-error')).toBeNull()
+  })
+
+  it('a recompile that throws after another world opened says nothing over that world', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    gitBridge(ok({ changed: true }), {
+      worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT, FOLDER])),
+      worldCompile: vi.fn(() => compile.promise),
+    })
+    await openGit()
+    switchTo('kf')
+    await settle()
+    await act(async () => { compile.reject(new Error('down')) })
+    await settle()
+    expect(screen.queryByTestId('world-recompile-error')).toBeNull()
+  })
+
   it('a recompile after a repository update that fails leaves no run going for the export dialog', async () => {
     const compile = deferred<Res<WorldDoc>>()
     const p = progressHub()

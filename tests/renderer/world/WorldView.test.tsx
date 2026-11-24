@@ -1388,6 +1388,49 @@ describe('WorldView card actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: boom")
   })
 
+  // U4: a Confirm or a service-names save that comes back after another world opened must not draw
+  // its world, or its failure, over the world now open.
+  describe('an answer from world:annotate after another world opened (U4)', () => {
+    const loaded = (): unknown[] => h.viewers.flatMap((v) => v.load.mock.calls.map((c: unknown[]) => c[0]))
+    const late = async (settleAnnotations: (confirm: ReturnType<typeof deferred<Res<WorldDoc>>>, names: ReturnType<typeof deferred<Res<WorldDoc>>>, returned: WorldDoc) => void) => {
+      const doc = infer()
+      const other = minimal()
+      other.projectKey = 'other'
+      const returned = infer()
+      returned.generatedAt = doc.generatedAt + 1
+      const confirm = deferred<Res<WorldDoc>>()
+      const names = deferred<Res<WorldDoc>>()
+      const worldAnnotate = vi.fn().mockReturnValueOnce(confirm.promise).mockReturnValueOnce(names.promise)
+      bridge({ worldGet: vi.fn(async (root: string) => ok(root === '/next' ? other : doc)), worldAnnotate })
+      const { rerender, onClose } = await mount()
+      act(() => viewer().opts.renderCard(buildingCard(doc, 'b1')))
+      fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+      fireEvent.click(screen.getByTestId('world-card').querySelector('[data-runtime-edit="b1"]') as Element)
+      fireEvent.change(screen.getByLabelText(/Service names/), { target: { value: 'orders-api' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(worldAnnotate).toHaveBeenCalledTimes(2)
+      rerender(<WorldView root="/next" onClose={onClose} />)
+      await settle()
+      expect(loaded()).toContain(other)
+      await act(async () => { settleAnnotations(confirm, names, returned) })
+      await settle()
+      expect(loaded()).not.toContain(returned)
+      expect(screen.queryByTestId('world-notice')).toBeNull()
+    }
+
+    it('a Confirm that worked and a save that threw leave the new world as it is', async () => {
+      await late((confirm, names, returned) => { confirm.resolve(ok(returned)); names.reject(new Error('boom')) })
+    })
+
+    it('a Confirm that threw and a save that worked leave the new world as it is', async () => {
+      await late((confirm, names, returned) => { confirm.reject(new Error('boom')); names.resolve(ok(returned)) })
+    })
+
+    it('answers that report a failure say nothing over the new world', async () => {
+      await late((confirm, names) => { confirm.resolve(fail('No part with that id.')); names.resolve(fail('nope')) })
+    })
+  })
+
   it('Confirm on an inferred claim that reads as service names saves nothing and points to Edit', async () => {
     const doc = infer()
     doc.buildings[0].how[0].text = 'runtime:a,b'
