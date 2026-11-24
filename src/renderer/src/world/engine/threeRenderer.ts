@@ -356,6 +356,10 @@ const EASED = 1e-3
 export const SETTLE_FRAMES = 6
 /** The fog is put on its density once it is within this share of it (an ease never quite arrives). */
 const FOG_SETTLED = 1e-3
+/** Whether two lists of boxes are the same boxes, in the same order. */
+export function sameRects(a: readonly Rect[], b: readonly Rect[]): boolean {
+  return a.length === b.length && a.every((r, i) => r.every((v, k) => v === b[i][k]))
+}
 /** Whether two frames' label places are the same: the same labels, each nudged the same. */
 export function sameLayout(a: ReadonlyMap<string, Nudge>, b: ReadonlyMap<string, Nudge>): boolean {
   if (a.size !== b.size) return false
@@ -2979,11 +2983,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       reframe() // a focus or a close-up is fitted again around the card
     },
     setPanels(els) {
-      // The same panels again (the stage rendered): only their boxes are measured again, since a panel can move
-      // without changing size (the card's content, the ask bar's answer above it), which no ResizeObserver reports.
+      // The same panels again (the stage rendered, or the pane's DOM changed): their boxes are measured again, since
+      // a panel can move without changing size (the card's content, the ask bar's answer above it), which no
+      // ResizeObserver reports. Only a box that moved draws a frame: the pane renders and changes many times a second
+      // while a world compiles or a card's text updates, and drawn in software each of those frames was a whole draw
+      // of the city at the screen's full rate (about 6 a second on a VM, for as long as the pane kept changing).
+      if (els.length === panels.length && els.every((el, i) => el === panels[i])) {
+        const was = panelBoxes
+        panelBoxes = null
+        if (was === null || !sameRects(was, blocked())) wake()
+        return
+      }
       panelBoxes = null
       wake()
-      if (els.length === panels.length && els.every((el, i) => el === panels[i])) return
       for (const el of panels) ro?.unobserve(el)
       panels = [...els]
       for (const el of panels) ro?.observe(el)

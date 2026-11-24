@@ -3,7 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
-import { createThreeRenderer, sameLayout, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { createThreeRenderer, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
@@ -114,6 +114,51 @@ describe('threeRenderer frames on demand', () => {
       expect(frames(r), name).toBe(n + 1)
     }
     r.dispose()
+  })
+
+  it('the same panels handed over again draw a frame only when one of them moved', () => {
+    // The pane hands its panels over after every render and every change of its DOM (a world compiling, a card's
+    // text updating): many times a second. Each used to wake the loop, and drawn in software each wake is a whole
+    // draw of the city.
+    const r = idle()
+    let box = [600, 0, 800, 200]
+    const panel = document.createElement('section')
+    panel.getBoundingClientRect = () => ({ left: box[0], top: box[1], right: box[2], bottom: box[3], width: box[2] - box[0], height: box[3] - box[1], x: box[0], y: box[1], toJSON: () => ({}) }) as DOMRect
+    r.setPanels([panel])
+    // Handed over again before a frame measured the new set: it is drawn.
+    r.setPanels([panel])
+    expect(h.frames.pending()).toBe(1)
+    settle(h.frames)
+    const n = frames(r)
+    for (let i = 0; i < 50; i++) r.setPanels([panel])
+    expect(h.frames.pending()).toBe(0)
+    h.frames.run(60)
+    expect(frames(r)).toBe(n)
+    // The panel moved at the same size (no ResizeObserver hears it): the next hand-over draws, on the next frame.
+    box = [600, 300, 800, 500]
+    r.setPanels([panel])
+    expect(h.frames.pending()).toBe(1)
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    settle(h.frames)
+    // Hidden (no box) is a change too; shown again where it was, another.
+    box = [0, 0, 0, 0]
+    r.setPanels([panel])
+    expect(h.frames.pending()).toBe(1)
+    settle(h.frames)
+    box = [600, 300, 800, 500]
+    r.setPanels([panel])
+    expect(h.frames.pending()).toBe(1)
+    settle(h.frames)
+    r.dispose()
+  })
+
+  it('sameRects: the same boxes in the same order', () => {
+    expect(sameRects([], [])).toBe(true)
+    expect(sameRects([[0, 0, 1, 1]], [[0, 0, 1, 1]])).toBe(true)
+    expect(sameRects([[0, 0, 1, 1]], [])).toBe(false)
+    expect(sameRects([[0, 0, 1, 1]], [[0, 0, 1, 2]])).toBe(false)
+    expect(sameRects([[0, 0, 1, 1], [2, 2, 3, 3]], [[2, 2, 3, 3], [0, 0, 1, 1]])).toBe(false)
   })
 
   it('a pulse draws until it arrives, and a theme with no world drawn yet wakes the loop too', async () => {
