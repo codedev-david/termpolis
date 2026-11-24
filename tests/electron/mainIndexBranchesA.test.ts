@@ -124,6 +124,7 @@ const mockWebContents = { send: vi.fn(), executeJavaScript: vi.fn(), session: un
 const mockMainWindow = {
   minimize: vi.fn(), maximize: vi.fn(), unmaximize: vi.fn(),
   isMaximized: vi.fn(() => false), isMinimized: vi.fn(() => false),
+  isVisible: vi.fn(() => true), isDestroyed: vi.fn(() => false),
   restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(),
   setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(),
   webContents: mockWebContents,
@@ -546,6 +547,32 @@ describe('createWindow — session-end is wired only when crash-watch produced a
     expect(X.installCleanExitGuards).toHaveBeenCalled()
     expect(channels).toContain('closed')           // createWindow() genuinely ran...
     expect(channels).not.toContain('session-end')  // ...and skipped the handler it did not have
+  })
+})
+
+// ===========================================================================
+// createWindow(): the renderer hears whether the window can be seen (Lumopolis stops drawing while it cannot)
+// ===========================================================================
+describe('createWindow — window:shown follows minimise, hide, restore and show', () => {
+  const handler = (ev: string): (() => void) => {
+    const c = mockMainWindow.on.mock.calls.find((x: unknown[]) => x[0] === ev)
+    if (!c) throw new Error(`no ${ev} listener`)
+    return c[1] as () => void
+  }
+  const shownSends = (): unknown[] => mockWebContents.send.mock.calls.filter((c: unknown[]) => c[0] === 'window:shown').map((c: unknown[]) => c[1])
+
+  it('sends false when minimised or hidden, true when shown again, and nothing for a destroyed window', () => {
+    mockWebContents.send.mockClear()
+    mockMainWindow.isMinimized.mockReturnValueOnce(true)
+    handler('minimize')()
+    mockMainWindow.isVisible.mockReturnValueOnce(false)
+    handler('hide')()
+    handler('restore')()
+    handler('show')()
+    expect(shownSends()).toEqual([false, false, true, true])
+    mockMainWindow.isDestroyed.mockReturnValueOnce(true)
+    handler('show')()
+    expect(shownSends()).toHaveLength(4)
   })
 })
 

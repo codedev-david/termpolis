@@ -110,6 +110,8 @@ export interface ThreeRenderer {
   /** Runs a bright pulse along each edge in turn. Resolves when the last one arrives. */
   pulse(edgeIds: string[], instant: boolean): Promise<void>
   stopPulses(): void
+  /** Ends a camera flight under way where the camera is now; its promise settles. Nothing when none is. */
+  stopFlight(): void
   pick(clientX: number, clientY: number): RenderPick | null
   setCursor(pointer: boolean): void
   /** The building or external under the pointer (null: none). Its name shows at any distance. */
@@ -139,6 +141,8 @@ export interface ThreeRenderer {
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
    */
   setReducedMotion(reduced: boolean): void
+  /** Draws the next frame though nothing changed (a capture of the canvas reads what was drawn last: an idle view drew it long ago). */
+  requestFrame(): void
   /** The four looping motions as they stand now (radians, or the pulse's level; all four hold still under reduced
    *  motion), and what the last draw put up: bloom, the star and dust points, the platforms and their lamps, each
    *  building's floor captions bottom to top, the orbs, the opened building and its gap, the camera flight, and how
@@ -152,9 +156,11 @@ export interface ThreeRenderer {
   stopChanges(): void
   /**
    * Stops (true) or restarts (false) the render loop. Something covering the whole view (the World
-   * home, the loading screen, a minimised window) pauses it, so a hidden scene costs no frames. While
-   * paused nothing moves: a camera flight or a pulse waits and goes on after the restart. Unpaused, a
-   * frame is drawn only while something moves or has just changed (an idle city draws nothing).
+   * home, the loading screen, a minimised window) pauses it, so a hidden scene costs no frames. Nothing
+   * waits on a frame that will not come: a camera flight under way lands where it was going and a pulse
+   * ends (their promises settle), and while paused a new flight lands at once and a new pulse is skipped;
+   * a change (a rise, a flash) waits and goes on after the restart. Unpaused, a frame is drawn only while
+   * something moves or has just changed (an idle city draws nothing).
    */
   setPaused(paused: boolean): void
   dispose(): void
@@ -483,7 +489,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     },
     onMode: () => applyView(false),
     now: () => performance.now(),
-    get reduced() { return reduced },
+    // No frame comes while paused or with the context lost: a flight then lands at once, as under reduced motion.
+    get reduced() { return reduced || paused || lost },
   })
   /**
    * The part of the view the panels leave free (freeArea). The overview is the home view, the one
@@ -1743,7 +1750,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   async function pulse(edgeIds: string[], instant: boolean): Promise<void> {
     stopPulses()
-    if (instant || reduced) return
+    if (instant || reduced || paused || lost) return // no frame would carry it (paused, the context lost)
     const mine = pulseToken
     for (const id of edgeIds) {
       if (mine !== pulseToken) return
@@ -2711,6 +2718,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     },
     pulse,
     stopPulses,
+    stopFlight: () => { if (!disposed) rig.stop() },
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
     setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? []; wake() },
@@ -2806,10 +2814,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       wake()
     },
+    requestFrame: () => { wake() },
     setPaused(p) {
       if (disposed || p === paused) return
       paused = p
-      if (p) { cancelAnimationFrame(raf); raf = 0; return }
+      if (p) {
+        cancelAnimationFrame(raf)
+        raf = 0
+        // No frame comes until the restart: a flight lands and a pulse ends, so a tour waiting on them goes on.
+        rig.land()
+        stopPulses()
+        return
+      }
       wake() // the pause is not a frame: nothing jumps on the first frame back (wake resets the clock)
     },
     dispose() {

@@ -55,9 +55,15 @@ export interface WorldViewer {
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
   apply(a: WorldAction): Promise<void>
   play(actions: WorldAction[]): Promise<void>
+  /**
+   * Stops what is playing: the rest of a play or tour, a pulse, and a camera flight under way (stopped where the
+   * camera is). The promises of apply() and play() settle at once.
+   */
   cancelActions(): void
   on(ev: 'select', cb: (sel: WorldSelection | null) => void): () => void
   on(ev: 'hover', cb: (id: string | null) => void): () => void
+  /** What became of the 3D map's graphics, as onGraphics: for a host that did not make the viewer (the exported page). */
+  on(ev: 'graphics', cb: (state: WorldGraphics) => void): () => void
   getSelection(): string[]
   /** Ids of the buildings, externals and edges currently in view. */
   cameraRegion(): string[]
@@ -89,9 +95,22 @@ export interface WorldViewer {
    * Nothing moves while paused; a flight or pulse in progress goes on after the restart.
    */
   setPaused(paused: boolean): void
+  /**
+   * Draws the next frame of the 3D map though nothing changed: frames are drawn only while something moves, so a
+   * capture of the canvas (an image of the city) asks for one first. Nothing in 2D.
+   */
+  requestFrame(): void
+  /** The project's display name changed: the 2D map's heading and the 3D map's text alternative follow. */
+  setTitle(title: string): void
   /** Removes every listener and frees the renderer. Later calls to load() are ignored. */
   dispose(): void
 }
+
+/**
+ * What became of the 3D map's graphics: 'lost' (the WebGL context was lost: nothing is drawn until it comes back),
+ * 'restored' (it came back and the world was built again), 'flat' (lost a second time: the viewer shows the 2D map).
+ */
+export type WorldGraphics = 'lost' | 'restored' | 'flat'
 
 export interface WorldLoadOptions {
   animateFrom?: WorldDoc
@@ -114,6 +133,8 @@ export interface WorldDrawn {
   tier: ZoomTier
   /** GL draw calls of the last frame, every pass (0 in 2D). */
   drawCalls: number
+  /** Frames drawn since the 3D map was made: frames are drawn only while something moves (0 in 2D). */
+  frames: number
   /** Buildings in the world (drawn or under their slabs), districts, and slabs drawn now (the districts tier; 0 in 2D). */
   buildings: number
   districts: number
@@ -158,6 +179,8 @@ export interface WorldViewerOptions {
   bottomReserve?: number
   /** The exported page: cards have no Confirm or Edit control and show evidence as text, not as buttons. */
   readOnly?: boolean
+  /** What became of the 3D map's graphics (a lost WebGL context): the host shows a notice. */
+  onGraphics?: (state: WorldGraphics) => void
 }
 
 /** True when this browser can create a WebGL context. */
@@ -176,20 +199,32 @@ export function hasWebGL(): boolean {
 const DRAG_PX = 5
 const TOUR_STEP_MS = ACTION_GAP_MS * 2
 
-function prefersReducedMotion(): boolean {
+/** The system's reduced-motion setting, or null where it cannot be asked. */
+function reducedMotionQuery(): MediaQueryList | null {
   try {
-    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+    return typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null
   } catch {
-    return false
+    return null
   }
 }
 
+/** The canvas's description for a screen reader: the 3D map cannot be walked with the keyboard, the 2D map can. */
+export const CANVAS_DESCRIPTION = 'To go through the parts with the keyboard, switch to the 2D map.'
+
 export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptions = {}): WorldViewer {
-  const reduced = opts.reducedMotion ?? prefersReducedMotion()
+  // Without the option the viewer follows the system setting, also when it is switched while the view is open.
+  const motionQuery = opts.reducedMotion === undefined ? reducedMotionQuery() : null
+  let reduced = opts.reducedMotion ?? motionQuery?.matches === true
+  let title = opts.title ?? 'This project'
   const cardOpts = { readOnly: opts.readOnly === true }
   const renderCard = opts.renderCard ?? ((): void => undefined)
   const selectCbs = new Set<(sel: WorldSelection | null) => void>()
   const hoverCbs = new Set<(id: string | null) => void>()
+  const graphicsCbs = new Set<(state: WorldGraphics) => void>()
+  const graphics = (g: WorldGraphics): void => {
+    opts.onGraphics?.(g)
+    for (const cb of Array.from(graphicsCbs)) cb(g)
+  }
 
   let doc: WorldDoc | null = null
   let layers: LayerState = { ...DEFAULT_LAYERS }
@@ -222,6 +257,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   container.style.outline = 'none'
 
   let r3: ThreeRenderer | null = null
+  /** WebGL contexts lost so far: the first is waited out, the second drops to the 2D map. */
+  let losses = 0
   if (hasWebGL()) {
     const before = new Set(Array.from(container.children))
     try {
@@ -229,6 +266,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         quality: opts.quality ?? 'high',
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
+        onContextLost: () => { if (++losses === 1) graphics('lost'); else dropToFlat() },
+        onContextRestored: () => { if (r3) graphics('restored') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
       })
@@ -441,7 +480,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // ---------------- 2D fallback ----------------
   // renderFallback tags each item with data-kind and data-id; clicks are wired from those.
   function drawFallback(d: WorldDoc): void {
-    container.innerHTML = renderFallback(d, opts.title ?? 'This project')
+    container.innerHTML = renderFallback(d, title, { planned: layers.planned, proposal: layers.proposal, ...(revealProposal !== undefined ? { reveal: revealProposal } : {}) })
     for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-id]'))) el.style.cursor = 'pointer'
   }
 
@@ -458,6 +497,13 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let hoverRaf = 0
   let hoverAt: { x: number; y: number } | null = null
   const canvas = r3 ? r3.canvas : null
+  // The canvas is a picture to a screen reader: its name, and where the keyboard can walk the parts.
+  const nameCanvas = (): void => { canvas?.setAttribute('aria-label', `Map of ${title}`) }
+  if (canvas) {
+    canvas.setAttribute('role', 'img')
+    canvas.setAttribute('aria-description', CANVAS_DESCRIPTION)
+    nameCanvas()
+  }
   /**
    * Where the last single click landed and what it picked. A double-click's first click selects, and
    * the camera flies to that part at once, so by the second click something else (or nothing) is under
@@ -542,21 +588,26 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       for (const cb of hoverCbs) cb(null)
     }
   }
-  const onFallbackClick = (e: MouseEvent): void => {
-    if (r3) return
+  /** Selects the 2D map's item the event came from; false when it came from no item. */
+  const selectItem = (e: Event): boolean => {
+    if (r3) return false
     const el = (e.target as Element | null)?.closest?.('[data-id]')
-    if (!el || !container.contains(el)) return
+    if (!el || !container.contains(el)) return false
     const id = el.getAttribute('data-id')
     const kind = el.getAttribute('data-kind')
     const hint = kind === 'building' || kind === 'edge' || kind === 'district' || kind === 'tech' ? kind : undefined
     if (id) void select(id, reduced, hint)
+    return true
   }
+  const onFallbackClick = (e: MouseEvent): void => { selectItem(e) }
   // The second press of a double-click would select the nearest page text (the legend's heading): the
   // 3D view, and the names drawn over it, have no text to select. A first press keeps its default.
   const onMouseDown = (e: MouseEvent): void => {
     if (e.detail > 1) e.preventDefault()
   }
   const onKeyDown = (e: KeyboardEvent): void => {
+    // Enter or Space on a 2D map item opens it, as a click does (Space would scroll the list instead).
+    if ((e.key === 'Enter' || e.key === ' ') && selectItem(e)) { e.preventDefault(); return }
     if (e.key !== 'Escape') return
     cancelActions()
     deselect()
@@ -577,6 +628,32 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
   container.addEventListener('click', onFallbackClick)
   container.addEventListener('keydown', onKeyDown)
+  /** Takes the 3D map's listeners off (dispose, and the drop to the 2D map). */
+  function unwireCanvas(): void {
+    if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = 0 }
+    if (!canvas) return
+    canvas.removeEventListener('pointerdown', onPointerDown)
+    canvas.removeEventListener('pointerup', onPointerUp)
+    canvas.removeEventListener('click', onClick)
+    canvas.removeEventListener('dblclick', onDblClick)
+    canvas.removeEventListener('pointermove', onPointerMove)
+    canvas.removeEventListener('pointerleave', onPointerLeave)
+    container.removeEventListener('mousedown', onMouseDown)
+  }
+  /**
+   * The WebGL context was lost a second time: the graphics cannot be trusted to come back, so the 3D map is freed and
+   * the 2D map drawn in its place, with the selection and its card kept.
+   */
+  function dropToFlat(): void {
+    const gone = r3
+    if (!gone || disposed) return
+    cancelActions()
+    unwireCanvas()
+    r3 = null
+    try { gone.dispose() } catch { /* the lost context may refuse to be freed: it is off the page either way */ }
+    redraw()
+    graphics('flat')
+  }
 
   // ---------------- actions ----------------
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -655,12 +732,22 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     }
   }
 
-  const queue = createActionQueue(exec, undefined, { reducedMotion: reduced })
+  const queue = createActionQueue(exec, undefined, { reducedMotion: () => reduced })
 
+  // The system setting switched while the view is open is followed at once (the queue reads it before each action).
+  const onMotionChange = (e: { matches: boolean }): void => {
+    if (disposed || e.matches === reduced) return
+    reduced = e.matches
+    r3?.setReducedMotion(reduced)
+  }
+  if (motionQuery && typeof motionQuery.addEventListener === 'function') motionQuery.addEventListener('change', onMotionChange)
+
+  /** Stops what is playing: the queue, a tour, a pulse, and the camera flight under way, which stops where it is (its promise settles). */
   function cancelActions(): void {
     queue.cancel()
     tourToken++
     r3?.stopPulses()
+    r3?.stopFlight()
   }
 
   function allIds(): string[] {
@@ -671,7 +758,13 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   function on(ev: 'select', cb: (sel: WorldSelection | null) => void): () => void
   function on(ev: 'hover', cb: (id: string | null) => void): () => void
-  function on(ev: 'select' | 'hover', cb: ((sel: WorldSelection | null) => void) | ((id: string | null) => void)): () => void {
+  function on(ev: 'graphics', cb: (state: WorldGraphics) => void): () => void
+  function on(ev: 'select' | 'hover' | 'graphics', cb: ((sel: WorldSelection | null) => void) | ((id: string | null) => void) | ((state: WorldGraphics) => void)): () => void {
+    if (ev === 'graphics') {
+      const f = cb as (state: WorldGraphics) => void
+      graphicsCbs.add(f)
+      return () => { graphicsCbs.delete(f) }
+    }
     if (ev === 'select') {
       const f = cb as (sel: WorldSelection | null) => void
       selectCbs.add(f)
@@ -768,7 +861,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()
@@ -782,20 +875,21 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     setPaused(p) {
       if (!disposed) r3?.setPaused(p)
     },
+    requestFrame() {
+      if (!disposed) r3?.requestFrame()
+    },
+    setTitle(t) {
+      if (disposed || t === title) return
+      title = t
+      nameCanvas()
+      if (!r3) redraw()
+    },
     dispose() {
       if (disposed) return
       disposed = true
       cancelActions()
-      if (hoverRaf) cancelAnimationFrame(hoverRaf)
-      if (canvas) {
-        canvas.removeEventListener('pointerdown', onPointerDown)
-        canvas.removeEventListener('pointerup', onPointerUp)
-        canvas.removeEventListener('click', onClick)
-        canvas.removeEventListener('dblclick', onDblClick)
-        canvas.removeEventListener('pointermove', onPointerMove)
-        canvas.removeEventListener('pointerleave', onPointerLeave)
-        container.removeEventListener('mousedown', onMouseDown)
-      }
+      unwireCanvas()
+      if (motionQuery && typeof motionQuery.removeEventListener === 'function') motionQuery.removeEventListener('change', onMotionChange)
       container.removeEventListener('click', onFallbackClick)
       container.removeEventListener('keydown', onKeyDown)
       selectCbs.clear()

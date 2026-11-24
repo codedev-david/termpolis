@@ -13,6 +13,13 @@ const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
 const nextFrame = (): Promise<void> => new Promise((done) => { requestAnimationFrame(() => done()) })
 
 describe('WorldCard', () => {
+  it('is a polite live region, so a screen reader reads a card that opens or changes (R11)', () => {
+    render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} onTech={() => {}} onConfirm={() => {}} onEvidence={() => {}} />)
+    const body = screen.getByRole('region', { name: 'Details' })
+    expect(body).toHaveAttribute('aria-live', 'polite')
+    expect(body).toHaveTextContent('Store')
+  })
+
   it('moves the close button left by the scrollbar a capped body shows, and watches the body for it', () => {
     const observed: Element[] = []
     let fire = (): void => undefined

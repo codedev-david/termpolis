@@ -942,6 +942,17 @@ function createWindow() {
   if (onSessionEnd) mainWindow.on('session-end', onSessionEnd)
 
   mainWindow.on('closed', () => { mainWindow = null })
+  // Whether anyone can see the window: backgroundThrottling is off (above), so the page's own visibility never
+  // changes when the window is minimised or hidden. Lumopolis stops drawing frames while it cannot be seen.
+  const sendShown = (): void => {
+    const w = mainWindow
+    if (!w || w.isDestroyed()) return
+    w.webContents.send('window:shown', w.isVisible() && !w.isMinimized())
+  }
+  mainWindow.on('minimize', sendShown)
+  mainWindow.on('restore', sendShown)
+  mainWindow.on('hide', sendShown)
+  mainWindow.on('show', sendShown)
   // Each load of the page gets its own direct typing line to the pty host (directTyping.ts).
   directTyping.attachWindow(mainWindow)
 }

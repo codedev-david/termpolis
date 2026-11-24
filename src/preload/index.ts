@@ -464,6 +464,12 @@ contextBridge.exposeInMainWorld('windowControls', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
+  /** Whether the window can be seen, each time it is minimised, hidden, restored or shown. Returns an unsubscribe. */
+  onShown: (cb: (shown: boolean) => void) => {
+    const handler = (_e: unknown, shown: boolean): void => cb(shown === true)
+    ipcRenderer.on('window:shown', handler)
+    return () => ipcRenderer.removeListener('window:shown', handler)
+  },
 })
 
 // Global hotkey listeners from main process

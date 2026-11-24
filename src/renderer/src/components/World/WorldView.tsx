@@ -28,7 +28,7 @@
 // (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
 // without guessing at the 3D scene. Off in every normal run.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent, ReactNode } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { worldTitle } from '../../../../shared/world/worldTitle'
@@ -128,11 +128,35 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
 
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
+/** The notice while the 3D map waits for its lost graphics to come back (the first loss). */
+export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes back when they do.'
+/** The notice once the graphics were lost a second time: the 2D map shows from then on. */
+export const GRAPHICS_FLAT = 'The graphics stopped again, so the map shows in 2D.'
+
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
-  const [webgl] = useState(() => hasWebGL())
+  const [webglFound, setWebglFound] = useState(() => hasWebGL())
+  /** The graphics were lost twice while open: the 2D map shows from then on. */
+  const [glGone, setGlGone] = useState(false)
+  const webgl = webglFound && !glGone
+  // WebGL missing at the start (a GPU blocked for a while, a driver update) is looked for again when the window comes
+  // back to the front, so the 3D map appears without reopening the pane. Only while it is missing: a live map's own
+  // context is never crowded by a test context, and a map that loses its graphics says so itself (onGraphics).
+  useEffect(() => {
+    if (webglFound || glGone) return
+    const recheck = (): void => { if (document.visibilityState !== 'hidden' && hasWebGL()) setWebglFound(true) }
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', recheck)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      document.removeEventListener('visibilitychange', recheck)
+    }
+  }, [webglFound, glGone])
+  /** The window is on screen (not minimised or hidden): the 3D map draws nothing while it is not. */
+  const [shown, setShown] = useState(true)
+  useEffect(() => window.windowControls?.onShown?.(setShown), [])
   const [map2d, setMap2d] = useState(readMap2d)
   /** The flat map shows: no WebGL, or the switch is on. */
   const flat = !webgl || map2d
@@ -506,18 +530,27 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         setCard(html)
         setClickThrough(fromClick === true)
       },
+      // A lost WebGL context: the first is waited out, the second leaves the 2D map for good.
+      onGraphics: (g) => {
+        if (g === 'lost') setNotice(GRAPHICS_LOST)
+        else if (g === 'restored') setNotice((n) => (n === GRAPHICS_LOST ? null : n))
+        else { setNotice(GRAPHICS_FLAT); setGlGone(true) }
+      },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
     setViewer(v)
     return () => {
       offSelect()
       v.dispose()
+      // A viewer made again (WebGL found later) loads the world afresh.
+      setViewer(null)
+      loadedRef.current = null
     }
   }, [webgl])
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc
-  useEffect(() => { viewer?.setPaused(covered || map2d) }, [viewer, covered, map2d])
+  useEffect(() => { viewer?.setPaused(covered || map2d || !shown) }, [viewer, covered, map2d, shown])
 
   // The e2e probe, while this viewer is up (and only under the test flag).
   useEffect(() => {
@@ -671,12 +704,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       })
       .catch((e: unknown) => { if (still()) setNotice(`Couldn't save the service names: ${messageOf(e)}`) })
   }
-  const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => {
-    const item = (e.target as Element).closest('[data-kind][data-id]')
-    if (!item) return
+  /** Opens the 2D map's item an event came from; false when it came from none. */
+  const openItem = (target: Element): boolean => {
+    const item = target.closest('[data-kind][data-id]')
+    if (!item) return false
     const kind = item.getAttribute('data-kind')
-    if (kind === 'district') { armedRef.current = false; setCard(null); return }
+    if (kind === 'district') { armedRef.current = false; setCard(null); return true }
     openPart(item.getAttribute('data-id') as string)
+    return true
+  }
+  const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => { openItem(e.target as Element) }
+  // Enter or Space on an item (each is a Tab stop) opens it as a click does; Space then does not scroll the list.
+  const onFallbackKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if ((e.key === 'Enter' || e.key === ' ') && openItem(e.target as Element)) e.preventDefault()
   }
   /** Opens a world from the home, the switcher or Build it; `planned` turns the plan overlay on. */
   const openWorld = (t: OpenTarget, planned = t.kind === 'design'): void => {
@@ -757,6 +797,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const home = world.kind === 'home'
   const projectName = worldTitle(entries, { root: worldRoot, designKey })
   const worldKey = worldRoot ?? designKey
+  // The canvas's text alternative names the project shown.
+  useEffect(() => { viewer?.setTitle(projectName) }, [viewer, projectName])
   /** The world as opened, before its folder resolves: a followed folder changes it on every cd. */
   const openedAs = designKey !== null ? `design ${designKey}` : `root ${target}`
   let empty: 'loading' | 'mapping' | 'error' | null = null
@@ -791,6 +833,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     pictureRef.current = null
     const canvas = flat ? null : hostRef.current?.querySelector('canvas') ?? null
     if (kind === 'world' || canvas === null) { setExporting(kind); return true }
+    // The map draws only while something moves: a frame is asked for, so there is one to read.
+    viewer?.requestFrame()
     pictureFrame.current = requestAnimationFrame(() => {
       try {
         pictureRef.current = canvas.toDataURL('image/png')
@@ -897,8 +941,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, colorScheme: 'dark', ...zoom }}
             onClick={onFallbackClick}
-            // renderFallback escapes every string from the doc.
-            dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
+            onKeyDown={onFallbackKey}
+            // renderFallback escapes every string from the doc. The plan shows as on the 3D map.
+            dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName, { planned: layers.planned, proposal }) }}
           />
         )}
         {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} escRef={homeEscRef} />}

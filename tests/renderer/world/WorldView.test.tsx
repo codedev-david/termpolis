@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testi
 import type { WorldDoc, WorldEntry, WorldProgressEvent, WorldUpdatedEvent } from '../../../src/shared/world/types'
 import type { WorldSelection, WorldViewerOptions } from '../../../src/renderer/src/world/engine'
 import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
-import { minimal } from './helpers'
+import { minimal, rich } from './helpers'
 
 // The engine is real except the two things jsdom cannot do: a WebGL probe and a WebGL viewer.
 const h = vi.hoisted(() => ({ webgl: true, viewers: [] as any[] }))
@@ -25,7 +25,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         }),
         emitSelect: (s: WorldSelection | null) => { for (const cb of selectCbs) cb(s) },
         selectListeners: () => selectCbs.size,
-        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
+        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), requestFrame: vi.fn(), setTitle: vi.fn(), dispose: vi.fn(),
         screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
         linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
@@ -42,6 +42,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 import { WorldView } from '../../../src/renderer/src/components/World'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
+import { GRAPHICS_FLAT, GRAPHICS_LOST } from '../../../src/renderer/src/components/World/WorldView'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -2002,6 +2003,8 @@ describe('WorldView export', () => {
     await mountWith()
     const c = canvas(() => PNG)
     openMenu('document')
+    // The map draws only while something moves: a frame is asked for, so there is one to read.
+    expect(viewer().requestFrame).toHaveBeenCalledTimes(1)
     // WebGL clears the canvas once a frame is shown: nothing is read, and no dialog opens, until the next frame.
     expect(c.toDataURL).not.toHaveBeenCalled()
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
@@ -2416,5 +2419,96 @@ describe('WorldView on a big monitor', () => {
     screen.getByTestId('world-canvas-host').appendChild(document.createElement('div'))
     await new Promise((r) => setTimeout(r, 0))
     expect(v.setPanels.mock.calls.length).toBe(calls2)
+  })
+})
+
+describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2D map, a hidden window', () => {
+  const notice = () => screen.queryByTestId('world-notice')
+
+  it('a first loss shows a notice until the graphics come back; a second shows the 2D map for good', async () => {
+    bridge()
+    const askSlot = vi.fn(() => <span>ask</span>)
+    await mount({ askSlot })
+    const v = viewer()
+    expect(v.setTitle).toHaveBeenLastCalledWith('repo') // the canvas's text alternative names the project
+    act(() => { v.opts.onGraphics('restored') }) // no notice up: nothing to take down
+    expect(notice()).toBeNull()
+    act(() => { v.opts.onGraphics('lost') })
+    expect(notice()).toHaveTextContent(GRAPHICS_LOST)
+    act(() => { v.opts.onGraphics('restored') })
+    expect(notice()).toBeNull()
+    act(() => { v.opts.onGraphics('lost') })
+    act(() => { v.opts.onGraphics('flat') })
+    await settle()
+    expect(notice()).toHaveTextContent(GRAPHICS_FLAT)
+    expect(v.dispose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('world-canvas-host')).toBeNull()
+    expect(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]')).not.toBeNull()
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
+    // WebGL is not looked for again: these graphics are not trusted to stay.
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    expect(h.viewers).toHaveLength(1)
+  })
+
+  it('WebGL missing at the start is looked for again when the window comes back, and the 3D map then loads the world', async () => {
+    h.webgl = false
+    bridge()
+    await mount()
+    expect(screen.getByTestId('world-fallback')).toBeInTheDocument()
+    act(() => { window.dispatchEvent(new Event('focus')) }) // still missing
+    expect(h.viewers).toHaveLength(0)
+    h.webgl = true
+    const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) }) // hidden: not looked for
+    expect(h.viewers).toHaveLength(0)
+    hidden.mockReturnValue('visible')
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    await settle()
+    hidden.mockRestore()
+    expect(h.viewers).toHaveLength(1)
+    expect(viewer().load).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+  })
+
+  it('Enter or Space on a 2D map item opens its card; elsewhere, or another key, keeps its default', async () => {
+    h.webgl = false
+    bridge()
+    await mount()
+    const list = screen.getByTestId('world-fallback')
+    const textOf = (html: string) => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent as string }
+    expect(fireEvent.keyDown(list.querySelector('[data-id="b1"]') as Element, { key: 'Enter' })).toBe(false)
+    expect(dialog()).toHaveTextContent(textOf(buildingCard(minimal(), 'b1') as string).slice(0, 20))
+    expect(fireEvent.keyDown(list.querySelector('[data-kind="edge"]') as Element, { key: ' ' })).toBe(false)
+    expect(fireEvent.keyDown(list.querySelector('h2') as Element, { key: 'Enter' })).toBe(true)
+    expect(fireEvent.keyDown(list.querySelector('[data-id="b1"]') as Element, { key: 'a' })).toBe(true)
+  })
+
+  it('the 2D map shows the plan as the layers say: planned parts dashed, gone with the planned layer off', async () => {
+    h.webgl = false
+    bridge({ worldGet: vi.fn(async () => ok(rich())) })
+    await mount()
+    const list = () => screen.getByTestId('world-fallback')
+    expect(list().querySelector('rect[data-id="b4"]')?.getAttribute('fill')).toBe('none')
+    fireEvent.click(screen.getByTestId('world-layer-planned'))
+    expect(list().querySelector('[data-id="b4"]')).toBeNull()
+  })
+
+  it('a minimised or hidden window pauses the 3D map; shown again, it draws', async () => {
+    let shown: ((s: boolean) => void) | null = null
+    const off = vi.fn()
+    ;(window as any).windowControls = { onShown: vi.fn((cb: (s: boolean) => void) => { shown = cb; return off }) }
+    try {
+      bridge()
+      const m = await mount()
+      expect(viewer().setPaused).toHaveBeenLastCalledWith(false)
+      act(() => { (shown as (s: boolean) => void)(false) })
+      expect(viewer().setPaused).toHaveBeenLastCalledWith(true)
+      act(() => { (shown as (s: boolean) => void)(true) })
+      expect(viewer().setPaused).toHaveBeenLastCalledWith(false)
+      m.unmount()
+      expect(off).toHaveBeenCalledTimes(1)
+    } finally {
+      delete (window as any).windowControls
+    }
   })
 })

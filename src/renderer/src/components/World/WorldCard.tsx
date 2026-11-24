@@ -218,6 +218,9 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
         data-testid="world-card-body"
         role="region"
         aria-label="Details"
+        // A screen reader reads a card when it opens or another part's replaces it, wherever the focus is (the 2D map's
+        // list, the Ask box): polite, so it waits for what is being read to finish.
+        aria-live="polite"
         tabIndex={0}
         onClick={onClick}
         onScroll={readMore}

@@ -1764,6 +1764,8 @@ declare global {
       minimize: () => void
       maximize: () => void
       close: () => void
+      /** Whether the window can be seen, each time it is minimised, hidden, restored or shown. Returns an unsubscribe. */
+      onShown: (cb: (shown: boolean) => void) => () => void
     }
     globalEvents: {
       onNewTerminal: (cb: () => void) => () => void

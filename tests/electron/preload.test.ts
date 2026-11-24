@@ -373,6 +373,18 @@ describe('preload: windowControls API', () => {
     exposed.windowControls.close()
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('window:close')
   })
+
+  it('onShown hands each window:shown to the callback as a boolean, and its cleanup removes the listener', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.windowControls.onShown(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'window:shown')?.[1]
+    handler({}, false)
+    handler({}, true)
+    handler({}, 'yes')
+    expect(cb.mock.calls).toEqual([[false], [true], [false]])
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('window:shown', handler)
+  })
 })
 
 describe('preload: model catalog API', () => {

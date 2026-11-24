@@ -103,6 +103,7 @@ describe('threeRenderer frames on demand', () => {
       ['animateChanges', () => r.animateChanges({ rise: ['a'], pulse: ['b'] })],
       ['stopChanges', () => r.stopChanges()],
       ['stopPulses', () => r.stopPulses()],
+      ['requestFrame', () => r.requestFrame()],
     ]
     for (const [name, act] of wakes) {
       settle(h.frames)
@@ -376,6 +377,67 @@ describe('threeRenderer reduced motion switched while open', () => {
     r.dispose()
     r.setReducedMotion(true) // after dispose: nothing
     expect(h.frames.pending()).toBe(0)
+  })
+})
+
+describe('threeRenderer: nothing waits on a frame that will not come (U5, U6)', () => {
+  it('stopFlight ends a flight under way where the camera is, and its promise settles; with none it does nothing', async () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(5)
+    r.stopFlight() // none under way
+    let landed = false
+    const flight = r.frame(['c'], false).then(() => { landed = true })
+    h.frames.step(3)
+    const mid = r.getCamera()
+    expect(r.motionState().flight.active).toBe(true)
+    r.stopFlight()
+    await flight
+    expect(landed).toBe(true)
+    expect(r.motionState().flight.active).toBe(false)
+    h.frames.step(3)
+    expect(r.getCamera()).toEqual(mid) // stopped where it was, not put at the end
+    r.dispose()
+    expect(() => r.stopFlight()).not.toThrow()
+  })
+
+  it('paused, a flight under way lands and a pulse ends; flights and pulses asked for while paused settle at once', async () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(5)
+    const flight = r.frame(['c'], false)
+    const pulse = r.pulse(['e1'], false)
+    h.frames.step(2)
+    r.setPaused(true)
+    await flight
+    await pulse
+    expect(r.motionState().flight.active).toBe(false)
+    const end = r.getCamera()
+    await r.overview(false) // no frame will move it: put there at once
+    expect(r.getCamera()).not.toEqual(end)
+    await r.pulse(['e1'], false)
+    expect(h.frames.pending()).toBe(0)
+    r.setPaused(false)
+    const again = r.frame(['c'], false)
+    h.frames.step()
+    expect(r.motionState().flight.active).toBe(true) // unpaused, flights move again
+    r.stopFlight()
+    await again
+    r.dispose()
+  })
+
+  it('a flight asked for while the context is lost lands at once', async () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(5)
+    r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    await r.frame(['c'], false)
+    await r.pulse(['e1'], false)
+    expect(r.motionState().flight.active).toBe(false)
+    r.dispose()
   })
 })
 

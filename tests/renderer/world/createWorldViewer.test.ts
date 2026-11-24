@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { createWorldViewer, hasWebGL, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
+import { CANVAS_DESCRIPTION, createWorldViewer, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { building, minimal, rich } from './helpers'
@@ -354,7 +354,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, frames: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -447,9 +447,9 @@ function fakeRenderer(host: HTMLElement) {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']), isShown: vi.fn((id: string) => id !== 'b1'),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [] })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7 })),
     motionState: vi.fn(() => ({ ...MOTION })),
-    keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
+    keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(), setReducedMotion: vi.fn(), requestFrame: vi.fn(), stopFlight: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
   return { r, aim: (h: RenderPick | null): void => { hit = h } }
@@ -973,7 +973,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, frames: 7, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
@@ -1525,5 +1525,267 @@ describe('read-only viewer', () => {
     const html = cards[cards.length - 1]
     expect(html).toContain('<h3>')
     expect(html).not.toContain('data-confirm')
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// WP2: a lost WebGL context, reduced motion followed live, the keyboard on the 2D map, the canvas's text alternative.
+
+/** A viewer on the stand-in renderer, with the options the test gives; its renderer and the options it was made with. */
+function mount3d(opts: Parameters<typeof createWorldViewer>[1] = {}) {
+  withWebGL()
+  let fake: ReturnType<typeof fakeRenderer> | null = null
+  createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const cards: (string | null)[] = []
+  const viewer = createWorldViewer(host, { renderCard: (h) => { cards.push(h) }, ...opts })
+  viewer.load(rich())
+  const f = fake as unknown as ReturnType<typeof fakeRenderer>
+  const made = createThreeRenderer.mock.calls[0][1] as { onContextLost: () => void; onContextRestored: () => void; reducedMotion: boolean }
+  return { host, viewer, cards, ...f, made }
+}
+
+/** A matchMedia whose answer the test switches, firing 'change' as the system does. */
+function liveMotion(initial: boolean) {
+  const listeners = new Set<(e: { matches: boolean }) => void>()
+  const mql = {
+    matches: initial,
+    addEventListener: vi.fn((_t: string, cb: (e: { matches: boolean }) => void) => { listeners.add(cb) }),
+    removeEventListener: vi.fn((_t: string, cb: (e: { matches: boolean }) => void) => { listeners.delete(cb) }),
+  }
+  vi.stubGlobal('matchMedia', vi.fn(() => mql))
+  return { mql, listeners, flip: (m: boolean): void => { mql.matches = m; for (const cb of Array.from(listeners)) cb({ matches: m }) } }
+}
+
+describe('WP2: a lost WebGL context (R03, R04)', () => {
+  it('the first loss is waited out and the restore reported; the second drops to the 2D map with the selection kept', () => {
+    const graphics: WorldGraphics[] = []
+    const { host, viewer, r, made, cards } = mount3d({ reducedMotion: true, onGraphics: (g) => { graphics.push(g) } })
+    void viewer.apply({ type: 'openCard', id: 'b1' })
+    made.onContextLost()
+    expect(graphics).toEqual(['lost'])
+    expect(r.dispose).not.toHaveBeenCalled()
+    made.onContextRestored()
+    expect(graphics).toEqual(['lost', 'restored'])
+    made.onContextLost()
+    expect(graphics).toEqual(['lost', 'restored', 'flat'])
+    expect(r.dispose).toHaveBeenCalledTimes(1)
+    expect(r.stopPulses).toHaveBeenCalled() // what was playing stops
+    expect(host.querySelector('canvas')).toBeNull()
+    expect(host.querySelector('section.world-fallback')).not.toBeNull()
+    expect(viewer.getSelection()).toEqual(['b1'])
+    expect(viewer.drawn().frames).toBe(0)
+    expect(viewer.cameraState()).toBeNull()
+    // The 2D map now answers clicks and keys; a late restore, another loss or a frame asked for do nothing.
+    host.querySelector<HTMLElement>('li[data-kind="building"][data-id="b2"]')?.click()
+    expect(viewer.getSelection()).toEqual(['b2'])
+    expect(cards[cards.length - 1]).toContain('Memory host')
+    made.onContextRestored()
+    made.onContextLost()
+    viewer.requestFrame()
+    expect(graphics).toEqual(['lost', 'restored', 'flat'])
+    expect(r.dispose).toHaveBeenCalledTimes(1)
+    // The canvas no longer takes clicks: its listeners came off with it.
+    r.canvas.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(r.pick).not.toHaveBeenCalled()
+    viewer.dispose()
+    expect(host.innerHTML).toBe('')
+  })
+
+  it("on('graphics') tells each listener as the option does, until it unsubscribes (the exported page listens so)", () => {
+    const seen: WorldGraphics[] = []
+    const other: WorldGraphics[] = []
+    const { viewer, made } = mount3d({ reducedMotion: true })
+    const off = viewer.on('graphics', (g) => { seen.push(g) })
+    viewer.on('graphics', (g) => { other.push(g) })
+    made.onContextLost()
+    made.onContextRestored()
+    off()
+    made.onContextLost()
+    expect(seen).toEqual(['lost', 'restored'])
+    expect(other).toEqual(['lost', 'restored', 'flat'])
+    viewer.dispose()
+  })
+
+  it('drops to 2D when the renderer refuses to be freed, works without a host listener, and does nothing once disposed', () => {
+    const a = mount3d({ reducedMotion: true })
+    a.r.dispose.mockImplementation(() => { throw new Error('lost context') })
+    a.made.onContextLost()
+    a.made.onContextRestored()
+    a.made.onContextLost()
+    expect(a.host.querySelector('section.world-fallback')).not.toBeNull()
+    createThreeRenderer.mockReset()
+    const graphics: WorldGraphics[] = []
+    const b = mount3d({ reducedMotion: true, onGraphics: (g) => { graphics.push(g) } })
+    b.viewer.dispose()
+    b.made.onContextLost()
+    b.made.onContextRestored()
+    b.made.onContextLost()
+    expect(graphics).toEqual(['lost'])
+    expect(b.r.dispose).toHaveBeenCalledTimes(1) // by dispose() only
+  })
+})
+
+describe('WP2: reduced motion followed while the view is open (R13)', () => {
+  it('a system switch reaches the renderer and the action queue at once, and stops being heard after dispose', async () => {
+    vi.useFakeTimers()
+    const live = liveMotion(false)
+    const { viewer, r, made } = mount3d()
+    expect(made.reducedMotion).toBe(false)
+    expect(live.mql.addEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    live.flip(true)
+    expect(r.setReducedMotion).toHaveBeenLastCalledWith(true)
+    // The queue reads it: no gap between actions, and the flights land at once.
+    await viewer.play([{ type: 'openCard', id: 'b1' }, { type: 'openCard', id: 'e1' }])
+    expect(r.frame).toHaveBeenLastCalledWith(['e1'], true)
+    await viewer.apply({ type: 'focus', ids: ['b2'] })
+    expect(r.frame).toHaveBeenLastCalledWith(['b2'], true)
+    live.flip(true) // no change: nothing to do
+    expect(r.setReducedMotion).toHaveBeenCalledTimes(1)
+    live.flip(false)
+    expect(r.setReducedMotion).toHaveBeenLastCalledWith(false)
+    await viewer.apply({ type: 'focus', ids: ['b2'] })
+    expect(r.frame).toHaveBeenLastCalledWith(['b2'], false)
+    viewer.dispose()
+    expect(live.mql.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    expect(live.listeners.size).toBe(0)
+  })
+
+  it('a change after dispose is ignored, and a given option is never overridden by the system setting', () => {
+    const live = liveMotion(true)
+    const { viewer, r, made } = mount3d({ reducedMotion: false })
+    expect(made.reducedMotion).toBe(false)
+    expect(live.mql.addEventListener).not.toHaveBeenCalled()
+    viewer.dispose()
+    createThreeRenderer.mockReset()
+    const again = liveMotion(true)
+    const b = mount3d()
+    expect(b.made.reducedMotion).toBe(true)
+    const heard = Array.from(again.listeners)[0]
+    b.viewer.dispose()
+    heard({ matches: false }) // a listener the browser had already queued
+    expect(b.r.setReducedMotion).not.toHaveBeenCalled()
+    expect(r.setReducedMotion).not.toHaveBeenCalled()
+  })
+
+  it('in 2D a switch changes the gaps between actions', async () => {
+    vi.useFakeTimers()
+    const live = liveMotion(true)
+    const { viewer, sels } = setup()
+    live.flip(false)
+    const done = viewer.play([{ type: 'openCard', id: 'b1' }, { type: 'openCard', id: 'e1' }])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sels).toHaveLength(1) // waiting out the gap now
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS)
+    await done
+    expect(sels).toHaveLength(2)
+  })
+})
+
+describe('WP2: the keyboard on the 2D map (R10)', () => {
+  const key = (el: Element, k: string): boolean => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+
+  it('Enter or Space on an item opens it as a click does; elsewhere, and other keys, keep their default', () => {
+    const { item, sels, host, lastCard } = setup({ reducedMotion: true })
+    expect(key(item('building', 'b1'), 'Enter')).toBe(false)
+    expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+    expect(lastCard()).toContain('Desktop app')
+    expect(key(item('edge', 'e1'), ' ')).toBe(false)
+    expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
+    expect(key(item('district', 'd1').querySelector('h3') as Element, 'Enter')).toBe(false)
+    expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
+    expect(key(host.querySelector('section.world-fallback > h2') as Element, 'Enter')).toBe(true)
+    expect(key(item('building', 'b1'), 'a')).toBe(true)
+    expect(sels).toEqual([])
+  })
+
+  it('on the 3D map Enter does nothing (the canvas is not walked with the keyboard)', () => {
+    const { host, viewer } = mount3d({ reducedMotion: true })
+    const sel = vi.fn()
+    viewer.on('select', sel)
+    expect(key(host, 'Enter')).toBe(true)
+    expect(sel).not.toHaveBeenCalled()
+  })
+})
+
+describe('WP2: the 2D map shows the plan layers (R05)', () => {
+  it('follows the planned layer and a drafted proposal', async () => {
+    const { host, viewer } = setup({ reducedMotion: true })
+    expect(host.querySelector('li[data-id="b4"]')).not.toBeNull()
+    viewer.setLayers({ planned: false })
+    expect(host.querySelector('li[data-id="b4"]')).toBeNull()
+    expect(host.querySelector('li[data-id="pb1"]')).toBeNull()
+    await viewer.apply({ type: 'draftProposal', proposalId: 'p1' })
+    expect(host.querySelector('li[data-id="pb1"]')?.textContent).toContain('(proposed)')
+    host.querySelector<HTMLElement>('li[data-id="pb1"]')?.click()
+    expect(viewer.getSelection()).toEqual(['pb1'])
+  })
+})
+
+describe('WP2: the canvas has a text alternative (R11), frames on request, and the 2D drawn() counts', () => {
+  it('names the canvas after the project and says where the keyboard works; setTitle follows', () => {
+    const { r, viewer } = mount3d({ reducedMotion: true, title: 'termpolis' })
+    expect(r.canvas.getAttribute('role')).toBe('img')
+    expect(r.canvas.getAttribute('aria-label')).toBe('Map of termpolis')
+    expect(r.canvas.getAttribute('aria-description')).toBe(CANVAS_DESCRIPTION)
+    viewer.setTitle('<b>other</b>')
+    expect(r.canvas.getAttribute('aria-label')).toBe('Map of <b>other</b>') // an attribute: text, never markup
+    viewer.setTitle('<b>other</b>')
+    expect(r.draw).toHaveBeenCalledTimes(1) // the 3D map is not redrawn for a name
+    viewer.dispose()
+    viewer.setTitle('late')
+    expect(r.canvas.getAttribute('aria-label')).toBe('Map of <b>other</b>')
+  })
+
+  it('setTitle redraws the 2D heading, escaped; before a world is loaded it only keeps the name', () => {
+    const { host, viewer } = setup({ reducedMotion: true })
+    viewer.setTitle('<i>x</i>')
+    expect(host.querySelector('h2')?.textContent).toBe('<i>x</i>')
+    expect(host.querySelector('i')).toBeNull()
+    const bare = document.createElement('div')
+    const v = createWorldViewer(bare, { reducedMotion: true })
+    v.setTitle('later')
+    expect(bare.querySelector('section.world-fallback')).toBeNull()
+    v.load(rich())
+    expect(bare.querySelector('h2')?.textContent).toBe('later')
+  })
+
+  it('requestFrame asks the renderer for a frame, never after dispose and never in 2D; 2D drawn() counts no frames', () => {
+    const { r, viewer } = mount3d({ reducedMotion: true })
+    viewer.requestFrame()
+    expect(r.requestFrame).toHaveBeenCalledTimes(1)
+    expect(viewer.drawn().frames).toBe(7)
+    viewer.dispose()
+    viewer.requestFrame()
+    expect(r.requestFrame).toHaveBeenCalledTimes(1)
+    getContext.mockReturnValue(null)
+    const flat = setup({ reducedMotion: true })
+    expect(() => flat.viewer.requestFrame()).not.toThrow()
+    expect(flat.viewer.drawn().frames).toBe(0)
+  })
+})
+
+describe('WP2: cancel stops the camera flight under way (U5)', () => {
+  it('cancelActions ends the active flight, so the play it belonged to settles at once and plays no further step', async () => {
+    const { viewer, r } = mount3d({ reducedMotion: false })
+    let settle: (() => void) | null = null
+    r.frame.mockImplementation(() => new Promise<void>((res) => { settle = res }))
+    r.stopFlight.mockImplementation(() => { settle?.() })
+    let played = false
+    const play = viewer.play([{ type: 'focus', ids: ['b1'] }, { type: 'focus', ids: ['b2'] }]).then(() => { played = true })
+    await Promise.resolve()
+    expect(r.frame).toHaveBeenCalledTimes(1)
+    viewer.cancelActions()
+    expect(r.stopFlight).toHaveBeenCalled()
+    await play
+    expect(played).toBe(true)
+    expect(r.frame).toHaveBeenCalledTimes(1) // the second step never ran
+    viewer.dispose()
+  })
+
+  it('in 2D cancelActions has no flight to stop', () => {
+    const { viewer } = setup({ reducedMotion: true })
+    expect(() => viewer.cancelActions()).not.toThrow()
   })
 })
