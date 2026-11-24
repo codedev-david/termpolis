@@ -1130,9 +1130,22 @@ describe('manifestServiceNames', () => {
     // A doubled \r ending the metadata: line, as the old `\s*` read it.
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata:\r\r\n  name: a\r\n')).toEqual(['a'])
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata: \r\r\r\n  name: b\r\r\n')).toEqual(['b'])
+    // A doubled \r on a blank line inside the block, as on the metadata: line.
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata:\r\n\r\r\n  name: c\r\n')).toEqual(['c'])
+    // Only metadata's own name: a name: nested under labels is a label, and a comment's indent sets nothing.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    name: label-value', '  name: real'))).toEqual(['real'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    name: label-only'))).toEqual([])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '      # deeper comment', '  name: own'))).toEqual(['own'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name: two words', '  name: second'))).toEqual(['second'])
+    // A comment at column 0 does not end the block (YAML allows it there); a key less indented than the first one is
+    // the block's own indent.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '# the name', '  name: after-comment'))).toEqual(['after-comment'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '    app: x', '  name: shallower'))).toEqual(['shallower'])
     // generateName only: the block ends at spec:, and a name further down belongs to something else.
     expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  generateName: gen-', '  labels:', '    app: web'))).toEqual([])
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Deployment\nmetadata:\nspec:\n  name: no')).toEqual([])
+    // A metadata: block that ends unnamed, then a second one at the top level that is named.
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\nmetadata:\n  labels: {}\nmetadata:\n  name: later\n')).toEqual(['later'])
   })
 
   it('reads a metadata block with no name in time linear in its size (exponential on main)', () => {

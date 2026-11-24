@@ -197,9 +197,34 @@ export function serviceNames(file: string, text: string): string[] {
 
 const COMPOSE = /^docker-compose.*\.ya?ml$/
 const K8S_DOC = /^kind:\s*(?:Deployment|Service)\s*$/m
-// Each line under metadata: matches one way only (blank, or indent then text), so a block without name: is linear.
-// The metadata: line itself may end in more than one \r, as a file saved twice through a CRLF conversion does.
-const K8S_NAME = /^metadata:[ \t\r]*\n(?:[ \t]*\r?\n|[ \t]+(?:[^ \t\r\n]|\r(?!\n))[^\n]*\n)*?[ \t]+name:\s*['"]?([\w.-]+)['"]?\s*$/m
+// A line's trailing \r (one or more, as a file run twice through a CRLF conversion has) is read as space.
+const K8S_META = /^metadata:\s*$/
+const K8S_KEY_NAME = /^name:[ \t]*['"]?([\w.-]+)['"]?\s*$/
+
+/**
+ * The `name:` of a Kubernetes document's top-level `metadata:` block: a key at the block's own indent (the smallest
+ * seen so far), so a `name:` nested deeper (a label called name) is not taken. Blank and comment lines are skipped,
+ * and the block ends at the first line that is not indented. Each line is read once.
+ */
+function k8sName(doc: string): string | null {
+  const lines = doc.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    if (!K8S_META.test(lines[i])) continue
+    let indent = -1
+    for (; i + 1 < lines.length; i++) {
+      const line = lines[i + 1]
+      const key = line.trimStart()
+      if (key === '' || key.startsWith('#')) continue
+      const lead = line.length - line.replace(/^[ \t]+/, '').length
+      if (lead === 0) break
+      if (indent < 0 || lead < indent) indent = lead
+      const m = lead === indent ? K8S_KEY_NAME.exec(line.slice(lead)) : null
+      if (m) return m[1]
+    }
+  }
+  return null
+}
+
 /** Manifest files compile reads for runtime names: compose files, package.json and Kubernetes YAML in the usual folders. */
 export const MANIFEST_PATTERNS = ['**/docker-compose*.yml', '**/docker-compose*.yaml', '**/package.json', '**/{k8s,kubernetes,deploy,manifests}/**/*.{yml,yaml}', '!**/node_modules/**']
 const MAX_MANIFESTS = 300
@@ -233,8 +258,8 @@ export function manifestServiceNames(file: string, text: string): string[] {
     }
   } else {
     for (const doc of text.split(/^---\s*$/m)) {
-      const name = K8S_DOC.test(doc) ? K8S_NAME.exec(doc) : null
-      if (name) found.push(name[1])
+      const name = K8S_DOC.test(doc) ? k8sName(doc) : null
+      if (name) found.push(name)
     }
   }
   return cleanRuntimeNames(found)
