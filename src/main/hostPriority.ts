@@ -19,6 +19,7 @@
 // The os module is a parameter because vi.mock cannot replace a Node builtin (it is a silent no-op), so the
 // tests count calls through a fake. The default is the real module.
 import * as nodeOs from 'os'
+import { probe } from './probeLog'
 
 export interface HostPriorityOs {
   setPriority(pid: number, priority: number): void
@@ -55,6 +56,7 @@ function setOwnPriority(
     const value = os.constants?.priority?.[level]
     if (typeof value !== 'number') return 'unsupported'
     os.setPriority(0, value)
+    try { probe(`hostPriority ${level} nice=${os === nodeOs ? nodeOs.getPriority(0) : '?'}`) } catch { /* probe */ }
     return 'set'
   } catch {
     return 'failed'
