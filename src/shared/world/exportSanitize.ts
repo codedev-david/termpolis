@@ -28,13 +28,20 @@
 // `<`, `|`, `+`, `@`, `&` or `*`, as a forward-slash UNC path (`//host/share`) or inside another scheme's URL
 // (`vscode://file/home/<other>`), and it ends at a space in its folder name (`/home/Ann Lee/x`).
 //
-// Known limits (ruled acceptable): a POSIX path field written `.\home\<account>\x` keeps its words (text gives
-// `.<outside the project>/x`); a path field whose last name equals the account becomes a bare
-// `<outside the project>` even when the folder is unrelated (`/usr/local/bin/node` with home `/home/node`); on a
-// volume without hard links (FAT, exFAT, some shares) a kill during the export can leave an empty file at the
-// claimed name (main/world/export.ts); and a UNC path right after a colon (`cwd:\\host\home\<account>`) loses the
-// letter before the colon (`cw<outside the project>`), though nothing of it shows. A known folder percent-encoded
-// twice (`%252Fhome%252Fann`) keeps its words, and a `+` reads as a space only in a percent-encoded known folder.
+// Last, the account's own folder below its parent (`Users/ann`, `home/ann`) is taken after any separator run in any
+// form the passes above leave (backstopped), so the account never shows there, though a host or share before it may
+// (`smb:///host/<outside the project>/x`, `%2F%2Fhost%2Fs%2F<outside the project>/x`).
+//
+// Known limits (ruled acceptable): a folder named as the account below one named as its parent is taken anywhere,
+// inside the project too (`src/Users/<account>/x` gives `src/<outside the project>/x`); a host or share written
+// before the account's folder in a form no pass reads as a share may show; a path field whose last name equals the
+// account becomes a bare `<outside the project>` even when the folder is unrelated (`/usr/local/bin/node` with home
+// `/home/node`); on a volume without hard links (FAT, exFAT, some shares) a kill during the export can leave an
+// empty file at the claimed name (main/world/export.ts); and a UNC path right after a colon
+// (`cwd:\\host\home\<account>`) loses the letter before the colon (`cw<outside the project>`), though nothing of it
+// shows. A known folder percent-encoded twice (`%252Fhome%252Fann`) keeps its words, and a `+` reads as a space only
+// in a percent-encoded known folder or as the account's own folder below its parent (`Users/Ann+Lee`), so
+// `Ann++Lee`, `+Ann+Lee` and `Ann%2BLee` keep theirs.
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
@@ -244,11 +251,12 @@ export function relativePath(p: string, ctx: SanitizeContext): string {
   const read = placedPath(urlPath(p, ctx) ?? p, ctx)
   const named = `${OUTSIDE}/${accountOf(ctx)}`
   const after = read.slice(named.length)
-  if (named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after)) return OUTSIDE + after
+  // Dots alone after it end a sentence (`C:\Users\ann.`): Windows drops a name's trailing dots anyway.
+  if (named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && (!/^[\w.-]/.test(after) || /^\.+$/.test(after))) return OUTSIDE + after
   // The account's short name (`<outside the project>/ANNLEE~1`) is its name too.
   const short = shortAt(ctx)
   const hit = short && short.exec(read)
-  return hit ? OUTSIDE + read.slice(hit[0].length) : read
+  return backstopped(hit ? OUTSIDE + read.slice(hit[0].length) : read, ctx)
 }
 
 /** Per context: a read path that is `<outside the project>/` and the account's short name (shortSource). */
@@ -256,7 +264,7 @@ const shortsAt = new WeakMap<SanitizeContext, RegExp | null>()
 function shortAt(ctx: SanitizeContext): RegExp | null {
   if (!shortsAt.has(ctx)) {
     const src = shortSource(ctx)
-    shortsAt.set(ctx, src === null ? null : new RegExp(`^${escapeRe(OUTSIDE)}/${src}(?![\\w.-])`, 'i'))
+    shortsAt.set(ctx, src === null ? null : new RegExp(`^${escapeRe(OUTSIDE)}/${src}(?=\\.*$|[^\\w.-])`, 'i'))
   }
   return shortsAt.get(ctx) as RegExp | null
 }
@@ -516,6 +524,43 @@ const FOLDER_END = `(?=$|[\\s\\\\/"'\`,;:!?)\\]}<>|]|\\.(?![\\w.-]))`
 const TRAILING = /(?<![.,;:!?)\]}])[.,;:!?)\]}]+$/
 
 /**
+ * The last net, run over what the passes above give (sanitizeText, relativePath): the account's own folder below its
+ * parent (`Users/ann`, `home/ann`), as a whole name, by its name, percent-encoded, with `+` for a space, or by its
+ * short name, after any run of separators written any way (`/`, `\`, `%2F`, `%5C`), whatever comes before the run,
+ * a drive or `file:` before it taken too (`C:\Users\ann` in a path field holding more than a path).
+ * Each form the passes above leave holding it (`smb:///host/Users/ann/x`, `%2F%2Fhost%2Fs%2FUsers%2Fann%2Fx`, a
+ * share after a sign, `(//host/s/Users/ann/x)`) becomes `<outside the project>` and the basename past it, so the
+ * account never shows, though a host or share before it may. A folder of the account's name under another folder
+ * (`src/ann/x.ts`) and a name only starting with it (`Users/annx`) are not taken. Null when the home folder has no
+ * parent folder name (`/root`, `C:\ann`).
+ */
+const backstops = new WeakMap<SanitizeContext, [RegExp, RegExp] | null>()
+function backstopOf(ctx: SanitizeContext): [RegExp, RegExp] | null {
+  if (!backstops.has(ctx)) {
+    const names = norm(ctx.home).split('/').filter((s) => s !== '' && s !== '.' && s !== '..')
+    const parent = names.length > 1 ? names[names.length - 2] : ''
+    const short = shortSource(ctx)
+    const account = names.length ? names[names.length - 1] : ''
+    const forms = [urlName(account), escapeRe(account.split(' ').join('+'))].concat(short === null ? [] : [short]).join('|')
+    const end = `(?=$|[\\s\\\\/"'\`,;:!?)\\]}<>|&#]|%2F|%5C|\\.(?![\\w.-]))`
+    backstops.set(ctx, parent === '' || /^[A-Za-z]:$/.test(parent) ? null
+      : [new RegExp(`(?:(?<!\\w)(?:file|[a-z])(?::|%3A))?${URL_RUN}(${URL_SEP_ONE})${URL_SEP_ONE}*${urlName(parent)}${URL_SEP}(?:${forms})${end}((?:${URL_SEP}[^\\s"'<>|&#?]*)?)`, 'gi'),
+        new RegExp(`^(?:${forms})$`, 'i')])
+  }
+  return backstops.get(ctx) as [RegExp, RegExp] | null
+}
+function backstopped(s: string, ctx: SanitizeContext): string {
+  const net = backstopOf(ctx)
+  return net === null ? s : s.replace(net[0], (_m: string, sep: string, rest: string, at: number, whole: string) => {
+    const tail = (TRAILING.exec(rest) ?? [''])[0]
+    const name = baseName(rest.slice(0, rest.length - tail.length).split(/[\\/]|%2F|%5C/i))
+    // After a name the first separator stays (`host/<outside the project>`), so the two stay apart.
+    const lead = /\w/.test(whole.charAt(at - 1)) ? sep : ''
+    return lead + (name !== '' && !net[1].test(name) ? `${OUTSIDE}/${name}` : OUTSIDE) + tail
+  })
+}
+
+/**
  * The project root, home and userData folders, longest first, each ending at a whole name, then the rest of the path
  * (groups 1 to 3), or else a UNC token (group 4, UNC_TOKEN). With `inUnc`, the forms baseSource reads inside one.
  */
@@ -568,7 +613,8 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
   const prompt = promptPattern(ctx)
   const unprompt = (text: string): string => (prompt ? text.replace(prompt, OUTSIDE) : text)
   // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
-  return (text) => unglue(decodeUrls(unprompt(redact(text)), ctx)).replace(known, knownHit).replace(revealing, revealingHit)
+  // The account's folder any of them leaves is taken last (backstopped).
+  return (text) => backstopped(unglue(decodeUrls(unprompt(redact(text)), ctx)).replace(known, knownHit).replace(revealing, revealingHit), ctx)
 }
 
 /**

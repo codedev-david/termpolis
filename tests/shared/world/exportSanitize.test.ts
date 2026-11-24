@@ -770,7 +770,8 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // Another drive, an admin share or a name in front is not the drive-less form, and stays as before.
     expect(sanitizeText('see D:\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
     expect(sanitizeText('see \\\\host\\D$\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
-    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe('a key x\\Users\\dev stays')
+    // The name in front stays; the account's folder after it is taken by the last net (backstopped).
+    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe(`a key x\\${OUTSIDE} stays`)
     // A drive-root project names no folder to find without its drive.
     const driveRoot: SanitizeContext = { root: 'C:\\', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
     expect(sanitizeText('see \\tmp\\a.ts now', driveRoot)).toBe('see \\tmp\\a.ts now')
@@ -812,7 +813,7 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(sanitizeText('see \\\\host\\home\\dev\\repo\\a.ts now', posix)).toBe(`see ${OUTSIDE}/a.ts now`)
     expect(sanitizeText('see \\\\host\\D$\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
     expect(sanitizeText('see D:\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
-    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe('a key x\\Users\\dev stays')
+    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe(`a key x\\${OUTSIDE} stays`)
   })
 
   it('ends a known folder only where its name ends, so a short or longer name beside it never shows', () => {
@@ -994,10 +995,13 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
       expect(out.toLowerCase()).not.toContain('dev')
     }
     // Text naming no folder of this machine's keeps its escapes, and so does this machine's folder written plainly.
-    for (const kept of ['see %2Fhome%2Fann%2Fx now', 'see %2Fhome%2Fdevon%2Fx now', 'a 100%3A1 ratio', 'see a%2Fb.ts now', 'see D%3A%5CUsers%5Cdev now', 'see x%2FUsers%2Fdev now']) {
+    for (const kept of ['see %2Fhome%2Fann%2Fx now', 'see %2Fhome%2Fdevon%2Fx now', 'a 100%3A1 ratio', 'see a%2Fb.ts now']) {
       expect(sanitizeText(kept, kept.includes('Users') ? win : posix)).toBe(kept)
     }
     expect(sanitizeText('see /home/dev/a%20b.ts now', posix)).toBe(`see ${OUTSIDE}/a%20b.ts now`)
+    // The account's own folder below Users is still taken, by the last net, on another drive or after a name.
+    expect(sanitizeText('see D%3A%5CUsers%5Cdev now', win)).toBe(`see ${OUTSIDE} now`)
+    expect(sanitizeText('see x%2FUsers%2Fdev now', win)).toBe(`see x%2F${OUTSIDE} now`)
     // As a path field.
     expect(relativePath('%2Fhome%2Fdev%2Frepo%2Fsrc%2Fa.ts', posix)).toBe('src/a.ts')
     expect(relativePath('C%3A%5CUsers%5Cdev%5Cx', win)).toBe(`${OUTSIDE}/x`)
@@ -1157,9 +1161,10 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     for (const [ctx, path, want] of both) expect(relativePath(path, ctx), path).toBe(want)
     for (const [ctx, path, want] of both.slice(0, -1)) expect(sanitizeText(`see ${path} now`, ctx), path).toBe(`see ${want} now`)
     expect(sanitizeText('see "//host/share/Users/dev/x". now', win)).toBe(`see "${OUTSIDE}/x". now`)
-    // Not after a name or another scheme, and not a folder that only starts with the account's name.
-    for (const kept of ['see smb://host/share/x now', 'see //host/share/Users/devx/y now', 'see a//host/share/Users/dev/x now',
-      'see x://host/share/Users/dev/x now', 'see http://host/share/Users/dev/x now']) expect(sanitizeText(kept, win)).toBe(kept)
+    // Not a folder that only starts with the account's name. After a name or another scheme the host is not taken,
+    // and the account's folder is, by the last net (backstopped).
+    for (const kept of ['see smb://host/share/x now', 'see //host/share/Users/devx/y now']) expect(sanitizeText(kept, win)).toBe(kept)
+    for (const lead of ['a', 'x:', 'http:']) expect(sanitizeText(`see ${lead}//host/share/Users/dev/x now`, win)).toBe(`see ${lead}//host/share/${OUTSIDE}/x now`)
   })
 
   it('reads a `+` in a percent-encoded known folder as the space of a name that holds one, in the folder only', () => {
@@ -1185,6 +1190,44 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // Not where nothing is percent-encoded, nor in a name of another folder.
     expect(sanitizeText('see /home/Ann+Lee/repo/a.ts now', sp)).toBe(`see ${OUTSIDE}/a.ts now`)
     expect(sanitizeText('see %2Fhome%2FAnn+Leex%2Fy now', sp)).toBe('see %2Fhome%2FAnn+Leex%2Fy now')
+  })
+
+  it('takes the account\'s own folder below its parent last, after any separator run, whatever comes before it', () => {
+    const winSp: SanitizeContext = { root: null, home: 'C:\\Users\\Ann Lee', userData: 'C:\\Users\\Ann Lee\\AppData\\Roaming\\Termpolis' }
+    const field = (p: string, ctx: SanitizeContext): string => sanitizeText(relativePath(p, ctx), ctx)
+    // The forms every earlier pass left: a host may show, the account never does.
+    const rows: Array<[SanitizeContext, string, string, string]> = [
+      [win, 'smb:///host/Users/dev/x', `smb:///host/${OUTSIDE}/x`, `${OUTSIDE}/x`],
+      [win, '///host/Users/dev/x', `///host/${OUTSIDE}/x`, `${OUTSIDE}/x`],
+      [win, '%2F%2Fhost%2Fs%2FUsers%2Fdev%2Fx', `%2F%2Fhost%2Fs%2F${OUTSIDE}/x`, `%2F%2Fhost%2Fs%2F${OUTSIDE}/x`],
+      [win, 'smb%3A%2F%2Fhost%2Fs%2FUsers%2Fdev%2Fx', `smb%3A%2F%2Fhost%2Fs%2F${OUTSIDE}/x`, `smb%3A%2F%2Fhost%2Fs%2F${OUTSIDE}/x`],
+      [winSp, 'smb://host/s/Users/Ann+Lee/x', `smb://host/s/${OUTSIDE}/x`, `${OUTSIDE}/x`],
+      [winSp, 'x/Users/Ann+Lee/y', `x/${OUTSIDE}/y`, `x/${OUTSIDE}/y`],
+      [winSp, 'x/Users/Ann%20Lee/y', `x/${OUTSIDE}/y`, `x/${OUTSIDE}/y`],
+      [win, '(//host/s/Users/dev/x)', `(${OUTSIDE}/x)`, `(/host/s/${OUTSIDE}/x)`],
+      [win, 'C:\\Users\\dev.', `${OUTSIDE}.`, `${OUTSIDE}.`],
+      [win, '/Users/dev.', `${OUTSIDE}.`, `${OUTSIDE}.`],
+      [win, 'a/Users/DEV', `a/${OUTSIDE}`, `a/${OUTSIDE}`],
+      [posix, '.\\home\\dev\\x', `.${OUTSIDE}/x`, `.${OUTSIDE}/x`],
+      [posix, 'src/home/dev/x', `src/${OUTSIDE}/x`, `src/${OUTSIDE}/x`],
+    ]
+    for (const [ctx, p, text, f] of rows) {
+      expect(sanitizeText(`see ${p} now`, ctx), p).toBe(`see ${text} now`)
+      expect(field(p, ctx), p).toBe(f)
+    }
+    // A free-text field whose path follows a drive is read whole, the drive with it.
+    expect(relativePath(' C:\\Users\\dev\\notes.md', win)).toBe(` ${OUTSIDE}/notes.md`)
+    expect(relativePath('-x:##file:///Users/dev\n', win)).toBe(`-x:##${OUTSIDE}\n`)
+    // A folder only starting with the name, a name with no parent folder before it, or no separator before the parent
+    // keeps its words; so does a home with no parent below a drive (`C:\dev`).
+    for (const kept of ['src/dev/x.ts', 'Users/dev/x', 'home/dev', 'the Users/dev team', 'x/Users/devx/y', 'x/Users/dev-x/y',
+      'x/Users/dev.ts', 'x/Others/dev/y', 'x/Users/DEVELO~1']) {
+      expect(sanitizeText(`see ${kept} now`, win), kept).toBe(`see ${kept} now`)
+      expect(field(kept, win), kept).toBe(kept)
+    }
+    const top: SanitizeContext = { root: null, home: 'C:\\dev', userData: 'C:\\dev\\AppData\\Roaming\\Termpolis' }
+    expect(sanitizeText('see x/Users/dev/y now', top)).toBe('see x/Users/dev/y now')
+    expect(relativePath('x/Users/dev/y', top)).toBe('x/Users/dev/y')
   })
 })
 
