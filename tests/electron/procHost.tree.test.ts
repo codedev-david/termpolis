@@ -313,6 +313,33 @@ describe('a tree run collects its output as execFile does', () => {
     expect((await sig).error).toMatchObject({ code: null, killed: true, signal: 'SIGKILL' })
   })
 
+  it('answers a spawn that got no pipes (EMFILE) with its error, once, and never touches a pipe', async () => {
+    // node returns such a child without stdout and stderr and emits the error on the next tick.
+    H.spawn.mockImplementationOnce(() => {
+      child = Object.assign(new FakeChild(), { stdout: null, stderr: null }) as unknown as FakeChild
+      return child
+    })
+    const r = track(run())
+    const emfile = Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE', errno: -24, syscall: 'spawn' })
+    child.emit('error', emfile)
+    child.emit('close', -24, null)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(r.value()).toEqual({ stdout: '', stderr: '', error: emfile })
+    expect(r.value()?.error).toMatchObject({ code: 'EMFILE', cmd: 'claude -p' })
+  })
+
+  it('cuts output at maxBuffer on a child with only one pipe', async () => {
+    H.spawn.mockImplementationOnce(() => {
+      child = Object.assign(new FakeChild(), { stderr: null }) as unknown as FakeChild
+      return child
+    })
+    const r = run({ maxBuffer: 2 })
+    child.stdout.emit('data', 'abc')
+    expect(child.stdout.destroyed).toBe(true)
+    child.emit('close', null, 'SIGTERM')
+    expect(await r).toMatchObject({ stdout: 'ab', error: { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' } })
+  })
+
   it('answers a spawn error with that error, cmd added, its pipes destroyed, and only once', async () => {
     const r = run()
     const enoent = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT', errno: -4058, syscall: 'spawn claude', path: 'claude', spawnargs: ['-p'] })

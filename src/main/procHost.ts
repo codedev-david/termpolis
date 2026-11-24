@@ -204,6 +204,10 @@ function maxBufferError(stream: 'stdout' | 'stderr'): Error {
  * `Command failed: <cmd>\n<stderr>` with `code` (the exit status, null for a signal), `killed` and
  * `signal`; each gets `cmd`. No timer: runExec's own timeout ends the tree. procHost.process.test.ts
  * runs the same commands through execFile and through this and compares what comes back.
+ *
+ * The 'close' and 'error' listeners go on before anything else, and every use of a pipe allows for none,
+ * as execFile's does: a spawn that hits EMFILE or ENFILE returns a child without stdout and stderr and
+ * emits the error on the next tick, which must find its listener.
  */
 function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOptions>, detached: boolean, done: ExecDone): ChildProcess {
   const child = spawn(bin, args, {
@@ -235,9 +239,12 @@ function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOpti
     })
     done(Object.assign(ex, { cmd }), stdout, stderr)
   }
+  const destroyPipes = (): void => {
+    child.stdout?.destroy()
+    child.stderr?.destroy()
+  }
   const kill = (): void => {
-    child.stdout!.destroy()
-    child.stderr!.destroy()
+    destroyPipes()
     killed = true
     try {
       child.kill('SIGTERM')
@@ -258,17 +265,16 @@ function spawnTree(bin: string, args: string[], base: ReturnType<typeof baseOpti
       chunks.push(chunk)
     }
   }
-  child.stdout!.setEncoding('utf8')
-  child.stdout!.on('data', (chunk: string) => collect('stdout', out, chunk))
-  child.stderr!.setEncoding('utf8')
-  child.stderr!.on('data', (chunk: string) => collect('stderr', err, chunk))
   child.addListener('close', exitHandler)
   child.addListener('error', (e: Error) => {
     ex = e
-    child.stdout!.destroy()
-    child.stderr!.destroy()
+    destroyPipes()
     exitHandler()
   })
+  child.stdout?.setEncoding('utf8')
+  child.stdout?.on('data', (chunk: string) => collect('stdout', out, chunk))
+  child.stderr?.setEncoding('utf8')
+  child.stderr?.on('data', (chunk: string) => collect('stderr', err, chunk))
   return child
 }
 
