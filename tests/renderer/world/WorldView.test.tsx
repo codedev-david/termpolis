@@ -789,6 +789,30 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
   })
 
+  it('another world or the home stops what the viewer is playing, so a tour cannot caption over the home (T4)', async () => {
+    bridge()
+    const { rerender, onClose } = await mount()
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(viewer().play).toHaveBeenCalledTimes(1)
+    expect(viewer().cancelActions).not.toHaveBeenCalled()
+    rerender(<WorldView root="/other" onClose={onClose} />)
+    await settle()
+    expect(viewer().cancelActions).toHaveBeenCalledTimes(1)
+    rerender(<WorldView root="" onClose={onClose} />)
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(viewer().cancelActions).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    // Without WebGL there is no viewer to stop: the home still comes up.
+    cleanup()
+    h.webgl = false
+    bridge()
+    const flat = await mount()
+    flat.rerender(<WorldView root="" onClose={flat.onClose} />)
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+  })
+
   it('a cd inside the same repository refetches nothing and keeps the open card', async () => {
     const b = bridge({ gitFindRoot: vi.fn(async () => ok('/repo')) })
     const { rerender, onClose } = await mount({ root: '/repo/src' })

@@ -273,7 +273,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   }, [viewer, clearTimers])
 
   useEffect(() => cancelCurrent, [cancelCurrent])
-  useEffect(() => clearTimers, [clearTimers])
+  // Unmount (the home, the pane closing): the answer's tour stops in the viewer too, so a step already dwelling
+  // never captions over the home (T4).
+  useEffect(() => stopTour, [stopTour])
 
   // A different project: drop the old project's question, answer and conversation.
   const lastRoot = useRef(root)

@@ -226,6 +226,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   rootRef.current = worldRoot
   const docRef = useRef<WorldDoc | null>(null)
   docRef.current = doc
+  const viewerRef = useRef<WorldViewer | null>(null)
+  viewerRef.current = viewer
   const asProjectRef = useRef(asProject)
   asProjectRef.current = asProject
   /** True after an Esc reset with nothing done since: the next Esc closes. */
@@ -317,6 +319,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // none was saved yet. The home: nothing (the viewer is hidden while there is no doc, so no stale
   // map stays up).
   useEffect(() => {
+    // A tour or a flight over the world being left stops here: paused under the home, it would otherwise caption
+    // over it (T4). Nothing can be playing before a world is drawn.
+    if (docRef.current !== null) viewerRef.current?.cancelActions()
     heldDocRef.current = null
     setDoc(null)
     setProposalPick(undefined)

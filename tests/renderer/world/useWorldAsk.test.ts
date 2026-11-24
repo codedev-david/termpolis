@@ -759,6 +759,25 @@ describe('useWorldAsk: one stop for the answer tour, and its sentences played in
     expect(result.current.revealed).toBe(3)
   })
 
+  it('unmounting mid-tour (the home) stops the tour in the viewer, and nothing queued plays later; with no tour it leaves the viewer alone', async () => {
+    const v = makeViewer()
+    const first = deferred<undefined>()
+    v.play.mockImplementationOnce(() => first.promise)
+    const a = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { a.result.current.ask('q') })
+    await tick(600)
+    v.cancelActions.mockClear()
+    a.unmount()
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    await act(async () => { first.resolve(undefined) })
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+    const w = makeViewer()
+    const b = renderHook(() => useWorldAsk(w as never, 'r'))
+    b.unmount()
+    expect(w.cancelActions).not.toHaveBeenCalled()
+  })
+
   it('a different project mid-tour stops the tour in the viewer too', async () => {
     const v = makeViewer()
     v.play.mockImplementation(() => new Promise(() => undefined))
