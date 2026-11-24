@@ -329,7 +329,7 @@ import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, graphSweeping, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { shownError } from './world/windowError'
@@ -2840,9 +2840,11 @@ const worldClient = createWorldClient(undefined, {
   // throw away every stored position. The ipc handler answers err(message).
   snapshot: async (root): Promise<GraphSnapshot> => {
     const key = graphKeyForRoot(root)
-    // graphSnapshot reads the in-memory graph only: no file or database access on this path.
+    // graphSnapshot reads the in-memory graph only: no file or database access on this path. While a sweep of
+    // the project is under way the graph holds only the files read so far (a terminal opened in the folder
+    // starts one), and a world compiled from that would map part of the project: the world lists it itself.
     const snap = graphSnapshot(key, root, { structureOnly: true })
-    if (snap.files.length > 0) return snap
+    if (snap.files.length > 0 && !graphSweeping(key)) return snap
     const built = await worldClient.snapshotFromFiles(root)
     void worldClient.whenCompiled(root).then(() => indexInBackground(root))
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.

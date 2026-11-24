@@ -267,6 +267,7 @@ const cg = vi.hoisted(() => ({
   codeGraphStats: vi.fn(() => ({ symbols: 3, edges: 1 })),
   graphKeyForRoot: vi.fn((r: string) => `key:${r}`),
   graphSnapshot: vi.fn((_key: string, _root: string) => ({ files: ['a.ts'] as string[], symbols: [], edges: [] }) as any),
+  graphSweeping: vi.fn((_key: string) => false),
   resolveCodeRefs: vi.fn(() => [{ symbol: 'foo', file: 'a.ts' }]),
   resolveToken: vi.fn(() => ({ symbols: [{ id: 's1', name: 'foo', file: 'a.ts', extra: 'dropped' }], files: ['a.ts'] })),
   ALL_REPOS: '__ALL_REPOS__',
@@ -4329,6 +4330,19 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(io('graphSnapshot')).toEqual([])
     // Control: the loader, which does read disk, is caught by the same check.
     expect(io('initCodeGraph')).toEqual(expect.arrayContaining(['fs', 'readFileSync']))
+  })
+
+  it('a world is never compiled from a code graph still being swept: the graph holds only the files read so far, so the world lists the folder itself', async () => {
+    world.client.snapshotFromFiles.mockClear()
+    cg.graphSweeping.mockReturnValueOnce(true)
+    const snap = await world.opts.snapshot('/repo/mid-sweep')
+    expect(cg.graphSweeping).toHaveBeenCalledWith('key:/repo/mid-sweep')
+    expect(world.client.snapshotFromFiles).toHaveBeenCalledWith('/repo/mid-sweep')
+    expect(snap.files).toEqual(['h.ts'])
+    // Once the sweep is over the graph is the project again, and no listing is made.
+    world.client.snapshotFromFiles.mockClear()
+    expect((await world.opts.snapshot('/repo/mid-sweep')).files).toEqual(['a.ts'])
+    expect(world.client.snapshotFromFiles).not.toHaveBeenCalled()
   })
 
   it('a folder with no source files is an error, so world:compile never saves an empty world; a Build it folder linked to a design may start empty', async () => {

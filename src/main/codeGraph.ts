@@ -97,6 +97,8 @@ function newState(): GraphState {
 
 let dir: string | null = null
 const graphs = new Map<string, GraphState>()
+/** Full builds under way, by project key (buildCodeGraph), with how many: two may overlap. */
+const sweeping = new Map<string, number>()
 let activeKey = ''
 
 /** The repo key for a root path (stable, full-path derived). Empty string = the default graph. */
@@ -355,7 +357,23 @@ export async function reindexRepoGraph(root: string): Promise<CodeGraphStats> {
 export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<CodeGraphStats> {
   // Name the work, so a stall during a repo sweep is reported as `code-graph:sweep` rather than as an
   // anonymous `sync-work` the user has to guess at. (Guessing is precisely what this cost us.)
-  return buildCodeGraphImpl(deps, projectKey)
+  sweeping.set(projectKey, (sweeping.get(projectKey) ?? 0) + 1)
+  try {
+    return await buildCodeGraphImpl(deps, projectKey)
+  } finally {
+    const left = (sweeping.get(projectKey) as number) - 1
+    if (left > 0) sweeping.set(projectKey, left)
+    else sweeping.delete(projectKey)
+  }
+}
+
+/**
+ * Whether a full build of `projectKey` is under way. A sweep clears the graph and refills it file by file, so
+ * until it ends the graph holds only the files read so far: a reader that needs the whole project (the world's
+ * first map) must not take it for the project.
+ */
+export function graphSweeping(projectKey: string): boolean {
+  return sweeping.has(projectKey)
 }
 
 async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Promise<CodeGraphStats> {
@@ -761,6 +779,7 @@ export function activeProjectKey(): string {
 export function _resetCodeGraphForTests(): void {
   dir = null
   graphs.clear()
+  sweeping.clear()
   activeKey = ''
   sweepCounters.parsed = sweepCounters.skippedLarge = sweepCounters.pauses = 0
 }

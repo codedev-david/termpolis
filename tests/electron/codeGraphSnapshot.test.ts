@@ -128,4 +128,39 @@ describe('graphSnapshot', () => {
     expect(graphSnapshot('k', undefined, { structureOnly: false }).symbols.length).toBeGreaterThan(0)
     expect(graphSnapshot('nope', 'C:/r', { structureOnly: true })).toEqual({ root: 'C:/r', files: [], symbols: [], callEdges: [], fileImports: {} })
   })
+
+  it('says a full build is under way until it ends, overlapping builds and a failed listing included, while the graph holds only the files read so far', async () => {
+    const cg = await import('../../src/main/codeGraph')
+    expect(cg.graphSweeping('k')).toBe(false)
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    let reads = 0
+    const first = cg.buildCodeGraph({
+      listFiles: async () => [A, B],
+      readFile: async (f) => {
+        if (++reads === 2) await held // the second file is still being read
+        return f === A ? aSrc : bSrc
+      },
+    }, 'k')
+    await expect.poll(() => reads).toBe(2)
+    expect(cg.graphSweeping('k')).toBe(true)
+    expect(cg.graphSweeping('other')).toBe(false)
+    expect(graphSnapshot('k', 'C:/repo/src', { structureOnly: true }).files).toEqual(['a.ts']) // part of the project
+    const second = cg.buildCodeGraph({ listFiles: async () => { throw new Error('no git') }, readFile: async () => '' }, 'k')
+    await second
+    expect(cg.graphSweeping('k')).toBe(true) // the first is still running
+    release()
+    await first
+    expect(cg.graphSweeping('k')).toBe(false)
+    expect(graphSnapshot('k', 'C:/repo/src', { structureOnly: true }).files).toEqual(['a.ts', 'lib/b.ts'])
+    // A reset forgets a build in flight.
+    let stuck!: () => void
+    const pending = cg.buildCodeGraph({ listFiles: () => new Promise<string[]>((r) => { stuck = () => r([]) }), readFile: async () => '' }, 'k')
+    expect(cg.graphSweeping('k')).toBe(true)
+    _resetCodeGraphForTests()
+    expect(cg.graphSweeping('k')).toBe(false)
+    stuck()
+    await pending
+    expect(cg.graphSweeping('k')).toBe(false)
+  })
 })
