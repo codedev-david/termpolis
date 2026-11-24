@@ -101,7 +101,7 @@ export function fitView(points: V3[], dir: V3, fovDeg: number, aspect: number, m
  * process past Chromium's GPU watchdog, which ended the process; two such ends leave the map in 2D for good. A bigger
  * view is drawn at this many pixels and stretched to fit, as the low quality tier draws at half the ratio.
  */
-export const SOFTWARE_MAX_PIXELS = 2560 * 1440
+export const SOFTWARE_MAX_PIXELS = 1920 * 1080
 
 /**
  * The pixel ratio `want` for a view `width` x `height` (CSS pixels), lowered where needed so the drawing buffer holds
