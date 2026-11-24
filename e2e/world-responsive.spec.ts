@@ -152,8 +152,11 @@ exit $LASTEXITCODE
       TERMPOLIS_TEST_MEMORY_HOST_PATH: path.resolve('e2e', 'mocks', 'memory-host-lockable.mjs'),
       TERMPOLIS_TEST_MEMORY_REAL_HOST: path.resolve('out', 'main', 'memoryHost.js'),
       TERMPOLIS_TEST_MEMORY_LOCK_FILE: memoryLockFile,
+      TERMPOLIS_PROBE_DIR: PROBE_DIR,
     },
   })
+  app.process().stdout?.on('data', (d) => { try { fs.appendFileSync(path.join(PROBE_DIR, 'stdout.log'), d) } catch { /* probe */ } })
+  app.process().stderr?.on('data', (d) => { try { fs.appendFileSync(path.join(PROBE_DIR, 'stdout.log'), d) } catch { /* probe */ } })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   // The session stays attached: Chromium drops a session's emulation when it detaches.
@@ -895,7 +898,15 @@ async function checkDialog(testid: string, label: string, open: () => Promise<vo
   await expect(page.locator(PANE)).toBeVisible()
 }
 
+// THROWAWAY PROBE (t24/resp): step marks beside the app's own probe lines.
+const PROBE_DIR = path.resolve('test-results', `probe-${Date.now()}-${process.pid}`)
+fs.mkdirSync(PROBE_DIR, { recursive: true })
+const mark = (s: string): void => { try { fs.appendFileSync(path.join(PROBE_DIR, 'probe.log'), `${new Date().toISOString()} spec ${s}
+`) } catch { /* probe */ } }
+
 test.describe.serial('Lumopolis at every screen size', () => {
+  test.beforeEach(async ({}, ti) => { mark(`test start ${ti.title.slice(0, 60)} retry=${ti.retry}`) })
+  test.afterEach(async ({}, ti) => { mark(`test end ${ti.status} ${ti.title.slice(0, 40)}`) })
   test('the home and its dialogs fit at every size and width', async () => {
     test.setTimeout(900_000)
     await openPane()
@@ -1113,6 +1124,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
           const askBox = page.getByPlaceholder('Ask about this project…')
           seedEvidence()
           await askBox.fill('How does the memory search work?')
+          mark(`ask ${n.name} at ${at.tag}`)
           await askBox.press('Enter')
           // The ask runner's own worst case (map load, three steps, the agent), plus slack for handing back and drawing the answer.
           const ASK_MS = 15_000 + 3 * 10_000 + 90_000 + 30_000
@@ -1127,6 +1139,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
           }
           // The answer says it was made without the project memory, and why (askPrimer: the store is locked, or no notes matched).
           const note = page.locator('[data-testid="world-answer-memory"]')
+          mark(`answer ${n.name} at ${at.tag}: ${await note.textContent().catch(() => '?')}`)
           await expect(note).toHaveText(n.text, { timeout: 10_000 })
           // The note lies inside the answer panel, whole: not cut off at its edge, and nothing scrolls across.
           const box = await note.evaluate((el) => {
@@ -1170,6 +1183,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       const NOTE = '[data-testid="world-notice"]'
       // The first map from the listing comes first, with its "Still reading" note: the note every big project shows
       // while its files are read keeps clear of the legend, open or shut, and inside the pane (fix round 2, m6).
+      mark('t4 opened the capped folder')
       const reading = page.locator(NOTE, { hasText: 'Still reading the files' })
       await expect(reading).toBeVisible({ timeout: 300_000 })
       const toggle = page.locator('[data-testid="world-legend-toggle"]')

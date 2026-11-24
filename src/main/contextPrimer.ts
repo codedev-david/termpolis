@@ -27,6 +27,7 @@ import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
 import { liveProjectKeyAliases } from './projectKey'
+import { probe } from './probeLog'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -363,7 +364,8 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // Linux before WP5 kept the case, is this folder's own and not another's; that lowercased key only while no other folder has
   // the lowercased spelling (WP5 fix I1), so `~/app`'s notes never count as `~/App`'s. Asked alongside the search, like the
   // Lumopolis check, and taken once the search answers, before any row is judged.
-  const ownKeysAsked = liveProjectKeyAliases(worldPath)
+  const ka0 = Date.now()
+  const ownKeysAsked = liveProjectKeyAliases(worldPath).finally(() => probe(`primer aliases ms=${Date.now() - ka0}`))
   let ownKeys = new Set<string>()
   const foreignNote = (h: PrimerHit, scoped = false): boolean => {
     if (!isClaudeNote(h)) return false
