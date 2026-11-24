@@ -13,8 +13,11 @@ import { relativePath, sanitizeText, type SanitizeContext } from '../../../src/s
 const B = '\\'
 const win: SanitizeContext = { root: 'C:\\Users\\dev\\repo', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
 const posix: SanitizeContext = { root: '/home/dev/repo', home: '/home/dev', userData: '/home/dev/.config/Termpolis' }
+/** An account whose folder has a short (8.3) name, and one with a space in it. */
+const long: SanitizeContext = { root: null, home: 'C:\\Users\\DavidEngelhart', userData: 'C:\\Users\\DavidEngelhart\\AppData\\Roaming\\Termpolis' }
+const spaced: SanitizeContext = { root: null, home: '/home/Ann Lee', userData: '/home/Ann Lee/.config/Termpolis' }
 
-/** Characters at the small size; the large one is eight times as many. Eight shapes at both: about 300 KB in all. */
+/** Characters at the small size; the large one is eight times as many. Fourteen shapes at both: about 520 KB in all. */
 const N = 4096
 /** Linear is about 8, quadratic about 64. */
 const LIMIT = 24
@@ -30,6 +33,8 @@ const base64 = (n: number): string => {
   return s
 }
 const repeat = (unit: string) => (n: number): string => unit.repeat(Math.ceil(n / unit.length)).slice(0, n)
+/** `head`, then `unit` repeated up to n characters in all. */
+const after = (head: string, unit: string) => (n: number): string => head + repeat(unit)(n - head.length)
 
 type Shape = [name: string, run: (s: string) => string, make: (n: number) => string]
 const shapes: Shape[] = [
@@ -39,6 +44,12 @@ const shapes: Shape[] = [
   ['text: a share path of folders named Users', (s) => sanitizeText(s, win), (n) => '//h' + repeat('/Users')(n - 3)],
   ['text: a run of dots', (s) => sanitizeText(s, win), repeat('.')],
   ['text: a run of backslashes', (s) => sanitizeText(s, win), repeat(B)],
+  ['text: a run of ~ after a short name\'s head', (s) => sanitizeText(s, long), after('/c/Users/DAVIDE', '~')],
+  ['text: an smb: URL with many folders', (s) => sanitizeText(s, win), after('smb://h', '/s')],
+  ['text: a run of %2F after an encoded home', (s) => sanitizeText(s, posix), after('%2Fhome%2Fdev', '%2F')],
+  ['text: a run of + after an encoded home', (s) => sanitizeText(s, spaced), after('%2Fhome%2FAnn', '+')],
+  ['text: the account\'s folder over and over', (s) => sanitizeText(s, win), repeat('/Users/dev')],
+  ['field: the account\'s folder over and over', (s) => relativePath(s, win), repeat('/Users/dev')],
   ['field: a run of slashes', (s) => relativePath(s, posix), repeat('/')],
   ['field: a run of backslashes', (s) => relativePath(s, win), repeat(B)],
 ]
