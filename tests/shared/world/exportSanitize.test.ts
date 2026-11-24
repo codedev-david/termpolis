@@ -1130,6 +1130,31 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     for (const kept of ['see smb://host/share/x now', 'see //host/share/Users/devx/y now', 'see a//host/share/Users/dev/x now',
       'see x://host/share/Users/dev/x now', 'see http://host/share/Users/dev/x now']) expect(sanitizeText(kept, win)).toBe(kept)
   })
+
+  it('reads a `+` in a percent-encoded known folder as the space of a name that holds one, in the folder only', () => {
+    const winSp: SanitizeContext = { root: 'C:\\Users\\Ann Lee\\repo', home: 'C:\\Users\\Ann Lee', userData: 'C:\\Users\\Ann Lee\\AppData\\Roaming\\Termpolis' }
+    const sp: SanitizeContext = { root: '/home/Ann Lee/repo', home: '/home/Ann Lee', userData: '/home/Ann Lee/.config/Termpolis' }
+    const both: Array<[SanitizeContext, string, string]> = [
+      [sp, '%2Fhome%2FAnn+Lee%2Fx', `${OUTSIDE}/x`],
+      [sp, '%2Fhome%2FAnn+Lee', OUTSIDE],
+      [winSp, 'C%3A%5CUsers%5CAnn+Lee%5Cx', `${OUTSIDE}/x`],
+      [winSp, 'C%3A%5CUsers%5Cann+lee%5Crepo%5Ca.ts', 'a.ts'],
+      // A file's own `+` is kept.
+      [sp, '%2Fhome%2FAnn+Lee%2Frepo%2Fa+b.ts', 'a+b.ts'],
+    ]
+    for (const [ctx, path, want] of both) {
+      expect(relativePath(path, ctx), path).toBe(want)
+      expect(sanitizeText(`see ?path=${path}&q=a+b now`, ctx), path).toBe(`see ?path=${want}&q=a+b now`)
+    }
+    // A name that holds a `+` keeps it, beside one with a space too.
+    const plus: SanitizeContext = { root: '/home/Ann Lee/a+b', home: '/home/Ann Lee', userData: '/home/Ann Lee/.config/Termpolis' }
+    expect(sanitizeText('see ?p=%2Fhome%2FAnn+Lee%2Fx now', plus)).toBe(`see ?p=${OUTSIDE}/x now`)
+    expect(sanitizeText('see ?p=%2Fhome%2FAnn%20Lee%2Fa+b%2Fc.ts now', plus)).toBe('see ?p=c.ts now')
+    expect(relativePath('%2Fhome%2FAnn%20Lee%2Fa+b%2Fc.ts', plus)).toBe('c.ts')
+    // Not where nothing is percent-encoded, nor in a name of another folder.
+    expect(sanitizeText('see /home/Ann+Lee/repo/a.ts now', sp)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('see %2Fhome%2FAnn+Leex%2Fy now', sp)).toBe('see %2Fhome%2FAnn+Leex%2Fy now')
+  })
 })
 
 function projD(): SanitizeContext {

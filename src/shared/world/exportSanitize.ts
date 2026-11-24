@@ -33,7 +33,8 @@
 // `<outside the project>` even when the folder is unrelated (`/usr/local/bin/node` with home `/home/node`); on a
 // volume without hard links (FAT, exFAT, some shares) a kill during the export can leave an empty file at the
 // claimed name (main/world/export.ts); and a UNC path right after a colon (`cwd:\\host\home\<account>`) loses the
-// letter before the colon (`cw<outside the project>`), though nothing of it shows.
+// letter before the colon (`cw<outside the project>`), though nothing of it shows. A known folder percent-encoded
+// twice (`%252Fhome%252Fann`) keeps its words, and a `+` reads as a space only in a percent-encoded known folder.
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
@@ -225,7 +226,7 @@ function resolveRelative(segments: string[]): string {
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
   // A path holding a known folder percent-encoded (decodeUrls) is one path: every escape in it is decoded.
-  const read = placedPath(decodeUrls(p, ctx) === p ? p : unescapeUrl(p), ctx)
+  const read = placedPath(urlPath(p, ctx) ?? p, ctx)
   const named = `${OUTSIDE}/${accountOf(ctx)}`
   const after = read.slice(named.length)
   if (named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after)) return OUTSIDE + after
@@ -395,6 +396,14 @@ const URL_SEP = `${URL_SEP_ONE}+`
 const URL_RUN = `(?<!${URL_SEP_ONE})`
 /** A folder name as a URL may write it: as it is or percent-encoded. */
 const urlName = (s: string): string => (encodeURIComponent(s) === s ? escapeRe(s) : `(?:${escapeRe(s)}|${escapeRe(encodeURIComponent(s))})`)
+/**
+ * The folder names of the context a URL may write with `+` for a space (`?path=%2Fhome%2FAnn+Lee`, as a form query
+ * writes it), lowercased: those holding a space and no `+`, so reading `+` as a space never turns a name into another.
+ */
+function plusNames(ctx: SanitizeContext): Set<string> {
+  const names = [ctx.root ?? '', ctx.userData, ctx.home].map((b) => norm(b).split('/')).reduce((a, b) => a.concat(b), [])
+  return new Set(names.filter((n) => n.includes(' ') && !n.includes('+')).map((n) => n.toLowerCase()))
+}
 
 /**
  * A RegExp source (for the `i` flag) matching folder `base` as a URL may write it, its colon and separators
@@ -403,7 +412,9 @@ const urlName = (s: string): string => (encodeURIComponent(s) === s ? escapeRe(s
  */
 function urlSource(base: string, ctx: SanitizeContext): string | null {
   const parts = norm(base).split('/')
-  const names = parts.slice(1).map((s) => partSource(s, ctx, urlName)).join(URL_SEP)
+  const plus = plusNames(ctx)
+  const write = (s: string): string => (plus.has(s.toLowerCase()) ? `(?:${urlName(s)}|${escapeRe(s.split(' ').join('+'))})` : urlName(s))
+  const names = parts.slice(1).map((s) => partSource(s, ctx, write)).join(URL_SEP)
   const drive = /^([A-Za-z]):$/.exec(parts[0])
   // The drive left out: at the run's start, or else (after a name) right after the run's first slash or backslash, the
   // first place in the run no letter or digit comes before (`%2F` ends with one).
@@ -423,7 +434,7 @@ const unescapeUrl = (s: string): string => s.replace(/(?:%[0-9a-f]{2})+/gi, (run
 })
 
 /** Per context: the project root, userData and home folders, longest first, as urlSource writes them. */
-const urlForms = new WeakMap<SanitizeContext, RegExp>()
+const urlForms = new WeakMap<SanitizeContext, [RegExp, Set<string>]>()
 
 /**
  * Text `s` with every path of the project root, userData and home folders that a URL percent-encodes
@@ -433,14 +444,38 @@ const urlForms = new WeakMap<SanitizeContext, RegExp>()
  * `beside` does: a folder written plainly keeps its escapes (`a%20b.ts`).
  */
 function decodeUrls(s: string, ctx: SanitizeContext): string {
-  let re = urlForms.get(ctx)
-  if (!re) {
+  let forms = urlForms.get(ctx)
+  if (!forms) {
     const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
       .sort((a, b) => norm(b).length - norm(a).length).map((b) => urlSource(b, ctx)).filter((b): b is string => b !== null)
-    re = new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?=[\\\\/~+%]|(?![\\w-]|\\.[\\w.-]))([^\\s"'<>|&#?]*)`, 'gi')
-    urlForms.set(ctx, re)
+    forms = [new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?=[\\\\/~+%]|(?![\\w-]|\\.[\\w.-]))([^\\s"'<>|&#?]*)`, 'gi'), plusNames(ctx)]
+    urlForms.set(ctx, forms)
   }
-  return s.replace(re, (m: string, base: string, rest: string) => (base.includes('%') || /^%(?:2F|5C)/i.test(rest) ? redact(unescapeUrl(m)) : m))
+  const [found, plus] = forms
+  return s.replace(found, (m: string, base: string, rest: string) => (encoded(base, rest) ? redact(unescapeUrl(spaced(base, plus) + rest)) : m))
+}
+
+/** Whether a known folder decodeUrls found is percent-encoded: in itself or in the separator right after it. */
+const encoded = (base: string, rest: string): boolean => base.includes('%') || /^%(?:2F|5C)/i.test(rest)
+
+/**
+ * A known folder decodeUrls found with `+` as a space in each name written so (plusNames), in the folder only: a file
+ * may be `a+b.ts`.
+ */
+const spaced = (base: string, plus: Set<string>): string => base.split(/([\\/]|%2F|%5C)/i)
+  .map((n) => (n.includes('+') && plus.has(unescapeUrl(n.split('+').join(' ')).toLowerCase()) ? n.split('+').join(' ') : n)).join('')
+
+/** Path field `p` holding a known folder percent-encoded (decodeUrls) as one path, every escape decoded; else null. */
+function urlPath(p: string, ctx: SanitizeContext): string | null {
+  decodeUrls('', ctx)
+  const [found, plus] = urlForms.get(ctx) as [RegExp, Set<string>]
+  let hit = false
+  const folded = p.replace(found, (m: string, base: string, rest: string) => {
+    if (!encoded(base, rest)) return m
+    hit = true
+    return spaced(base, plus) + rest
+  })
+  return hit ? unescapeUrl(folded) : null
 }
 
 /**
