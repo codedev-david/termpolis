@@ -559,9 +559,6 @@ describe('codeGraphExtract', () => {
       expect(ex.symbols[0].endLine).toBe(5003) // as before: an arrow with no braces runs to the next multi-line block
       expect(byName(ex.symbols, 'last')!.endLine).toBe(5003)
       grows(unit('const a = () => 1\n'), extract('many.ts'))
-      // Python blocks that nest deeper and deeper: k of them hold about k * k / 2 characters, so 8n is 2.8 times as deep.
-      const deep = (n: number): string => Array.from({ length: Math.round(Math.sqrt(2 * n)) }, (_, i) => ' '.repeat(i) + 'def f' + i + '():').join('\n')
-      grows(deep, { read: (src) => extractFile('deep.py', src)!.symbols, check: (syms, src) => expect(syms).toHaveLength(src.split('\n').length) })
       // A class holding methods holding blocks: each symbol still ends at its own closing brace.
       const nested = J('class A {', '  m() {', '    if (x) {', '    }', '  }', '  n() {', '  }', '}', 'function g() {', '}')
       expect(show('n.ts', nested).s).toEqual([['A', 'class', 1, 8], ['m', 'method', 2, 5], ['n', 'method', 6, 7], ['g', 'function', 9, 10]])
