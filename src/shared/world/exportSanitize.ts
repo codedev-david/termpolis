@@ -21,7 +21,8 @@
 // Other absolute POSIX text (`/api/users`, `/etc/hosts`) is left alone. Beyond that definition, the project root,
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms, and a drive written the Git Bash or Cygwin way, `/c/...` or
-// `/cygdrive/c/...`), so a folder name holding a space never splits.
+// `/cygdrive/c/...`), so a folder name holding a space never splits. On Windows the account's folder is also found
+// by its short (8.3) name (`DAVIDE~1`, shortSource), which Git Bash and temp paths write.
 // Another account's path is found by the definition alone, so it is missed when a line break splits it, after
 // `<`, `|`, `+`, `@`, `&` or `*`, as a forward-slash UNC path (`//host/share`) or inside another scheme's URL
 // (`vscode://file/home/<other>`), and it ends at a space in its folder name (`/home/Ann Lee/x`).
@@ -139,14 +140,50 @@ function backslashKept(p: string, ctx: SanitizeContext): boolean {
   return !/^(?:[A-Za-z]:|\\|~|file:)/i.test(p) && !mappedOnWindows(ctx)
 }
 
-/** Whether `p` (normalised) lies in or is `base` (normalised), by whole folder names; gives the segments past it. */
-function under(p: string, base: string): string[] | null {
+/**
+ * Whether `p` (normalised) lies in or is `base` (normalised), by whole folder names; gives the segments past it. On
+ * Windows the account's folder may be written as its short name (`C:/Users/ANNLEE~1`, shortName).
+ */
+function under(p: string, base: string, ctx: SanitizeContext): string[] | null {
   if (!base) return null
-  const fold = windowsLike(base) ? (s: string): string => s.toLowerCase() : (s: string): string => s
+  const windows = windowsLike(base)
+  const fold = windows ? (s: string): string => s.toLowerCase() : (s: string): string => s
+  const short = windows ? shortName(ctx) : null
+  const account = short && fold(accountOf(ctx))
+  const same = (s: string, q: string): boolean => fold(s) === fold(q) || (fold(s) === account && (short as RegExp).test(q))
   const ps = p.split('/')
   const bs = base.split('/')
-  if (ps.length < bs.length || bs.some((s, i) => fold(s) !== fold(ps[i]))) return null
+  if (ps.length < bs.length || bs.some((s, i) => !same(s, ps[i]))) return null
   return ps.slice(bs.length)
+}
+
+/** The account: the home folder's own name. */
+const accountOf = (ctx: SanitizeContext): string => baseName(norm(ctx.home).split('/'))
+
+/**
+ * The RegExp source of the short (8.3) names Windows gives the account's folder when its name does not fit 8.3 (longer
+ * than 8 characters or holding a space): its first 6 characters without spaces and dots, `~` and a number
+ * (`DavidEngelhart` is `DAVIDE~1`, Git Bash and temp paths write it so). Null on Linux and macOS, and for a name that
+ * fits. Only the account's own folder is read this way, so `PROGRA~1` and another folder's `~2` keep their names.
+ */
+function shortSource(ctx: SanitizeContext): string | null {
+  const name = accountOf(ctx)
+  const head = name.replace(/[ .]/g, '').slice(0, 6)
+  return windowsLike(norm(ctx.home)) && head !== '' && (name.length > 8 || name.includes(' ')) ? `${escapeRe(head)}~[1-9][0-9]*` : null
+}
+/** Per context: shortSource as a whole name. */
+const shortNames = new WeakMap<SanitizeContext, RegExp | null>()
+function shortName(ctx: SanitizeContext): RegExp | null {
+  if (!shortNames.has(ctx)) {
+    const src = shortSource(ctx)
+    shortNames.set(ctx, src === null ? null : new RegExp(`^${src}$`, 'i'))
+  }
+  return shortNames.get(ctx) as RegExp | null
+}
+/** A folder name of a known folder as RegExp source (written by `write`), its short name too where it is the account. */
+function partSource(s: string, ctx: SanitizeContext, write: (s: string) => string): string {
+  const short = shortSource(ctx)
+  return short !== null && s.toLowerCase() === accountOf(ctx).toLowerCase() ? `(?:${write(s)}|${short})` : write(s)
 }
 
 /** The last real name in a path: no empty, dot or drive part. */
@@ -186,9 +223,23 @@ function resolveRelative(segments: string[]): string {
 export function relativePath(p: string, ctx: SanitizeContext): string {
   // A path holding a known folder percent-encoded (decodeUrls) is one path: every escape in it is decoded.
   const read = placedPath(decodeUrls(p, ctx) === p ? p : unescapeUrl(p), ctx)
-  const named = `${OUTSIDE}/${baseName(norm(ctx.home).split('/'))}`
+  const named = `${OUTSIDE}/${accountOf(ctx)}`
   const after = read.slice(named.length)
-  return named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after) ? OUTSIDE + after : read
+  if (named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after)) return OUTSIDE + after
+  // The account's short name (`<outside the project>/ANNLEE~1`) is its name too.
+  const short = shortAt(ctx)
+  const hit = short && short.exec(read)
+  return hit ? OUTSIDE + read.slice(hit[0].length) : read
+}
+
+/** Per context: a read path that is `<outside the project>/` and the account's short name (shortSource). */
+const shortsAt = new WeakMap<SanitizeContext, RegExp | null>()
+function shortAt(ctx: SanitizeContext): RegExp | null {
+  if (!shortsAt.has(ctx)) {
+    const src = shortSource(ctx)
+    shortsAt.set(ctx, src === null ? null : new RegExp(`^${escapeRe(OUTSIDE)}/${src}(?![\\w.-])`, 'i'))
+  }
+  return shortsAt.get(ctx) as RegExp | null
 }
 
 /** relativePath before the home folder's name is taken out. */
@@ -201,7 +252,7 @@ function placedPath(p: string, ctx: SanitizeContext): string {
   const kept = plainPath(p, true)
   if (!kept.startsWith('/')) return resolveRelative(kept.split('/'))
   // An absolute path read as inside the project has a project folder to be inside of.
-  const inRoot = under(trimSlashes(kept), norm(ctx.root as string))
+  const inRoot = under(trimSlashes(kept), norm(ctx.root as string), ctx)
   return inRoot ? resolveRelative(inRoot) : read
 }
 
@@ -219,9 +270,9 @@ function separatorReading(p: string, ctx: SanitizeContext): string {
   if (/^[A-Za-z]:/.test(n)) n = driveRead(n, ctx)
   if (!isAbsolute(n)) return n ? resolveRelative(n.split('/')) : ''
   const n2 = norm(n)
-  const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root))
+  const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root), ctx)
   if (inRoot) return resolveRelative(inRoot)
-  if ([ctx.home, ctx.userData].some((b) => under(n2, norm(b))?.length === 0)) return OUTSIDE
+  if ([ctx.home, ctx.userData].some((b) => under(n2, norm(b), ctx)?.length === 0)) return OUTSIDE
   return outside(n2.split('/'))
 }
 
@@ -235,7 +286,7 @@ function separatorReading(p: string, ctx: SanitizeContext): string {
 function gluedFolders(ctx: SanitizeContext): Array<[string, string]> {
   return [ctx.root ?? '', ctx.userData, ctx.home].map((b) => norm(b).split('/'))
     .filter((p) => /^[A-Za-z]:$/.test(p[0]) && p.length > 1).sort((a, b) => b.join('/').length - a.join('/').length)
-    .map((p) => [p.join('/'), escapeRe(p[0]) + p.slice(1).map((s) => `([\\\\/]*)${escapeRe(s)}`).join('')])
+    .map((p) => [p.join('/'), escapeRe(p[0]) + p.slice(1).map((s) => `([\\\\/]*)${partSource(s, ctx, escapeRe)}`).join('')])
 }
 
 /**
@@ -272,7 +323,7 @@ function driveRead(n: string, ctx: SanitizeContext): string {
 
 /** The drive (`C:`) a drive-less rooted path `n` is read on, for a context whose home folder has one. */
 function onDrive(n: string, ctx: SanitizeContext): string {
-  const base = [ctx.root ?? '', ctx.userData, ctx.home].find((b) => /^[A-Za-z]:/.test(b) && under(b.slice(0, 2) + n, norm(b)) !== null)
+  const base = [ctx.root ?? '', ctx.userData, ctx.home].find((b) => /^[A-Za-z]:/.test(b) && under(b.slice(0, 2) + n, norm(b), ctx) !== null)
   return (base ?? ctx.home).slice(0, 2)
 }
 
@@ -300,12 +351,12 @@ const RUN_START = '(?:(?<![\\\\/])|(?<=(?<![\\\\/])[\\\\/]))'
  * backslashes (JSON), the long forms `\\?\` and `\\.\`, and a drive as an admin share (`\\host\C$`). With `inUnc`, only
  * the forms that name this machine even inside a UNC path (UNC_TOKEN): a drive, an admin share and the long forms.
  */
-function baseSource(base: string, inUnc: boolean): string {
+function baseSource(base: string, inUnc: boolean, ctx: SanitizeContext): string {
   const n = norm(base)
   const parts = n.split('/')
   const drive = /^([A-Za-z]):$/.exec(parts[0])
   if (drive) {
-    const rest = parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
+    const rest = parts.slice(1).map((s) => SEP + partSource(s, ctx, escapeRe)).join('')
     // Git Bash, Cygwin and WSL write the drive as a folder (`/c/...`, `/cygdrive/c/...`, `/mnt/c/...`). Only below
     // the drive itself: a drive-root project would otherwise claim any `/c/` in the text.
     const bash = rest ? `|(?<![\\\\/])[\\\\/]+(?:(?:cygdrive|mnt)${SEP})?${drive[1]}` : ''
@@ -317,7 +368,7 @@ function baseSource(base: string, inUnc: boolean): string {
     const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])${rooted}` : ''
     return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash}${bare})${rest}`
   }
-  if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
+  if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map((s) => partSource(s, ctx, escapeRe)).join(SEP)
   // A POSIX folder, also in the long form with no drive after the prefix (`\\?\home\ann`), and written with a
   // backslash after anything (`..\home\ann`, `cwd:\home\ann`) but a host's name: in `\\host\home\ann`, and anywhere
   // else inside a UNC path (`\\host\share\home\ann`), it is a folder on that host.
@@ -338,9 +389,9 @@ const urlName = (s: string): string => (encodeURIComponent(s) === s ? escapeRe(s
  * percent-encoded or not (`C%3A%5CUsers%5Cann`, `%2Fhome%2Fann`), the drive left out as baseSource's `bare` form
  * does; null for a UNC folder.
  */
-function urlSource(base: string): string | null {
+function urlSource(base: string, ctx: SanitizeContext): string | null {
   const parts = norm(base).split('/')
-  const names = parts.slice(1).map(urlName).join(URL_SEP)
+  const names = parts.slice(1).map((s) => partSource(s, ctx, urlName)).join(URL_SEP)
   const drive = /^([A-Za-z]):$/.exec(parts[0])
   // The drive left out: at the run's start, or else (after a name) right after the run's first slash or backslash, the
   // first place in the run no letter or digit comes before (`%2F` ends with one).
@@ -372,7 +423,7 @@ function decodeUrls(s: string, ctx: SanitizeContext): string {
   let re = urlForms.get(ctx)
   if (!re) {
     const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
-      .sort((a, b) => norm(b).length - norm(a).length).map(urlSource).filter((b): b is string => b !== null)
+      .sort((a, b) => norm(b).length - norm(a).length).map((b) => urlSource(b, ctx)).filter((b): b is string => b !== null)
     re = new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?=[\\\\/~+%]|(?![\\w-]|\\.[\\w.-]))([^\\s"'<>|&#?]*)`, 'gi')
     urlForms.set(ctx, re)
   }
@@ -407,7 +458,7 @@ const TRAILING = /(?<![.,;:!?)\]}])[.,;:!?)\]}]+$/
  */
 function knownPattern(ctx: SanitizeContext, inUnc: boolean): RegExp {
   const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
-    .sort((a, b) => norm(b).length - norm(a).length).map((b) => baseSource(b, inUnc))
+    .sort((a, b) => norm(b).length - norm(a).length).map((b) => baseSource(b, inUnc, ctx))
   // A `file:` URL of a known folder is taken whole. `(?!)` never matches, so with no folder known the pass changes
   // nothing. A name running on with `~`, `+` or a letter outside ASCII (an 8.3 short name `ANN~1`, `ann+x`, `anné`)
   // is a folder beside it, taken whole as group 2 up to a whole name's end: a separator, whitespace, a quote, the end

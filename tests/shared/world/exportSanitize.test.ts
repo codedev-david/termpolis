@@ -1063,6 +1063,48 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(relativePath('/mnt/d/work/x', projD())).toBe('x')
     expect(relativePath('/mnt/c/x', posix)).toBe(`${OUTSIDE}/x`)
   })
+
+  it("hides the Windows short (8.3) name of an account that does not fit 8.3 as it hides the long one, and only the account's", () => {
+    const long: SanitizeContext = { root: 'C:\\Users\\DavidEngelhart\\repos\\app', home: 'C:\\Users\\DavidEngelhart', userData: 'C:\\Users\\DavidEngelhart\\AppData\\Roaming\\Termpolis' }
+    const spaced: SanitizeContext = { root: null, home: 'C:\\Users\\Ann Lee', userData: 'C:\\Users\\Ann Lee\\AppData\\Roaming\\Termpolis' }
+    const both: Array<[SanitizeContext, string, string]> = [
+      // The reviewer's four: Git Bash's temp folder, the home folder alone, the drive left out, and the drive path.
+      [long, '/c/Users/DAVIDE~1/AppData/Local/Temp/x.txt', `${OUTSIDE}/x.txt`],
+      [long, '/c/Users/DAVIDE~1', OUTSIDE],
+      [long, '\\Users\\DAVIDE~1\\x', `${OUTSIDE}/x`],
+      [long, 'C:\\Users\\DAVIDE~1', OUTSIDE],
+      // Any number, in any case, and the project under it is still the project.
+      [long, '\\Users\\davide~12', OUTSIDE],
+      [long, 'C:\\Users\\DAVIDE~2\\repos\\app\\src\\b.ts', 'src/b.ts'],
+      [long, 'file:///C:/Users/DAVIDE~1/x', `${OUTSIDE}/x`],
+      [long, 'C:%5CUsers%5CDAVIDE~1%5Cx', `${OUTSIDE}/x`],
+      [long, 'C:UsersDAVIDE~1x', `${OUTSIDE}/x`],
+      // Somewhere else it is still the account's name.
+      [long, 'D:\\Other\\DAVIDE~1', OUTSIDE],
+      // A name with a space has a short name whatever its length, without the space.
+      [spaced, 'C:\\Users\\ANNLEE~1\\x', `${OUTSIDE}/x`],
+      [spaced, 'C:\\Users\\ANNLEE~1', OUTSIDE],
+      // Other folders' short names, and names that only look like the account's, keep their names.
+      [long, 'C:\\PROGRA~1', `${OUTSIDE}/PROGRA~1`],
+      [long, 'C:\\Users\\OTHERU~1', `${OUTSIDE}/OTHERU~1`],
+      [long, 'C:\\Users\\DAVIDE~0', `${OUTSIDE}/DAVIDE~0`],
+      [long, 'C:\\Users\\DAVIDE~1x', `${OUTSIDE}/DAVIDE~1x`],
+      [long, 'C:\\Users\\DAVIDEN~1', `${OUTSIDE}/DAVIDEN~1`],
+    ]
+    for (const [ctx, path, want] of both) {
+      expect(relativePath(path, ctx), path).toBe(want)
+      expect(sanitizeText(`see ${path} now`, ctx), path).toBe(`see ${want} now`)
+    }
+    // An account that fits 8.3 has no short name, and Linux and macOS have none: `~1` there is another folder.
+    const eight: SanitizeContext = { root: null, home: 'C:\\Users\\abcdefgh', userData: 'C:\\Users\\abcdefgh\\AppData\\Roaming\\Termpolis' }
+    expect(relativePath('C:\\Users\\ABCDEF~1', eight)).toBe(`${OUTSIDE}/ABCDEF~1`)
+    const linux: SanitizeContext = { root: null, home: '/home/DavidEngelhart', userData: '/home/DavidEngelhart/.config/Termpolis' }
+    expect(relativePath('/home/DAVIDE~1', linux)).toBe(`${OUTSIDE}/DAVIDE~1`)
+    expect(sanitizeText('see /home/DAVIDE~1/x now', linux)).toBe(`see ${OUTSIDE}/x now`)
+    // A name of dots and spaces alone gives no short name to look for.
+    const dots: SanitizeContext = { root: null, home: 'C:\\Users\\. .', userData: 'C:\\Users\\. .\\AppData\\Roaming\\Termpolis' }
+    expect(relativePath('C:\\Users\\~1\\x', dots)).toBe(`${OUTSIDE}/x`)
+  })
 })
 
 function projD(): SanitizeContext {
