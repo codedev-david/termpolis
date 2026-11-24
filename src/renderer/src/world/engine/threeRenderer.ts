@@ -2214,6 +2214,31 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   })
   ro?.observe(host)
   undo.push(() => { ro?.disconnect() })
+  /**
+   * The screen's pixel ratio changed (the window moved to another display, the page zoomed) with the view's size in
+   * CSS pixels the same, which no ResizeObserver reports: a media query for the ratio in use hears the change, the
+   * buffer is fitted to the new ratio, and a query for the new one listens from then on.
+   */
+  let ratioQuery: MediaQueryList | null = null
+  const watchRatio = (): void => {
+    ratioQuery?.removeEventListener('change', onRatio)
+    let q: MediaQueryList | null = null
+    try {
+      q = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+    } catch {
+      // no media queries here: a new ratio waits for the next resize
+    }
+    ratioQuery = q && typeof q.addEventListener === 'function' ? q : null
+    ratioQuery?.addEventListener('change', onRatio)
+  }
+  const onRatio = (): void => {
+    watchRatio()
+    fitBuffer()
+    wake()
+  }
+  const dropRatioQuery = (): void => { ratioQuery?.removeEventListener('change', onRatio) }
+  watchRatio()
+  undo.push(dropRatioQuery)
 
   /**
    * Which labels show, so that no two overlap on screen (placeLabels), most wanted first:
@@ -3045,6 +3070,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       cancelAnimationFrame(raf)
       raf = 0
       ro?.disconnect()
+      dropRatioQuery()
       dropContextListeners()
       host.removeEventListener('keydown', onKeyDown)
       host.removeEventListener('keyup', onKeyUp)

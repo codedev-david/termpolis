@@ -2,7 +2,7 @@
 // below 1 regression), a drag handing the camera to the hand, and resizing. OrbitControls is real; it
 // listens on the canvas, so the events are dispatched there as a browser would.
 import { describe, expect, it, vi } from 'vitest'
-import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { createThreeRenderer, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import {
   bldg, boxCanvas, cameraOf, DEFAULT_OPTS, district, emptyText, gpu, rendererOf, resizeHost, smallCity, smallText, withHarness,
@@ -316,6 +316,50 @@ describe('threeRenderer resize', () => {
     expect(rendererOf().getPixelRatio()).toBe(2)
     expect(gpu.composers[0].pixelRatios[gpu.composers[0].pixelRatios.length - 1]).toBe(2)
     r.dispose()
+  })
+
+  it("fits the buffer again when the screen's pixel ratio changes with no change of size, which no ResizeObserver reports", () => {
+    const queries: Array<{ media: string; on: Array<() => void>; off: Array<() => void> }> = []
+    vi.stubGlobal('matchMedia', (media: string) => {
+      const q = { media, on: [] as Array<() => void>, off: [] as Array<() => void> }
+      queries.push(q)
+      return {
+        media,
+        matches: true,
+        addEventListener: (_: string, f: () => void) => { q.on.push(f) },
+        removeEventListener: (_: string, f: () => void) => { q.off.push(f) },
+      }
+    })
+    vi.stubGlobal('devicePixelRatio', 1)
+    gpu.limits = { renderbuffer: 4096, texture: 16384, viewport: [16384, 16384] }
+    resizeHost(h.host, 3000, 1000)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(queries.map((q) => q.media)).toEqual(['(resolution: 1dppx)'])
+    expect(rendererOf().pixelRatios).toEqual([1])
+    const sized = rendererOf().sizes.length
+    h.frames.run(SETTLE_FRAMES + 5)
+    vi.stubGlobal('devicePixelRatio', 2) // dragged onto a 2x display
+    queries[0].on[0]()
+    // 3000 x 2 is past the 4096 cap: 4096 / 3000, the size the same
+    expect(rendererOf().getPixelRatio()).toBe(4096 / 3000)
+    expect(gpu.composers[0].pixelRatios).toEqual([4096 / 3000])
+    expect(rendererOf().sizes.slice(sized)).toEqual([[3000, 1000]])
+    expect(h.frames.pending()).toBe(1) // drawn again
+    // the old query is let go; one for the new ratio listens
+    expect(queries[0].off).toEqual(queries[0].on)
+    expect(queries.map((q) => q.media)).toEqual(['(resolution: 1dppx)', '(resolution: 2dppx)'])
+    r.dispose()
+    expect(queries[1].off).toEqual(queries[1].on)
+  })
+
+  it('a pixel ratio query that throws, or answers without listeners, leaves the buffer to the next resize', () => {
+    vi.stubGlobal('matchMedia', () => { throw new Error('no media queries') })
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r.dispose()
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    const r2 = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r2.dispose()
+    expect(gpu.renderers).toHaveLength(2)
   })
 
   it('keeps the drawing buffer inside the largest texture too, where that is the tightest limit (N1)', () => {
