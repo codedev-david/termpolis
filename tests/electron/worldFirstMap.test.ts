@@ -329,6 +329,30 @@ describe('the first map of a big project (WP4a)', () => {
     }
   })
 
+  it('a snapshot that throws before its reads leaves no beat running: the beat starts inside the try (minor sweep, R4-2)', async () => {
+    vi.useFakeTimers()
+    try {
+      const out: WorldHostResponse[] = []
+      // Posting the run's first progress throws, before any read: the snapshot fails, and no timer is left behind.
+      const host = createWorldHost(
+        (m) => {
+          if (m.kind === 'progress' && m.stage === 'structure') throw new Error('port closed')
+          out.push(m)
+        },
+        { createStore: () => ({ load: async () => null, save: async () => undefined }) as never, readSource: async () => null, glob: async () => [], listFiles: async () => FILES }
+      )
+      await host.handle({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false } as WorldHostRequest)
+      const before = vi.getTimerCount()
+      await host.handle({ kind: 'call', id: 1, fn: 'snapshotFromFiles', args: ['/r', early()] } as WorldHostRequest)
+      expect(out.find((m) => m.kind === 'result' && m.id === 1)).toMatchObject({ ok: false, error: { message: 'port closed' } })
+      expect(vi.getTimerCount()).toBe(before)
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
+      expect(out.filter((m) => m.kind === 'progress')).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a folder whose snapshot no compile took keeps its scans for a while: then they go, and only the last few folders are kept', async () => {
     const h = setup()
     await h.init()

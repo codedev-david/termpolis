@@ -1081,8 +1081,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
       const scans = new Map<string, StageFile | null>()
-      // The reads' progress, with a beat while a read is stuck (fix round 4, M1): for a person's run only.
-      const reads = early !== null ? readProgress((pct) => postProgress(early, 'boundaries', pct), 0) : null
+      // The reads' progress, with a beat while a read is stuck (fix round 4, M1): for a person's run only. Its timer
+      // starts inside the try, so the finally stops it whatever throws first (minor sweep, R4-2).
+      let reads: ReturnType<typeof readProgress> | null = null
       sweepRuns()
       if (early !== null) {
         // A run already going for this project keeps its percentage: a second snapshot never takes it back (M1).
@@ -1090,6 +1091,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         postProgress(early, 'structure', 0)
       }
       try {
+        if (early !== null) reads = readProgress((pct) => postProgress(early, 'boundaries', pct), 0)
         const snap = await snapshotFromFiles(root, {
           read,
           ...(deps.listFiles ? { listFiles: deps.listFiles } : {}),
