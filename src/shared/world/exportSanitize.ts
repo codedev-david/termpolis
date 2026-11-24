@@ -196,8 +196,8 @@ function separatorReading(p: string, ctx: SanitizeContext): string {
   let n = plainPath(p, false)
   if (n === '~' || n.startsWith('~/')) n = norm(ctx.home) + n.slice(1)
   else if (n.startsWith('~')) return outside(n.split('/').slice(1))
-  // On Windows (a drive home folder) `/c/x` and `/cygdrive/c/x` are Git Bash and Cygwin for `C:/x`.
-  const bash = /^\/(?:cygdrive\/)?([A-Za-z])(?=\/|$)/i.exec(n)
+  // On Windows (a drive home folder) `/c/x`, `/cygdrive/c/x` and `/mnt/c/x` are Git Bash, Cygwin and WSL for `C:/x`.
+  const bash = /^\/(?:cygdrive\/|mnt\/)?([A-Za-z])(?=\/|$)/i.exec(n)
   if (bash && /^[A-Za-z]:/.test(ctx.home)) n = `${bash[1]}:${n.slice(bash[0].length)}`
   // On Windows `\x` is rooted on the current drive: read on the drive of the project, userData or home folder it is
   // in, or else on home's drive.
@@ -281,9 +281,9 @@ function baseSource(base: string): string {
   const drive = /^([A-Za-z]):$/.exec(parts[0])
   if (drive) {
     const rest = parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
-    // Git Bash and Cygwin write the drive as a folder (`/c/...`, `/cygdrive/c/...`). Only below the drive itself:
-    // a drive-root project would otherwise claim any `/c/` in the text.
-    const bash = rest ? `|[\\\\/]+(?:cygdrive${SEP})?${drive[1]}` : ''
+    // Git Bash, Cygwin and WSL write the drive as a folder (`/c/...`, `/cygdrive/c/...`, `/mnt/c/...`). Only below
+    // the drive itself: a drive-root project would otherwise claim any `/c/` in the text.
+    const bash = rest ? `|[\\\\/]+(?:(?:cygdrive|mnt)${SEP})?${drive[1]}` : ''
     // Rooted on the current drive, the drive left out (`\Users\ann`): not right after a drive letter, a share's `$`, a
     // name character or another slash, so `D:\Users\ann`, `\\host\D$\Users\ann` and `x\Users\ann` are not taken for
     // it, while `..\Users\ann`, `a.ts:12:\Users\ann`, `cwd:\Users\ann`, `-\Users\ann` and `$\Users\ann` are. Nor
@@ -390,11 +390,14 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
   const rewrite = (path: string, tail: string): string => relativePath(path.slice(0, path.length - tail.length), ctx) + tail
   // A known folder named alone keeps its last character; a path running on drops the punctuation ending a sentence.
   // A folder beside a known one is outside the project, and its name is never shown, not even as the basename.
-  const knownHit = (_m: string, base: string, beside: string | undefined, rest: string): string => {
+  // A folder whose first slash follows a name (`vscode://file/Users/ann`, `a/home/ann`) keeps that slash, so the name
+  // stays apart from what replaces the folder.
+  const knownHit = (_m: string, base: string, beside: string | undefined, rest: string, at: number, whole: string): string => {
     const tail = rest ? (TRAILING.exec(rest) ?? [''])[0] : ''
-    if (!beside) return rewrite(base + rest, tail)
+    const lead = base.startsWith('/') && /\w/.test(whole.charAt(at - 1)) ? '/' : ''
+    if (!beside) return lead + rewrite(base + rest, tail)
     const out = rewrite(base + beside + rest, tail)
-    return out.toLowerCase().includes(beside.toLowerCase()) ? OUTSIDE + tail : out
+    return lead + (out.toLowerCase().includes(beside.toLowerCase()) ? OUTSIDE + tail : out)
   }
   const revealingHit = (m: string): string => rewrite(m, (TRAILING.exec(m) ?? [''])[0])
   // A known drive folder written with separators left out is first written out whole (gluedBase), after no name

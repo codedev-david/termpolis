@@ -922,7 +922,7 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // A known folder right after the long-form prefix is still this machine's, and a URL is no UNC path.
     expect(sanitizeText('see \\\\?\\home\\dev\\repo\\src\\a.ts now', posix)).toBe('see src/a.ts now')
     expect(sanitizeText('see \\\\.\\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
-    expect(sanitizeText('see https://example.com/home/dev/x now', posix)).toBe(`see https://example.com${OUTSIDE}/x now`)
+    expect(sanitizeText('see https://example.com/home/dev/x now', posix)).toBe(`see https://example.com/${OUTSIDE}/x now`)
   })
 
   it("reads a drive with no separator after it, or with separators left out between this machine's own folder names, as the drive path", () => {
@@ -1030,4 +1030,38 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     // With no account name in the home folder there is nothing to take.
     expect(sanitizeText('root@box:~$ ls', { root: null, home: '/', userData: '/x/Termpolis' })).toBe('root@box:~$ ls')
   })
+
+  it("reads WSL's /mnt/c/ as the drive and keeps the slash before a known folder that runs on from a name, so no text is lost", () => {
+    const mac: SanitizeContext = { root: '/Users/dev/repo', home: '/Users/dev', userData: '/Users/dev/Library/Application Support/Termpolis' }
+    const text: Array<[SanitizeContext, string, string]> = [
+      [win, 'see /mnt/c/Users/dev/repo/src/a.ts now', 'see src/a.ts now'],
+      [win, 'see /mnt/c/Users/dev/x now', `see ${OUTSIDE}/x now`],
+      [win, 'see /mnt/C/Users/DEV/x now', `see ${OUTSIDE}/x now`],
+      [win, 'see x/c/Users/dev/repo/a.ts now', 'see x/a.ts now'],
+      [win, 'see /cygdrive/c/Users/dev/repo/a.ts now', 'see a.ts now'],
+      [win, 'open vscode://file/c:/Users/dev/repo/a.ts now', 'open vscode://file/a.ts now'],
+      [mac, 'open vscode://file/Users/dev/repo/a.ts now', 'open vscode://file/a.ts now'],
+      [mac, 'open vscode://file/Users/dev/x now', `open vscode://file/${OUTSIDE}/x now`],
+      [mac, 'see https://host/Users/dev/x now', `see https://host/${OUTSIDE}/x now`],
+      [posix, 'open vscode://file/home/dev/repo/a.ts now', 'open vscode://file/a.ts now'],
+      [posix, 'see a/home/dev/repo/a.ts now', 'see a/a.ts now'],
+      [posix, 'see src/home/dev now', `see src/${OUTSIDE} now`],
+    ]
+    for (const [ctx, input, want] of text) {
+      const out = sanitizeText(input, ctx)
+      expect(out).toBe(want)
+      expect(out.toLowerCase()).not.toContain('dev')
+    }
+    // After anything but a name the slash goes with the folder, as before.
+    expect(sanitizeText('cwd:/home/dev/x', posix)).toBe(`cwd:${OUTSIDE}/x`)
+    expect(sanitizeText('see /c/Users/dev/repo/a.ts now', win)).toBe('see a.ts now')
+    // As a path field, on Windows only.
+    expect(relativePath('/mnt/c/Users/dev/repo/src/a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('/mnt/d/work/x', projD())).toBe('x')
+    expect(relativePath('/mnt/c/x', posix)).toBe(`${OUTSIDE}/x`)
+  })
 })
+
+function projD(): SanitizeContext {
+  return { root: 'D:\\work', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
+}
