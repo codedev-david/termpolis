@@ -1,6 +1,7 @@
 // Structural validator for a WorldDoc. Hand-written and dependency-free on purpose: it runs in
 // the main process, the renderer and the standalone website bundle. Target is ES2020 (no
 // Array.prototype.at, no Object.hasOwn).
+import { isSafeColor, safeColor } from './safeColor'
 import type { WorldDoc } from './types'
 
 type Rec = Record<string, unknown>
@@ -368,6 +369,17 @@ const checkMaps = (ctx: Ctx, doc: Rec): void => {
   map('runtimeNames', doc.runtimeNames, (k, v) => { checkStrings(ctx, `runtimeNames "${k}"`, 'value', v) })
 }
 
+/** A valid cargo or processes map with every colour outside the hex allowlist made grey (a colour lands in a style
+ *  attribute, so "red;display:none" must not reach it); null when every colour is already safe. */
+const safeColors = (map: Rec): Rec | null => {
+  const keys = Object.keys(map)
+  if (keys.every((k) => isSafeColor((map[k] as Rec).color))) return null
+  return Object.fromEntries(keys.map((k) => {
+    const v = map[k] as Rec
+    return [k, isSafeColor(v.color) ? v : { ...v, color: safeColor(v.color) }]
+  }))
+}
+
 const listOf = (ctx: Ctx, name: string, v: unknown, each: (item: unknown, i: number) => void): void => {
   if (!Array.isArray(v)) ctx.errors.push(`${name} must be an array`)
   else v.forEach(each)
@@ -422,7 +434,10 @@ export function validateWorld(
   const dropped = ctx.dropped.length > 0 ? { dropped: ctx.dropped } : {}
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
   // filesCapped, nestedCapped, filesUnreadable, filesRead and filesListed (the files note's counts) are kept only as
-  // whole numbers of at least 0; provisional and savedByNewer only as true.
+  // whole numbers of at least 0; provisional and savedByNewer only as true. A cargo or process colour that is not a
+  // plain hex colour is made grey rather than failing the world. The caller's doc is never changed: a copy is returned.
+  const cargo = safeColors(doc.cargo as Rec)
+  const processes = safeColors(doc.processes as Rec)
   const badHand = doc.runtimeHandSet !== undefined && !(Array.isArray(doc.runtimeHandSet) && doc.runtimeHandSet.every((x) => typeof x === 'string'))
   const badCount = (n: unknown): boolean => n !== undefined && !(Number.isInteger(n) && (n as number) >= 0)
   const badCapped = badCount(doc.filesCapped)
@@ -432,8 +447,10 @@ export function validateWorld(
   const badListed = badCount(doc.filesListed)
   const badProvisional = doc.provisional !== undefined && doc.provisional !== true
   const badNewer = doc.savedByNewer !== undefined && doc.savedByNewer !== true
-  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badProvisional || badNewer) {
+  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badProvisional || badNewer || cargo || processes) {
     const rest: Record<string, unknown> = { ...doc }
+    if (cargo) rest.cargo = cargo
+    if (processes) rest.processes = processes
     if (doc.labelTokens !== undefined && !isNum(doc.labelTokens)) delete rest.labelTokens
     if (badHand) delete rest.runtimeHandSet
     if (badCapped) delete rest.filesCapped

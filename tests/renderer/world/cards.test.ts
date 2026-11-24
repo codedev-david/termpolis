@@ -179,7 +179,7 @@ describe('cards', () => {
     expect(html).not.toContain('· </span>')
   })
 
-  it('shows a status pill, cargo swatches on the lines and an external tag', () => {
+  it('shows a status pill and cargo swatches on the lines', () => {
     const doc = minimal()
     expect(buildingCard(doc, 'b2')).toContain('<span class="tag status-verified">Built · tests pass</span>')
     const color = doc.cargo[doc.edges[0].cargo].color
@@ -187,6 +187,18 @@ describe('cards', () => {
     expect(edgeCard(doc, 'e1')).toContain(`<p><span class="cargo" style="background:${color}"></span>`)
     doc.edges[0].cargo = 'nothing-known'
     expect(edgeCard(doc, 'e1')).toContain('<p>nothing-known</p>')
+  })
+
+  it('a cargo colour that is not a plain hex colour never reaches the swatch style (E5)', () => {
+    const doc = minimal()
+    doc.cargo[doc.edges[0].cargo].color = 'red;display:none'
+    const html = edgeCard(doc, 'e1')
+    expect(html).toContain('<span class="cargo" style="background:#94a3b8"></span>')
+    expect(html).not.toContain('display:none')
+    expect(buildingCard(doc, 'b1')).not.toContain('red;')
+  })
+
+  it('tags an external building', () => {
     expect(buildingCard(rich(), 'x1')).toContain('<span class="tag status-external">Outside the project</span>')
   })
 

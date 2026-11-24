@@ -688,3 +688,53 @@ describe('savedByNewer, isNewerWorld and migrateWorld (C12, C13)', () => {
     expect(WORLD_MIGRATIONS).toEqual({})
   })
 })
+
+describe('cargo and process colours (E5: only a hex colour reaches a style attribute)', () => {
+  it('makes a colour outside the hex allowlist grey instead of failing the world, and leaves the input as it was', () => {
+    const d = fresh()
+    d.cargo.memory.color = 'red;display:none'
+    d.cargo.extra = { shape: 'cube', color: '#ABC', label: 'Extra' }
+    d.processes.main.color = 'url(x)'
+    const before = JSON.parse(JSON.stringify(d))
+    const r = validateWorld(d)
+    if (!r.ok) throw new Error(r.errors.join('; '))
+    expect(r.doc.cargo).toEqual({ memory: { shape: 'sphere', color: '#94a3b8', label: 'Memory' }, extra: { shape: 'cube', color: '#ABC', label: 'Extra' } })
+    expect(r.doc.cargo.extra).toBe(d.cargo.extra)
+    expect(r.doc.processes).toEqual({ main: { label: 'Main process', color: '#94a3b8' }, memory: { label: 'Memory host', color: '#44cc99' } })
+    expect({ ...r.doc, cargo: before.cargo, processes: before.processes }).toEqual(before)
+    expect(d).toEqual(before)
+  })
+
+  it('a world whose colours are all hex comes back as the same object, in either mode', () => {
+    for (const color of ['#abc', '#a1b2c3', '#A1B2C3D4']) {
+      const d = fresh()
+      d.cargo.memory.color = color
+      const r = validateWorld(d)
+      expect(r.ok && r.doc).toBe(d)
+      const loose = validateWorld(d, { dropBadItems: true })
+      expect(loose.ok && loose.doc).toBe(d)
+    }
+  })
+
+  it('only the map with a bad colour is copied, and the lenient load does the same', () => {
+    const d = fresh()
+    d.processes.memory.color = ''
+    const r = validateWorld(d, { dropBadItems: true })
+    if (!r.ok) throw new Error(r.errors.join('; '))
+    expect(r.doc.cargo).toBe(d.cargo)
+    expect(r.doc.processes.memory.color).toBe('#94a3b8')
+    expect(r.doc.processes.main).toBe(d.processes.main)
+    for (const bad of ['#12', '#123456789', 'rgb(0,0,0)', ' #abc', '#abc ', '#ggg', 'red']) {
+      const x = fresh()
+      x.cargo.memory.color = bad
+      const out = validateWorld(x)
+      expect(out.ok && out.doc.cargo.memory.color).toBe('#94a3b8')
+    }
+  })
+
+  it('a colour that is not a string still fails the world, as before', () => {
+    const d = fresh()
+    d.cargo.memory.color = 7
+    expect(errorsOf(d)).toContain('cargo "memory": color must be a string')
+  })
+})

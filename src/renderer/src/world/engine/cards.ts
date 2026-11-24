@@ -4,6 +4,7 @@ import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
 import { AI_NAME, BUILD_STATUS_TEXT as STATUS, RUNS_IN_LABEL, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
+import { safeColor } from '../../../../shared/world/safeColor'
 
 export { escapeHtml } from './html'
 
@@ -59,10 +60,10 @@ function chips(doc: WorldDoc, techs: string[]): string {
 
 const nodeLink = (doc: WorldDoc, id: string): string => `<a class="lnk link-node" data-node="${esc(id)}">${esc(nodeName(doc, id))}</a>`
 const edgeLink = (e: WorldEdge): string => `<a class="lnk link-edge" data-edge="${esc(e.id)}">${esc(edgeSummary(e.label))}</a>`
-/** The small colour square of a line's cargo, as in the legend. */
+/** The small colour square of a line's cargo, as in the legend. Only a hex colour reaches the style attribute. */
 const swatch = (doc: WorldDoc, e: WorldEdge): string => {
   const c = doc.cargo[e.cargo]
-  return c ? `<span class="cargo" style="background:${esc(c.color)}"></span>` : ''
+  return c ? `<span class="cargo" style="background:${safeColor(c.color)}"></span>` : ''
 }
 
 function edgeList(doc: WorldDoc, edges: WorldEdge[], dir: 'from' | 'to'): string {
