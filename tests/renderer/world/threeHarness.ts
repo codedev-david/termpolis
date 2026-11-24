@@ -40,6 +40,11 @@ export const gpu = {
    *  unmasked name) or only as RENDERER. */
   gpuName: null as unknown,
   debugInfo: true,
+  /**
+   * The context's WebGL 2 fences: whether it has them (off: WebGL 1, no fenceSync), how long after it is put in a fence
+   * signals (performance.now ms; null: never), the fences put in, and the ones still not deleted.
+   */
+  fences: { on: false, signalAfter: 0 as number | null, made: [] as FakeSync[], live: new Set<FakeSync>() },
   reset(): void {
     gpu.renderers.length = 0
     gpu.composers.length = 0
@@ -50,8 +55,32 @@ export const gpu = {
     gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
     gpu.gpuName = null
     gpu.debugInfo = true
+    gpu.fences = { on: false, signalAfter: 0, made: [], live: new Set() }
   },
 }
+
+/** A fake WebGLSync: when it was put in (performance.now) and what with. */
+export interface FakeSync { at: number; condition: number; flags: number }
+const SYNC_STATUS = 0x9112
+const SIGNALED = 0x9119
+const UNSIGNALED = 0x9118
+const SYNC_GPU_COMMANDS_COMPLETE = 0x9117
+/** The fence calls of a context with fences (gpu.fences.on). */
+const fenceCalls = (): Record<string, unknown> => ({
+  SYNC_STATUS, SIGNALED, UNSIGNALED, SYNC_GPU_COMMANDS_COMPLETE,
+  fenceSync: (condition: number, flags: number): FakeSync => {
+    const f = { at: performance.now(), condition, flags }
+    gpu.fences.made.push(f)
+    gpu.fences.live.add(f)
+    return f
+  },
+  getSyncParameter: (f: FakeSync, p: number): number | null => {
+    if (p !== SYNC_STATUS) return null
+    const after = gpu.fences.signalAfter
+    return after !== null && performance.now() - f.at >= after ? SIGNALED : UNSIGNALED
+  },
+  deleteSync: (f: FakeSync): void => { gpu.fences.live.delete(f) },
+})
 
 export class FakeWebGLRenderer {
   readonly args: unknown[]
@@ -108,7 +137,7 @@ export class FakeWebGLRenderer {
     if (gpu.failDispose) throw gpu.failDispose
   }
   forceContextLoss(): void { this.contextLost++ }
-  /** A context answering the buffer limits (gpu.limits) and the GPU's name (gpu.gpuName), and nothing else. */
+  /** A context answering the buffer limits (gpu.limits), the GPU's name (gpu.gpuName) and, with gpu.fences.on, fences. */
   getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; getParameter(p: number): unknown; getExtension(name: string): unknown } {
     // The unmasked name (0x9246) only through the extension; RENDERER (0x1f01) names it too when there is none.
     const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport, [gpu.debugInfo ? 0x9246 : 0x1f01]: gpu.gpuName }
@@ -116,6 +145,7 @@ export class FakeWebGLRenderer {
       MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, RENDERER: 0x1f01,
       getParameter: (p) => (p in answers ? answers[p] : null),
       getExtension: (name) => (name === 'WEBGL_debug_renderer_info' && gpu.debugInfo ? { UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
+      ...(gpu.fences.on ? fenceCalls() : {}),
     }
   }
 }

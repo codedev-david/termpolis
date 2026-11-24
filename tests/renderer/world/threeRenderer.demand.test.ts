@@ -4,7 +4,7 @@
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
 import { createThreeRenderer, sameLayout, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
-import { SOFTWARE_LOOP_MS } from '../../../src/renderer/src/world/engine/viewMath'
+import { SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
@@ -431,6 +431,101 @@ describe('threeRenderer drawn in software', () => {
     h.frames.run(20)
     // Landed, with the building still open: the loop's pace again.
     expect(drawnOver(r, 1600)).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    r.dispose()
+  })
+
+  /** Runs screen frames until the next one drawn. */
+  const toNextFrame = (r: ThreeRenderer): void => {
+    const n = frames(r)
+    for (let k = 0; k < 200 && frames(r) === n; k++) h.frames.step()
+  }
+
+  // world-visual 3 on the Windows runners: the Termpolis repository's own city took the GPU process 150 to 200 ms a
+  // frame, so even 100 ms apart its looping motions held three of the four cores, the map's compile was starved past
+  // 240 s and every call into the page waited seconds. With fences the next looping frame waits for the last to be
+  // finished, then four times what it took (softwareLoopGap).
+  it('with fences, waits for the GPU to finish a looping frame, then softwareLoopGap of what it took', () => {
+    gpu.gpuName = SWIFTSHADER
+    gpu.fences.on = true
+    for (const [after, ms] of [[0, 1600], [60, 3200], [150, 4800]] as const) {
+      gpu.fences.signalAfter = after
+      const r = idle(DEFAULT_OPTS)
+      drawnOver(r, 1000) // a looping frame's fence has been read: the pace is its cost's
+      toNextFrame(r)
+      const before = r.motionState().ringAngle
+      const from = performance.now()
+      const drawn = drawnOver(r, ms)
+      toNextFrame(r)
+      const span = (performance.now() - from) / 1000
+      // The fence is read once a screen frame (16 ms): its cost is `after` to a frame more, and the frame drawn on
+      // the first screen frame at least softwareLoopGap later.
+      const most = softwareLoopGap(after)
+      const least = softwareLoopGap(after + 16) + 16
+      expect(drawn, `signalled after ${after} ms`).toBeLessThanOrEqual(ms / most + 1)
+      expect(drawn, `signalled after ${after} ms`).toBeGreaterThanOrEqual(Math.floor(ms / least))
+      // The motions keep their speed however far apart the frames are drawn.
+      // (Frames 500 ms apart take their whole step: MAX_FRAME_DT would cut it to 250 ms and halve the speed.)
+      expect(r.motionState().ringAngle - before).toBeCloseTo(span * 0.8, 2)
+      // One fence a frame, each after the frame's commands, and only the last one kept.
+      expect(gpu.fences.made.length).toBeGreaterThan(drawn)
+      expect(gpu.fences.made.every((f) => f.condition === 0x9117 && f.flags === 0)).toBe(true)
+      expect(gpu.fences.live.size).toBeLessThanOrEqual(1) // a signalled one is deleted once read
+      toNextFrame(r) // just drawn: its fence is still there
+      expect(gpu.fences.live.size).toBe(1)
+      r.dispose()
+      expect(gpu.fences.live.size).toBe(0) // dispose deletes it
+      h.host.remove()
+      h.host = makeHost(800, 600)
+    }
+  })
+
+  it('a fence that never signals holds the looping motions SOFTWARE_LOOP_MAX_MS apart, and a change is still drawn at once', () => {
+    gpu.gpuName = SWIFTSHADER
+    gpu.fences.on = true
+    gpu.fences.signalAfter = null
+    const r = idle(DEFAULT_OPTS)
+    drawnOver(r, 1000)
+    const drawn = drawnOver(r, 3200)
+    expect(drawn).toBeLessThanOrEqual(3200 / SOFTWARE_LOOP_MAX_MS + 1)
+    expect(drawn).toBeGreaterThanOrEqual(Math.floor(3200 / (SOFTWARE_LOOP_MAX_MS + 16)))
+    expect(h.frames.pending()).toBe(1) // never stopped
+    expect(gpu.fences.live.size).toBeLessThanOrEqual(1) // the ones given up on are deleted
+    h.frames.run(3)
+    const n = frames(r)
+    r.setHovered('a')
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    r.dispose()
+  })
+
+  it('a GPU puts in no fence; a lost context drops its fence, and one back without fences keeps SOFTWARE_LOOP_MS', () => {
+    gpu.fences.on = true
+    gpu.gpuName = GEFORCE
+    const g = idle(DEFAULT_OPTS)
+    expect(drawnOver(g, 480)).toBe(30)
+    expect(gpu.fences.made).toEqual([])
+    g.dispose()
+    h.host.remove()
+    h.host = makeHost(800, 600)
+    gpu.gpuName = SWIFTSHADER
+    gpu.fences.signalAfter = 150
+    const r = idle(DEFAULT_OPTS)
+    drawnOver(r, 1000)
+    expect(drawnOver(r, 3200)).toBeLessThanOrEqual(3200 / SOFTWARE_LOOP_MAX_MS + 1)
+    toNextFrame(r)
+    const kept = [...gpu.fences.live]
+    expect(kept.length).toBe(1)
+    // Lost: the fence went with its context (not deleted into the new one).
+    r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    gpu.fences.on = false // back as WebGL 1
+    const made = gpu.fences.made.length
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect([...gpu.fences.live]).toEqual(kept)
+    h.frames.run(20)
+    const drawn = drawnOver(r, 1600)
+    expect(drawn).toBeGreaterThanOrEqual(Math.floor(1600 / (SOFTWARE_LOOP_MS + 16)))
+    expect(drawn).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
+    expect(gpu.fences.made.length).toBe(made) // none put in without fences
     r.dispose()
   })
 
