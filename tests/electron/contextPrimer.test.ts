@@ -807,12 +807,16 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
     })
 
     // WP5: a note keyed by an older spelling of this folder (projectKeyAliases) is this folder's own, not another's.
+    // Spelled with a doubled separator: before WPA that spelling had a key of its own (legacyProjectKeyOf keeps the double), on
+    // every platform. MINE alone has no older key on macOS, which folds case and has no drive spellings (WP5 fix round 1).
     it('a note keyed by an older spelling of this folder is shown in a search nothing scoped', async () => {
-      const aliasKey = projectKeyAliases(MINE)[1]
+      const spelled = MINE.replace('\\termpolis', '\\\\termpolis')
+      expect(projectKeyOf(spelled)).toBe(mineKey)
+      const aliasKey = projectKeyAliases(spelled).find((k) => k !== mineKey)
       expect(aliasKey).toBeDefined()
       const list = [note('n1', 'a note written from another spelling of my termpolis', { projectKey: aliasKey }), note('n2', 'a note about the other termpolis', { projectKey: otherKey })]
       const search = vi.fn(async (o: { project?: string }) => (o.project ? [] : list))
-      const out = (await buildContextPrimer(search, { query: 'q', project: proj, projectPath: MINE, now: NOW }))!
+      const out = (await buildContextPrimer(search, { query: 'q', project: proj, projectPath: spelled, now: NOW }))!
       expect(out).toContain('another spelling of my termpolis')
       expect(out).not.toContain('the other termpolis')
     })
