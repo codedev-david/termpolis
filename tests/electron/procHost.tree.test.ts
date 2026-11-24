@@ -166,13 +166,22 @@ describe('runExec with tree', () => {
 
 describe('the host routes a cancel to the request it names', () => {
   it('cancels an exec in flight by id, and ignores an id it does not hold', async () => {
+    H.endProcessTree.mockClear()
     const answer = handleProcMessage({ kind: 'exec', id: 7, bin: 'claude', args: ['-p'], opts: { tree: true } })
+    // Another id leaves run 7 alone.
     expect(await handleProcMessage({ kind: 'cancel', id: 99 })).toBeNull()
+    expect(H.endProcessTree).not.toHaveBeenCalled()
+    let answered = false
+    void answer.then(() => { answered = true })
+    await vi.advanceTimersByTimeAsync(TREE_STOP_SETTLE_MS)
+    expect(answered).toBe(false)
     expect(await handleProcMessage({ kind: 'cancel', id: 7 })).toBeNull()
+    expect(H.endProcessTree).toHaveBeenCalledTimes(1)
     expect(H.endProcessTree).toHaveBeenCalledWith(4242, expect.objectContaining({ canRetry: expect.any(Function) }))
     await vi.advanceTimersByTimeAsync(TREE_STOP_SETTLE_MS)
     expect(await answer).toMatchObject({ kind: 'result', id: 7, ok: false, stdout: '', error: CANCELLED })
     // Answered: the id is forgotten, so a late cancel reaches nothing.
     expect(await handleProcMessage({ kind: 'cancel', id: 7 })).toBeNull()
+    expect(H.endProcessTree).toHaveBeenCalledTimes(1)
   })
 })
