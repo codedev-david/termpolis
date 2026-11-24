@@ -43,7 +43,7 @@ import {
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
-import { prepareIsolatedLaunch, type IsolatedLaunch } from './readOnlyIsolation'
+import { prepareIsolatedLaunch, ISOLATION_SETUP_FAILED, type IsolatedLaunch, type McpListRun } from './readOnlyIsolation'
 import { CODEX_AUTO_APPROVED_TOOLS, RESTRICTED_RUN_TOOLS } from '../shared/agentIntegration'
 import { PRIMER_CLOSE, PRIMER_OPEN, PRIMER_PREFACE } from '../shared/headlessPrompt'
 
@@ -64,6 +64,9 @@ export const EXEC_DEFAULT_TIMEOUT_MS = 15 * 60_000
  *  as "no limit", so an unclamped 0 would start a run nothing ever stops. */
 export const EXEC_MIN_TIMEOUT_MS = 10_000
 export const EXEC_MAX_TIMEOUT_MS = 60 * 60_000
+/** How old an agy run home must be before the startup sweep removes it: past the longest run's
+ *  deadline, with room to spare, so it can't belong to a live run. */
+export const AGY_HOME_STALE_MS = EXEC_MAX_TIMEOUT_MS + 10 * 60_000
 
 /** A caller's timeout, clamped to [EXEC_MIN_TIMEOUT_MS, EXEC_MAX_TIMEOUT_MS]. Anything that isn't
  *  a number (JSON turns a NaN into null) is left to the default. Pure. */
@@ -272,8 +275,9 @@ function claudeLinkedReadOnlyArgs(model: string | undefined, mcpConfig: string):
  *  saving its session (`noPersist`) is told to: claude's flag goes ahead of `-p`, codex's with its
  *  other options; agy has none. `opts.cwd` is the spawn's to use, and codex is also told it with
  *  `-C`. The caller checks it first: runHeadless takes only an absolute path, which can never be
- *  read as a flag. `opts.isolateArgs` are an isolated run's Codex options (readOnlyIsolation.ts),
- *  placed with its other options; the other agents' isolation is in their environment. */
+ *  read as a flag. `opts.isolateArgs` are an isolated run's options (readOnlyIsolation.ts): codex's
+ *  with its other options, claude's read-only launch's ahead of `-p`; agy's isolation is in its
+ *  environment. */
 export function execCommand(
   agent: ExecAgent,
   model: string | undefined,
@@ -322,7 +326,7 @@ export function execCommand(
     const args = job?.claudeMcpConfig
       ? claudeLinkedReadOnlyArgs(model, job.claudeMcpConfig)
       : claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS)
-    return { bin, args: noPersist ? beforePrint(args, [CLAUDE_NO_PERSIST]) : args }
+    return { bin, args: beforePrint(args, [...(noPersist ? [CLAUDE_NO_PERSIST] : []), ...(opts.isolateArgs ?? [])]) }
   }
   return { bin, args: agyReadOnlyArgs(model, timeoutMs) }
 }
@@ -347,8 +351,11 @@ export interface ExecDeps {
    *  Linked machines job, whose session must not become this computer's memory. Absent, or failing,
    *  and the job runs without the flag, as on a CLI that has none. */
   noPersist?: (agent: ExecAgent) => Promise<boolean>
-  /** Sets up an isolated run's launch (ExecRequest.isolated). Test seam; prepareIsolatedLaunch when absent. */
-  isolation?: (agent: ExecAgent, cwd: string, env: Readonly<Record<string, string>>) => Promise<IsolatedLaunch>
+  /** Sets up an isolated run's launch (ExecRequest.isolated); `run` spawns its MCP list check through
+   *  `deliver`, as the run itself is spawned. Test seam; prepareIsolatedLaunch when absent. */
+  isolation?: (agent: ExecAgent, cwd: string, env: Readonly<Record<string, string>>, run: McpListRun) => Promise<IsolatedLaunch>
+  /** Where a setup failure's reason is written. console.warn (the app log) when absent. */
+  log?: (line: string) => void
 }
 
 /** Per-run MCP plumbing for one Linked machines job. */
@@ -408,10 +415,19 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   // Set up before the job's MCP plumbing, so a run that can't be isolated has nothing to dispose of.
   let isolation: IsolatedLaunch | null = null
   if (req.isolated && req.write !== true) {
+    // The MCP list check is spawned exactly as the run will be: same deliver, folder, environment and signal.
+    const run: McpListRun = async (bin, args, o) => {
+      const res = await deliverWithDeadline(deps.deliver, bin, args, '', o.timeoutMs, DELIVER_GRACE_MS, {
+        cwd: o.cwd, env: o.env, ...(req.signal ? { signal: req.signal } : {}),
+      })
+      return { stdout: res.stdout, code: res.code }
+    }
     try {
-      isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {})
+      isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {}, run)
     } catch (err) {
-      return { ok: false, agent, output: '', error: err instanceof Error ? err.message : String(err), code: -1, durationMs: now() - started, primerChars }
+      // The reason is for the log: a path or a Node error code means nothing on a map.
+      ;(deps.log ?? console.warn)(`[exec] isolated ${agent} run not started: ${err instanceof Error ? err.message : String(err)}`)
+      return { ok: false, agent, output: '', error: ISOLATION_SETUP_FAILED, code: -1, durationMs: now() - started, primerChars }
     }
   }
   // Asked before the job's MCP plumbing is made, so nothing is left to dispose of while it waits.

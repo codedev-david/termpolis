@@ -14,6 +14,7 @@ import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/
 import { createAnnotationStore, withAnnotations } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
+import { ISOLATION_SETUP_FAILED } from '../../src/main/readOnlyIsolation'
 
 const DRAFT_OPS: DesignOp[] = [
   { op: 'addDistrict', id: 'core', name: 'Core' },
@@ -96,6 +97,12 @@ describe('createDesigner draft', () => {
     const { designer, registry, store } = setup(async () => okRes('I would build a shop.'))
     expect(await failure(designer.draft('A shop'))).toBe(DESIGN_EMPTY)
     expect(await store.load('design:id1')).toBeNull()
+    expect(await registry.list()).toEqual([])
+  })
+
+  it('a run that could not be made safe shows the isolation sentence and writes nothing', async () => {
+    const { designer, registry } = setup(async () => ({ ok: false, error: ISOLATION_SETUP_FAILED, output: '' }) as ExecResult)
+    expect(await failure(designer.draft('A shop'))).toBe(ISOLATION_SETUP_FAILED)
     expect(await registry.list()).toEqual([])
   })
 

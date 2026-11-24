@@ -6,6 +6,7 @@ import { estimateTokens } from '../../shared/world/tokens'
 import type { AskNoMemory, AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
+import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
 import { buildAskPrompt, summarize } from './askContext'
 import type { WorldClient } from './worldClient'
@@ -185,6 +186,8 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       }
       if (ctl.signal.aborted) return cancelled()
       if (!res.ok && isMissingCli(res.error)) return { askId, ok: false, error: agentMissingMessage(agent) }
+      // A run that couldn't be made safe says so in its own fixed sentence, never inside "couldn't reach".
+      if (!res.ok && res.error === ISOLATION_SETUP_FAILED) return { askId, ok: false, error: ISOLATION_SETUP_FAILED }
       if (!res.ok) return { askId, ok: false, error: `Lumopolis couldn't reach your agent: ${res.error ?? 'no answer'}` }
       const answer = parseAnswer(res.output, doc, labels)
       return {

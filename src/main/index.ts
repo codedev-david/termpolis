@@ -283,7 +283,8 @@ import { registerMemoryAuditIpc } from './memoryAuditIpc'
 import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
 import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
-import { runHeadless, execRequestFromVerb, type ExecAgent } from './headlessExec'
+import { runHeadless, execRequestFromVerb, AGY_HOME_STALE_MS, type ExecAgent } from './headlessExec'
+import { READ_ONLY_RUN_ENV, sweepStaleAgyHomes } from './readOnlyIsolation'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
 import { buildProbes, runBench, checkRegression, baselineFrom, formatBench, type BenchMemory } from './recallBench'
@@ -2697,7 +2698,8 @@ void worldSettings.ready()
  *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
 const worldClaudeExec = (root: string, signal?: AbortSignal): ExecFn => async (cmd, args, opts) => {
   try {
-    const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}) }
+    // READ_ONLY_RUN_ENV last: labelling is a Lumopolis run, and the memory hook stays quiet for it.
+    const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}), ...READ_ONLY_RUN_ENV }
     // Consent again at the last moment: labelling may have been turned off, or the call cancelled (its world
     // removed, its compile ended), while the env was built.
     if (worldSettings.get().worldLabelling === false || signal?.aborted) return { stdout: '', code: 1 }
@@ -5256,6 +5258,9 @@ async function semanticPoolOptions(
     // is OFF the main thread — it can no longer stall first keystrokes and needn't wait the old ~20 s;
     // warming it early makes recall fast from the first query instead of paying the cold load then.
     setTimeout(() => { warmProbeEmbeddings().catch(() => {}) }, 2500)
+    // agy run homes a crash or a quit mid-run left in the temp folder. Async and late, off the startup path;
+    // sweepStaleAgyHomes never throws.
+    setTimeout(() => { void sweepStaleAgyHomes(AGY_HOME_STALE_MS) }, 30_000)
     // Periodically compact this device's append-only shard once it's mostly dead lines
     // (threshold-gated + non-forced → a no-op until it's worth it), so per-reload parse cost
     // stays bounded as the log grows. Lossless + atomic (compactSelfShard proves the round-trip).

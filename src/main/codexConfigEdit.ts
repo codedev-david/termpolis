@@ -433,27 +433,47 @@ function unsupportedShape(doc: Doc, forAdd: boolean): string | null {
 /**
  * The names of every MCP server this config sets, in file order, each once: from `[mcp_servers.<name>]`
  * headers (and their sub-tables), from dotted keys (`mcp_servers.<name>.command = …`) and from keys under a
- * `[mcp_servers]` header. A shape whose names can't be read line by line, `mcp_servers` as an inline table
- * or an array of tables, is an error, never a short list: the caller switches the servers off by name.
+ * `[mcp_servers]` header. `url` holds the names this config gives a `url`, Codex's streamable HTTP
+ * transport, whatever the shape: a `url` key in the server's table, a dotted `mcp_servers.<name>.url`, or
+ * an inline table that mentions `url =`. A shape whose names can't be read line by line, `mcp_servers` as an
+ * inline table or as an array of tables (`[[mcp_servers]]`, `[[mcp_servers.<name>]]`), is an error, never a
+ * short list: the caller switches the servers off by name. An array of tables inside one server
+ * (`[[mcp_servers.<name>.<sub>]]`) still names that server.
  */
-export function codexMcpServerNames(text: string): { names: string[] } | { error: string } {
+export function codexMcpServerNames(text: string): { names: string[]; url: string[] } | { error: string } {
   const doc = parse(text)
   if ('error' in doc) return doc
   const names: string[] = []
-  const add = (name: string): void => {
-    if (!names.includes(name)) names.push(name)
+  const url: string[] = []
+  const add = (list: string[], name: string): void => {
+    if (!list.includes(name)) list.push(name)
   }
   for (const t of doc.tables) {
-    if (t.path[0] === 'mcp_servers' && t.array) return { error: 'mcp_servers is written as an array of tables ([[…]])' }
-    if (t.path[0] === 'mcp_servers' && t.path.length >= 2) add(t.path[1])
+    if (t.path[0] === 'mcp_servers' && t.array && t.path.length <= 2) return { error: 'mcp_servers is written as an array of tables ([[…]])' }
+    if (t.path[0] === 'mcp_servers' && t.path.length >= 2) add(names, t.path[1])
     for (const k of t.keys) {
       const full = [...t.path, ...k.key]
       if (full[0] !== 'mcp_servers') continue
       if (full.length === 1) return { error: 'mcp_servers is set as an inline table' }
-      add(full[1])
+      add(names, full[1])
+      const isUrl = full.length === 2 ? /(^|[{,\s])url\s*=/.test(statementText(doc, k).slice(k.valueAt)) : full.length === 3 && full[2] === 'url'
+      if (isUrl) add(url, full[1])
     }
   }
-  return { names }
+  return { names, url }
+}
+
+/** The root table's `key` when it is one single-line string; undefined when the config doesn't set it.
+ *  Any other spelling (a dotted key under it, a number, a multi-line value) is an error: the caller
+ *  can't tell what Codex would read. */
+export function codexTopLevelString(text: string, key: string): string | undefined | { error: string } {
+  const doc = parse(text)
+  if ('error' in doc) return doc
+  const root = doc.tables[0]
+  const k = root.keys.find((s) => s.key[0] === key)
+  if (!k) return undefined
+  const value = k.key.length === 1 ? stringValue(doc, k) : undefined
+  return value === undefined ? { error: `${key} is not set as one plain string` } : value
 }
 
 /** Is Termpolis's MCP server in this config, and what does it run? */

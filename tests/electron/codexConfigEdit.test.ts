@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  addCodexToolApprovals, codexConfigSets, codexMcpServerNames, codexServerState, codexTrustedProjects,
+  addCodexToolApprovals, codexConfigSets, codexMcpServerNames, codexServerState, codexTopLevelString, codexTrustedProjects,
   stripCodexProjectTrust, stripCodexServer, tomlString, upsertCodexServer,
   type CodexServerSpec, type TomlEdit,
 } from '../../src/main/codexConfigEdit'
@@ -834,6 +834,10 @@ describe('stripCodexProjectTrust', () => {
 })
 
 describe('codexMcpServerNames', () => {
+  it('reads an array of tables deeper inside one server as part of that server', () => {
+    expect(codexMcpServerNames(lf('[mcp_servers.docs]', 'command = "d"', '[[mcp_servers.docs.tools]]', 'name = "t"'))).toEqual({ names: ['docs'], url: [] })
+  })
+
   it('lists every server once, in file order, from headers, sub-tables, dotted keys and keys under [mcp_servers]', () => {
     const text = lf(
       'model = "gpt-5"',
@@ -852,18 +856,51 @@ describe('codexMcpServerNames', () => {
       '[profiles.p]',
       'model = "o3"',
     )
-    expect(codexMcpServerNames(text)).toEqual({ names: ['inline_one', 'docs', 'quoted-name', 'under'] })
+    expect(codexMcpServerNames(text)).toEqual({ names: ['inline_one', 'docs', 'quoted-name', 'under'], url: [] })
   })
 
   it('lists none for a config with no servers, or an empty one', () => {
-    expect(codexMcpServerNames(lf('model = "gpt-5"', '[projects."C:/x"]', 'trust_level = "trusted"'))).toEqual({ names: [] })
-    expect(codexMcpServerNames('')).toEqual({ names: [] })
-    expect(codexMcpServerNames(lf('[mcp_servers]'))).toEqual({ names: [] })
+    expect(codexMcpServerNames(lf('model = "gpt-5"', '[projects."C:/x"]', 'trust_level = "trusted"'))).toEqual({ names: [], url: [] })
+    expect(codexMcpServerNames('')).toEqual({ names: [], url: [] })
+    expect(codexMcpServerNames(lf('[mcp_servers]'))).toEqual({ names: [], url: [] })
+  })
+
+  it('also lists, once each, the servers given a url: in their table, as a dotted key, or inline', () => {
+    const text = lf(
+      'mcp_servers.dotted.url = "https://d"',
+      'mcp_servers.inline = { command = "x", url = "https://i" }',
+      'mcp_servers.cmd = { command = "c" }',
+      'mcp_servers.urlish = { command = "c", my_url = "n" }',
+      '[mcp_servers.web]',
+      'url = "https://w"',
+      '[mcp_servers.web.http_headers]',
+      'url = "not the transport"',
+      '[mcp_servers]',
+      'under = {url="https://u"}',
+      'web.url = "https://again"',
+    )
+    expect(codexMcpServerNames(text)).toEqual({ names: ['dotted', 'inline', 'cmd', 'urlish', 'web', 'under'], url: ['dotted', 'inline', 'web', 'under'] })
   })
 
   it('is an error, never a short list, for a shape whose names it can\'t read', () => {
     expect(codexMcpServerNames(lf('mcp_servers = { docs = { command = "d" } }'))).toEqual({ error: 'mcp_servers is set as an inline table' })
     expect(codexMcpServerNames(lf('[[mcp_servers]]', 'name = "docs"'))).toEqual({ error: 'mcp_servers is written as an array of tables ([[…]])' })
+    expect(codexMcpServerNames(lf('[[mcp_servers.docs]]', 'command = "d"'))).toEqual({ error: 'mcp_servers is written as an array of tables ([[…]])' })
     expect(codexMcpServerNames(lf('[mcp_servers.docs', 'command = "d"'))).toHaveProperty('error')
+  })
+})
+
+describe('codexTopLevelString', () => {
+  it('reads a top-level key set as one plain string, and only at the top level', () => {
+    expect(codexTopLevelString(lf('profile = "work"', '[profiles.work]', 'model = "o3"'), 'profile')).toBe('work')
+    expect(codexTopLevelString(lf("profile = 'lit'"), 'profile')).toBe('lit')
+    expect(codexTopLevelString(lf('model = "x"', '[profiles.work]', 'profile = "inner"'), 'profile')).toBeUndefined()
+    expect(codexTopLevelString('', 'profile')).toBeUndefined()
+  })
+
+  it("is an error for a value it can't read as one string, or a config it can't parse", () => {
+    expect(codexTopLevelString(lf('profile = 3'), 'profile')).toEqual({ error: 'profile is not set as one plain string' })
+    expect(codexTopLevelString(lf('profile.name = "x"'), 'profile')).toEqual({ error: 'profile is not set as one plain string' })
+    expect(codexTopLevelString(lf('[profile', 'x = 1'), 'profile')).toHaveProperty('error')
   })
 })

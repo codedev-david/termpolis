@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { agentMissingMessage, createAskRunner, DEFAULT_PREP_TIMEOUT_MS } from '../../src/main/world/askRunner'
 import type { AskRequest, WorldDoc } from '../../src/shared/world/types'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
+import { ISOLATION_SETUP_FAILED } from '../../src/main/readOnlyIsolation'
 
 const DOC = {
   version: 1, projectKey: 'k', generatedAt: 1, sourceRevision: { head: 'h', dirty: false },
@@ -169,6 +170,11 @@ describe('createAskRunner', () => {
   it('exec ok:false → {ok:false, error}', async () => {
     const { runner } = setup(async () => ({ ok: false, output: '', error: 'timed out' }) as ExecResult)
     expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: "Lumopolis couldn't reach your agent: timed out" })
+  })
+
+  it('a run that could not be made safe says so in its own sentence, not inside "couldn\'t reach"', async () => {
+    const { runner } = setup(async () => ({ ok: false, output: '', error: ISOLATION_SETUP_FAILED }) as ExecResult)
+    expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: ISOLATION_SETUP_FAILED })
   })
 
   it('exec ok:false without an error says no answer', async () => {

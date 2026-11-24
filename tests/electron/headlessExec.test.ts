@@ -14,6 +14,7 @@ import {
   EXEC_DEFAULT_TIMEOUT_MS,
   EXEC_MIN_TIMEOUT_MS,
   EXEC_MAX_TIMEOUT_MS,
+  AGY_HOME_STALE_MS,
   EXEC_MAX_PRIMER_CHARS,
   EXEC_READ_ONLY_CLAUDE_TOOLS,
   PROMPT_TOKEN,
@@ -22,7 +23,7 @@ import {
   type ExecRequest,
 } from '../../src/main/headlessExec'
 import { RESTRICTED_RUN_TOOLS } from '../../src/shared/agentIntegration'
-import type { IsolatedLaunch } from '../../src/main/readOnlyIsolation'
+import { ISOLATION_SETUP_FAILED, type IsolatedLaunch } from '../../src/main/readOnlyIsolation'
 
 const okDeliver = (stdout: string, code = 0, stderr = ''): ExecDeps['deliver'] =>
   vi.fn(async () => ({ stdout, stderr, code }))
@@ -689,7 +690,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
       { deliver, isolation, isDirectory: anyDir },
     )
     expect(res.ok).toBe(true)
-    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' })
+    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' }, expect.any(Function))
     const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(bin).toBe('codex')
     expect(args).toEqual([
@@ -719,25 +720,63 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     const isolation = vi.fn(async () => launch())
     const deliver = okDeliver('ok')
     await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation, isDirectory: anyDir })
-    expect(isolation).toHaveBeenCalledWith('claude', '/r', {})
+    expect(isolation).toHaveBeenCalledWith('claude', '/r', {}, expect.any(Function))
     expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 
-  it('does not start a run whose isolation can\'t be set up, and says why', async () => {
+  it('does not start a run whose isolation can\'t be set up: the fixed sentence for the UI, the reason for the log', async () => {
     const deliver = okDeliver('ok')
     const linkedJobMcp = vi.fn(() => null)
+    const log = vi.fn()
     const res = await runHeadless(
       { task: 't', agent: 'codex', cwd: '/r', isolated: true },
-      { deliver, linkedJobMcp, isolation: async () => { throw new Error('can\'t switch Codex\'s MCP servers off') }, isDirectory: anyDir, now: () => 0 },
+      { deliver, linkedJobMcp, log, isolation: async () => { throw new Error('can\'t switch Codex\'s MCP servers off: /h/config.toml') }, isDirectory: anyDir, now: () => 0 },
     )
-    expect(res).toEqual({ ok: false, agent: 'codex', output: '', error: 'can\'t switch Codex\'s MCP servers off', code: -1, durationMs: 0, primerChars: 0 })
+    expect(res).toEqual({ ok: false, agent: 'codex', output: '', error: ISOLATION_SETUP_FAILED, code: -1, durationMs: 0, primerChars: 0 })
+    expect(log).toHaveBeenCalledWith('[exec] isolated codex run not started: can\'t switch Codex\'s MCP servers off: /h/config.toml')
     expect(deliver).not.toHaveBeenCalled()
     expect(linkedJobMcp).not.toHaveBeenCalled()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const odd = await runHeadless(
       { task: 't', agent: 'gemini', cwd: '/r', isolated: true },
       { deliver, isolation: async () => { throw 'no temp folder' }, isDirectory: anyDir },
     )
-    expect(odd.error).toBe('no temp folder')
+    expect(odd.error).toBe(ISOLATION_SETUP_FAILED)
+    expect(warn).toHaveBeenCalledWith('[exec] isolated gemini run not started: no temp folder')
+    warn.mockRestore()
+  })
+
+  it('spawns the MCP list check through deliver, in the run\'s folder with its environment, signal and deadline', async () => {
+    const calls: unknown[][] = []
+    const deliver = vi.fn(async (...a: unknown[]) => {
+      calls.push(a)
+      return { stdout: (a[1] as string[])[0] === 'mcp' ? '[]' : 'answer', stderr: '', code: 0 }
+    }) as unknown as ExecDeps['deliver']
+    const ac = new AbortController()
+    let checked: { stdout: string; code: number } | undefined
+    const isolation: ExecDeps['isolation'] = async (_agent, _cwd, _env, run) => {
+      checked = await run('codex', ['mcp', 'list', '--json'], { cwd: '/r', env: { A: '1', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: 10_000 })
+      return launch()
+    }
+    const res = await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true, env: { A: '1' }, signal: ac.signal }, { deliver, isolation, isDirectory: anyDir })
+    expect(res.ok).toBe(true)
+    expect(checked).toEqual({ stdout: '[]', code: 0 })
+    expect(calls[0]).toEqual(['codex', ['mcp', 'list', '--json'], ' ', PROMPT_TOKEN, { cwd: '/r', env: { A: '1', TERMPOLIS_READ_ONLY_RUN: '1' }, signal: ac.signal, timeoutMs: 10_000 }])
+    // Without a signal the check carries none.
+    calls.length = 0
+    await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true }, { deliver, isolation, isDirectory: anyDir })
+    expect(calls[0][4]).toEqual({ cwd: '/r', env: { A: '1', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: 10_000 })
+  })
+
+  it('gives Claude\'s read-only launch its isolation options ahead of -p', async () => {
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation: async () => launch({ args: ['--setting-sources', 'user'] }), isDirectory: anyDir })
+    const args = (deliver as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[]
+    expect(args.slice(args.indexOf('--setting-sources'))).toEqual(['--setting-sources', 'user', '-p', PROMPT_TOKEN])
+  })
+
+  it('keeps an agy run home past the longest run\'s deadline before the sweep may take it', () => {
+    expect(AGY_HOME_STALE_MS).toBe(EXEC_MAX_TIMEOUT_MS + 10 * 60_000)
   })
 
   it('ignores isolated on a write run', async () => {
@@ -763,6 +802,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isDirectory: anyDir })
     const [, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(args).toContain('--strict-mcp-config')
+    expect(args.slice(-4)).toEqual(['--setting-sources', 'user', '-p', PROMPT_TOKEN])
     expect(opts.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 })

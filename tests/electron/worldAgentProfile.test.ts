@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runHeadless, PROMPT_TOKEN, type ExecAgent, type ExecDeps } from '../../src/main/headlessExec'
-import { defaultIsolationIO, prepareIsolatedLaunch, type IsolationIO } from '../../src/main/readOnlyIsolation'
-import { LUMOPOLIS_RUN } from '../../src/main/world/agentProfile'
+import { clearIsolationChecks, defaultIsolationIO, prepareIsolatedLaunch, type IsolationIO } from '../../src/main/readOnlyIsolation'
+import { LUMOPOLIS_RUN, lumopolisClaudeExec } from '../../src/main/world/agentProfile'
 import { createAskRunner } from '../../src/main/world/askRunner'
 import { createDesigner } from '../../src/main/world/designer'
 import { makeWorldLlm } from '../../src/main/world/label'
@@ -14,7 +14,7 @@ import type { WorldDoc } from '../../src/shared/world/types'
 
 // Ask, the Designer and labelling launch each agent the same way, through the one Lumopolis profile:
 // these tests run the real runHeadless and the real isolation (against a fake home and temp folder)
-// and check the exact argv and environment each agent is started with.
+// and check the exact argv and environment each agent is started with, its MCP list check included.
 
 const DOC = {
   version: 1, projectKey: 'k', generatedAt: 1, sourceRevision: { head: 'h', dirty: false },
@@ -32,6 +32,7 @@ let home: string
 let tmp: string
 let root: string
 beforeEach(async () => {
+  clearIsolationChecks()
   base = await mkdtemp(join(tmpdir(), 'world-agent-profile-'))
   home = join(base, 'home')
   tmp = join(base, 'tmp')
@@ -46,22 +47,31 @@ afterEach(async () => {
 
 const io = (): IsolationIO => ({ ...defaultIsolationIO, homedir: () => home, tmpdir: () => tmp, env: {} })
 
-/** Real runHeadless deps with a recording deliver; the agy home is checked while the run is live. */
-function liveDeps(): { deps: ExecDeps; deliver: ReturnType<typeof vi.fn>; homesSeen: string[][] } {
+type DeliverOpts = { env?: Record<string, string>; signal?: AbortSignal }
+
+/** Real runHeadless deps with a recording deliver that answers the MCP list check as an isolated CLI
+ *  does; the agy home is checked while the run is live. `run` stands in for the agent's own run. */
+function liveDeps(run: (opts: DeliverOpts) => Promise<{ stdout: string; stderr: string; code: number }> = async () => ({ stdout: 'answer', stderr: '', code: 0 })): {
+  deps: ExecDeps; deliver: ReturnType<typeof vi.fn>; homesSeen: string[][]
+} {
   const homesSeen: string[][] = []
-  const deliver = vi.fn(async (_bin: string, _args: string[], _prompt: string, _token: string, opts: { env?: Record<string, string> }) => {
+  const deliver = vi.fn(async (bin: string, args: string[], _prompt: string, _token: string, opts: DeliverOpts) => {
+    if (args[0] === 'mcp') return { stdout: bin === 'agy' ? 'No MCP servers configured.\n' : '[{"name":"docs","enabled":false}]', stderr: '', code: 0 }
     if (opts.env?.HOME) homesSeen.push(await readdir(join(opts.env.HOME, '.gemini', 'antigravity-cli')))
-    return { stdout: 'answer', stderr: '', code: 0 }
+    return run(opts)
   })
-  const deps: ExecDeps = { deliver: deliver as never, isolation: (agent, cwd, env) => prepareIsolatedLaunch(agent, cwd, env, io()) }
+  const deps: ExecDeps = { deliver: deliver as never, isolation: (agent, cwd, env, check) => prepareIsolatedLaunch(agent, cwd, env, check, io()) }
   return { deps, deliver, homesSeen }
 }
 
 const CODEX_OFF = [
   '-c', 'mcp_servers.docs.enabled=false',
+  '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled',
   '-c', 'mcp_servers.github.enabled=false',
+  '-c', 'mcp_servers.github.command=termpolis-mcp-disabled',
   '-c', 'mcp_servers.termpolis.enabled=false',
   '-c', 'mcp_servers.termpolis.command=termpolis-mcp-disabled',
+  '-c', 'features.apps=false',
 ]
 
 /** The exact argv and environment each agent gets for a Lumopolis run in `cwd`. */
@@ -69,7 +79,10 @@ function expected(agent: ExecAgent, cwd: string, timeoutSecs: number): { bin: st
   if (agent === 'claude') {
     return {
       bin: 'claude',
-      args: ['--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Bash,PowerShell,Edit,Write,NotebookEdit', '--strict-mcp-config', '-p', PROMPT_TOKEN],
+      args: [
+        '--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Bash,PowerShell,Edit,Write,NotebookEdit', '--strict-mcp-config',
+        '--setting-sources', 'user', '-p', PROMPT_TOKEN,
+      ],
       env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9', TERMPOLIS_READ_ONLY_RUN: '1' },
     }
   }
@@ -87,14 +100,22 @@ function expected(agent: ExecAgent, cwd: string, timeoutSecs: number): { bin: st
   }
 }
 
-/** Checks one recorded launch, and that the agy home existed during the run and is gone after it. */
+/** Checks one recorded launch and the MCP list check before it (same CLI, folder and environment),
+ *  and that the agy home existed during the run and is gone after it. */
 async function checkLaunch(agent: ExecAgent, cwd: string, timeoutSecs: number, deliver: ReturnType<typeof vi.fn>, homesSeen: string[][]): Promise<void> {
-  expect(deliver).toHaveBeenCalledTimes(1)
-  const [bin, args, , , opts] = deliver.mock.calls[0]
   const want = expected(agent, cwd, timeoutSecs)
+  expect(deliver).toHaveBeenCalledTimes(agent === 'claude' ? 1 : 2)
+  const [bin, args, , , opts] = deliver.mock.calls[deliver.mock.calls.length - 1]
   expect(bin).toBe(want.bin)
   expect(args).toEqual(want.args)
   expect(opts.env).toEqual(want.env)
+  if (agent !== 'claude') {
+    const [checkBin, checkArgs, , , checkOpts] = deliver.mock.calls[0]
+    expect(checkBin).toBe(want.bin)
+    expect(checkArgs).toEqual(agent === 'codex' ? ['mcp', 'list', '--json', ...CODEX_OFF] : ['mcp', 'list'])
+    expect(checkOpts).toMatchObject({ cwd, timeoutMs: 10_000 })
+    expect(checkOpts.env).toEqual(agent === 'codex' ? want.env : { ...want.env, HOME: opts.env.HOME, USERPROFILE: opts.env.HOME })
+  }
   if (agent === 'gemini') {
     expect(opts.env.HOME).toBe(opts.env.USERPROFILE)
     expect(homesSeen).toEqual([['settings.json']])
@@ -136,6 +157,39 @@ describe('the Lumopolis launch profile', () => {
       await checkLaunch(agent, join(base, 'designs', 'id1'), 90, deliver, homesSeen)
     })
   }
+
+  it('an Ask cancelled while agy runs leaves no home behind', async () => {
+    let started!: () => void
+    const running = new Promise<void>((resolve) => { started = resolve })
+    const { deps, homesSeen } = liveDeps((opts) => new Promise((resolve) => {
+      started()
+      opts.signal?.addEventListener('abort', () => resolve({ stdout: '', stderr: '', code: 1 }), { once: true })
+    }))
+    const runner = createAskRunner({
+      exec: runHeadless, execDeps: deps,
+      client: { get: async () => DOC, read: async () => ({ items: [], evidence: [] }) } as never,
+      agent: () => 'gemini', runEnv, primer: async () => null, log: () => undefined,
+    })
+    const asked = runner.ask({ askId: 'a1', root, question: 'What is this?', selection: [], cameraRegion: [], summary: '' })
+    await running
+    expect(homesSeen).toEqual([['settings.json']])
+    expect(await readdir(tmp)).toHaveLength(1)
+    runner.cancel('a1')
+    expect(await asked).toMatchObject({ ok: false, cancelled: true })
+    await vi.waitFor(async () => expect(await readdir(tmp)).toEqual([]))
+  })
+
+  it('labelling launches claude with no tools, no MCP server and the person\'s own settings only, prompt on stdin', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'answer', code: 0 }))
+    const llm = makeWorldLlm('claude', undefined, { claudeExec: exec })
+    expect(await llm('label these')).toBe('answer')
+    expect(exec).toHaveBeenCalledTimes(1)
+    expect(exec.mock.calls[0]).toEqual(['claude', ['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--setting-sources', 'user'], expect.objectContaining({ input: expect.stringContaining('label these') })])
+  })
+
+  it('lumopolisClaudeExec wraps the real exec when given none', () => {
+    expect(typeof lumopolisClaudeExec()).toBe('function')
+  })
 
   for (const agent of ['codex', 'gemini'] as const) {
     it(`labelling launches ${agent} read-only and isolated, as index.ts routes it`, async () => {

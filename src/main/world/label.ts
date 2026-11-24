@@ -9,7 +9,7 @@ import type { ModelCatalog } from '../modelCatalog'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { Claim, Evidence, EvidenceKind, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
-import { LUMOPOLIS_RUN } from './agentProfile'
+import { LUMOPOLIS_RUN, lumopolisClaudeExec } from './agentProfile'
 import { cargoOf } from './cargoTypes'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
 import {
@@ -175,7 +175,7 @@ export function makeWorldLlm(
   if (agent === 'claude') {
     // The prompt carries repository excerpts, so it goes on stdin, never on the command line
     // (endpoint scanners read command lines; source trips their credential-signature rules).
-    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: deps.claudeExec, timeoutMs: LABEL_CALL_TIMEOUT_MS, promptVia: 'stdin' })
+    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: lumopolisClaudeExec(deps.claudeExec), timeoutMs: LABEL_CALL_TIMEOUT_MS, promptVia: 'stdin' })
   }
   const run = deps.run
   if (!run) return async () => null

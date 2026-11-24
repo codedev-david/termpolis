@@ -11,6 +11,7 @@ import { estimateTokens } from '../../shared/world/tokens'
 import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
+import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
@@ -193,7 +194,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       }
       if (ctl.signal.aborted) throw new DesignFailure(DESIGN_REPLACED)
       if (!res.ok && isMissingCli(res.error)) throw new DesignFailure(agentMissingMessage(agent))
-      if (!res.ok) throw new DesignFailure(DESIGN_AGENT_FAILED)
+      if (!res.ok) throw new DesignFailure(res.error === ISOLATION_SETUP_FAILED ? ISOLATION_SETUP_FAILED : DESIGN_AGENT_FAILED)
       return { ...parseDesignReply(res.output), tokens: estimateTokens(task) + estimateTokens(res.output) }
     } finally {
       if (running.get(key) === ctl) running.delete(key)
