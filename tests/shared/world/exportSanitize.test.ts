@@ -785,6 +785,36 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(sanitizeText('see \\\\host\\home\\dev\\repo\\a.ts now', posix)).toBe(`see ${OUTSIDE}/a.ts now`)
   })
 
+  it('rewrites a backslash-written folder after any character but a host name, and keeps the character before it', () => {
+    const mac: SanitizeContext = { root: '/Users/ann/repo', home: '/Users/ann', userData: '/Users/ann/Library/Application Support/Termpolis' }
+    const forms = (home: string): Array<[string, string]> => [
+      [`cwd:${home}`, `cwd:${OUTSIDE}`],
+      [`cwd:${home}\\x`, `cwd:${OUTSIDE}/x`],
+      [`a.ts:12:${home}\\x`, `a.ts:12:${OUTSIDE}/x`],
+      [`see src\\..\\..\\..${home}\\.ssh\\id_rsa now`, `see src\\..\\..\\..${OUTSIDE}/id_rsa now`],
+      [`see ..${home}\\x now`, `see ..${OUTSIDE}/x now`],
+      [`see .${home}\\x now`, `see .${OUTSIDE}/x now`],
+      [`-${home}\\x`, `-${OUTSIDE}/x`],
+      [`$${home}\\x`, `$${OUTSIDE}/x`],
+      [`PATH=/bin:${home}\\bin`, `PATH=/bin:${OUTSIDE}/bin`],
+      [`a.ts:12:${home}\\repo\\src\\a.ts`, 'a.ts:12:src/a.ts'],
+    ]
+    const cases: Array<[SanitizeContext, string, string]> = [[posix, '\\home\\dev', 'dev'], [mac, '\\Users\\ann', 'ann'], [win, '\\Users\\dev', 'dev']]
+    for (const [ctx, home, account] of cases) {
+      for (const [text, want] of forms(home)) {
+        const out = sanitizeText(text, ctx)
+        expect(out).toBe(want)
+        expect(out.toLowerCase()).not.toContain(account)
+      }
+    }
+    // A folder on another host stays that host's, and on Windows a share's `$`, a drive or a name in front still
+    // keeps a folder from being read as this drive's.
+    expect(sanitizeText('see \\\\host\\home\\dev\\repo\\a.ts now', posix)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('see \\\\host\\D$\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('see D:\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/a.ts now`)
+    expect(sanitizeText('a key x\\Users\\dev stays', win)).toBe('a key x\\Users\\dev stays')
+  })
+
   it('lets no traversal through on Windows either', () => {
     expect(relativePath('..\\..\\etc\\passwd', win)).toBe(`${OUTSIDE}/passwd`)
     expect(relativePath('src\\..\\..\\x.ts', win)).toBe(`${OUTSIDE}/x.ts`)
