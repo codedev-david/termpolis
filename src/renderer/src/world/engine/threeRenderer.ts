@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, pixelBudgetRatio, SOFTWARE_LOOP_MS, SOFTWARE_MAX_PIXELS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -452,8 +452,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return softwareRenderer(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER))
   }
   let software = readSoftware()
-  /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
-  const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
+  /**
+   * The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), drawn in software lowered
+   * to SOFTWARE_MAX_PIXELS, and lowered to the buffer cap.
+   */
+  const pixelRatio = (): number => {
+    const want = Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5)
+    return bufferRatio(software ? pixelBudgetRatio(want, width, height, SOFTWARE_MAX_PIXELS) : want, width, height, bufferCap)
+  }
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
   const shown = { width, height, ratio: pixelRatio() }
   renderer.setPixelRatio(shown.ratio)
