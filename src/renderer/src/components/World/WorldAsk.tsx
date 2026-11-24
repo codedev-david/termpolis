@@ -105,6 +105,8 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   // late transcript never asks over what the person did since. The hook's `cancel` comes with WP-VOICE; until it
   // lands these calls do nothing (T8).
   const micCancel = (mic as { cancel?: () => void }).cancel
+  // The 5-minute cap's note (WP-VOICE `notice`): shown quietly, not as an error; absent before WP-VOICE lands.
+  const micNotice = (mic as { notice?: string | null }).notice ?? null
   const dropMic = (): void => { micCancel?.() }
   const dropMicRef = useRef(dropMic)
   dropMicRef.current = dropMic
@@ -377,6 +379,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
       {mic.errorMsg && (
         <div role="alert" className="max-w-full text-xs text-[#f14c4c]">{mic.errorMsg}</div>
       )}
+      {micNotice && <div role="status" className="max-w-full text-xs text-[#9ca3af]">{micNotice}</div>}
     </div>
   )
 }

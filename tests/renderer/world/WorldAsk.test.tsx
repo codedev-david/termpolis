@@ -12,12 +12,14 @@ const vm = vi.hoisted(() => ({
   stop: vi.fn(),
   /** The hook's `cancel` (WP-VOICE): absent unless a test gives it one. */
   cancel: undefined as ReturnType<typeof vi.fn> | undefined,
+  /** The hook's `notice` (WP-VOICE, the 5-minute cap): undefined stands for a hook without it. */
+  notice: null as string | null | undefined,
 }))
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   useVoiceInput: (...args: unknown[]) => {
     vm.args = args
     vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
-    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop, ...(vm.cancel ? { cancel: vm.cancel } : {}) }
+    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop, ...(vm.cancel ? { cancel: vm.cancel } : {}), ...(vm.notice !== undefined ? { notice: vm.notice } : {}) }
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
@@ -584,6 +586,22 @@ describe('WorldAsk', () => {
       vm.status = 'transcribing'
       render(<WorldAsk viewer={makeViewer() as never} root="r" />)
       expect(screen.getByLabelText('Ask by voice').className).toContain('animate-pulse')
+    })
+
+    it('shows the hook notice (the 5-minute cap) as a quiet status line, not an alert; none without one', () => {
+      vm.notice = 'Recording stopped after 5 minutes.'
+      const view = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.getByRole('status').textContent).toBe('Recording stopped after 5 minutes.')
+      expect(screen.getByRole('status').className).toContain('text-[#9ca3af]')
+      expect(screen.queryByRole('alert')).toBeNull()
+      vm.notice = null
+      view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.queryByRole('status')).toBeNull()
+      // A hook from before WP-VOICE has no notice at all.
+      vm.notice = undefined
+      view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.queryByRole('status')).toBeNull()
+      vm.notice = null
     })
 
     it('shows the hook error as plain text under the input', () => {
