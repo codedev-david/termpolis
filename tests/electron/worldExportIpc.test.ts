@@ -44,8 +44,11 @@ function shopWorld(): WorldDoc {
 }
 const broken = (): WorldDoc => ({ ...labelledWorld(), edges: 7 }) as unknown as WorldDoc
 
-/** A file system in memory: the export's own files, and what it writes. */
-function memFs(over: { write?: Error } = {}) {
+/**
+ * A file system in memory: the export's own files, and what it writes. `link` gives it hard links, failing with the
+ * error it returns for a name.
+ */
+function memFs(over: { write?: Error; link?: (to: string) => Error | undefined } = {}) {
   const files = new Map<string, Uint8Array>([
     [ASSETS.runtimeJs, Buffer.from('(function(){window.__exported=1})()\n')],
     [ASSETS.ortWasm, new Uint8Array(64).fill(7)],
@@ -71,6 +74,15 @@ function memFs(over: { write?: Error } = {}) {
     }),
     rm: vi.fn(async (p: string) => { written.delete(p) }),
     stat: vi.fn(async (p: string) => ({ size: Buffer.byteLength(written.get(p) as string, 'utf8') })),
+  }
+  const link = over.link
+  if (link) {
+    fs.link = vi.fn(async (from: string, to: string) => {
+      const e = link(to)
+      if (e) throw e
+      if (written.has(to)) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
+      written.set(to, written.get(from) as string)
+    })
   }
   return { fs, written }
 }
@@ -414,6 +426,72 @@ describe('world:export', () => {
     const path = (await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).data.path as string
     expect(path).toMatch(/^D:\\out\\notes \([0-9a-f]{12}\)\.html$/)
     expect([...mem.written.values()].filter((v) => v === 'theirs')).toHaveLength(100)
+  })
+
+  const whole = /<\/html>\s*$/
+  const coded = (code: string): Error => Object.assign(new Error(code), { code })
+
+  it('hard-links a new name to the written page, so a kill at any point never leaves an empty or partial file there', async () => {
+    const mem = memFs({ link: () => undefined })
+    // Termpolis is killed right after the page reaches its name: the step after that never ends.
+    const rm = mem.fs.rm
+    mem.fs.rm = vi.fn((p: string, o: { force: boolean }) => (p.includes('.part-') ? new Promise<void>(() => undefined) : rm(p, o)))
+    mem.fs.rename = vi.fn(() => new Promise<void>(() => undefined))
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    void call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    await vi.waitFor(() => expect(mem.written.has('D:\\out\\notes.html')).toBe(true))
+    expect(mem.written.get('D:\\out\\notes.html')).toMatch(whole)
+    expect(mem.fs.writeFile).not.toHaveBeenCalledWith('D:\\out\\notes.html', '', { flag: 'wx' })
+    expect(mem.fs.rename).not.toHaveBeenCalled()
+  })
+
+  it('a linked save removes its .part and skips a taken name; the documentation is placed the same way', async () => {
+    const mem = memFs({ link: () => undefined })
+    mem.written.set('D:\\out\\notes.html', 'theirs')
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const res = await call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(res.data.path).toBe('D:\\out\\notes (2).html')
+    expect(res.data.bytes).toBe(Buffer.byteLength(mem.written.get('D:\\out\\notes (2).html') as string, 'utf8'))
+    expect([...mem.written.keys()].sort()).toEqual(['D:\\out\\notes (2).html', 'D:\\out\\notes.html'])
+    expect(mem.written.get('D:\\out\\notes.html')).toBe('theirs')
+    expect(mem.fs.rename).not.toHaveBeenCalled()
+    const docMem = memFs({ link: () => undefined })
+    const doc = setup({ mem: docMem, platform: 'linux', saveDialog: vi.fn(async () => '/home/ann/guide') })
+    expect((await doc.call('world:document', { root: ROOT, title: 'Shop' })).data.path).toBe('/home/ann/guide.html')
+    expect([...docMem.written.keys()]).toEqual(['/home/ann/guide.html'])
+    expect(docMem.written.get('/home/ann/guide.html')).toMatch(whole)
+  })
+
+  it.each(['EPERM', 'ENOTSUP', 'EXDEV'])('where hard links fail with %s, the same name is claimed empty and renamed onto, as before', async (code) => {
+    const mem = memFs({ link: () => coded(code) })
+    mem.written.set('D:\\out\\notes.html', 'theirs')
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const res = await call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(res.data.path).toBe('D:\\out\\notes (2).html')
+    // One link tried; the names after it are claimed with wx, never linked.
+    expect(mem.fs.link).toHaveBeenCalledTimes(1)
+    expect(mem.fs.writeFile).toHaveBeenCalledWith('D:\\out\\notes.html', '', { flag: 'wx' })
+    expect(mem.fs.writeFile).toHaveBeenCalledWith('D:\\out\\notes (2).html', '', { flag: 'wx' })
+    expect(mem.written.get('D:\\out\\notes (2).html')).toMatch(whole)
+    expect(mem.written.get('D:\\out\\notes.html')).toBe('theirs')
+    expect(mem.written.size).toBe(2)
+  })
+
+  it('a linked save with every name taken fails and leaves nothing; one cancelled while it links removes the name', async () => {
+    const full = memFs({ link: () => coded('EEXIST') })
+    const { call } = setup({ mem: full, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toEqual(err("Termpolis couldn't save the file (EEXIST)."))
+    expect(full.fs.link).toHaveBeenCalledTimes(101)
+    expect(full.written.size).toBe(0)
+    const cancel = memFs({ link: () => undefined })
+    const cancelling = setup({ mem: cancel, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const link = cancel.fs.link as NonNullable<ExportFs['link']>
+    cancel.fs.link = vi.fn(async (from: string, to: string) => {
+      await link(from, to)
+      await cancelling.call('world:export-cancel', { exportId: 'x1' })
+    })
+    expect(await cancelling.call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toEqual(ok({ cancelled: true }))
+    expect(cancel.written.size).toBe(0)
   })
 
   it("model listed but the world couldn't be indexed: its own sentence and a keyword-only flag, never 'isn't installed'", async () => {

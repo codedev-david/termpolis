@@ -6,7 +6,8 @@
 // ONE classic <script> holding the runtime (dist-world/world-export.js), under a CSP that forbids every request.
 // A keyword page carries the world, its meta and the Ask entries; a smart Ask page adds the int8 vectors, the
 // tokenizer, the ORT wasm and the model. Nothing reaches the target name until the whole file is written: it is
-// written beside it under a .part name, then renamed, and a cancel or a failure removes the .part.
+// written beside it under a .part name, then renamed (or, for a name Termpolis picked, hard-linked), and a cancel
+// or a failure removes the .part.
 //
 // Index reuse: the export embeds the Ask entries afresh every time. There is no cache in userData in 2.0: about
 // 30 s on a 600-line world is acceptable, and a cache adds a failure mode (a stale index that no longer matches).
@@ -105,6 +106,8 @@ export interface ExportFs {
   /** `flag: 'wx'` creates the file only when no file has the name (EEXIST otherwise). */
   writeFile(path: string, data: string | Uint8Array, opts?: { flag: 'wx' }): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /** A hard link: `newPath` names the file `existing` names, EEXIST when a file has that name. Optional: without it a new name is claimed empty. */
+  link?(existing: string, newPath: string): Promise<void>
   rm(path: string, opts: { force: boolean }): Promise<void>
   stat(path: string): Promise<{ size: number }>
 }
@@ -293,20 +296,33 @@ const removeQuietly = (fs: ExportFs, path: string): Promise<void> => fs.rm(path,
 export const MAX_NUMBERED = 100
 
 /**
- * Claims a name for a `target` whose `.html` Termpolis added (`<stem>.html`): the first of `<stem>.html`,
- * `<stem> (2).html` … `(MAX_NUMBERED).html`, then `<stem> (<random>).html`, that no file has, created empty with
- * `wx` so the check holds until the rename replaces that empty file. Only EEXIST moves on to the next name; any
- * other error, or a random name taken too, is thrown (writeError words it).
+ * Places the written `part` at a name for a `target` whose `.html` Termpolis added (`<stem>.html`): the first of
+ * `<stem>.html`, `<stem> (2).html` … `(MAX_NUMBERED).html`, then `<stem> (<random>).html`, that no file has. A hard
+ * link puts the whole file at that name in one step, so the name never holds an empty or half-written file, not even
+ * when Termpolis is killed. On a volume with no hard links (FAT, some shares), or an ExportFs without `link`, the name
+ * is created empty with `wx` and the caller renames the .part onto it. Only EEXIST moves on to the next name; any
+ * other error, or a random name taken too, is thrown (writeError words it). `linked` says the file is already there.
  */
-async function claimName(fs: ExportFs, target: string): Promise<string> {
+async function placeNew(fs: ExportFs, part: string, target: string): Promise<{ name: string; linked: boolean }> {
   const stem = target.slice(0, -'.html'.length)
+  let link = fs.link
   for (let n = 1; ; n++) {
     const name = n === 1 ? target : n <= MAX_NUMBERED ? `${stem} (${n}).html` : `${stem} (${randomBytes(6).toString('hex')}).html`
     try {
+      if (link) {
+        await link(part, name)
+        return { name, linked: true }
+      }
       await fs.writeFile(name, '', { flag: 'wx' })
-      return name
+      return { name, linked: false }
     } catch (e) {
-      if (errCode(e) !== 'EEXIST' || n > MAX_NUMBERED) throw e
+      if (errCode(e) === 'EEXIST') {
+        if (n > MAX_NUMBERED) throw e
+      } else if (link) {
+        // No hard link here: the same name again, claimed empty, and every name after it.
+        link = undefined
+        n--
+      } else throw e
     }
   }
 }
@@ -314,25 +330,31 @@ async function claimName(fs: ExportFs, target: string): Promise<string> {
 /**
  * Writes `data` to `part`, then renames it to `target`. On a failure, or a cancel before the rename, the .part is
  * removed and `target` is left as it was. The size is the written file's, or the data's when it cannot be read.
- * With `newName` the target is a name the dialog never saw, so no file there is replaced: claimName picks the name
+ * With `newName` the target is a name the dialog never saw, so no file there is replaced: placeNew picks the name
  * when the file is written, not when the dialog closed, and two saves of one name (or a file another program made
- * meanwhile) each keep their own file.
+ * meanwhile) each keep their own file. A name placeNew hard-linked already holds the file, and only the .part goes.
  */
 async function writeAtomically(fs: ExportFs, part: string, target: string, data: string, signal?: AbortSignal, newName = false): Promise<ExportResult> {
   if (signal?.aborted) return { ok: false, error: CANCELLED, cancelled: true }
   let phase: 'write' | 'rename' = 'write'
   let path = target
   let claimed: string | null = null
+  let linked = false
   try {
     await fs.writeFile(part, data)
-    if (newName && !signal?.aborted) path = claimed = await claimName(fs, target)
+    if (newName && !signal?.aborted) {
+      const placed = await placeNew(fs, part, target)
+      path = claimed = placed.name
+      linked = placed.linked
+    }
     if (signal?.aborted) {
       await removeQuietly(fs, part)
       if (claimed !== null) await removeQuietly(fs, claimed)
       return { ok: false, error: CANCELLED, cancelled: true }
     }
     phase = 'rename'
-    await fs.rename(part, path)
+    if (linked) await removeQuietly(fs, part)
+    else await fs.rename(part, path)
   } catch (e) {
     await removeQuietly(fs, part)
     if (claimed !== null) await removeQuietly(fs, claimed)
