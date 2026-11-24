@@ -457,7 +457,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # THE Linux e2e gate: the WHOLE e2e directory, blocking, sharded 4 ways.
+  # THE Linux e2e gate: the WHOLE e2e directory, blocking, in 6 jobs (4 count shards and the 2 heavy Lumopolis specs).
   #
   # Until v1.32.5 CI ran 18 named specs and 34 of the 52 on disk had never been
   # executed at all. A spec that cannot fail rots silently: v1.30.3 removed a
@@ -474,7 +474,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # 1-4: the suite split by test count, without the two heavy Lumopolis specs; 5: world-responsive;
+        # 6: world-visual (HEAVY_SPECS in playwright.config.ts says why).
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -539,7 +541,12 @@ jobs:
         timeout-minutes: 52
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
-        run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
+        run: |
+          case "${{ matrix.shard }}" in
+            5) xvfb-run --auto-servernum npx playwright test e2e/world-responsive.spec.ts --reporter=list ;;
+            6) xvfb-run --auto-servernum npx playwright test e2e/world-visual.spec.ts --reporter=list ;;
+            *) TERMPOLIS_E2E_SKIP_HEAVY=1 xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list ;;
+          esac
       # e2e/world-platform.spec.ts again with the GPU and its software fallback off, so the pane's 2D list (what a machine without
       # WebGL gets) runs in CI: every runner here draws WebGL on SwiftShader. On the shortest shard only, a few
       # minutes. --output keeps Playwright from clearing test-results/, which holds the suite's own results.
@@ -575,7 +582,7 @@ jobs:
           retention-days: 14
           overwrite: true
 
-  # THE Windows e2e gate: the whole e2e directory again, blocking, sharded 4 ways like e2e-full.
+  # THE Windows e2e gate: the whole e2e directory again, blocking, in 6 jobs like e2e-full.
   #
   # ConPTY, NTFS ACLs and the hosted runner's 1024x768 desktop exist only here. Until this job,
   # Windows e2e ran only when someone dispatched e2e-soak, and three Windows-only failures built
@@ -594,7 +601,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # 1-4: the suite split by test count, without the two heavy Lumopolis specs; 5: world-responsive;
+        # 6: world-visual (HEAVY_SPECS in playwright.config.ts says why).
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -631,7 +640,12 @@ jobs:
         shell: bash
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
-        run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
+        run: |
+          case "${{ matrix.shard }}" in
+            5) npx playwright test e2e/world-responsive.spec.ts --reporter=list ;;
+            6) npx playwright test e2e/world-visual.spec.ts --reporter=list ;;
+            *) TERMPOLIS_E2E_SKIP_HEAVY=1 npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list ;;
+          esac
       - name: Upload failure traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
