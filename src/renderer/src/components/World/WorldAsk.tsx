@@ -169,6 +169,14 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   const spoken = useRef<unknown>(null)
   const hushRef = useRef(hush)
   hushRef.current = hush
+  // A different project, or the app hidden (minimised, another window on top), stops the speech at once. The
+  // hush moves the reading on before the engine is told, so an end the cancel fires cannot start the next piece (T7).
+  useEffect(() => () => hushRef.current(), [root])
+  useEffect(() => {
+    const away = (): void => { if (document.visibilityState === 'hidden') hushRef.current() }
+    document.addEventListener('visibilitychange', away)
+    return () => document.removeEventListener('visibilitychange', away)
+  }, [])
   useEffect(() => {
     if (!speak || state !== 'answered' || !answer || spoken.current === answer) return
     spoken.current = answer

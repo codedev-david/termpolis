@@ -1064,6 +1064,66 @@ describe('WorldAsk: speech in bounded pieces that always ends (T6)', () => {
   })
 })
 
+describe('WorldAsk: speech stops with a different project and when the app is hidden (T7)', () => {
+  const on = () => settingsGet.mockResolvedValue({ success: true, data: { worldLabelling: true, worldSpeakAnswers: true } })
+  type U = { text: string; onend: () => void; onerror: () => void }
+  const said = (): U[] => speech.speak.mock.calls.map((c) => c[0] as U)
+  const long = Array.from({ length: 30 }, () => 'alpha').join(' ') + '. ' + Array.from({ length: 30 }, () => 'bravo').join(' ') + '.'
+  let hidden = false
+  beforeEach(() => {
+    on()
+    hidden = false
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') })
+    ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, long, { cited: {} }))
+  })
+  afterEach(() => { delete (document as any).visibilityState })
+
+  async function speaking(root = 'C:/a') {
+    const l = makeLink()
+    const view = render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root={root} link={l.link} />)
+    await settle()
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    expect(lastBusy(l.link)).toBe(true)
+    speech.cancel.mockClear()
+    return { l, view }
+  }
+
+  it('a different project stops the speech, and the reading has moved on before the engine is told', async () => {
+    const { l, view } = await speaking()
+    // An engine that ends the utterance as it is cancelled: that end must not start the next piece.
+    speech.cancel.mockImplementationOnce(() => { said()[0].onend() })
+    view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="C:/b" link={l.link} />)
+    expect(speech.cancel).toHaveBeenCalled()
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    expect(lastBusy(l.link)).toBe(false)
+  })
+
+  it('the app going hidden stops the speech; coming back changes nothing', async () => {
+    const { l } = await speaking()
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(speech.cancel).not.toHaveBeenCalled()
+    expect(lastBusy(l.link)).toBe(true)
+    hidden = true
+    speech.cancel.mockImplementationOnce(() => { said()[0].onend() })
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(speech.cancel).toHaveBeenCalled()
+    expect(speech.speak).toHaveBeenCalledTimes(1)
+    expect(lastBusy(l.link)).toBe(false)
+  })
+
+  it('once unmounted, the app going hidden reaches nothing', async () => {
+    const { view } = await speaking()
+    view.unmount()
+    speech.cancel.mockClear()
+    hidden = true
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(speech.cancel).not.toHaveBeenCalled()
+  })
+})
+
 describe('WorldAsk cost line', () => {
   it('shows the answer and session cost after two answers, and nothing after dismiss', async () => {
     ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, 'The answer.', { tokens: 1000 }))
