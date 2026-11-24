@@ -911,6 +911,47 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(r.setHovered).toHaveBeenLastCalledWith(null)
   })
 
+  it('a move lights its hover at once, for the next frame to draw: the pick waits on no frame of its own', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, viewer, r } = setup3d()
+    const hovers: (string | null)[] = []
+    viewer.on('hover', (id) => { hovers.push(id) })
+    const flush = (): void => { for (const f of frames.splice(0)) f(0) }
+    // The renderer's next frame, asked for before the move (its loop asks for each frame at the end of the last).
+    let drawnWith: string | null | undefined
+    requestAnimationFrame(() => { const c = r.setHovered.mock.calls; drawnWith = c.length ? c[c.length - 1][0] : null })
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove', 10, 10)
+    // Lit before any frame runs, so that frame draws it.
+    expect(hovers).toEqual(['b1'])
+    expect(r.setHovered).toHaveBeenLastCalledWith('b1')
+    expect(r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0]).toMatchObject({ hover: true })
+    expect(r.pick).toHaveBeenCalledTimes(1)
+    // A move again in the same frame is not picked until that frame, which picks where the pointer is then, once.
+    aim({ kind: 'node', id: 'b2' })
+    at('pointermove', 20, 20); at('pointermove', 30, 30)
+    expect(r.pick).toHaveBeenCalledTimes(1)
+    expect(frames).toHaveLength(2) // the renderer's frame and the hover's
+    flush()
+    expect(drawnWith).toBe('b1')
+    expect(r.pick).toHaveBeenCalledTimes(2)
+    expect(r.pick).toHaveBeenLastCalledWith(30, 30)
+    expect(hovers).toEqual(['b1', 'b2'])
+    // A frame with no move since its pick picks nothing; the next move picks at once again.
+    at('pointermove', 40, 40)
+    expect(r.pick).toHaveBeenCalledTimes(3)
+    flush()
+    expect(r.pick).toHaveBeenCalledTimes(3)
+    // A move picked late, then the pointer gone before the frame: the frame lights nothing.
+    at('pointermove', 50, 50)
+    at('pointermove', 60, 60)
+    at('pointerleave')
+    flush()
+    expect(r.pick).toHaveBeenCalledTimes(4)
+    expect(hovers).toEqual(['b1', 'b2', null])
+  })
+
   it('hovering a district slab (from far away) lights the connections of all its buildings', () => {
     const frames: FrameRequestCallback[] = []
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })

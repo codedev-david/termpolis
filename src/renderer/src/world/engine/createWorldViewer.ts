@@ -522,6 +522,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   const clickAt = (e: MouseEvent): { x: number; y: number } =>
     up && Math.floor(up.x) === e.clientX && Math.floor(up.y) === e.clientY ? up : { x: e.clientX, y: e.clientY }
   let hoverRaf = 0
+  /** The pointer moved again in the frame its first move picked in: the frame picks again where it is now. */
+  let hoverLate = false
   let hoverAt: { x: number; y: number } | null = null
   const canvas = r3 ? r3.canvas : null
   // The canvas is a picture to a screen reader: its name, and where the keyboard can walk the parts.
@@ -573,23 +575,33 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     }
     void select(hit.id, reduced, undefined, true)
   }
+  /** Picks what is under the pointer and lights it as the hover. */
+  const hoverPick = (): void => {
+    if (!r3 || !hoverAt || disposed) return
+    const hit = r3.pick(hoverAt.x, hoverAt.y)
+    const id = hit ? hit.id : null
+    r3.setCursor(id !== null)
+    if (id !== hovered) {
+      hovered = id
+      hoverNode = hit && hit.kind === 'node' ? hit.id : null
+      hoverDistrict = hit && hit.kind === 'district' ? hit.id : null
+      r3.setHovered(hoverNode)
+      showFocus()
+      for (const cb of hoverCbs) cb(id)
+    }
+  }
+  // A move picks at once, at most once a frame: the renderer's next frame draws the hover. Picked in a frame of its
+  // own instead (asked for after the renderer's), the hover was drawn a frame late, and drawn in software a frame
+  // there costs up to seconds. A move again in the same frame is picked by that frame, where the pointer is by then.
   const onPointerMove = (e: PointerEvent): void => {
     hoverAt = { x: e.clientX, y: e.clientY }
-    if (hoverRaf) return
+    if (hoverRaf) { hoverLate = true; return }
+    hoverPick()
     hoverRaf = requestAnimationFrame(() => {
       hoverRaf = 0
-      if (!r3 || !hoverAt || disposed) return
-      const hit = r3.pick(hoverAt.x, hoverAt.y)
-      const id = hit ? hit.id : null
-      r3.setCursor(id !== null)
-      if (id !== hovered) {
-        hovered = id
-        hoverNode = hit && hit.kind === 'node' ? hit.id : null
-        hoverDistrict = hit && hit.kind === 'district' ? hit.id : null
-        r3.setHovered(hoverNode)
-        showFocus()
-        for (const cb of hoverCbs) cb(id)
-      }
+      if (!hoverLate) return
+      hoverLate = false
+      hoverPick()
     })
   }
   // The lit connections' labels can appear under the pointer (a busy building's labels gather at
@@ -657,7 +669,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   container.addEventListener('keydown', onKeyDown)
   /** Takes the 3D map's listeners off (dispose, and the drop to the 2D map). */
   function unwireCanvas(): void {
-    if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = 0 }
+    if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = 0; hoverLate = false }
     if (!canvas) return
     canvas.removeEventListener('pointerdown', onPointerDown)
     canvas.removeEventListener('pointerup', onPointerUp)
