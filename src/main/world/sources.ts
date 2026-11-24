@@ -1,13 +1,16 @@
 // Lumopolis world sources registry: the list of worlds the user can open (a project, a folder, a
 // cloned git repository or an agent-drafted design). One JSON file at `<dir>/world/sources.json`,
 // written atomically (unique temp file, then rename; a rename Windows refuses for a moment because the
-// file is being read is tried again). A file that fails to parse or validate is
-// moved aside to `.bad` and read as an empty list. `missing` is computed on every read, never stored.
+// file is being read is tried again, as is a read). Entries are checked one by one: a bad one is left out of
+// the list (logged by its place, never its contents) but kept in the file, so a newer build's entry survives a
+// save. A file that is not a JSON list is moved aside to a timestamped `.bad` and read as an empty list.
+// `missing` is computed on every read, never stored.
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { graphKeyForRoot } from '../codeGraph'
 import { worldFileName } from './worldStore'
 import { renameWithRetry } from './gitSource'
+import { moveAside, retryLocked, sleepMs } from './storeFiles'
 import { stripUrlUserinfo } from '../../shared/world/gitUrl'
 import type { WorldEntry, WorldSource } from '../../shared/world/types'
 import type { RepoLogin } from '../../shared/world/repoAccess'
@@ -17,7 +20,7 @@ export type { WorldEntry, WorldSource }
 export interface SourceRegistryDeps {
   exists(p: string): Promise<boolean>
   now(): number
-  /** Waits between rename tries; a timer when not given. */
+  /** Waits between read and rename tries; a timer when not given. */
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -87,8 +90,6 @@ function defaultTitle(s: WorldSource): string {
 
 const tmpFor = (target: string): string => `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
 
-const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-
 // On Windows a rename onto a file someone is reading (the recent list reloads as a world opens) fails
 // with EPERM for a moment, so a transient refusal is tried again before the write counts as failed.
 async function writeAtomic(target: string, text: string, sleep: (ms: number) => Promise<void>): Promise<void> {
@@ -115,13 +116,20 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     return run
   }
 
+  const sleep = deps.sleep ?? sleepMs
+  // The entries this build cannot read, exactly as stored, written back by every save after the readable ones.
+  let unread: unknown[] = []
+  // The last skipped places logged, so a list that is read often logs the same skip once.
+  let logged = ''
+
   async function load(): Promise<WorldEntry[]> {
     let text: string
     try {
-      text = await readFile(file, 'utf8')
+      text = await retryLocked(() => readFile(file, 'utf8'), sleep)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw err
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      unread = []
+      return []
     }
     let parsed: unknown
     try {
@@ -129,15 +137,37 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     } catch {
       parsed = undefined
     }
+    if (!Array.isArray(parsed)) {
+      unread = []
+      await moveAside(file, { now: deps.now, rename })
+      return []
+    }
     // Entries stay as stored (an unknown login included) so a save never rewrites what a newer build wrote.
-    if (Array.isArray(parsed) && parsed.every(validEntry)) return parsed
-    await rename(file, `${file}.bad`).catch(() => undefined)
-    return []
+    const entries: WorldEntry[] = []
+    const skipped: number[] = []
+    unread = []
+    parsed.forEach((e: unknown, i) => {
+      if (validEntry(e)) entries.push(e)
+      else {
+        unread.push(e)
+        skipped.push(i)
+      }
+    })
+    const places = skipped.map((i) => `#${i}`).join(', ')
+    if (places !== '' && places !== logged) console.warn(`[world sources] entries this version cannot read were left out of the list: ${places}`)
+    logged = places
+    return entries
   }
 
+  /** The key a stored entry this build cannot read gives, when it gives one. */
+  const unreadKey = (e: unknown): unknown => (typeof e === 'object' && e !== null ? (e as Record<string, unknown>).key : undefined)
+
+  /** Writes `entries` after the unreadable entries whose keys none of them has (a key written now replaces one). */
   async function save(entries: WorldEntry[]): Promise<void> {
+    const keys = new Set(entries.map((e) => e.key))
+    const kept = unread.filter((e) => { const k = unreadKey(e); return !(isStr(k) && keys.has(k)) })
     await mkdir(folder, { recursive: true })
-    await writeAtomic(file, JSON.stringify(entries), deps.sleep ?? sleepMs)
+    await writeAtomic(file, JSON.stringify([...kept, ...entries]), sleep)
   }
 
   async function decorate(e: WorldEntry): Promise<WorldEntry> {
@@ -174,7 +204,9 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     remove(key) {
       return serial(async () => {
         const entries = await load()
-        if (entries.some((e) => e.key === key)) await save(entries.filter((e) => e.key !== key))
+        const unreadHit = unread.some((e) => unreadKey(e) === key)
+        unread = unread.filter((e) => unreadKey(e) !== key)
+        if (unreadHit || entries.some((e) => e.key === key)) await save(entries.filter((e) => e.key !== key))
       })
     },
 

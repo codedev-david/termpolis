@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, provisionalNotice, readCappedNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
+import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, provisionalNotice, readCappedNotice, savedByNewerNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
 
 describe('worldNotes: what the pane says about the files a world maps', () => {
   it('WP4a: a listing read in part says every file is shown and how many were read; a first map says it is still reading', () => {
@@ -21,6 +21,16 @@ describe('worldNotes: what the pane says about the files a world maps', () => {
     // The full world's note replaces the first map's, and a full world with nothing to say clears it.
     expect(nextFilesNotice(readCappedNotice(3, 2), provisionalNotice())).toBe(readCappedNotice(3, 2))
     expect(nextFilesNotice(null, provisionalNotice())).toBeNull()
+  })
+
+  it('WP3: a world saved by a newer Termpolis says so first, and the note is told apart as a files note', () => {
+    // Placeholder wording until David signs off the proposed line (see the WP3 report).
+    expect(savedByNewerNotice()).toBe("Lumopolis couldn't read that world. Try again.")
+    expect(filesNotice({ savedByNewer: true })).toBe(savedByNewerNotice())
+    expect(filesNotice({ savedByNewer: true, filesUnreadable: 1 })).toBe(`${savedByNewerNotice()} ${unreadableNotice(1)}`)
+    expect(filesNotice({ savedByNewer: false } as never)).toBeNull()
+    expect(isFilesNotice(savedByNewerNotice())).toBe(true)
+    expect(isFilesNotice(`${savedByNewerNotice()} ${unreadableNotice(1)}`)).toBe(true)
   })
 
   it('the capped note says how many files the world shows, with a thousands separator', () => {

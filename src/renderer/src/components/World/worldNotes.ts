@@ -3,13 +3,18 @@
 // at the cap they share (main/repoFileList.ts) leave it carrying nestedCapped, that cap; names that are not valid
 // UTF-8 leave it carrying filesUnreadable, the source files skipped for it; a listing of more files than a map reads
 // (main/world/readCap.ts) leaves it carrying filesRead and filesListed; a first map drawn from the listing while the
-// files are still being read is provisional. The pane says them all, in one note.
+// files are still being read is provisional; a stored world written by a newer Termpolis, opened read-only, is
+// savedByNewer. The pane says them all, in one note.
 
 const CAPPED_START = 'Showing the first '
 const NESTED_START = 'The repositories inside this folder hold more than '
 const UNREADABLE = /^[\d,]+ files? (?:was|were) skipped because (?:its|their) names? can't be read\./
 const READ_CAPPED = /^All [\d,]+ files are shown, but only [\d,]+ were read for the lines between them\./
 const PROVISIONAL = 'Still reading the files: '
+// PLACEHOLDER until David signs off the wording (WP3 report): Lumopolis's existing read-failure line (READ_FAILED in
+// main/world/exportIpc.ts). Proposed: "This world was saved by a newer Termpolis, so this version shows a copy and
+// leaves the saved one as it is."
+const SAVED_BY_NEWER = "Lumopolis couldn't read that world. Try again."
 
 const count = (n: number): string => n.toLocaleString('en-US')
 
@@ -33,6 +38,11 @@ export function readCappedNotice(listed: number, read: number): string {
   return `All ${count(listed)} files are shown, but only ${count(read)} were read for the lines between them.`
 }
 
+/** The note for a stored world written by a newer Termpolis, which this version opens read-only. */
+export function savedByNewerNotice(): string {
+  return SAVED_BY_NEWER
+}
+
 /** The note for a first map drawn from the file listing while the files are still being read. */
 export function provisionalNotice(): string {
   return `${PROVISIONAL}lines and details fill in when they are done.`
@@ -45,11 +55,13 @@ interface FilesNoteDoc {
   filesRead?: number
   filesListed?: number
   provisional?: boolean
+  savedByNewer?: boolean
 }
 
 /** The world's files note, or null when it has nothing to say. */
 export function filesNotice(doc: FilesNoteDoc | null): string | null {
   const parts: string[] = []
+  if (doc && doc.savedByNewer === true) parts.push(savedByNewerNotice())
   if (doc && doc.provisional === true) parts.push(provisionalNotice())
   if (doc && doc.filesCapped !== undefined && doc.filesCapped > 0) parts.push(cappedNotice(doc.filesCapped))
   if (doc && doc.nestedCapped !== undefined && doc.nestedCapped > 0) parts.push(nestedCappedNotice(doc.nestedCapped))
@@ -60,7 +72,7 @@ export function filesNotice(doc: FilesNoteDoc | null): string | null {
 
 /** Whether a notice is a files note (this world's or an earlier one's), not anything else the pane said. */
 export function isFilesNotice(text: string): boolean {
-  return text.startsWith(PROVISIONAL) || text.startsWith(CAPPED_START) || text.startsWith(NESTED_START) || UNREADABLE.test(text) || READ_CAPPED.test(text)
+  return text.startsWith(SAVED_BY_NEWER) || text.startsWith(PROVISIONAL) || text.startsWith(CAPPED_START) || text.startsWith(NESTED_START) || UNREADABLE.test(text) || READ_CAPPED.test(text)
 }
 
 /**

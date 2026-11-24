@@ -121,28 +121,117 @@ describe('source registry', () => {
     expect(await r.touch('nope')).toBeNull()
   })
 
-  it('corrupt sources.json → empty list + .bad backup', async () => {
+  const backups = async (): Promise<string[]> => (await readdir(join(dir, 'world'))).filter((n) => n.endsWith('.bad')).sort()
+
+  it('a sources.json that is not a JSON list → empty list + a timestamped .bad backup that never overwrites an earlier one (F21)', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(sourcesFile(), '{not json')
-    const r = reg()
+    const r = createSourceRegistry(dir, { ...deps(), now: () => Date.UTC(2026, 10, 23, 9, 30, 0, 5) })
     expect(await r.list()).toEqual([])
-    expect(await readdir(join(dir, 'world'))).toContain('sources.json.bad')
-    await writeFile(sourcesFile(), JSON.stringify([{ key: 1 }]))
-    expect(await r.list()).toEqual([])
+    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z.bad'])
     await writeFile(sourcesFile(), '"str"')
     expect(await r.list()).toEqual([])
+    // the same millisecond still gets its own name
+    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z-1.bad', 'sources.json.2026-11-23T09-30-00-005Z.bad'])
+    expect(await readFile(join(dir, 'world', 'sources.json.2026-11-23T09-30-00-005Z.bad'), 'utf8')).toBe('{not json')
+    // a list whose entries are all unreadable is a list: nothing is moved aside
+    await writeFile(sourcesFile(), JSON.stringify([{ key: 1 }]))
+    expect(await r.list()).toEqual([])
+    expect(await backups()).toHaveLength(2)
+    expect(JSON.parse(await readFile(sourcesFile(), 'utf8'))).toEqual([{ key: 1 }])
   })
 
-  it('rejects entries with a bad source shape', async () => {
+  it('one malformed entry is left out of the list, the rest kept (M06)', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     const base = { key: 'k', title: 't', lastOpened: 1 }
+    const good = { key: 'g', title: 'Good', lastOpened: 5, source: { kind: 'folder', root: '/a' } }
     const bad = [null, 'x', { kind: 'nope' }, { kind: 'project', root: 1 }, { kind: 'git', url: 'u', root: 'r', ref: 3 }, { kind: 'design', id: 'i', title: 1 }]
     for (const source of bad) {
-      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source }]))
-      expect(await reg().list()).toEqual([])
+      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source }, good]))
+      expect((await reg().list()).map((e) => e.key)).toEqual(['g'])
+      expect(await reg().get('g')).toMatchObject({ title: 'Good' })
+      expect(await reg().get('k')).toBeNull()
     }
-    await writeFile(sourcesFile(), JSON.stringify([null]))
-    expect(await reg().list()).toEqual([])
+    for (const entry of [null, 7, 'x', [], { ...good, key: 3 }, { ...good, title: null }, { ...good, lastOpened: '1' }]) {
+      await writeFile(sourcesFile(), JSON.stringify([good, entry]))
+      expect((await reg().list()).map((e) => e.key)).toEqual(['g'])
+    }
+    expect(await backups()).toEqual([])
+  })
+
+  it('logs the places of the entries it leaves out, never what they say, once per change', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const good = { key: 'g', title: 'Good', lastOpened: 5, source: { kind: 'folder', root: '/a' } }
+      const hidden = { key: 'private-key-name', title: 'Private title', lastOpened: 1, source: { kind: 'cloud', where: '/home/someone' } }
+      await writeFile(sourcesFile(), JSON.stringify([good, hidden, null]))
+      const r = reg()
+      await r.list()
+      await r.list()
+      await r.get('g')
+      expect(warn).toHaveBeenCalledTimes(1)
+      const line = String(warn.mock.calls[0][0])
+      expect(line).toBe('[world sources] entries this version cannot read were left out of the list: #1, #2')
+      for (const word of ['private', 'Private', 'cloud', 'someone', 'Good']) expect(line).not.toContain(word)
+      await writeFile(sourcesFile(), JSON.stringify([null, good]))
+      await r.list()
+      expect(warn).toHaveBeenLastCalledWith('[world sources] entries this version cannot read were left out of the list: #0')
+      await writeFile(sourcesFile(), JSON.stringify([good]))
+      await r.list()
+      await writeFile(sourcesFile(), JSON.stringify([null, good]))
+      await r.list()
+      // a clean read in between resets it, so the same skip is logged again
+      expect(warn).toHaveBeenCalledTimes(3)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('an entry this version cannot read stays in the file through every save, until its key is written or removed', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const newer = { key: graphKeyForRoot('/b'), title: 'From a newer build', lastOpened: 9, source: { kind: 'cloud', id: 'c1' } }
+    const junk = { nokey: true }
+    await writeFile(sourcesFile(), JSON.stringify([newer, junk, 'loose']))
+    const r = reg()
+    const a = await r.upsert({ kind: 'project', root: '/a' })
+    const onDisk = async (): Promise<unknown[]> => JSON.parse(await readFile(sourcesFile(), 'utf8')) as unknown[]
+    expect(await onDisk()).toEqual([newer, junk, 'loose', { key: a.key, title: 'a', lastOpened: a.lastOpened, source: { kind: 'project', root: '/a' } }])
+    await r.touch(a.key)
+    await r.setLogin(a.key, 'machine')
+    expect((await onDisk()).slice(0, 3)).toEqual([newer, junk, 'loose'])
+    expect((await r.list()).map((e) => e.key)).toEqual([a.key])
+    // removing a key nobody has changes nothing
+    await r.remove('nope')
+    expect(await onDisk()).toHaveLength(4)
+    // writing the same key replaces the unreadable entry
+    const b = await r.upsert({ kind: 'folder', root: '/b' })
+    expect((await onDisk()).map((e) => (typeof e === 'object' && e !== null ? (e as { key?: unknown }).key : e))).toEqual([undefined, 'loose', a.key, b.key])
+    // and removing a key drops an unreadable entry that has it too
+    const plain = { key: a.key, title: 'a', lastOpened: 1, source: { kind: 'project', root: '/a' } }
+    await writeFile(sourcesFile(), JSON.stringify([newer, plain]))
+    await r.remove(newer.key)
+    expect(await onDisk()).toEqual([plain])
+  })
+
+  it('a registry written by this build today still loads unchanged (current-format fixture)', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const fixture = [
+      { key: graphKeyForRoot('/a'), source: { kind: 'project', root: '/a' }, title: 'a', lastOpened: 1 },
+      { key: graphKeyForRoot('/b'), source: { kind: 'folder', root: '/b', linkedDesign: 'design:d1' }, title: 'Bee', lastOpened: 2 },
+      { key: graphKeyForRoot('/g'), source: { kind: 'git', url: 'https://h/x/y.git', ref: 'main', root: '/g', login: 'machine' }, title: 'y', lastOpened: 3 },
+      { key: 'design:d1', source: { kind: 'design', id: 'd1', title: 'Plan', linkedRoot: '/b' }, title: 'Plan', lastOpened: 4 }
+    ]
+    const text = JSON.stringify(fixture)
+    await writeFile(sourcesFile(), text)
+    present.add(join(dir, 'world', worldFileName('design:d1')))
+    const r = reg()
+    expect(await r.list()).toEqual([...fixture].reverse())
+    await r.remove('nope')
+    expect(await readFile(sourcesFile(), 'utf8')).toBe(text)
+    await r.touch('design:d1')
+    expect(JSON.parse(await readFile(sourcesFile(), 'utf8'))).toEqual([...fixture.slice(0, 3), { ...fixture[3], lastOpened: 101 }])
+    expect(await backups()).toEqual([])
   })
 
   it('a git entry may remember how it was opened (machine or token); any other login reads as token and hides nothing', async () => {
@@ -200,9 +289,10 @@ describe('source registry', () => {
   it('a bad backup rename still reads as empty; other read errors throw', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(sourcesFile(), 'x')
-    await mkdir(`${sourcesFile()}.bad`)
-    await writeFile(join(`${sourcesFile()}.bad`, 'f'), '1')
+    vi.mocked(fsp.rename).mockRejectedValueOnce(new Error('refused'))
     expect(await reg().list()).toEqual([])
+    expect(await readFile(sourcesFile(), 'utf8')).toBe('x')
+    expect(await backups()).toEqual([])
     await rm(sourcesFile(), { force: true })
     await mkdir(sourcesFile())
     await expect(reg().list()).rejects.toThrow()
@@ -281,6 +371,33 @@ describe('source registry', () => {
     const touched = r.touch(a.key)
     const seen = await r.get(a.key)
     expect(seen?.lastOpened).toBe((await touched)?.lastOpened)
+  })
+
+  it('a read that a locked file refuses (EBUSY, EACCES, EPERM) is tried again and lands (F18)', async () => {
+    const waits: number[] = []
+    const r = createSourceRegistry(dir, { ...deps(), sleep: async (ms: number) => { waits.push(ms) } })
+    const a = await r.upsert({ kind: 'project', root: '/a' })
+    vi.mocked(fsp.readFile).mockRejectedValueOnce(busy('EBUSY')).mockRejectedValueOnce(busy('EACCES')).mockRejectedValueOnce(busy('EPERM'))
+    expect((await r.list()).map((e) => e.key)).toEqual([a.key])
+    expect(waits).toEqual([100, 200, 300])
+  })
+
+  it('a read refused on every try throws after about a second, and a missing file is never waited on', async () => {
+    const waits: number[] = []
+    const r = createSourceRegistry(dir, { ...deps(), sleep: async (ms: number) => { waits.push(ms) } })
+    await r.upsert({ kind: 'project', root: '/a' })
+    vi.mocked(fsp.readFile).mockRejectedValue(busy('EBUSY'))
+    try {
+      await expect(r.list()).rejects.toThrow('EBUSY')
+    } finally {
+      vi.mocked(fsp.readFile).mockReset()
+      vi.mocked(fsp.readFile).mockImplementation((await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).readFile)
+    }
+    expect(waits).toEqual([100, 200, 300, 400])
+    waits.length = 0
+    await rm(sourcesFile())
+    expect(await r.list()).toEqual([])
+    expect(waits).toEqual([])
   })
 
   it('a rename refused on every try gives up after the last one and leaves no temp file', async () => {

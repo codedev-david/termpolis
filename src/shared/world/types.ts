@@ -103,6 +103,9 @@ export interface WorldDoc {
   provisional?: boolean
   /** The root's older keys (world:get only, never stored): the pane copies its saved views from them (WP5 fix I5). */
   aliasKeys?: string[]
+  /** The stored world was written by a newer Termpolis: it is opened read-only and never written over, and what this
+   *  version compiles is kept in memory only. Never stored. Absent otherwise. */
+  savedByNewer?: boolean
 }
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }

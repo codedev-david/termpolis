@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { validateWorld } from '../../src/shared/world/validate'
+import { isNewerWorld, migrateWorld, validateWorld, WORLD_MIGRATIONS, WORLD_VERSION } from '../../src/shared/world/validate'
 import minDoc from './fixtures/world.min.json'
 
 type Any = any
@@ -572,5 +572,119 @@ describe('claims and name states', () => {
     expect(errorsOf(a).join(' ')).toContain('nameState "guessed" is invalid')
     const b = fresh(); b.edges[0].claims = [{ text: 't', state: 'observed', evidence: [] }]
     expect(errorsOf(b).length).toBeGreaterThan(0)
+  })
+})
+
+describe('validateWorld dropBadItems (a stored world loads without its bad items, C14)', () => {
+  const lenient = (doc: unknown): ReturnType<typeof validateWorld> => validateWorld(doc, { dropBadItems: true })
+
+  it('a clean world validates the same either way and lists nothing dropped', () => {
+    const strict = validateWorld(fresh())
+    const loose = lenient(fresh())
+    expect(loose).toEqual(strict)
+    expect(loose.ok && 'dropped' in loose).toBe(false)
+  })
+
+  it('drops a bad claim (its own fields or its evidence) and keeps the rest of the doc exactly', () => {
+    const d = fresh()
+    d.buildings[0].how.push({ text: 1, state: 'observed', evidence: [{ kind: 'file', ref: 'a.ts' }] })
+    d.buildings[0].why.unshift({ text: 't', state: 'observed', evidence: [{ kind: 'file', ref: '/abs/path.ts' }] })
+    d.edges[0].claims.push('not a claim')
+    const copy = JSON.parse(JSON.stringify(d))
+    const r = lenient(d)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.dropped).toEqual([{ kind: 'claim', index: 1 }, { kind: 'claim', index: 0 }, { kind: 'claim', index: 0 }])
+    expect(r.doc).toEqual((validateWorld(fresh()) as { doc: unknown }).doc)
+    // strict mode still fails the same doc as before
+    expect(errorsOf(copy)).toEqual([
+      'building b1: claim text must be a string', 'building b1: evidence ref "/abs/path.ts" must be repository-relative', 'edge e1: claim is not an object'
+    ])
+  })
+
+  it('drops a bad tour step, a tour it empties, and a bad tour, keeping the tours that are fine', () => {
+    const d = fresh()
+    d.tours = [
+      { id: 't1', title: 'First look', steps: [{ ids: ['b1'], caption: 'c' }, { ids: ['gone'], caption: 'c' }] },
+      { id: 't2', title: 't', steps: [{ ids: ['gone'], caption: 'c' }] },
+      { id: 't3', title: 1, steps: [] },
+      7,
+      { id: 't4', title: 'none stored', steps: [] }
+    ]
+    const r = lenient(d)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.tours).toEqual([
+      { id: 't1', title: 'First look', steps: [{ ids: ['b1'], caption: 'c' }] },
+      { id: 't4', title: 'none stored', steps: [] }
+    ])
+    expect(r.dropped).toEqual([
+      { kind: 'tour step', index: 1 }, { kind: 'tour step', index: 0 }, { kind: 'tour', index: 1 }, { kind: 'tour', index: 2 }, { kind: 'tour', index: 3 }
+    ])
+  })
+
+  it('a dropped tour gives its id back, but not an id a kept tour holds', () => {
+    const d = fresh()
+    d.tours = [
+      { id: 'a', title: 1, steps: [] },
+      { id: 'a', title: 'second a', steps: [] },
+      { id: 'b', title: 'kept b', steps: [] },
+      { id: 'b', title: 'dup b', steps: [] }
+    ]
+    const r = lenient(d)
+    expect(r.ok && r.doc.tours.map((t) => t.title)).toEqual(['second a', 'kept b'])
+    expect(r.ok && r.dropped).toEqual([{ kind: 'tour', index: 0 }, { kind: 'tour', index: 3 }])
+  })
+
+  it('anything outside claims, tours and tour steps still fails the whole doc', () => {
+    const d = fresh()
+    d.buildings[0].status = 'nope'
+    d.tours = [7]
+    const r = lenient(d)
+    expect(r.ok).toBe(false)
+    const bad = fresh()
+    bad.tours = 'x'
+    expect(lenient(bad)).toEqual({ ok: false, errors: ['tours must be an array'] })
+  })
+})
+
+describe('savedByNewer, isNewerWorld and migrateWorld (C12, C13)', () => {
+  it('savedByNewer is kept only as true', () => {
+    const kept = validateWorld({ ...fresh(), savedByNewer: true })
+    expect(kept.ok && kept.doc.savedByNewer).toBe(true)
+    for (const junk of [false, 'true', 1, null]) {
+      const r = validateWorld({ ...fresh(), savedByNewer: junk, filesCapped: 10 })
+      expect(r.ok && ['savedByNewer' in r.doc, r.doc.filesCapped]).toEqual([false, 10])
+    }
+  })
+
+  it('isNewerWorld is true only for an object with a whole version above this one', () => {
+    expect(isNewerWorld({ version: WORLD_VERSION + 1 })).toBe(true)
+    for (const doc of [{ version: WORLD_VERSION }, { version: 0 }, { version: 2.5 }, { version: '2' }, {}, null, [2], 'x']) {
+      expect(isNewerWorld(doc)).toBe(false)
+    }
+  })
+
+  it('migrateWorld leaves the current version, a newer one, a non-whole version and a non-object as they are', () => {
+    const cur = fresh()
+    expect(migrateWorld(cur)).toBe(cur)
+    for (const doc of [{ version: 2 }, { version: 0.5 }, { version: 'x' }, {}, null, 'x', [1]]) expect(migrateWorld(doc)).toBe(doc)
+  })
+
+  it('migrateWorld walks an older doc up one version at a time and keeps its positions', () => {
+    const migrations = {
+      [-1]: (doc: Record<string, unknown>) => ({ ...doc, steps: ['-1'] }),
+      0: (doc: Record<string, unknown>) => {
+        const { spots, ...rest } = doc
+        return { ...rest, layout: { seed: 7, positions: spots }, steps: [...(doc.steps as string[]), '0'] }
+      }
+    }
+    const old = { version: -1, spots: { b1: [0, 0, 0], b2: [6, 0, 0] } }
+    expect(migrateWorld(old, migrations)).toEqual({ version: 1, steps: ['-1', '0'], layout: { seed: 7, positions: old.spots } })
+    // a gap in the path leaves the doc as it was, so validation rejects it
+    const gap = { version: -2 }
+    expect(migrateWorld(gap, migrations)).toBe(gap)
+    expect(migrateWorld({ version: 0 })).toEqual({ version: 0 })
+    expect(WORLD_MIGRATIONS).toEqual({})
   })
 })

@@ -22,6 +22,40 @@ const isStr = (v: unknown): v is string => typeof v === 'string'
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 const has = (o: Rec, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k)
 
+/** The schema version this build reads and writes. */
+export const WORLD_VERSION = 1
+
+/** One step up from an older stored version: WORLD_MIGRATIONS[n] turns a version-n doc into the shape of version n + 1
+ *  (migrateWorld sets the version number itself). Empty while version 1 is the only one there has been. */
+export type WorldMigration = (doc: Rec) => Rec
+export const WORLD_MIGRATIONS: Readonly<Record<number, WorldMigration>> = {}
+
+/** A doc stored by a newer Termpolis: a whole version number above WORLD_VERSION. */
+export const isNewerWorld = (doc: unknown): boolean =>
+  isRecord(doc) && Number.isInteger(doc.version) && (doc.version as number) > WORLD_VERSION
+
+/**
+ * Brings a doc stored by an older version up to WORLD_VERSION one migration at a time. Anything else (the current
+ * version, a newer one, no whole version number, not an object) comes back as it was, as does an older doc with no
+ * migration path, so validation still rejects it.
+ */
+export function migrateWorld(doc: unknown, migrations: Readonly<Record<number, WorldMigration>> = WORLD_MIGRATIONS): unknown {
+  if (!isRecord(doc) || !Number.isInteger(doc.version)) return doc
+  let out: Rec = doc
+  for (let v = doc.version as number; v < WORLD_VERSION; v++) {
+    if (!has(migrations as Rec, String(v))) return doc
+    out = { ...migrations[v](out), version: v + 1 }
+  }
+  return out
+}
+
+/** An item a lenient validation dropped: its kind and its place in its own list, nothing it says. */
+export interface DroppedItem { kind: 'claim' | 'tour' | 'tour step'; index: number }
+export interface ValidateOptions {
+  /** A stored world's bad claim, tour or tour step is dropped (and listed in `dropped`) instead of failing the doc. */
+  dropBadItems?: boolean
+}
+
 const idsOf = (list: unknown): string[] => {
   const out: string[] = []
   if (Array.isArray(list)) {
@@ -42,6 +76,37 @@ interface Ctx {
   // Buildings, externals, districts and edges share ONE id namespace (`ids`): an edge or a tour
   // step that names an id must never be ambiguous. Proposals and tours are separate lists.
   seen: { ids: Set<string>; proposal: Set<string>; tour: Set<string> }
+  drop: boolean
+  dropped: DroppedItem[]
+}
+
+/**
+ * Checks each item of `list`. A strict check records every error. A lenient one (ctx.drop) gives each item its own
+ * error list and takes an item with any error out of `list` (in place, so the doc keeps the rest), calling `onDrop`
+ * with the item and the items kept so far.
+ */
+const eachItem = (
+  ctx: Ctx, kind: DroppedItem['kind'], list: unknown[], check: (item: unknown, i: number) => void,
+  onDrop?: (item: unknown, kept: unknown[]) => void
+): void => {
+  if (!ctx.drop) {
+    list.forEach((item, i) => check(item, i))
+    return
+  }
+  const kept: unknown[] = []
+  const outer = ctx.errors
+  list.forEach((item, i) => {
+    const mine: string[] = []
+    ctx.errors = mine
+    check(item, i)
+    ctx.errors = outer
+    if (mine.length === 0) kept.push(item)
+    else {
+      ctx.dropped.push({ kind, index: i })
+      if (onDrop) onDrop(item, kept)
+    }
+  })
+  if (kept.length < list.length) list.splice(0, list.length, ...kept)
 }
 
 /** Label for an item: `<kind> <id>` when it has a usable id, else `<kind> #<index>`. */
@@ -103,17 +168,17 @@ const checkClaims = (ctx: Ctx, p: string, field: string, v: unknown): void => {
     ctx.errors.push(`${p}: ${field} must be an array`)
     return
   }
-  for (const c of v) {
+  eachItem(ctx, 'claim', v, (c) => {
     if (!isRecord(c)) {
       ctx.errors.push(`${p}: claim is not an object`)
-      continue
+      return
     }
     if (!isStr(c.text)) ctx.errors.push(`${p}: claim text must be a string`)
     if (!CLAIM_STATES.has(c.state as string)) ctx.errors.push(`${p}: claim state "${String(c.state)}" is invalid`)
     if (!Array.isArray(c.evidence)) ctx.errors.push(`${p}: claim evidence must be an array`)
     else if (c.evidence.length === 0) ctx.errors.push(`${p}: claim without evidence`)
     else for (const ev of c.evidence) checkEvidence(ctx, p, ev)
-  }
+  })
 }
 
 /** A world saved before claims and name states existed still loads: a missing list is empty, a missing name state observed. */
@@ -230,7 +295,9 @@ const checkTour = (ctx: Ctx, t: unknown, i: number): void => {
     ctx.errors.push(`${p}: steps must be an array`)
     return
   }
-  rec.steps.forEach((s, n) => {
+  const steps: unknown[] = rec.steps
+  const had = steps.length
+  eachItem(ctx, 'tour step', steps, (s, n) => {
     if (!isRecord(s)) {
       ctx.errors.push(`${p}: step #${n} is not an object`)
       return
@@ -240,6 +307,13 @@ const checkTour = (ctx: Ctx, t: unknown, i: number): void => {
     }
     checkStr(ctx, `${p}: step #${n}`, s, 'caption')
   })
+  // Only a lenient check takes steps out: a tour it emptied goes too (one stored with no steps stays as it was).
+  if (had > 0 && steps.length === 0) ctx.errors.push(`${p}: no step left`)
+}
+
+/** A dropped tour gives its id back unless a kept tour holds it, so a later tour with that id is not a duplicate. */
+const releaseTourId = (ctx: Ctx) => (t: unknown, kept: unknown[]): void => {
+  if (isRecord(t) && isStr(t.id) && !kept.some((k) => (k as Rec).id === t.id)) ctx.seen.tour.delete(t.id)
 }
 
 const checkProposal = (ctx: Ctx, pr: unknown, i: number, baseNodes: Set<string>): void => {
@@ -299,7 +373,9 @@ const listOf = (ctx: Ctx, name: string, v: unknown, each: (item: unknown, i: num
   else v.forEach(each)
 }
 
-export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok: false; errors: string[] } {
+export function validateWorld(
+  doc: unknown, opts: ValidateOptions = {}
+): { ok: true; doc: WorldDoc; dropped?: DroppedItem[] } | { ok: false; errors: string[] } {
   if (!isRecord(doc)) return { ok: false, errors: ['world doc must be an object'] }
 
   const layout = doc.layout
@@ -312,11 +388,13 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
     processes: isRecord(doc.processes) ? doc.processes : {},
     nodeIds: new Set([...idsOf(doc.buildings), ...idsOf(doc.externals), ...idsOf(doc.districts), ...idsOf(doc.edges)]),
     districtIds: new Set(idsOf(doc.districts)),
-    seen: { ids: new Set(), proposal: new Set(), tour: new Set() }
+    seen: { ids: new Set(), proposal: new Set(), tour: new Set() },
+    drop: opts.dropBadItems === true,
+    dropped: []
   }
   const e = ctx.errors
 
-  if (doc.version !== 1) e.push('version must be 1')
+  if (doc.version !== WORLD_VERSION) e.push(`version must be ${WORLD_VERSION}`)
   if (!isStr(doc.projectKey)) e.push('projectKey must be a string')
   if (!isNum(doc.generatedAt)) e.push('generatedAt must be a number')
   const rev = doc.sourceRevision
@@ -334,15 +412,17 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   listOf(ctx, 'buildings', doc.buildings, (b, i) => checkBuilding(ctx, '', b, i, false))
   listOf(ctx, 'edges', doc.edges, (x, i) => checkEdge(ctx, '', x, i, nodes))
   listOf(ctx, 'externals', doc.externals, (x, i) => checkExternal(ctx, x, i))
-  listOf(ctx, 'tours', doc.tours, (t, i) => checkTour(ctx, t, i))
+  if (!Array.isArray(doc.tours)) e.push('tours must be an array')
+  else eachItem(ctx, 'tour', doc.tours, (t, i) => checkTour(ctx, t, i), releaseTourId(ctx))
 
   if (!isRecord(doc.layers)) e.push('layers must be an object')
   else listOf(ctx, 'layers.plan', doc.layers.plan, (pr, i) => checkProposal(ctx, pr, i, nodes))
 
   if (e.length) return { ok: false, errors: e }
+  const dropped = ctx.dropped.length > 0 ? { dropped: ctx.dropped } : {}
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
   // filesCapped, nestedCapped, filesUnreadable, filesRead and filesListed (the files note's counts) are kept only as
-  // whole numbers of at least 0; provisional only as true.
+  // whole numbers of at least 0; provisional and savedByNewer only as true.
   const badHand = doc.runtimeHandSet !== undefined && !(Array.isArray(doc.runtimeHandSet) && doc.runtimeHandSet.every((x) => typeof x === 'string'))
   const badCount = (n: unknown): boolean => n !== undefined && !(Number.isInteger(n) && (n as number) >= 0)
   const badCapped = badCount(doc.filesCapped)
@@ -351,7 +431,8 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   const badRead = badCount(doc.filesRead)
   const badListed = badCount(doc.filesListed)
   const badProvisional = doc.provisional !== undefined && doc.provisional !== true
-  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badProvisional) {
+  const badNewer = doc.savedByNewer !== undefined && doc.savedByNewer !== true
+  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badProvisional || badNewer) {
     const rest: Record<string, unknown> = { ...doc }
     if (doc.labelTokens !== undefined && !isNum(doc.labelTokens)) delete rest.labelTokens
     if (badHand) delete rest.runtimeHandSet
@@ -361,7 +442,8 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
     if (badRead) delete rest.filesRead
     if (badListed) delete rest.filesListed
     if (badProvisional) delete rest.provisional
-    return { ok: true, doc: rest as unknown as WorldDoc }
+    if (badNewer) delete rest.savedByNewer
+    return { ok: true, doc: rest as unknown as WorldDoc, ...dropped }
   }
-  return { ok: true, doc: doc as unknown as WorldDoc }
+  return { ok: true, doc: doc as unknown as WorldDoc, ...dropped }
 }
