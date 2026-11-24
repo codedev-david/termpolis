@@ -251,8 +251,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     // runner: setup, then at most the 60 s typing deadline (a first compile of 2 to 5 s and up to 24
     // recompiles of about 350 ms fit well inside it), then the tail.
     test.setTimeout(90_000)
-    // Stop the tour (it may still be running) by closing its card, then close the pane.
-    if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
+    // Stop the tour (it may still be running) by closing its card, then close the pane. The tour may end between
+    // the look and the click, taking its card with it.
+    if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click({ timeout: 5_000 }).catch(() => undefined)
     await page.locator('[data-testid="world-close"]').click()
     await expect(pane()).toHaveCount(0)
     await createTerminal('Typing', project)

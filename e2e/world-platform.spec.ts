@@ -390,7 +390,8 @@ test.describe.serial('Lumopolis on this platform', () => {
     await expect(card().locator('.tour-caption')).toBeVisible({ timeout: 15_000 })
     await page.waitForTimeout(1500)
     await shot('06-tour')
-    await page.locator('[data-testid="world-card-close"]').click()
+    // The tour may end first and take its caption down itself; either way the card goes.
+    await page.locator('[data-testid="world-card-close"]').click({ timeout: 5_000 }).catch(() => undefined)
     await expect(card()).toHaveCount(0)
 
     await (await toolbarControl(page, 'world-map2d')).click()

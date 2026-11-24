@@ -217,7 +217,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let reduced = opts.reducedMotion ?? motionQuery?.matches === true
   let title = opts.title ?? 'This project'
   const cardOpts = { readOnly: opts.readOnly === true }
-  const renderCard = opts.renderCard ?? ((): void => undefined)
+  const hostCard = opts.renderCard ?? ((): void => undefined)
+  /** Shows a card (null takes it down). The tour's caption marks itself as the tour's after this. */
+  function renderCard(html: string | null, fromClick?: boolean): void {
+    tourCard = false
+    hostCard(html, fromClick)
+  }
   const selectCbs = new Set<(sel: WorldSelection | null) => void>()
   const hoverCbs = new Set<(id: string | null) => void>()
   const graphicsCbs = new Set<(state: WorldGraphics) => void>()
@@ -244,6 +249,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let tourToken = 0
   /** A tour is showing its captions: ending it clears the caption and the highlight. */
   let tourActive = false
+  // Whether the card and the highlight showing are the tour's own: its end clears those and nothing else.
+  let tourCard = false
+  let tourLit = false
   let disposed = false
   const toast = createChangeToast(container)
   /** The ask bar's and the legend's strips: the toast keeps out of both (the fit gets them too, in 3D). */
@@ -363,6 +371,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     r3.setFocus({ ...f, hover: true, passive, held: focusHolds(baseFocus) })
   }
   function setFocus(f: RenderFocus | null): void {
+    tourLit = false
     baseFocus = f
     showFocus()
   }
@@ -389,6 +398,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   function select(id: string, instant = reduced, hint?: SelectionKind, fromClick = false): Promise<void> {
     const kind = hint !== undefined && kindMatches(id, hint) ? hint : kindOf(id)
     if (!kind) return Promise.resolve()
+    // A choice of the user's (or an answer's card) ends a tour under way, as Esc does. Its caption is not taken
+    // down first: the new card replaces it.
+    tourCard = false
+    endTour()
     selection = { kind, id }
     const { focus, frameIds } = focusFor(selection)
     renderCard(cardFor(selection), fromClick)
@@ -686,7 +699,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return [...out]
   }
 
-  /** Ends a tour under way, if any: its caption and highlight are cleared and its camera flight stopped. */
+  /**
+   * Ends a tour under way, if any: its camera flight stops, and its caption and highlight are cleared while they
+   * are still the tour's own (a card or highlight shown since, by the user or an answer, stays).
+   */
   function endTour(): void {
     tourToken++
     wakeDwells()
@@ -694,8 +710,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     tourActive = false
     r3?.stopFlight()
     if (disposed) return // the host is taking the view down: nothing is drawn again
-    renderCard(null)
-    setFocus(null)
+    if (tourCard) renderCard(null)
+    if (tourLit) setFocus(null)
   }
 
   async function exec(a: WorldAction, o: { reducedMotion: boolean }): Promise<void> {
@@ -707,12 +723,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         if (!r3) return
         const ids = shownIds(a.ids)
         if (ids.length === 0) return
+        endTour() // a highlight from outside the tour (an answer's) ends it
         setFocus(groupFocus(ids))
         if (a.type === 'focus') await r3.frame(ids, instant)
         return
       }
       case 'flow': {
         if (!r3) return
+        endTour()
         setFocus(groupFocus(a.edgeIds))
         await r3.frame(a.edgeIds, instant)
         await r3.pulse(a.edgeIds, instant)
@@ -735,9 +753,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
           if (ids.length === 0) continue
           if (selection) { selection = null; emitSelect() }
           renderCard(`<p class="tour-caption">${escapeHtml(step.caption)}</p>`)
+          tourCard = true
           if (r3) {
             r3.setSelected(null)
             setFocus(groupFocus(ids))
+            tourLit = true
             await r3.frame(ids, instant)
           }
           // Reduced motion drops the flight, not the time to read the caption.
@@ -749,6 +769,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       case 'draftProposal': {
         const p = doc.layers.plan.find((x) => x.id === a.proposalId)
         if (!p) return
+        endTour()
         revealProposal = p.id
         redraw()
         const ids = [...p.buildings.map((b) => b.id), ...p.edges.map((e) => e.id)]

@@ -213,7 +213,26 @@ describe('2D fallback: apply()', () => {
     // A tour with no stop left on the map shows nothing and waits for nothing.
     cards.length = 0
     await viewer.apply({ type: 'tour', steps: [{ ids: ['gone'], caption: 'lost' }] })
-    expect(cards).toEqual([null])
+    expect(cards).toEqual([]) // it showed no caption, so it takes none down
+  })
+
+  it('a part clicked during the last stop ends the tour and its card stays: no caption over it, no select(null) after it (I1)', async () => {
+    vi.useFakeTimers()
+    const { viewer, cards, sels, item } = setup({ reducedMotion: true })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2) // on the last stop
+    expect(cards[cards.length - 1]).toBe('<p class="tour-caption">two</p>')
+    const n = cards.length
+    sels.length = 0
+    item('building', 'x1').click()
+    await done // the click ended the tour: it settles at once
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 4)
+    expect(cards.slice(n)).toHaveLength(1) // the card, and nothing after it
+    expect(cards[cards.length - 1]).not.toBeNull()
+    expect(cards[cards.length - 1]).not.toContain('tour-caption')
+    expect(sels).toEqual([{ kind: 'building', id: 'x1' }])
+    expect(viewer.getSelection()).toEqual(['x1'])
   })
 
   it('draftProposal redraws with the proposal; an unknown proposal is ignored', async () => {
@@ -1087,6 +1106,48 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(lastCard()).toBeNull()
     expect(viewer.drawn().highlighted).toEqual([])
     expect(r.frame).toHaveBeenCalledTimes(1)
+  })
+
+  it("an answer's card and highlight shown during a tour end it and stay; the tour's flight is stopped (I1)", async () => {
+    vi.useFakeTimers()
+    const { r, viewer, cards, lastCard } = setup3dWith(true, rich())
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(lastCard()).toBe('<p class="tour-caption">one</p>')
+    const n = cards.length
+    // As WorldAsk applies an answer: its card, then its highlight.
+    await viewer.apply({ type: 'openCard', id: 'b3' })
+    await viewer.apply({ type: 'highlight', ids: ['b3', 'b4'] })
+    await done
+    expect(r.stopFlight).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 6)
+    expect(cards.slice(n)).toHaveLength(1) // the answer's card replaced the caption, with no null between
+    expect(lastCard()).not.toBeNull()
+    expect(lastCard()).not.toContain('tour-caption')
+    expect(viewer.getSelection()).toEqual(['b3'])
+    expect(viewer.drawn().highlighted).toEqual(expect.arrayContaining(['b3', 'b4']))
+    expect(r.setFocus).not.toHaveBeenLastCalledWith(null)
+  })
+
+  it('a flow or a drafted proposal during a tour ends it, and its highlight stays', async () => {
+    vi.useFakeTimers()
+    const { r, viewer, lastCard } = setup3dWith(true, rich())
+    const steps = [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }]
+    let done = viewer.apply({ type: 'tour', steps })
+    await vi.advanceTimersByTimeAsync(0)
+    await viewer.apply({ type: 'flow', edgeIds: ['e1'] })
+    await done
+    expect(lastCard()).toBeNull() // the caption goes: nothing replaced it
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 6)
+    expect(viewer.drawn().highlighted).toContain('e1')
+    done = viewer.apply({ type: 'tour', steps })
+    await vi.advanceTimersByTimeAsync(0)
+    await viewer.apply({ type: 'draftProposal', proposalId: 'p1' })
+    await done
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 6)
+    expect(lastCard()).toBeNull()
+    expect(viewer.drawn().highlighted).toEqual(expect.arrayContaining(['pb1']))
+    expect(r.setFocus).not.toHaveBeenLastCalledWith(null)
   })
 
   it('drawn reports what a highlight lit, and nothing once the focus is gone', async () => {

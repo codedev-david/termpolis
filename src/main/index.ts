@@ -953,6 +953,8 @@ function createWindow() {
   mainWindow.on('restore', sendShown)
   mainWindow.on('hide', sendShown)
   mainWindow.on('show', sendShown)
+  // Some window managers emit minimize but never restore: gaining focus means the window is back too.
+  mainWindow.on('focus', sendShown)
   // Each load of the page gets its own direct typing line to the pty host (directTyping.ts).
   directTyping.attachWindow(mainWindow)
 }

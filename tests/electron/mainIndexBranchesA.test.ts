@@ -553,7 +553,7 @@ describe('createWindow — session-end is wired only when crash-watch produced a
 // ===========================================================================
 // createWindow(): the renderer hears whether the window can be seen (Lumopolis stops drawing while it cannot)
 // ===========================================================================
-describe('createWindow — window:shown follows minimise, hide, restore and show', () => {
+describe('createWindow — window:shown follows minimise, hide, restore, show and focus', () => {
   const handler = (ev: string): (() => void) => {
     const c = mockMainWindow.on.mock.calls.find((x: unknown[]) => x[0] === ev)
     if (!c) throw new Error(`no ${ev} listener`)
@@ -569,10 +569,13 @@ describe('createWindow — window:shown follows minimise, hide, restore and show
     handler('hide')()
     handler('restore')()
     handler('show')()
-    expect(shownSends()).toEqual([false, false, true, true])
+    mockMainWindow.isMinimized.mockReturnValueOnce(true)
+    handler('minimize')()
+    handler('focus')() // a window manager that sends no restore: focus brings the map back
+    expect(shownSends()).toEqual([false, false, true, true, false, true])
     mockMainWindow.isDestroyed.mockReturnValueOnce(true)
     handler('show')()
-    expect(shownSends()).toHaveLength(4)
+    expect(shownSends()).toHaveLength(6)
   })
 })
 
