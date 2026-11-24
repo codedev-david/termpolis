@@ -15,6 +15,13 @@
  * the OS (terminalShellAlone, shellAlone.ts) before the paste and before the Enter. The injected
  * output above is no process, so the first terminal gets a real one to stand in for the agent,
  * and a second terminal with none proves that nothing is typed at a bare shell prompt.
+ *
+ * Since 1.63.1 nothing is typed into a Claude Code whose profile has Termpolis's SessionStart memory
+ * hook either (claudeHookLoadsMemory): the hook loads the digest again after a compaction by itself.
+ * Skipping the tour connects the agents with that hook on, so the re-prime is tested on a profile
+ * that has the hook switched off, and a last terminal proves that a Claude with the hook gets nothing
+ * typed. The agent configs live in this spec's own scratch home, so switching the hook leaves the
+ * one the other specs share alone.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -26,6 +33,7 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
 let app: ElectronApplication
 let page: Page
 let isolatedUserData: string
+let agentHome: string
 
 const MARKER = 'E2E-REPRIME-MARKER'
 const BP_START = '\x1b[200~'
@@ -34,6 +42,7 @@ test.beforeAll(async () => {
   ensureE2eBuild()
 
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-reprime-'))
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-reprime-home-'))
   fs.writeFileSync(
     path.join(isolatedUserData, 'session.json'),
     JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'powershell', viewMode: 'tabs' }),
@@ -45,7 +54,7 @@ test.beforeAll(async () => {
       `--user-data-dir=${isolatedUserData}`,
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1' },
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_TEST_AGENT_HOME: agentHome },
   })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
@@ -70,8 +79,8 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await quitApp(app)
-  if (isolatedUserData) {
-    try { fs.rmSync(isolatedUserData, { recursive: true, force: true }) } catch {}
+  for (const dir of [isolatedUserData, agentHome]) {
+    if (dir) try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
 
@@ -119,6 +128,21 @@ async function askShellAlone(termId: string, wanted: 'alone' | 'running', ms: nu
   }, { id: termId, want: wanted, budget: ms })
 }
 
+/** What Agent Integration says about the profile: connected, and whether the memory hook is on. */
+async function hookStatus(): Promise<{ connected: unknown; primerHook: unknown }> {
+  return page.evaluate(async () => {
+    const r = await (window as any).termpolis.agentIntegrationStatus()
+    return { connected: r?.data?.connected, primerHook: r?.data?.primerHook }
+  })
+}
+
+/** Connects the agents with Termpolis's SessionStart memory hook on or off, and returns the status after. */
+async function setMemoryHook(on: boolean): Promise<{ connected: unknown; primerHook: unknown }> {
+  const res = await page.evaluate((primerHook) => (window as any).termpolis.agentIntegrationSet({ connect: true, primerHook }), on)
+  expect(res?.success, JSON.stringify(res)).toBe(true)
+  return hookStatus()
+}
+
 /** The bracketed pastes written to one terminal so far (a pointer is one). */
 async function pastesTo(termId: string): Promise<number> {
   return page.evaluate(async ({ id, bp }) => {
@@ -142,6 +166,24 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
       return (r && r.data) || ''
     }, MARKER)
     expect(primer).toContain(MARKER)
+  })
+
+  test('the profile has no memory hook (precondition: the re-prime is for a Claude that cannot load its memory itself)', async () => {
+    // Skipping the tour answers its first step as shown: connected, with the memory hook on. A Claude
+    // Code with that hook gets no re-prime typed (the last test), so switch it off here, once the
+    // tour's own answer is in: sent after it, the tour's would switch the hook back on.
+    const tour = await page.evaluate(async () => {
+      const until = Date.now() + 5000
+      let r: any = null
+      while (Date.now() < until) {
+        r = await (window as any).termpolis.agentIntegrationStatus()
+        if (r?.data?.consent != null) break
+        await new Promise((res) => setTimeout(res, 100))
+      }
+      return { consent: r?.data?.consent, connected: r?.data?.connected, primerHook: r?.data?.primerHook }
+    })
+    console.log(`[compaction-reprime] agent integration after the tour: ${JSON.stringify(tour)}`)
+    expect(await setMemoryHook(false)).toEqual({ connected: true, primerHook: false })
   })
 
   test('a "Compacting conversation" marker triggers a re-prime paste into the terminal', async () => {
@@ -243,6 +285,28 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     expect(await pastesTo(termId), 'a pointer was typed at a bare shell prompt').toBe(0)
     // Still only a shell: the silence is the OS's answer, not an agent that came and went.
     expect(await askShellAlone(termId, 'alone', 10_000)).toBe(true)
+  })
+
+  test("nothing is typed into a Claude Code whose profile has Termpolis's memory hook", async () => {
+    // The hook loads the digest again after a compaction by itself (SessionStart, source compact).
+    // The same flow as the first terminal, a process running included, so the one difference is the hook.
+    expect(await setMemoryHook(true)).toEqual({ connected: true, primerHook: true })
+    await createTerminal('Reprime3')
+    const termId = await lastTerminalId()
+    expect(termId).toBeTruthy()
+    await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
+    const running = await askShellAlone(termId, 'running', 45_000)
+    expect(running, 'expected the OS to see node running in the terminal').not.toBe(true)
+
+    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, 'claude code v1.0 starting\r\n'),
+      termId)
+    await page.waitForTimeout(1200)
+    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, '✻ Compacting conversation… (2m 30s)\r\n'),
+      termId)
+
+    // Longer than the first test saw the same flow take to type its pointer, as in the test above.
+    await page.waitForTimeout(Math.max(12_000, rePrimeMs * 2 + 3000))
+    expect(await pastesTo(termId), 'a pointer was typed into a Claude that loads its memory itself').toBe(0)
   })
 })
 
