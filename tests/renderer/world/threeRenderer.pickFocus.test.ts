@@ -530,6 +530,30 @@ describe('threeRenderer line framing', () => {
     r.dispose()
   })
 
+  it('a look that leaves an end out of a narrow free strip does not count as blocked: the next direction still steps back (I1)', async () => {
+    // The gap ring again, with the card leaving a strip 50 px wide. Straight across the line, stepping back ends on a
+    // look where p is in the strip but behind the towers (blocked). Each later direction's first look leaves an end out
+    // of the strip; that look once kept the earlier "blocked" and the search turned away before stepping back, so the
+    // close-up fell back to a look where p could not be clicked. The look turned -45 degrees at lift 2, one step back,
+    // shows both.
+    const walls = Array.from({ length: 16 }, (_, k) => k).filter((k) => k < 5 || k > 7)
+      .map((k) => bldg(`w${k}`, [8 * Math.cos((k * Math.PI) / 8), 0, 8 * Math.sin((k * Math.PI) / 8)], { floors: 10, height: 200 }))
+    const r = drawn({
+      districts: [district('d1', [0, 0, 0], 40)],
+      buildings: [bldg('p', [0, 0, 0]), bldg('q', [30, 0, 0]), ...walls],
+      conduits: [conduit('e', [0, 0, 0], [30, 0, 0])],
+      orbs: [],
+    })
+    r.setRightReserve(750, 0)
+    h.frames.step()
+    r.setSelected('e')
+    await r.frame(['e'], true)
+    h.frames.step()
+    expect(r.screenPoint('q')).not.toBeNull()
+    expect(r.screenPoint('p')).not.toBeNull()
+    r.dispose()
+  })
+
   it('an upright line (its ends one above the other) is framed from the camera\'s side; a line to an orb, from either side', async () => {
     const m = smallCity()
     m.conduits.push(conduit('v', [-30, 0, 30], [-30, 20, 30]))

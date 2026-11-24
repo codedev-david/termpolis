@@ -1616,6 +1616,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * end was hidden by what stands in front of it (it lies in the free area, but no click there picks it).
    */
   function endsHidden(ends: NodeRec[], eye: THREE.Vector3, target: THREE.Vector3, why?: { blocked: boolean }): number {
+    // Every look answers for itself: an end left out of the free area says nothing about what stands in front.
+    if (why) why.blocked = false
     const a = areaFor(true)
     lens(scout, a)
     scout.position.copy(eye)
