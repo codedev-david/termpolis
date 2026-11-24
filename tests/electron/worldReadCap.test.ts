@@ -330,26 +330,25 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     void compile(d).then((o) => (out = o))
     await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS - 1)
     expect(out).toBeNull()
-    // The report search (inside readTestResults) is on the window; the manifest search keeps its own clock (R4-1).
+    // Both walks are told to stop with the window: the report search (inside readTestResults) and the manifests'
+    // listing (M5); the manifests' reads keep their own clock (R4-1).
     expect(glob).toHaveBeenCalledTimes(2)
     expect([signals.length, manifestSignals.length]).toEqual([1, 1])
-    expect(signals.some((s) => s.aborted)).toBe(false)
+    expect([...signals, ...manifestSignals].some((s) => s.aborted)).toBe(false)
     await vi.advanceTimersByTimeAsync(20)
-    expect(signals.every((s) => s.aborted)).toBe(true)
-    expect(manifestSignals[0].aborted).toBe(false)
+    expect([...signals, ...manifestSignals].every((s) => s.aborted)).toBe(true)
     // Main's asks have their own clock, longer than the host's own wait for main (RUNS_WAIT_MS): still waited for.
     expect(out).toBeNull()
     await vi.advanceTimersByTimeAsync(RUNS_WAIT_MS + RUNS_GRACE_MS - SEARCH_TIME_MS - 40)
     expect(out).toBeNull()
     await vi.advanceTimersByTimeAsync(40)
-    // Then the manifests, to the end of their own budget, and the compile ends with what it has.
+    // A listing that never answers, even told to stop, is waited on to the end of the manifests' budget, and the
+    // compile ends with what it has.
     expect(out).toBeNull()
     // To 1 ms before the budget (22 019 ms have passed).
     await vi.advanceTimersByTimeAsync(MANIFEST_TIME_MS - RUNS_WAIT_MS - RUNS_GRACE_MS - 20)
     expect(out).toBeNull()
-    expect(manifestSignals[0].aborted).toBe(false)
     await vi.advanceTimersByTimeAsync(20)
-    expect(manifestSignals[0].aborted).toBe(true)
     const done = out as unknown as Awaited<ReturnType<typeof compile>>
     expect(done).not.toBeNull()
     // No result read and no source complete: no building is called untested (gap); each reads as not yet checked,
@@ -434,6 +433,53 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     await vi.advanceTimersByTimeAsync(0)
     ended.abort()
     expect(await stopped).toEqual({ found: [['a/package.json', ['a']]], complete: false })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a manifest listing that runs late drops only the manifests it had not reached: what it found by the window is read and named (minor sweep, M5)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const d = deps({
+      // As globFiles does: told to stop, the walk hands back what it found so far (here two of the tree's manifests).
+      glob: (_root, patterns, opts) =>
+        patterns.some((p) => p.includes('package.json'))
+          ? new Promise<string[]>((r) => opts.signal.addEventListener('abort', () => r([`${ROOT}/src/app/package.json`, `${ROOT}/src/lib/package.json`])))
+          : Promise.resolve([]),
+      readFile: async (p) => JSON.stringify({ name: p.includes('/app/') ? '@acme/app' : 'lib' })
+    })
+    let out: Awaited<ReturnType<typeof compile>> | null = null
+    void compile(d).then((o) => (out = o))
+    await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS - 10)
+    expect(out).toBeNull()
+    await vi.advanceTimersByTimeAsync(20)
+    const done = out as unknown as Awaited<ReturnType<typeof compile>>
+    expect(done).not.toBeNull()
+    expect(Object.values(done.doc.runtimeNames).flat().sort()).toEqual(['app', 'lib'])
+    // The listing was cut short, so the compile says it ran out.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/ran out of time/)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('readManifests: a listing told to stop at listMs keeps what it found and those are read; the result is not complete (minor sweep, M5)', async () => {
+    vi.useFakeTimers()
+    const listed: AbortSignal[] = []
+    const glob = (_root: string, _patterns: string[], opts: { signal: AbortSignal }) => {
+      listed.push(opts.signal)
+      return new Promise<string[]>((r) => opts.signal.addEventListener('abort', () => r([`${ROOT}/a/package.json`])))
+    }
+    const readFile = async () => JSON.stringify({ name: 'a' })
+    const late = readManifests({ glob, readFile }, ROOT, new AbortController().signal, 5000, 1000)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(listed[0].aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await late).toEqual({ found: [['a/package.json', ['a']]], complete: false })
+    expect(vi.getTimerCount()).toBe(0)
+    // A budget already shut: the listing is told to stop at once too.
+    const shut = new AbortController()
+    shut.abort()
+    expect(await readManifests({ glob, readFile }, ROOT, shut.signal)).toEqual({ found: [], complete: false })
+    expect(listed[1].aborted).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
   })
 

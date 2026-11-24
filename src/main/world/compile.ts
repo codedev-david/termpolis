@@ -243,15 +243,18 @@ const MANIFEST_CONCURRENCY = 4
 /**
  * The manifests under the project and the runtime names each gives: listed, then read four at a time, on their own
  * clock (`budgetMs` from the call, MANIFEST_TIME_MS) rather than the search window the file reads share (minor sweep,
- * R4-1). At the budget, or at `stop` (the compile ended), the search and the reads stop and what was read by then is
- * kept, so a late manifest costs its own names and no one else's (fix round 4, M5). A read that never returns stops
- * counting then too. `complete` is false when anything was cut short.
+ * R4-1). The listing is told to stop at `listMs` (SEARCH_TIME_MS, as before round 4); the walk then hands back what it
+ * found, and those manifests are still read in the rest of the budget, so a late listing drops only the manifests it
+ * had not reached (minor sweep, M5). At the budget, or at `stop` (the compile ended), the search and the reads stop
+ * and what was read by then is kept, so a late read costs its own names and no one else's (fix round 4, M5). A read
+ * that never returns stops counting then too. `complete` is false when anything was cut short.
  */
 export async function readManifests(
   deps: Pick<CompileDeps, 'glob' | 'readFile'>,
   root: string,
   stop: AbortSignal,
-  budgetMs: number = MANIFEST_TIME_MS
+  budgetMs: number = MANIFEST_TIME_MS,
+  listMs: number = SEARCH_TIME_MS
 ): Promise<{ found: Array<[string, string[]]>; complete: boolean }> {
   const prefix = `${root.replace(/\\/g, '/')}/`
   const got: Array<[string, string[]] | null> = []
@@ -261,11 +264,18 @@ export async function readManifests(
   else stop.addEventListener('abort', end, { once: true })
   const timer = setTimeout(end, budgetMs)
   const signal = own.signal
+  // The listing's own stop: at listMs, or with the budget.
+  const listing = new AbortController()
+  const endListing = (): void => listing.abort()
+  if (signal.aborted) endListing()
+  else signal.addEventListener('abort', endListing, { once: true })
+  const listTimer = setTimeout(endListing, listMs)
   const stopped = new Promise<false>((resolve) => (signal.aborted ? resolve(false) : signal.addEventListener('abort', () => resolve(false), { once: true })))
   const search = async (): Promise<boolean> => {
     const listed = await Promise.resolve()
-      .then(() => deps.glob(root, MANIFEST_PATTERNS, { signal }))
+      .then(() => deps.glob(root, MANIFEST_PATTERNS, { signal: listing.signal }))
       .catch((): string[] => [])
+    const listedWhole = !listing.signal.aborted
     const paths = listed
       .map((p) => p.replace(/\\/g, '/'))
       .filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules'))
@@ -278,7 +288,7 @@ export async function readManifests(
       const rel = abs.slice(prefix.length)
       got[i] = text === null || text.length > MAX_MANIFEST_CHARS || signal.aborted ? null : [rel, manifestServiceNames(rel, text)]
     })
-    return !signal.aborted
+    return listedWhole && !signal.aborted
   }
   try {
     const complete = await Promise.race([search(), stopped])
@@ -286,6 +296,7 @@ export async function readManifests(
     return { found: got.filter((x): x is [string, string[]] => x != null && x[1].length > 0), complete }
   } finally {
     clearTimeout(timer)
+    clearTimeout(listTimer)
     stop.removeEventListener('abort', end)
     // A walk or a read still out is told to stop: nothing waits on it now.
     end()
