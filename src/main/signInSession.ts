@@ -48,8 +48,11 @@ export interface PtySpawnOptions {
 
 export interface SessionDeps {
   spawn: (file: string, args: string[] | string, opts: PtySpawnOptions) => PtyLike
-  /** Ends the process tree under `pid`, while its root lives (processTree.ts). */
-  killTree: (pid: number) => void
+  /** Ends the process tree under `pid`, while its root lives (processTree.ts endProcessTree), and
+   *  settles once taskkill has exited (or the group was signalled): retried only while `canRetry`. */
+  killTree: (pid: number, canRetry: () => boolean) => Promise<unknown>
+  /** The same at quit, where nothing after an await runs: waits for the kill, bounded (killProcessTree sync). */
+  killTreeNow: (pid: number) => void
   send: (s: SignInState) => void
   /** Opens an address in the user's browser (shell.openExternal). */
   openExternal: (url: string) => void
@@ -133,6 +136,8 @@ interface Session {
   busy: boolean
   ended: boolean
   exited: boolean
+  /** pty.kill() ran: once, and only after the tree kill settled (or at quit). */
+  ptyKilled: boolean
   exitCode: number | null
   confirming: boolean
   stage: AgyStage
@@ -146,6 +151,8 @@ const sessions = new Map<string, Session>()
 /** What the user typed for each session's CLI (a code, a project): masked wherever its screen is
  *  shown, and dropped the moment the session ends. */
 const typedBy = new Map<string, string[]>()
+/** Ended sessions whose tree kill is still running: a quit closes their PTYs straight away. */
+const ending = new Set<Session>()
 
 const DONE: InputResult = { ok: true }
 const no = (why: string): InputResult => ({ ok: false, why })
@@ -229,14 +236,39 @@ function show(s: Session, deps: SessionDeps, phase: SignInPhase): void {
   deps.send({ sessionId: s.id, accountId: s.spec.accountId, agent: s.spec.agent, phase })
 }
 
-/** Ends a session: its timer, its process tree while its root lives, what the user typed. */
-function end(s: Session, deps: SessionDeps): void {
+/** Closes a session's PTY once, unless its CLI exited: node-pty then let go of it itself. */
+function killPty(s: Session): void {
+  if (s.exited || s.ptyKilled) return
+  s.ptyKilled = true
+  try { s.pty.kill() } catch { /* gone already */ }
+}
+
+/** The tree first, while its root lives, then the PTY: pty.kill() ends the root and lets go of its
+ *  pid, so a taskkill still on its way would walk a dead root (missing the CLI's children) or a
+ *  pid that is someone else's by then. endProcessTree always settles, its taskkills time out. */
+async function endTree(s: Session, deps: SessionDeps): Promise<void> {
+  ending.add(s)
+  try {
+    await deps.killTree(s.pty.pid, () => !s.exited)
+  } catch { /* gone already */ } finally {
+    ending.delete(s)
+  }
+  killPty(s)
+}
+
+/** Ends a session: its timer, its process tree while its root lives, then its PTY, what the user
+ *  typed. At quit the tree kill is waited for (bounded) before the PTY closes, nothing being awaited then. */
+function end(s: Session, deps: SessionDeps, quit = false): void {
   if (s.ended) return
   s.ended = true
   deps.clearInterval(s.timer)
   if (!s.exited) {
-    try { deps.killTree(s.pty.pid) } catch { /* gone already */ }
-    try { s.pty.kill() } catch { /* gone already */ }
+    if (quit) {
+      try { deps.killTreeNow(s.pty.pid) } catch { /* gone already */ }
+      killPty(s)
+    } else {
+      void endTree(s, deps)
+    }
   }
   typedBy.delete(s.id)
   sessions.delete(s.id)
@@ -396,7 +428,7 @@ export function startSignInSession(spec: SessionSpec, deps: SessionDeps): { sess
   const s: Session = {
     id: randomUUID(), spec, deps, pty, screen: new TerminalScreen(SIGN_IN_SIZE), raw: '', total: 0, phase: { kind: 'starting' }, sent: '',
     startedAt: now, unknownSince: null, answered: null, picked: null, live: false, stuckOn: null, busy: false, ended: false, exited: false,
-    exitCode: null, confirming: false, stage: 'start', stageAt: now, signInFrom: 0, timer: null,
+    ptyKilled: false, exitCode: null, confirming: false, stage: 'start', stageAt: now, signInFrom: 0, timer: null,
   }
   sessions.set(s.id, s)
   pty.onData((data: string) => {
@@ -519,9 +551,11 @@ export function endSignInsOf(owner: unknown): void {
   for (const s of [...sessions.values()]) if (s.spec.owner === owner) end(s, s.deps)
 }
 
-/** Ends every session (quit). */
+/** Ends every session (quit), and closes the PTYs of those whose tree kill is still on its way. */
 export function endSignIns(): void {
-  for (const s of [...sessions.values()]) end(s, s.deps)
+  for (const s of [...sessions.values()]) end(s, s.deps, true)
+  for (const s of [...ending]) killPty(s)
+  ending.clear()
 }
 
 /** How many sessions run now. */
@@ -537,4 +571,5 @@ export function _typedHeldForTest(): number {
 export function _resetSignInSessionsForTest(): void {
   sessions.clear()
   typedBy.clear()
+  ending.clear()
 }

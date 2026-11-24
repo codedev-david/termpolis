@@ -640,6 +640,23 @@ describe('secondOpinionDeliver: a kill that is not confirmed', () => {
     expect(h.killTree).not.toHaveBeenCalled()
   })
 
+  it('a cancel during the deadline stop joins it: one kill, the backstop keeps its time, and the first reason stands', async () => {
+    vi.useFakeTimers()
+    const h = harness({ platform: 'win32' })
+    const ac = new AbortController()
+    const run = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1_000, signal: ac.signal })
+    const result = track(run)
+    vi.advanceTimersByTime(1_000)
+    expect(h.killTree).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(STOP_SETTLE_MS - 1)
+    ac.abort()
+    expect(h.killTree).toHaveBeenCalledTimes(1)
+    // Settled by the first stop's backstop, not one restarted by the cancel.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(result.done()).toBe(true)
+    expect(await run).toEqual({ stdout: '', stderr: 'codex did not finish within 1s and was stopped', code: 1 })
+  })
+
   it('with the real killProcessTree: a taskkill that fails twice is logged once, and the backstop still settles the run', async () => {
     vi.useFakeTimers()
     const log = vi.fn()

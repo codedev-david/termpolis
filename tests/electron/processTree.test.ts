@@ -98,7 +98,7 @@ describe('killProcessTree on Windows', () => {
     expect(kill).not.toHaveBeenCalled()
   })
 
-  it('listens for a taskkill that fails to start, and does not hold the app open for it', () => {
+  it('listens for a taskkill that fails to start, and unrefs its child handle', () => {
     const { proc, spawn } = fakeTaskkill()
     killProcessTree(4321, { platform: 'win32' }, { spawn, env: {}, log: vi.fn() })
     // An 'error' with no listener would be thrown as an uncaught exception in the main process.
@@ -210,10 +210,21 @@ describe('endProcessTree on Windows waits for taskkill, retries once, and logs a
   })
 
   it('never retries once the root has exited, since its pid may already name a stranger', async () => {
-    const { spawn } = scriptedTaskkill({ exit: 128 }, { exit: 0 })
+    const { spawn } = scriptedTaskkill({ exit: 1 }, { exit: 0 })
     const log = vi.fn()
     expect(await endProcessTree(4321, { platform: 'win32', canRetry: () => false }, { spawn, env: {}, log })).toBe(false)
     expect(spawn).toHaveBeenCalledTimes(1)
+    expect(log.mock.calls).toEqual([['[processTree] taskkill did not end pid 4321 (exit 1)']])
+  })
+
+  it('never retries a taskkill that found no such process, even while the caller would allow it', async () => {
+    const { spawn } = scriptedTaskkill({ exit: 128 }, { exit: 0 })
+    const log = vi.fn()
+    const canRetry = vi.fn(() => true)
+    expect(await endProcessTree(4321, { platform: 'win32', canRetry }, { spawn, env: {}, log })).toBe(false)
+    // The root is gone, so /T has nothing to walk from, and a second taskkill could meet a reused pid.
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(canRetry).not.toHaveBeenCalled()
     expect(log.mock.calls).toEqual([['[processTree] taskkill did not end pid 4321 (exit 128)']])
   })
 
@@ -314,15 +325,19 @@ describe('killProcessTree on macOS and Linux', () => {
     expect(kill).toHaveBeenCalledTimes(1)
   })
 
-  it('swallows ESRCH from a group that is already gone, without a log', async () => {
+  it('swallows ESRCH from a group that is already gone, without a log, and sends it no SIGKILL', async () => {
     vi.useFakeTimers()
     const log = vi.fn()
     const kill = vi.fn(() => { throw errno('ESRCH') })
     expect(killProcessTree(700, { platform: 'linux' }, { kill, log })).toBe(true)
-    expect(() => vi.runAllTimers()).not.toThrow()
-    expect(kill).toHaveBeenCalledTimes(2)
+    // No member holds the group ID any more, so it may be reused: a SIGKILL 2 s later could reach a
+    // stranger's group. Nothing is armed.
+    expect(vi.getTimerCount()).toBe(0)
+    vi.runAllTimers()
+    expect(kill.mock.calls).toEqual([[-700, 'SIGTERM']])
     // A group already gone is what a kill wants, so it counts as delivered.
     expect(await endProcessTree(700, { platform: 'linux' }, { kill, log })).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
     expect(log).not.toHaveBeenCalled()
   })
 

@@ -13,7 +13,7 @@ import { AGY_ENV_AUTH, runAgyStep } from './agySwitch'
 import { endSignIns, endSignInsOf, signInInput, startSignInSession } from './signInSession'
 import type { PtyLike, PtySpawnOptions, SessionDeps } from './signInSession'
 import { ptyHostReady, spawnInPtyHost } from './ptyHostClient'
-import { killProcessTree } from './processTree'
+import { endProcessTree, killProcessTree } from './processTree'
 import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
@@ -1366,7 +1366,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   // into it. The renderer names the account and the method; main builds everything else.
   const sessionDeps: SessionDeps = {
     spawn: deps.signInSpawn ?? spawnSignInPty,
-    killTree: (pid) => { killProcessTree(pid) },
+    killTree: (pid, canRetry) => endProcessTree(pid, { canRetry }),
+    killTreeNow: (pid) => { killProcessTree(pid, { sync: true }) },
     send: (state: SignInState) => deps.send(ACCOUNTS_IPC.signInState, state),
     openExternal: (url) => deps.openExternal?.(url),
     now,

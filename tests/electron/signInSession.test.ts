@@ -88,7 +88,8 @@ beforeEach(() => {
   ptys = []
   deps = {
     spawn: login(),
-    killTree: vi.fn(),
+    killTree: vi.fn(async () => true),
+    killTreeNow: vi.fn(),
     send: (s) => { sent.push(JSON.parse(JSON.stringify(s)) as SignInState) },
     openExternal: vi.fn(),
     now: () => Date.now(),
@@ -275,7 +276,7 @@ describe('Claude Code: claude auth login', () => {
     startSignInSession(spec(), deps)
     await advance(SIGN_IN_TIMEOUT_MS)
     expect(last()).toMatchObject({ kind: 'error', timeout: true, message: 'The sign-in took longer than 10 minutes, so Termpolis stopped it.' })
-    expect(deps.killTree).toHaveBeenCalledWith(4000)
+    expect(deps.killTree).toHaveBeenCalledWith(4000, expect.any(Function))
     expect(ptys[0].killed).toBe(true)
   })
 
@@ -284,7 +285,7 @@ describe('Claude Code: claude auth login', () => {
     const { sessionId } = startSignInSession(spec(), deps)
     expect(await signInInput(sessionId, { kind: 'cancel' })).toEqual({ ok: true })
     expect(last()).toEqual({ kind: 'cancelled' })
-    expect(deps.killTree).toHaveBeenCalledWith(4000)
+    expect(deps.killTree).toHaveBeenCalledWith(4000, expect.any(Function))
     expect(await signInInput(sessionId, { kind: 'code', value: 'x' })).toEqual({ ok: false, why: 'that sign-in has ended' })
     expect(await signInInput('nope', { kind: 'cancel' })).toEqual({ ok: false, why: 'that sign-in has ended' })
     expect(ptys[0].writes).toEqual([])
@@ -342,7 +343,7 @@ describe('Claude Code: claude auth login', () => {
     const one = startSignInSession(spec(), deps)
     startSignInSession(spec(), deps)
     expect(signInSessionCount()).toBe(1)
-    expect(deps.killTree).toHaveBeenCalledWith(4000)
+    expect(deps.killTree).toHaveBeenCalledWith(4000, expect.any(Function))
     expect(await signInInput(one.sessionId, { kind: 'cancel' })).toMatchObject({ ok: false })
   })
 
@@ -432,9 +433,106 @@ describe('Claude Code: claude auth login', () => {
   it('ends a tree that is gone already without a fuss', () => {
     deps.spawn = login({ MOCK_LOGIN_MODE: 'silent' })
     deps.killTree = () => { throw new Error('gone') }
+    deps.killTreeNow = () => { throw new Error('gone') }
     startSignInSession(spec(), deps)
     ptys[0].kill = () => { throw new Error('gone') }
     expect(() => endSignIns()).not.toThrow()
+  })
+})
+
+describe('ending a session: the tree first, then the PTY', () => {
+  /** A CLI that prints nothing and exits only when told. */
+  function quiet(): { exit: (code: number) => void } {
+    const h = { exit: (_code: number) => undefined as void }
+    deps.spawn = () => fakePty((io) => { h.exit = io.exit; return { input: () => undefined } })
+    return h
+  }
+  /** A tree kill that settles only when the test says. */
+  function heldKill(): { settle: (ok?: boolean) => void; fail: () => void; canRetry: () => (() => boolean) } {
+    let resolve: (v: boolean) => void = () => undefined
+    let reject: (e: Error) => void = () => undefined
+    const kill = vi.fn((_pid: number, _canRetry: () => boolean) => new Promise<boolean>((res, rej) => { resolve = res; reject = rej }))
+    deps.killTree = kill
+    return { settle: (ok = true) => resolve(ok), fail: () => reject(new Error('taskkill failed')), canRetry: () => kill.mock.calls[0][1] }
+  }
+
+  it('closes the PTY only once the tree kill has settled, so taskkill walks a live root', async () => {
+    quiet()
+    const k = heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    let kills = 0
+    ptys[0].kill = () => { kills++; ptys[0].killed = true }
+    await signInInput(sessionId, { kind: 'cancel' })
+    expect(deps.killTree).toHaveBeenCalledWith(4000, expect.any(Function))
+    await advance(60_000)
+    expect(kills).toBe(0)
+    expect(signInSessionCount()).toBe(0)
+    k.settle()
+    await advance(0)
+    expect(kills).toBe(1)
+    // The quit after it closes nothing twice.
+    endSignIns()
+    expect(kills).toBe(1)
+  })
+
+  it('closes the PTY after a tree kill that failed, too', async () => {
+    quiet()
+    const k = heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    await signInInput(sessionId, { kind: 'cancel' })
+    k.fail()
+    await advance(0)
+    expect(ptys[0].killed).toBe(true)
+  })
+
+  it("lets the tree kill try again only while the CLI has not exited, and leaves an exited CLI's PTY alone", async () => {
+    const cli = quiet()
+    const k = heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    await signInInput(sessionId, { kind: 'cancel' })
+    expect(k.canRetry()()).toBe(true)
+    cli.exit(1)
+    expect(k.canRetry()()).toBe(false)
+    k.settle(false)
+    await advance(0)
+    expect(ptys[0].killed).toBe(false)
+  })
+
+  it('at quit, waits for the tree kill itself before closing the PTY, with nothing left to await', () => {
+    quiet()
+    const order: string[] = []
+    deps.killTreeNow = vi.fn(() => { order.push('tree') })
+    startSignInSession(spec(), deps)
+    ptys[0].kill = () => { order.push('pty') }
+    endSignIns()
+    expect(deps.killTreeNow).toHaveBeenCalledWith(4000)
+    expect(deps.killTree).not.toHaveBeenCalled()
+    expect(order).toEqual(['tree', 'pty'])
+  })
+
+  it('at quit, closes the PTY of a session whose tree kill is still on its way, once', async () => {
+    quiet()
+    const k = heldKill()
+    const { sessionId } = startSignInSession(spec(), deps)
+    let kills = 0
+    ptys[0].kill = () => { kills++ }
+    await signInInput(sessionId, { kind: 'cancel' })
+    expect(kills).toBe(0)
+    endSignIns()
+    expect(kills).toBe(1)
+    expect(deps.killTreeNow).not.toHaveBeenCalled()
+    k.settle()
+    await advance(0)
+    expect(kills).toBe(1)
+  })
+
+  it('at quit, ends nothing of a CLI that has exited already', () => {
+    const cli = quiet()
+    startSignInSession(spec(), deps)
+    cli.exit(1)
+    endSignIns()
+    expect(deps.killTreeNow).not.toHaveBeenCalled()
+    expect(ptys[0].killed).toBe(false)
   })
 })
 
@@ -790,6 +888,33 @@ describe('agy: the switch-all sign-in, in a hidden agy', () => {
     await until('success')
     expect(last()).toEqual({ kind: 'success', email: 'who@example.test' })
     await advance(12_000)
+    expect(signInSessionCount()).toBe(0)
+    expect(deps.killTree).toHaveBeenCalled()
+  })
+
+  it("types no /exit when agy's box is gone by then, and ends its tree", async () => {
+    let write: (s: string) => void = () => undefined
+    let signed = false
+    const main = (text = ''): string => '\u001b[2J\u001b[H      Antigravity CLI\r\n     who@example.test (Google AI Pro)\r\n\r\n' + '─'.repeat(80) + '\r\n> ' + text + '\r\n' + '─'.repeat(80) + '\r\n? for shortcuts\r\n'
+    deps.spawn = () => fakePty((io) => {
+      write = io.write
+      setTimeout(() => write('\u001b[2J\u001b[HSelect login method:\r\n\r\n> One\r\n\r\n  enter Confirm\r\n'), 10)
+      return {
+        input: (d: string) => {
+          if (!signed && d === '\r') { signed = true; write('Authentication successful!\r\n'); setTimeout(() => write(main()), 20); return }
+          if (d.startsWith('/')) write(main(d))
+          else if (d.includes('\u0015')) write(main())
+        },
+      }
+    })
+    // agy draws something else the moment it is signed in: there is no box to type /exit into.
+    const { sessionId } = startSignInSession(agySpec({ onAgySignedIn: () => write('\u001b[2J\u001b[HSomething else\r\n') }), deps)
+    await until('choose')
+    await signInInput(sessionId, { kind: 'pick', index: 0, label: 'One' })
+    await until('success')
+    const typed = ptys[0].writes.length
+    await advance(12_000)
+    expect(ptys[0].writes.slice(typed).join('')).not.toContain('/exit')
     expect(signInSessionCount()).toBe(0)
     expect(deps.killTree).toHaveBeenCalled()
   })

@@ -21,7 +21,7 @@
 // Nothing here throws. A tree that is already gone is not a failure: ESRCH from a group, or a
 // taskkill the caller says not to repeat. Any other failure is logged once per kill, as one line
 // that names only the pid and the exit or error code, and a failed taskkill is tried once more
-// while the caller says its root is still alive.
+// while the caller says its root is still alive, unless taskkill found no such process.
 
 import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from 'child_process'
 import path from 'path'
@@ -88,6 +88,10 @@ function usablePid(pid: number | undefined): pid is number {
  *  timeout), or the error code of a spawn that failed. */
 type Outcome = number | string
 
+/** taskkill's exit code when no process has the pid. A retry can't help then: /T walks a tree only
+ *  down from a live root, and by the time it ran the root's pid could name a stranger. */
+const TASKKILL_NOT_FOUND = 128
+
 function errorCode(e: unknown): string {
   return String((e as NodeJS.ErrnoException | undefined)?.code ?? 'error')
 }
@@ -109,7 +113,9 @@ function taskkillOnce(pid: number, deps: KillTreeDeps): Promise<Outcome> {
     let done = false
     const end = (outcome: Outcome): void => { if (!done) { done = true; resolve(outcome) } }
     try {
-      // Asynchronous: a blocking spawn on the main thread stalls every terminal's echo.
+      // Asynchronous: a blocking spawn on the main thread stalls every terminal's echo. Node arms
+      // the timeout with a timer of its own that unref() doesn't reach, so a taskkill still running
+      // keeps a plain Node process alive until it exits or times out. Electron's quit doesn't wait.
       const tk = (deps.spawn ?? spawn)(taskkillPath(deps.env), taskkillArgs(pid), { windowsHide: true, stdio: 'ignore', timeout: TASKKILL_TIMEOUT_MS })
       // An 'error' with no listener would be thrown as an uncaught exception in the main process.
       tk.on('error', (e) => end(errorCode(e)))
@@ -119,22 +125,24 @@ function taskkillOnce(pid: number, deps: KillTreeDeps): Promise<Outcome> {
   })
 }
 
-/** Signals a process group, logging any failure but ESRCH once per kill. Returns false only on a
- *  failure other than ESRCH. */
-function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signals) => boolean {
+/** How a signal to a process group went: sent, the group was gone (ESRCH), or another failure. */
+type GroupResult = 'sent' | 'gone' | 'failed'
+
+/** Signals a process group, logging any failure but ESRCH once per kill. */
+function groupSignaller(pid: number, deps: KillTreeDeps): (signal: NodeJS.Signals) => GroupResult {
   const kill = deps.kill ?? ((p: number, signal: NodeJS.Signals) => process.kill(p, signal))
   const log = logOf(deps)
   let logged = false
   return (signal) => {
     try {
       kill(-pid, signal)
-      return true
+      return 'sent'
     } catch (e) {
       const code = errorCode(e)
       // ESRCH: the group is already gone, which is what a kill wants.
-      if (code === 'ESRCH') return true
+      if (code === 'ESRCH') return 'gone'
       if (!logged) { logged = true; log(`[processTree] ${signal} did not reach process group ${pid} (${code})`) }
-      return false
+      return 'failed'
     }
   }
 }
@@ -150,7 +158,7 @@ export async function endProcessTree(pid: number | undefined, opts: Omit<KillTre
   if (!usablePid(pid)) return false
   if ((opts.platform ?? process.platform) === 'win32') {
     let outcome = await taskkillOnce(pid, deps)
-    if (outcome !== 0) {
+    if (outcome !== 0 && outcome !== TASKKILL_NOT_FOUND) {
       let again = false
       try { again = opts.canRetry?.() === true } catch { /* no answer is a no */ }
       if (again) outcome = await taskkillOnce(pid, deps)
@@ -160,11 +168,12 @@ export async function endProcessTree(pid: number | undefined, opts: Omit<KillTre
     return false
   }
   const signalGroup = groupSignaller(pid, deps)
-  const delivered = signalGroup('SIGTERM')
-  // A process group ID is not reused while any member lives, so a late SIGKILL can't hit a
-  // stranger's group, and unref keeps it from holding a quitting process open.
-  setTimeout(() => signalGroup('SIGKILL'), opts.graceMs ?? TREE_KILL_GRACE_MS).unref()
-  return delivered
+  const term = signalGroup('SIGTERM')
+  // A process group ID is not reused while any member lives. Once SIGTERM finds no member (ESRCH)
+  // the ID is free, so no SIGKILL follows. A group whose last member dies during the grace leaves
+  // that window open for the SIGKILL. unref keeps the timer from holding a quitting process open.
+  if (term !== 'gone') setTimeout(() => signalGroup('SIGKILL'), opts.graceMs ?? TREE_KILL_GRACE_MS).unref()
+  return term !== 'failed'
 }
 
 /**

@@ -644,13 +644,16 @@ describe('will-quit stops every run before it returns', () => {
 
   it('ends a sign-in the sheet left running, its process tree with it', async () => {
     const { startSignInSession, signInSessionCount } = await import('../../src/main/signInSession')
-    const kill = vi.fn()
-    let killTree = vi.fn()
+    const order: string[] = []
+    const kill = vi.fn(() => { order.push('pty') })
+    const killTree = vi.fn(async () => true)
+    const killTreeNow = vi.fn(() => { order.push('tree') })
     startSignInSession({
       accountId: 'acc_1', agent: 'claude', key: 'claude:quit', file: 'claude', args: [], env: {}, cwd: '/', mode: 'sign-in', label: 'b',
     }, {
       spawn: () => ({ pid: 4242, write: () => undefined, kill, onData: () => undefined, onExit: () => undefined }),
-      killTree: (killTree = vi.fn()),
+      killTree,
+      killTreeNow,
       send: () => undefined,
       openExternal: () => undefined,
       now: () => Date.now(),
@@ -661,8 +664,10 @@ describe('will-quit stops every run before it returns', () => {
     expect(signInSessionCount()).toBe(1)
     quit()
     expect(signInSessionCount()).toBe(0)
-    expect(killTree).toHaveBeenCalledWith(4242)
-    expect(kill).toHaveBeenCalled()
+    // At quit the tree is ended synchronously, while the CLI is still the PTY's live root, and only then the PTY.
+    expect(killTreeNow).toHaveBeenCalledWith(4242)
+    expect(killTree).not.toHaveBeenCalled()
+    expect(order).toEqual(['tree', 'pty'])
   })
 })
 

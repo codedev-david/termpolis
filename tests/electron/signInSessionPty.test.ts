@@ -9,7 +9,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { _resetSignInSessionsForTest, endSignIns, signInInput, startSignInSession } from '../../src/main/signInSession'
 import type { PtyLike, SessionDeps, SessionSpec } from '../../src/main/signInSession'
-import { killProcessTree } from '../../src/main/processTree'
+import { endProcessTree, killProcessTree } from '../../src/main/processTree'
 import type { SignInPhase, SignInState } from '../../src/shared/signInScreens'
 
 const require = createRequire(import.meta.url)
@@ -27,7 +27,8 @@ let sent: SignInState[] = []
 function deps(): SessionDeps {
   return {
     spawn: (file, args, opts) => pty!.spawn(file, args as string[], opts as unknown as Record<string, unknown>),
-    killTree: (pid) => { killProcessTree(pid) },
+    killTree: (pid, canRetry) => endProcessTree(pid, { canRetry }),
+    killTreeNow: (pid) => { killProcessTree(pid, { sync: true }) },
     send: (s) => { sent.push(s) },
     openExternal: () => undefined,
     now: () => Date.now(),

@@ -30,7 +30,7 @@ import { parseAccountsDoc } from '../../src/main/agentAccounts'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { _resetSignInSessionsForTest, endSignIns, signInInput, startSignInSession } from '../../src/main/signInSession'
 import type { PtyLike, SessionDeps } from '../../src/main/signInSession'
-import { killProcessTree } from '../../src/main/processTree'
+import { endProcessTree, killProcessTree } from '../../src/main/processTree'
 import { shellAlone } from '../../src/main/shellAlone'
 import type { SignInPhase, SignInState } from '../../src/shared/signInScreens'
 
@@ -512,7 +512,8 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
     let signedInAs: string | null = 'none'
     const sessionDeps: SessionDeps = {
       spawn: (file, args, opts) => (pty as PtyModule).spawn(file, args as string[], opts as unknown as Record<string, unknown>) as unknown as PtyLike,
-      killTree: (pid) => { killProcessTree(pid) },
+      killTree: (pid, canRetry) => endProcessTree(pid, { canRetry }),
+      killTreeNow: (pid) => { killProcessTree(pid, { sync: true }) },
       send: (st) => { sent.push(st) },
       openExternal: () => undefined,
       now: () => Date.now(),

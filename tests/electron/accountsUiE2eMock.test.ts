@@ -10,7 +10,7 @@ import { tmpdir } from 'os'
 import { delimiter, join } from 'path'
 import { _resetSignInSessionsForTest, endSignIns, signInInput, startSignInSession } from '../../src/main/signInSession'
 import type { PtyLike, SessionDeps } from '../../src/main/signInSession'
-import { killProcessTree } from '../../src/main/processTree'
+import { endProcessTree, killProcessTree } from '../../src/main/processTree'
 import { signInCli, signInEnv } from '../../src/main/accountsIpc'
 import { claudeSignedInNow } from '../../src/main/accountIdentity'
 import type { SignInPhase, SignInState } from '../../src/shared/signInScreens'
@@ -30,7 +30,8 @@ let sent: SignInState[] = []
 function deps(): SessionDeps {
   return {
     spawn: (file, args, opts) => pty!.spawn(file, args, opts as unknown as Record<string, unknown>),
-    killTree: (pid) => { killProcessTree(pid) },
+    killTree: (pid, canRetry) => endProcessTree(pid, { canRetry }),
+    killTreeNow: (pid) => { killProcessTree(pid, { sync: true }) },
     send: (s) => { sent.push(s) },
     openExternal: () => undefined,
     now: () => Date.now(),

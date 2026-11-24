@@ -127,6 +127,10 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
       bin,
       stop(reason, sync) {
         if (settled) return
+        // A second stop (a cancel after the deadline, or the other way round) joins the one under
+        // way: no second kill chain, and the backstop keeps its time. Only the quit goes on, since
+        // it must still kill synchronously before the app exits.
+        if (stopReason !== null && !sync) return
         const note = (stopReason ??= reason)
         clearTimeout(deadline)
         clearTimeout(giveUp)

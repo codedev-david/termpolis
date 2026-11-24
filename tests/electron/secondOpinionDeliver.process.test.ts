@@ -180,7 +180,10 @@ describe('ending a real tree, and a kill that fails', () => {
     const log = vi.fn()
     // A Windows folder with no taskkill.exe in it: the real spawn fails, twice.
     const nowhere = { SystemRoot: join(dir, 'no-windows') }
-    const { runs, pidFile } = setup({ settleMs: 1_000, killTree: (pid, o) => killProcessTree(pid, o, { env: nowhere, log }) })
+    // The real spawn, counted: without the retry there is one taskkill, not two.
+    const tried: string[] = []
+    const counted = (cmd: string, args: string[], opts: SpawnOptions) => { tried.push(cmd); return spawn(cmd, args, opts) }
+    const { runs, pidFile } = setup({ settleMs: 1_000, killTree: (pid, o) => killProcessTree(pid, o, { env: nowhere, log, spawn: counted }) })
     const ac = new AbortController()
     const run = runs.deliver(process.execPath, [agentScript, PROMPT_TOKEN], 'review this', PROMPT_TOKEN, { timeoutMs: 0, signal: ac.signal })
     const pids = await readPids(pidFile, run)
@@ -189,6 +192,7 @@ describe('ending a real tree, and a kill that fails', () => {
     expect(r).toMatchObject({ code: 1, stderr: expect.stringContaining('cancelled') })
     await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1), { timeout: 10_000 })
     expect(log.mock.calls[0][0]).toMatch(/^\[processTree\] taskkill did not end pid \d+ \(exit ENOENT\)$/)
+    expect(tried).toEqual([taskkillPath(nowhere), taskkillPath(nowhere)])
     // The tree was never killed. The afterEach ends it through the pids it reported.
     expect(isAlive(pids.agent)).toBe(true)
   }, 60_000)
