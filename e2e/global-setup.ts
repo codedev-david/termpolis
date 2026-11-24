@@ -4,7 +4,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { makeScratchAgentHome } from '../tests/agentHomeScratch'
 
 export default function globalSetup(): () => void {
@@ -15,14 +15,20 @@ export default function globalSetup(): () => void {
   const agentHome = makeScratchAgentHome()
   process.env.TERMPOLIS_TEST_AGENT_HOME = agentHome.dir
 
-  // Kill any lingering Electron processes
-  try {
-    if (process.platform === 'win32') {
-      execSync('taskkill /f /im electron.exe 2>nul', { stdio: 'ignore' })
-    } else {
-      execSync('pkill -f electron 2>/dev/null || true', { stdio: 'ignore' })
-    }
-  } catch {}
+  // An app an earlier run of THIS checkout left behind (its runner was killed before quitApp ran) is stopped. Only
+  // that one: every e2e launch starts the app as `<checkout>/out/main/index.js`, so the pattern is that full path.
+  // This was `pkill -f electron` (and `taskkill /im electron.exe` on Windows), which also killed the app of a
+  // run going on at the same time in another checkout or worktree on the machine: that run's test died at
+  // whatever step it had reached with "Target page, context or browser has been closed" (world-responsive's
+  // long test 2 on the shared Linux box, at 1.6 and 5.0 minutes). A leftover is harmless to this run, since
+  // every spec has its own --user-data-dir (so its own single-instance lock) and the app's ports fall back to
+  // free ones. Windows has no way to match a process by its arguments short of listing every process's
+  // command line, which this suite does not do, so there nothing is stopped.
+  if (process.platform !== 'win32') {
+    const main = path.resolve('out', 'main', 'index.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // No shell: `sh -c "pkill -f …"` would carry the pattern in its own command line and be killed too.
+    try { execFileSync('pkill', ['-f', main], { stdio: 'ignore' }) } catch { /* exit 1: none left over */ }
+  }
 
   // Clean lockfiles
   const appDataDirs = [

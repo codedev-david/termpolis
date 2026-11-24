@@ -16,7 +16,6 @@ test.setTimeout(60_000)
 
 test.beforeAll(async () => {
   ensureE2eBuild()
-  const { execSync } = await import('child_process')
 
   // Clear session so we start fresh on the Welcome screen
   const os = await import('os')
@@ -33,9 +32,8 @@ test.beforeAll(async () => {
     }
   }
 
-  // Kill any existing Electron instances right before launch to release single-instance lock
-  try { execSync('taskkill /F /IM electron.exe', { stdio: 'pipe' }) } catch { /* no instances running */ }
-  await new Promise(r => setTimeout(r, 2000))
+  // No Electron is killed first: e2eLaunchArgs gives this spec its own --user-data-dir, so its own
+  // single-instance lock, and `taskkill /IM electron.exe` also killed any other run's app on the machine.
 
   app = await electron.launch({
     args: e2eLaunchArgs('stress-test'),
