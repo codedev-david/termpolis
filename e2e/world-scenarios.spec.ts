@@ -29,6 +29,7 @@ import os from 'os'
 import path from 'path'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { launchWorldApp, removeDirs, expectPaneOpens } from './helpers/world'
+import { toolbarControl, closeMore } from './helpers/worldToolbar'
 import { makeScenario, UNTRACKED_VENDORED, type ScenarioName, type ScenarioOptions } from '../tests/e2e/fixtures/worldScenarios'
 
 let app: ElectronApplication
@@ -363,6 +364,122 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     await expect(pane()).toHaveCount(0)
   })
   }
+
+  /** What the probe counts of the 3D map drawn now; null before a map is drawn. */
+  const drawnNow = (): Promise<{ frames: number; buildings: number; changing: number } | null> => page.evaluate(() => {
+    const w = window as unknown as { __termpolis_world?: { drawn(): { frames: number; buildings: number; changing: number } } }
+    return w.__termpolis_world?.drawn() ?? null
+  })
+
+  /** Opens the one-file scenario's world and waits until its 3D map is drawn and its changes have run. */
+  async function openOneFile(): Promise<void> {
+    const dir = await makeScenario('one-file', base)
+    const key = await worldKey(dir, false)
+    const mapped = await page.evaluate(
+      (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
+      key
+    )
+    expect(mapped.error ?? '').toBe('')
+    await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+    await expectPaneOpens(page)
+    await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: 120_000 })
+    await expect.poll(async () => (await drawnNow())?.buildings ?? 0, { message: 'the one-file world is drawn', timeout: 120_000 }).toBeGreaterThan(0)
+    await expect.poll(async () => (await drawnNow())?.changing ?? -1, { message: 'its changes have run', timeout: 60_000 }).toBe(0)
+  }
+
+  async function closePane(): Promise<void> {
+    await page.locator('[data-testid="world-close"]').click()
+    await expect(pane()).toHaveCount(0)
+  }
+
+  test('an idle 3D map draws no frames under reduced motion, and starts again live when motion is allowed', async () => {
+    test.setTimeout(240_000)
+    await openOneFile()
+    // Reduced motion, switched on while the map is open (R13): the opening turn and the looping motions stop, and
+    // after a few frames to settle the map asks for none. The map before on-demand frames drew every frame.
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    try {
+      await page.waitForTimeout(1500)
+      const f0 = (await drawnNow())!.frames
+      await page.waitForTimeout(5000)
+      const reducedFrames = (await drawnNow())!.frames - f0
+      // Motion allowed again, live: the looping motions draw every frame once more.
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
+      await page.waitForTimeout(1000)
+      const m0 = (await drawnNow())!.frames
+      await page.waitForTimeout(5000)
+      const movingFrames = (await drawnNow())!.frames - m0
+      console.log(`[idle-frames] ${JSON.stringify({ reducedMotion5s: reducedFrames, motion5s: movingFrames })}`)
+      test.info().annotations.push({ type: 'idle-frames', description: JSON.stringify({ reducedMotion5s: reducedFrames, motion5s: movingFrames }) })
+      expect(reducedFrames, 'frames drawn over 5 s idle under reduced motion').toBeLessThanOrEqual(6)
+      expect(movingFrames, 'frames drawn over 5 s with motion allowed').toBeGreaterThan(6)
+    } finally {
+      await page.emulateMedia({ reducedMotion: null })
+    }
+    await closePane()
+  })
+
+  test('the 2D map is walked by keyboard: Tab reaches a part, Enter opens its card, Esc shuts it', async () => {
+    test.setTimeout(240_000)
+    await openOneFile()
+    await (await toolbarControl(page, 'world-map2d')).click()
+    await closeMore(page)
+    const fallback = page.locator('[data-testid="world-fallback"]')
+    await expect(fallback).toBeVisible()
+    try {
+      // Tab from the toolbar until the focus is on one of the map's parts (each is a Tab stop), at most 60 presses.
+      const onPart = (): Promise<boolean> => page.evaluate(() => document.activeElement?.closest('[data-testid="world-fallback"] [data-kind="building"]') != null)
+      let presses = 0
+      while (!(await onPart()) && presses < 60) {
+        await page.keyboard.press('Tab')
+        presses++
+      }
+      expect(await onPart(), `Tab reaches a part of the 2D map (${presses} presses)`).toBe(true)
+      await expect(page.locator('[data-testid="world-card"]')).toHaveCount(0)
+      await page.keyboard.press('Enter')
+      await expect(page.locator('[data-testid="world-card"]')).toBeVisible()
+      await expect(page.locator('[data-testid="world-card-body"]')).toContainText('index')
+      await page.keyboard.press('Escape')
+      await expect(page.locator('[data-testid="world-card"]')).toHaveCount(0)
+      // Esc shut the card and left the pane open on the 2D map.
+      await expect(pane()).toBeVisible()
+      await expect(fallback).toBeVisible()
+    } finally {
+      await (await toolbarControl(page, 'world-map2d')).click() // off again: the choice is kept between sessions
+      await closeMore(page)
+    }
+    await expect(fallback).toHaveCount(0)
+    await closePane()
+  })
+
+  test('the 3D map waits out a lost context and draws again when it comes back; a second loss shows the 2D map', async () => {
+    test.setTimeout(240_000)
+    await openOneFile()
+    const notice = page.locator('[data-testid="world-notice"]')
+    const lose = (): Promise<boolean> => page.evaluate(() => {
+      const canvas = document.querySelector('[data-testid="world-canvas-host"] canvas') as HTMLCanvasElement | null
+      const gl = canvas?.getContext('webgl2') ?? canvas?.getContext('webgl') ?? null
+      const ext = gl?.getExtension('WEBGL_lose_context') ?? null
+      ;(window as unknown as { __wp2Lose?: WEBGL_lose_context | null }).__wp2Lose = ext
+      ext?.loseContext()
+      return ext !== null
+    })
+    expect(await lose(), 'the canvas has WEBGL_lose_context').toBe(true)
+    await expect(notice).toHaveText('The 3D map paused: the graphics stopped. It comes back when they do.')
+    const before = (await drawnNow())!.frames
+    await page.waitForTimeout(1000)
+    expect((await drawnNow())!.frames, 'nothing is drawn while the context is lost').toBe(before)
+    await page.evaluate(() => (window as unknown as { __wp2Lose: WEBGL_lose_context }).__wp2Lose.restoreContext())
+    await expect(notice).toHaveCount(0)
+    await expect.poll(async () => (await drawnNow())!.frames, { message: 'the canvas draws again once restored', timeout: 30_000 }).toBeGreaterThan(before)
+    await expect.poll(async () => (await drawnNow())!.buildings, { message: 'the world is built again on the restored context', timeout: 30_000 }).toBeGreaterThan(0)
+    // The second loss is not waited out: the 2D map shows, and says why.
+    expect(await lose()).toBe(true)
+    await expect(notice).toHaveText('The graphics stopped again, so the map shows in 2D.')
+    await expect(page.locator('[data-testid="world-fallback"]')).toBeVisible()
+    await expect(page.locator('[data-testid="world-fallback"] [data-kind="building"]').first()).toBeVisible()
+    await closePane()
+  })
 
   test('the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])

@@ -312,12 +312,16 @@ async function openPane(): Promise<void> {
   await expect(page.locator(PANE)).toBeVisible({ timeout: 30_000 })
 }
 
-/** Waits until the world is on the canvas and still. */
+/**
+ * Waits until the world is on the canvas and still. The changes a newer world plays (rises, pulses, fades) are
+ * counted on the wall clock, so they end about a second after it loads; the wait for them still gets the caller's
+ * budget, as a world just swapped in at 5K, drawn in software, once held the count open for over 30 s.
+ */
 async function settled(compileMs = 120_000): Promise<void> {
   await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: compileMs })
   await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: compileMs })
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn().changing ?? -1), { timeout: 30_000 })
+    .poll(() => page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn().changing ?? -1), { timeout: compileMs })
     .toBe(0)
   await still('the world')
 }
