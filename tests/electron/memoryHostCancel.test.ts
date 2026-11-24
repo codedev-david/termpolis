@@ -183,6 +183,32 @@ describe('memory host: the interactive lane', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it("a background write is not let in between the Ask's reads: it waits through the linger after the search, so the listing runs first (world-responsive t3)", async () => {
+    await initHost()
+    await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
+    const g = gatedEmbed()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const order: string[] = []
+      const search = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive').then((r) => { order.push('search'); return r })
+      await vi.advanceTimersByTimeAsync(0)
+      const write = call(2, 'memoryDelete', ['no-such-note'], 'background').then((r) => { order.push('write'); return r })
+      await vi.advanceTimersByTimeAsync(0)
+      g.open()
+      expect((await search)?.ok).toBe(true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(order).toEqual(['search']) // the lane is empty now, but lingering: the write still waits
+      expect(_hostLaneForTests().waiting).toBe(1)
+      const list = await call(3, 'memoryList', [{ limit: 5 }], 'interactive') // the Ask's next read: at once
+      order.push('list')
+      expect(list?.ok).toBe(true)
+      await vi.advanceTimersByTimeAsync(BACKGROUND_MAX_WAIT_MS)
+      expect((await write)?.ok).toBe(true) // and it never starves: its max wait still holds
+      expect(order).toEqual(['search', 'list', 'write'])
+      expect(LANE_LINGER_MS).toBeGreaterThan(BACKGROUND_MAX_WAIT_MS)
+    } finally { vi.useRealTimers() }
+  })
+
   it('a single write, the router learn and the status reads never queue on the lane: they answer while an interactive call runs (WPA fix round 2, R-I1)', async () => {
     await initHost()
     await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
