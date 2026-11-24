@@ -230,18 +230,43 @@ async function readOwn(file: string, sleep: Sleep, now: () => number): Promise<R
   return loses(claims, parsed) && !(await copyAside(file, { now, sleep })) ? null : claims
 }
 
-/** The older keys still to adopt, or null when nothing is pending (no marker, or one that cannot be read now). */
-async function readPending(file: string): Promise<string[] | null> {
+/** WP3 round 3 (M5): an older key that cannot be adopted is tried on at most ADOPT_RETRY_OPENS opens in all, each try
+ *  after the first only once ADOPT_RETRY_BACKOFF_MS has passed, doubled after every try (1, 2, 4 ... 64 minutes: about two
+ *  hours in all). A file held for good costs a few reads, never about a second on every open; then it is given up on and
+ *  logged, its file is left as it was, and the record keeps it as given up. An open with nothing due reads only the
+ *  record. */
+export const ADOPT_RETRY_OPENS = 8
+export const ADOPT_RETRY_BACKOFF_MS = 60_000
+/** The `next` of a key given up on: it stays in the record, so no later open reads its file again. */
+export const ADOPT_GIVEN_UP = Number.MAX_SAFE_INTEGER
+
+/** One older key still to adopt: how many opens tried it, and the time from which the next one may. */
+export interface PendingKey {
+  key: string
+  tries: number
+  next: number
+}
+
+const isPendingKey = (v: unknown): v is PendingKey => {
+  const p = v as Partial<PendingKey> | null
+  return typeof p?.key === 'string' && Number.isFinite(p.tries) && Number.isFinite(p.next)
+}
+
+/** The older keys still to adopt, or null when nothing is pending (no marker, or one that cannot be read now). A round 2
+ *  record (a list of keys) reads as tried once and due now; an entry of neither shape is dropped. */
+async function readPending(file: string): Promise<PendingKey[] | null> {
+  let parsed: unknown
   try {
-    const keys: unknown = JSON.parse(await readFile(file, 'utf8'))
-    return Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+    parsed = JSON.parse(await readFile(file, 'utf8'))
   } catch {
     return null
   }
+  if (!Array.isArray(parsed)) return []
+  return parsed.flatMap((v: unknown): PendingKey[] => (typeof v === 'string' ? [{ key: v, tries: 1, next: 0 }] : isPendingKey(v) ? [v] : []))
 }
 
 /** Records the older keys still to adopt, or removes the record when there are none. Resolves whether that landed. */
-async function keepPending(file: string, keys: string[]): Promise<boolean> {
+async function keepPending(file: string, keys: PendingKey[]): Promise<boolean> {
   try {
     if (keys.length > 0) await writeAtomic(file, JSON.stringify(keys))
     else await rm(file, { force: true })
@@ -271,6 +296,9 @@ async function keepPending(file: string, keys: string[]): Promise<boolean> {
  * WP3 round 3 (M3): a new key's file that appears while the older files are read (the world host saved it meanwhile) is
  * merged into the same way, its own claims last, so what was read is not dropped. When that file cannot be read, every key
  * read or held goes in the record instead, for a later open to try again.
+ * WP3 round 3 (M5): each key in the record carries its tries and when the next may run (ADOPT_RETRY_OPENS,
+ * ADOPT_RETRY_BACKOFF_MS). An open before any key is due reads only the record; a key tried ADOPT_RETRY_OPENS times is
+ * given up on, with a log line, and stays in the record so that no later open reads it again.
  */
 export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep; now?: () => number; lock?: AnnotationLockDeps } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
@@ -281,13 +309,24 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
   const pendingFile = `${target}${ADOPT_PENDING_SUFFIX}`
   const exists = (f: string): Promise<boolean> => access(f).then(() => true, () => false)
   const had = await exists(target)
-  let wanted = others
-  if (had) {
-    // The common case, every open after the first: one look for a record, no lock taken.
-    const pending = await readPending(pendingFile)
-    if (!pending) return []
-    wanted = others.filter((k) => pending.includes(k))
-  }
+  // The common case, every open after the first: one look for a record, no lock taken.
+  const pending = await readPending(pendingFile)
+  if (had && !pending) return []
+  const at = now()
+  const prior = (pending ?? []).filter((p) => others.includes(p.key))
+  const later = prior.filter((p) => p.next > at)
+  const waits = (k: string): boolean => later.some((p) => p.key === k)
+  // With a file of its own, the new key needs only the keys in the record; without one (nothing merged yet, or a crash
+  // came between the record and the merged file) every key but those waiting out a back-off.
+  const wanted = had ? prior.filter((p) => !waits(p.key)).map((p) => p.key) : others.filter((k) => !waits(k))
+  if (wanted.length === 0 && later.length > 0) return [] // none due yet: no read, no lock (M5)
+  /** M5: the record's entries for `keys`, tried once more now: due again after a longer back-off, or given up on. */
+  const triedNow = (keys: string[]): PendingKey[] => keys.map((k): PendingKey => {
+    const tries = (prior.find((p) => p.key === k)?.tries ?? 0) + 1
+    if (tries < ADOPT_RETRY_OPENS) return { key: k, tries, next: at + ADOPT_RETRY_BACKOFF_MS * 2 ** (tries - 1) }
+    console.warn(`[world annotations] an older key's annotations could not be adopted in ${tries} tries and are no longer tried; their file is left as it was`)
+    return { key: k, tries, next: ADOPT_GIVEN_UP }
+  })
   const found: Array<[string, Record<string, Claim[]>]> = []
   const unread: string[] = []
   for (const old of wanted) {
@@ -295,7 +334,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
     if (claims === 'unread') unread.push(old)
     else if (claims !== 'none') found.push([old, claims])
   }
-  if (!had && found.length === 0 && unread.length === 0) return []
+  if (!had && !pending && found.length === 0 && unread.length === 0) return []
   try {
     return await withAnnotationFileLock(target, async () => {
       let own: Record<string, Claim[]> | null = null
@@ -303,15 +342,16 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
         // The new key's own claims, newer than any older key's; when `had` is false, the world host saved them while we read.
         own = await readOwn(target, sleep, now)
         if (!own) {
-          // A held-back merge never loses the new key's notes. The record stays, or (for a file that appeared while we read)
-          // is made of every key read or held, so a later open tries again.
-          if (!had) await keepPending(pendingFile, [...found.map(([old]) => old), ...unread])
+          // A held-back merge never loses the new key's notes. Every key read or held stays in the record (or, for a file
+          // that appeared while we read, goes in it) as tried once more, so a later open tries again after its back-off.
+          await keepPending(pendingFile, [...later, ...triedNow([...found.map(([old]) => old), ...unread])])
           return []
         }
       }
+      const record = [...later, ...triedNow(unread)]
       // On a first adoption every key in `unread` is new to the record: it goes down before the merged file.
       const first = !had && unread.length > 0
-      if (first && !(await keepPending(pendingFile, unread))) return []
+      if (first && !(await keepPending(pendingFile, record))) return []
       if (found.length > 0) {
         const merged: Record<string, Claim[]> = Object.create(null)
         for (const claims of [...found.map(([, c]) => c), ...(own ? [own] : [])]) {
@@ -324,7 +364,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
         for (const id of Object.keys(merged)) merged[id] = capClaims(merged[id])
         await writeAtomic(target, JSON.stringify(merged))
       }
-      if (!first) await keepPending(pendingFile, unread) // shrunk or gone: after the merged file
+      if (!first) await keepPending(pendingFile, record) // no key added: after the merged file
       return found.map(([old]) => old)
     }, deps.lock)
   } catch {

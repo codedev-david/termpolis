@@ -61,7 +61,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 import {
   adoptAnnotationAliases, createAnnotationStore, withAnnotationFileLock, ANNOTATION_LOCK_DEADLINE_MS, ANNOTATION_LOCK_RETRY_MS,
   ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
-  ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX,
+  ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX, ADOPT_RETRY_BACKOFF_MS, ADOPT_RETRY_OPENS, ADOPT_GIVEN_UP, type PendingKey,
 } from '../../src/main/world/annotations'
 import { CLAIM_TRIES, LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
 import { writeFileSync } from 'node:fs'
@@ -156,8 +156,13 @@ describe('adoptAnnotationAliases', () => {
     await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
   })
   describe('an older file another program holds through every retry (WP3 round 2)', () => {
-    const quick = { sleep: async () => undefined }
+    const DAY = 24 * 60 * 60 * 1000
+    let clock = Date.now()
+    // Every read of this clock is a day after the last, so a key in the record is always due at the next open (M5).
+    const quick = { sleep: async () => undefined, now: () => (clock += DAY) }
     const pending = (): string => `${fileFor('new-key')}${ADOPT_PENDING_SUFFIX}`
+    const record = async (): Promise<PendingKey[]> => JSON.parse(await readFile(pending(), 'utf8')) as PendingKey[]
+    const pendingKeys = async (): Promise<string[]> => (await record()).map((p) => p.key)
     const holdOld = (opens = 1): void => { faults.busy = `${sha256('old-key')}.json`; faults.busyReads = LOCKED_ATTEMPTS * opens }
 
     it('is not given up on: the next open adopts it, and the record of it goes', async () => {
@@ -165,7 +170,7 @@ describe('adoptAnnotationAliases', () => {
       holdOld()
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
       await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await pendingKeys()).toEqual(['old-key'])
       // the next open: the file reads now
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual(['old-key'])
       expect((await createAnnotationStore(dir).list('new-key')).b1[0].text).toBe('the billing door')
@@ -184,7 +189,7 @@ describe('adoptAnnotationAliases', () => {
       await store.add('new-key', 'b2', claim('added since'))
       holdOld() // still held on the next open: nothing is written, the record stays
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual([])
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await pendingKeys()).toEqual(['old-key'])
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['old-key'])
       const got = await store.list('new-key')
       expect(got.b1.map((c) => c.text)).toEqual(['older'])
@@ -198,7 +203,7 @@ describe('adoptAnnotationAliases', () => {
       await writeFile(pending(), JSON.stringify(['old-key']), 'utf8')
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
       expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{"b1": [')
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await pendingKeys()).toEqual(['old-key'])
       await writeFile(fileFor('new-key'), '{}', 'utf8')
       await writeFile(pending(), '{"not":"a list"}', 'utf8')
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
@@ -213,18 +218,21 @@ describe('adoptAnnotationAliases', () => {
       const later = JSON.stringify({ b2: [{ text: 'a later note', state: 'verified', evidence: [{ kind: 'review', ref: 'a later kind' }] }] })
       await writeFile(fileFor('new-key'), later, 'utf8')
       await writeFile(pending(), JSON.stringify(['old-key']), 'utf8')
-      // every backup name taken: the merge is held back, the file and the record stay
+      // every backup name taken (each read of the clock takes the next CLAIM_TRIES): the merge is held back, the file and
+      // the record stay
+      let made = 0
       const crowded = (): number => {
-        for (let n = 1; n <= CLAIM_TRIES; n++) writeFileSync(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`, 'taken')
+        for (let n = made + 1; n <= made + CLAIM_TRIES; n++) writeFileSync(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`, 'taken')
+        made += CLAIM_TRIES
         return at
       }
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { ...quick, now: crowded })).toEqual([])
       expect(await readFile(fileFor('new-key'), 'utf8')).toBe(later)
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
-      for (let n = 1; n <= CLAIM_TRIES; n++) await rm(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`)
-      // a backup can be made: it holds the file as it was, and the merge lands
-      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { ...quick, now: () => at })).toEqual(['old-key'])
-      expect(await readFile(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-1.bad`, 'utf8')).toBe(later)
+      expect(await pendingKeys()).toEqual(['old-key'])
+      for (let n = 1; n <= made; n++) await rm(`${fileFor('new-key')}.2026-11-23T01-02-03-004Z-${n}.bad`)
+      // a backup can be made (a day later: the record's key is due again): it holds the file as it was, and the merge lands
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { ...quick, now: () => at + DAY })).toEqual(['old-key'])
+      expect(await readFile(`${fileFor('new-key')}.2026-11-24T01-02-03-004Z-1.bad`, 'utf8')).toBe(later)
       expect((await createAnnotationStore(dir).list('new-key')).b1[0].text).toBe('older')
     })
 
@@ -244,7 +252,7 @@ describe('adoptAnnotationAliases', () => {
       faults.renamedTo = []
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['other'])
       expect(faults.renamedTo).toEqual([pending(), fileFor('new-key')]) // the record first: a crash after it still retries
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await pendingKeys()).toEqual(['old-key'])
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['old-key'])
       expect(Object.keys(await store.list('new-key')).sort()).toEqual(['b1', 'b2'])
     })
@@ -310,11 +318,108 @@ describe('adoptAnnotationAliases', () => {
       faults.busyReads = LOCKED_ATTEMPTS
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'held'], { sleep })).toEqual([])
       expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{"b2": [')
-      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key', 'held'])
+      expect(await pendingKeys()).toEqual(['old-key', 'held'])
       await writeFile(fileFor('new-key'), JSON.stringify({ b2: [claim('the host')] }), 'utf8') // reads now
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'held'], quick)).toEqual(['old-key', 'held'])
       expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2', 'b3'])
       await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    describe('a key that can never be read costs a few reads in all, not about a second on every open (M5)', () => {
+      const T0 = Date.UTC(2026, 10, 24, 9)
+      const heldFor = (): number => { faults.busy = `${sha256('old-key')}.json`; faults.busyReads = 1_000_000; return faults.busyReads }
+
+      it('it is tried after a back-off that doubles, ADOPT_RETRY_OPENS times in all, then given up on with a log line', async () => {
+        await createAnnotationStore(dir).add('old-key', 'b1', claim('held for good'))
+        const start = heldFor()
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          let t = T0
+          const deps = { sleep: async () => undefined, now: () => t }
+          const triedAt: number[] = []
+          // An open every minute for four hours.
+          for (let open = 0; open < 240; open++, t += 60_000) {
+            const before = faults.busyReads
+            expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], deps)).toEqual([])
+            const reads = before - faults.busyReads
+            expect([0, LOCKED_ATTEMPTS]).toContain(reads) // a try reads the file through its retries; any other open, not at all
+            if (reads > 0) triedAt.push(t)
+          }
+          expect(triedAt).toHaveLength(ADOPT_RETRY_OPENS)
+          expect(start - faults.busyReads).toBe(ADOPT_RETRY_OPENS * LOCKED_ATTEMPTS)
+          // each try waits twice as long as the one before it: 1, 2, 4 ... 64 minutes
+          expect(triedAt.slice(1).map((at, i) => at - triedAt[i])).toEqual(Array.from({ length: ADOPT_RETRY_OPENS - 1 }, (_, i) => ADOPT_RETRY_BACKOFF_MS * 2 ** i))
+          expect(await record()).toEqual([{ key: 'old-key', tries: ADOPT_RETRY_OPENS, next: ADOPT_GIVEN_UP }]) // given up on, for good
+          expect(warn).toHaveBeenCalledTimes(1)
+          expect(String(warn.mock.calls[0][0])).toBe(`[world annotations] an older key's annotations could not be adopted in ${ADOPT_RETRY_OPENS} tries and are no longer tried; their file is left as it was`)
+          expect(String(warn.mock.calls[0][0])).not.toContain(dir)
+          faults.busy = ''
+          expect(await readFile(fileFor('old-key'), 'utf8')).toContain('held for good') // its file is left as it was
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('an open before the next try is due reads only the record: no older file, no lock, the record left as it is', async () => {
+        await createAnnotationStore(dir).add('old-key', 'b1', claim('held'))
+        await createAnnotationStore(dir).add('new-key', 'b2', claim('own'))
+        heldFor()
+        let t = T0
+        const deps = { sleep: async () => undefined, now: () => t }
+        await writeFile(pending(), JSON.stringify(['old-key']), 'utf8') // a round 2 record: tried once, due now
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], deps)).toEqual([])
+        expect(await record()).toEqual([{ key: 'old-key', tries: 2, next: T0 + ADOPT_RETRY_BACKOFF_MS * 2 }])
+        const reads = faults.busyReads
+        const text = await readFile(pending(), 'utf8')
+        faults.renamedTo = []
+        t += ADOPT_RETRY_BACKOFF_MS * 2 - 1
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], deps)).toEqual([])
+        expect(faults.busyReads).toBe(reads)
+        expect(faults.renamedTo).toEqual([])
+        expect(await readFile(pending(), 'utf8')).toBe(text)
+        expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([])
+        // due: tried, and read at last
+        t += 1
+        faults.busy = ''
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], deps)).toEqual(['old-key'])
+        await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      })
+
+      it('only the keys that are due are read; the others keep their place in the record as they were', async () => {
+        const store = createAnnotationStore(dir)
+        await store.add('old-key', 'b1', claim('due'))
+        await store.add('later-key', 'b3', claim('not due yet'))
+        await store.add('new-key', 'b2', claim('own'))
+        const wait = { key: 'later-key', tries: 3, next: T0 + 1 }
+        await writeFile(pending(), JSON.stringify([{ key: 'old-key', tries: 2, next: T0 }, wait]), 'utf8')
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'later-key'], { sleep: async () => undefined, now: () => T0 })).toEqual(['old-key'])
+        expect(await record()).toEqual([wait])
+        expect(Object.keys(await store.list('new-key')).sort()).toEqual(['b1', 'b2'])
+      })
+
+      it("a new key's file that does not read counts as a try of every due key, so it too is not read on every open", async () => {
+        await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+        await writeFile(fileFor('new-key'), '{"b1": [', 'utf8')
+        await writeFile(pending(), JSON.stringify([{ key: 'old-key', tries: ADOPT_RETRY_OPENS - 2, next: T0 }]), 'utf8')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { sleep: async () => undefined, now: () => T0 })).toEqual([])
+          expect(await record()).toEqual([{ key: 'old-key', tries: ADOPT_RETRY_OPENS - 1, next: T0 + ADOPT_RETRY_BACKOFF_MS * 2 ** (ADOPT_RETRY_OPENS - 2) }])
+          expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { sleep: async () => undefined, now: () => T0 + DAY })).toEqual([])
+          expect(await record()).toEqual([{ key: 'old-key', tries: ADOPT_RETRY_OPENS, next: ADOPT_GIVEN_UP }])
+          expect(warn).toHaveBeenCalledTimes(1)
+          expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{"b1": [') // left as it was
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('entries of neither shape are dropped from the record', async () => {
+        await createAnnotationStore(dir).add('new-key', 'b2', claim('own'))
+        await writeFile(pending(), JSON.stringify([7, null, { key: 'a' }, { key: 'b', tries: 1 }, { key: 3, tries: 1, next: 0 }, { key: 'gone', tries: 1, next: 0 }]), 'utf8')
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['gone'], { sleep: async () => undefined, now: () => T0 })).toEqual([])
+        await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' }) // 'gone' has no file: nothing left to try
+      })
     })
 
     it('waits between the reads of a held file with the real pause when no sleep is given', async () => {
