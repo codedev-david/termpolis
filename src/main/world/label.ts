@@ -251,10 +251,80 @@ const isArr = (v: unknown): v is unknown[] => Array.isArray(v)
 const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr)
 const cap = (s: string, n: number): string => s.trim().slice(0, n)
 
-/** Internal dots in filenames and numbers have no following space. Skip common abbreviations too. */
-function firstSentence(s: string): string {
-  const end = /(?:(?<!\b(?:e\.g|i\.e|Mr|Mrs|Ms|Dr|Prof))\.|[!?])[.!?]*["'”’)\]]*(?=\s|$)/i.exec(s)
-  return end ? s.slice(0, end.index + end[0].length) : s
+/** CJK stops end a sentence wherever they stand; the others only before a space or the end, past any closers. */
+const CJK_STOPS = '。！？'
+const STOPS = '.!?…'
+const CLOSERS = `"')]}”’»」』`
+/** Abbreviations whose full stop ends nothing: Latin ones in any case, titles only as written. */
+const LATIN_ABBREVIATIONS = new Set(['vs', 'etc', 'approx'])
+const TITLES = new Set(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'No', 'Inc', 'Ltd', 'Co', 'Jr', 'Sr'])
+const isLetter = (c: string): boolean => /\p{L}/u.test(c)
+
+/** Whether the full stop at `dot` closes an abbreviation: the last dot of a dotted chain (U.S., e.g., a.k.a.) or a listed word. */
+function abbreviation(s: string, dot: number): boolean {
+  if (dot >= 2 && s[dot - 2] === '.' && isLetter(s[dot - 1])) return true
+  let w = dot
+  while (w > 0 && isLetter(s[w - 1])) w--
+  const word = s.slice(w, dot)
+  return TITLES.has(word) || LATIN_ABBREVIATIONS.has(word.toLowerCase())
+}
+
+/**
+ * The index just past the first sentence's end (its stops and closers), or -1 when none starts at or before
+ * `limit`. One pass, so a long run of stops costs linear time. A stop glued to the next character (a file name, a
+ * version) ends nothing; "!" and "?" always end one before a space; a single "." does not after an abbreviation,
+ * and a "." or "…" does not when a lowercase letter follows.
+ */
+function sentenceEnd(s: string, limit = s.length): number {
+  for (let i = 0; i < s.length && i <= limit; i++) {
+    if (CJK_STOPS.includes(s[i])) {
+      let k = i + 1
+      while (k < s.length && (CJK_STOPS.includes(s[k]) || CLOSERS.includes(s[k]))) k++
+      return k
+    }
+    if (!STOPS.includes(s[i])) continue
+    let j = i + 1
+    while (j < s.length && STOPS.includes(s[j])) j++
+    let k = j
+    while (k < s.length && CLOSERS.includes(s[k])) k++
+    let n = k
+    while (n < s.length && /\s/.test(s[n])) n++
+    const glued = n === k && n < s.length
+    const ends =
+      !glued &&
+      (/[!?]/.test(s.slice(i, j)) || (!(j === i + 1 && s[i] === '.' && abbreviation(s, i)) && (n === s.length || !/\p{Ll}/u.test(s[n]))))
+    if (ends) return k
+    i = j - 1
+  }
+  return -1
+}
+
+/** Prose keeps its first sentence; one that ends past `limit` is cut by the cap anyway, so the scan stops there. */
+function firstSentence(s: string, limit: number): string {
+  const t = s.trim()
+  const end = sentenceEnd(t, limit)
+  return end < 0 ? t : t.slice(0, end)
+}
+
+/**
+ * Names, labels and chips are not sentences, so they are never cut: one holding a sentence break is refused
+ * (undefined, the code-derived value stays), and one lone closing full stop is taken off.
+ */
+function asName(s: string): string | undefined {
+  const t = s.trim()
+  const end = sentenceEnd(t)
+  if (end === -1) return t
+  if (end < t.length) return undefined
+  return /(?:^|[^.!?…])\.$/.test(t) ? t.slice(0, -1).trimEnd() : t
+}
+
+/** How a cited value is fitted to its field: undefined or '' refuses it. */
+type Fit = (s: string, n: number) => string | undefined
+const prose = (s: string, n: number): string => cap(firstSentence(s, n), n)
+const proseWords: Fit = (s, n) => capWords(firstSentence(s, n), n)
+const named: Fit = (s, n) => {
+  const t = asName(s)
+  return t === undefined ? undefined : cap(t, n)
 }
 
 /**
@@ -308,7 +378,7 @@ function claimsFrom(o: Json, key: string, evidenceOf: ReadonlyMap<string, Eviden
     const itemEvidence = own(item, 'evidence')
     if (!isStr(itemText) || !isStrArr(itemEvidence)) throw new Reject()
     const labels = [...new Set(itemEvidence)]
-    const text = cap(firstSentence(itemText), MAX_CLAIM_TEXT)
+    const text = prose(itemText, MAX_CLAIM_TEXT)
     // A claim citing nothing, or anything outside this batch, is dropped.
     if (labels.length === 0 || text === '' || labels.some((l) => !evidenceOf.has(l))) continue
     out.push({ text, state: 'inferred', evidence: labels.slice(0, MAX_EVIDENCE).map((l) => ({ ...(evidenceOf.get(l) as Evidence) })) })
@@ -323,16 +393,16 @@ function citations(raw: unknown, evidenceOf: ReadonlyMap<string, Evidence>): str
   return isStrArr(cites) ? [...new Set(cites)].filter((l) => evidenceOf.has(l)) : []
 }
 
-/** A cited text field: `{ value: string, evidence: ["E1"] }`. A bare string, a wrong type, or no valid citation: undefined
- *  (the caller keeps the code-derived value). */
-function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Evidence>, fit: (s: string, n: number) => string = cap): string | undefined {
+/** A cited text field: `{ value: string, evidence: ["E1"] }`. A bare string, a wrong type, no valid citation, or a
+ *  value its fit refuses: undefined (the caller keeps the code-derived value). */
+function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Evidence>, fit: Fit): string | undefined {
   return citedOf(own(o, key), max, ev, fit)
 }
 
-function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>, fit: (s: string, n: number) => string = cap): string | undefined {
+function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>, fit: Fit): string | undefined {
   const v = own(raw, 'value')
   if (!isStr(v) || v.trim() === '' || citations(raw, ev).length === 0) return undefined
-  return fit(firstSentence(v), max)
+  return fit(v, max) || undefined
 }
 
 function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): string[] | undefined {
@@ -341,10 +411,13 @@ function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): str
   return isStrArr(v) && citations(raw, ev).length > 0 ? shortList(v) : undefined
 }
 
+/** Chips kept whole: one too long for a chip (with room for a closing full stop) or holding a sentence break is dropped. */
 function shortList(v: string[]): string[] {
   return v
-    .map((x) => firstSentence(x).trim())
-    .filter((x) => x !== '' && x.length <= MAX_ITEM)
+    .map((x) => x.trim())
+    .filter((x) => x.length <= MAX_ITEM + 1)
+    .map(asName)
+    .filter((x): x is string => x !== undefined && x !== '' && x.length <= MAX_ITEM)
     .slice(0, MAX_LIST)
 }
 
@@ -352,12 +425,12 @@ function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, E
   try {
     if (!isObj(raw)) throw new Reject()
     const out: Record<string, unknown> = {}
-    const name = citedText(raw, 'name', MAX_NAME, ev)
+    const name = citedText(raw, 'name', MAX_NAME, ev, named)
     if (name !== undefined) {
       out.name = name
       out.nameInferred = name !== b.name
     }
-    const techLabel = citedText(raw, 'techLabel', MAX_LABEL, ev)
+    const techLabel = citedText(raw, 'techLabel', MAX_LABEL, ev, named)
     if (techLabel !== undefined) out.techLabel = techLabel
     const stack = citedList(raw, 'stack', ev)
     if (stack) out.stack = stack
@@ -374,7 +447,7 @@ function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, E
         if (!isStrArr(members) || members.some((m) => !buildingMembers.has(m))) {
           throw new Reject()
         }
-        const name = citedText(f, 'name', MAX_NAME, ev)
+        const name = citedText(f, 'name', MAX_NAME, ev, named)
         return name === undefined ? null : { name, tech: citedList(f, 'tech', ev) ?? [], members }
       })
       // Keep the full file-derived layout if any proposed floor lacks a cited name.
@@ -392,12 +465,12 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
     const out: Record<string, unknown> = {}
     // The line's description and its technology chips cite an excerpt like every other field; uncited, the
     // identifiers the code found stay.
-    const label = citedText(raw, 'label', MAX_LABEL, ev)
+    const label = citedText(raw, 'label', MAX_LABEL, ev, prose)
     if (label !== undefined) out.label = label
     // The cargo names a line in the legend: cut at a word, never mid-word.
-    const cargo = citedText(raw, 'cargo', MAX_CARGO, ev, capWords)
+    const cargo = citedText(raw, 'cargo', MAX_CARGO, ev, proseWords)
     if (cargo !== undefined) out.cargo = cargo
-    const rate = citedText(raw, 'rate', MAX_LABEL, ev)
+    const rate = citedText(raw, 'rate', MAX_LABEL, ev, named)
     if (rate !== undefined) out.rate = rate
     const tech = citedList(raw, 'tech', ev)
     if (tech) out.tech = tech
@@ -414,9 +487,9 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
 function validDistrict(raw: unknown, ev: ReadonlyMap<string, Evidence>): { name?: string; subtitle?: string } | null {
   if (!isObj(raw)) return null
   const out: { name?: string; subtitle?: string } = {}
-  const name = citedText(raw, 'name', MAX_NAME, ev)
+  const name = citedText(raw, 'name', MAX_NAME, ev, named)
   if (name !== undefined) out.name = name
-  const sub = citedText(raw, 'subtitle', MAX_LABEL, ev)
+  const sub = citedText(raw, 'subtitle', MAX_LABEL, ev, prose)
   if (sub !== undefined) out.subtitle = sub
   return out
 }
@@ -954,7 +1027,7 @@ function applyReply(
     for (const [term, def] of Object.entries(glossary)) {
       if (n === MAX_GLOSSARY) break
       // A definition citing no excerpt of this batch is dropped: there is no code-derived glossary value to keep.
-      const text = citedOf(def, MAX_GLOSSARY_DEF, evidence)
+      const text = citedOf(def, MAX_GLOSSARY_DEF, evidence, prose)
       if (text === undefined || term.trim() === '') continue
       const k = cap(term, MAX_NAME)
       if (RESERVED_TERMS.has(k)) continue

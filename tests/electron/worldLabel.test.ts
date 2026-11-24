@@ -207,7 +207,7 @@ describe('labelWorld', () => {
             { text: 'Reads, e.g. CSV with index.ts at v1.5.2. Then encrypts.', evidence: ['E1'] },
             { text: 'Reads at a rate of 1.5! then encrypts.', evidence: ['E1'] }
           ],
-          stack: F(['Node.js. Extra claim.'])
+          stack: F(['Node.js.', 'Node.js. Extra claim.'])
         }
       },
       glossary: { CSV: F('Comma-separated values. Extra claim.') }
@@ -219,7 +219,8 @@ describe('labelWorld', () => {
       'Reads at a rate of 1.5!'
     ])
     expect(l.districts.d1.subtitle).toBe('CSV support.')
-    expect(l.buildings.a.stack).toEqual(['Node.js.'])
+    // A chip is a name, not a sentence: its full stop goes, and a chip holding a second sentence is dropped.
+    expect(l.buildings.a.stack).toEqual(['Node.js'])
     expect(l.glossary.CSV).toBe('Comma-separated values.')
   })
 
@@ -242,10 +243,10 @@ describe('labelWorld', () => {
 
   it('drops uncited floor tech while retaining a cited floor name', async () => {
     const reply = JSON.stringify({
-      buildings: { a: { floors: [{ name: F('CSV parser. Extra claim.'), tech: ['Uncited tech'], members: ['src/a/one.ts', 'src/a/two.ts'] }] } }
+      buildings: { a: { floors: [{ name: F('CSV parser.'), tech: ['Uncited tech'], members: ['src/a/one.ts', 'src/a/two.ts'] }] } }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
-    expect(l.buildings.a.floors).toEqual([{ name: 'CSV parser.', tech: [], members: ['src/a/one.ts', 'src/a/two.ts'] }])
+    expect(l.buildings.a.floors).toEqual([{ name: 'CSV parser', tech: [], members: ['src/a/one.ts', 'src/a/two.ts'] }])
   })
 
   it('caps claims and lengths', async () => {
@@ -2059,5 +2060,153 @@ describe('caveat 1 fix round 1', () => {
     } finally {
       info.mockRestore()
     }
+  })
+})
+
+describe('label review 1: sentences, names and chips', () => {
+  const E = edgeId({ from: 'a', to: 'b' })
+  /** Labels the two-district grouping with one reply: building a's fields, plus any top-level extras. */
+  const withA = (a: object, extra: object = {}) =>
+    labelWorld(twoDistricts(), mkDeps({ llm: async () => JSON.stringify({ buildings: { a }, ...extra }) }))
+  const claim = (text: string) => ({ text, evidence: ['E1'] })
+  const howOf = async (text: string) => (await withA({ how: [claim(text)] })).buildings.a.how.map((c) => c.text)
+
+  // I1: a run of full stops not followed by a space made the splitter quadratic, before the text was capped.
+  it('splits a 100,000-dot reply in linear time, and caps it as before', async () => {
+    const dots = `Parses${'.'.repeat(100_000)}x`
+    const t0 = performance.now()
+    const l = await withA(
+      { name: F(dots), techLabel: F(dots), stack: F([dots, `ts${'.'.repeat(100_000)}`]), how: [claim(dots)], why: [claim(`${'!'.repeat(100_000)}x`)] },
+      { district: { subtitle: F(dots) }, edges: { [E]: { label: F(dots), cargo: F(dots), rate: F(dots) } }, glossary: { CSV: F(dots) } }
+    )
+    expect(performance.now() - t0).toBeLessThan(2000)
+    expect(l.buildings.a.how[0].text).toBe(dots.slice(0, 400))
+    expect(l.buildings.a.why[0].text).toBe('!'.repeat(400))
+    expect(l.districts.d1.subtitle).toBe(dots.slice(0, 120))
+    expect(l.glossary.CSV).toBe(dots.slice(0, 240))
+    expect(l.edges[E].label).toBe(dots.slice(0, 120))
+    // The cargo is cut at a word, and the trailing stops go with the cut.
+    expect(l.edges[E].cargo).toBe('Parses…')
+    expect(l.buildings.a.name).toBe(dots.slice(0, 60))
+    expect(l.buildings.a.techLabel).toBe(dots.slice(0, 120))
+    // A chip longer than a chip may be is dropped, never cut.
+    expect(l.buildings.a.stack).toEqual([])
+  })
+
+  it('a sentence that ends past the cap is cut at the cap, as the whole text would be', async () => {
+    const long = `${'word '.repeat(90)}ends here. Second sentence.`
+    expect(await howOf(long)).toEqual([long.slice(0, 400)])
+    const l = await withA({}, { edges: { [E]: { cargo: F('Carries the parsed rows. Then more.') } } })
+    expect(l.edges[E].cargo).toBe('Carries the parsed rows.')
+  })
+
+  // I2: prose keeps its abbreviations whole, and names and chips are never cut as if they were sentences.
+  it.each([
+    'Rejects requests from U.S. users without a key.',
+    'Chooses CSV vs. JSON per file.',
+    'Handles CSV, JSON, etc. for imports.',
+    'Uses a.k.a. aliases.',
+    'Reads, i.e. Parses the file.',
+    'Parses CSV. then encrypts every record.',
+    'Loads index.ts. and v1.5.2 too.'
+  ])('keeps the prose claim %j whole', async (text) => {
+    expect(await howOf(text)).toEqual([text])
+  })
+
+  it.each(['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'No', 'Inc', 'Ltd', 'Co', 'Jr', 'Sr', 'vs', 'etc', 'approx', 'VS', 'Etc', 'Approx'])(
+    'does not end a sentence at the abbreviation %s.',
+    async (abbr) => {
+      expect(await howOf(`Calls ${abbr}. Smith first. Then more.`)).toEqual([`Calls ${abbr}. Smith first.`])
+    }
+  )
+
+  it.each([
+    ['Calls Smith. Then more.', 'Calls Smith.'],
+    // Only the capitalised form of a title is one: a plain "no" ends its sentence.
+    ['The answer is no. Then it exits.', 'The answer is no.'],
+    ['Plan B. Then retry.', 'Plan B.'],
+    ['Says "hi." Then more.', 'Says "hi."'],
+    ['Loading... Then parse.', 'Loading...'],
+    ['Done?! Next part.', 'Done?!'],
+    ['Reads at a rate of 1.5! then encrypts.', 'Reads at a rate of 1.5!'],
+    ['Waits? yes, then runs.', 'Waits?'],
+    ['Parses 3 files. 2 more later.', 'Parses 3 files.'],
+    ['Parses CSV. `run` is next.', 'Parses CSV.'],
+    // M2: the ellipsis character and CJK terminators end a sentence; CJK needs no space after it.
+    ['Parses CSV… Encrypts all.', 'Parses CSV…'],
+    ['Parses CSV… then encrypts all.', 'Parses CSV… then encrypts all.'],
+    ['解析CSV。加密每条记录。', '解析CSV。'],
+    ['解析！加密。', '解析！'],
+    ['解析？加密。', '解析？'],
+    ['解析。」加密。', '解析。」'],
+    ['Trailing stop.', 'Trailing stop.']
+  ])('keeps the first sentence of %j', async (text, first) => {
+    expect(await howOf(text)).toEqual([first])
+  })
+
+  it.each([
+    ['U.S. Payments', 'U.S. Payments'],
+    ['St. Louis Ops', 'St. Louis Ops'],
+    ['Billing vs. Search', 'Billing vs. Search'],
+    ['No. 2 queue', 'No. 2 queue'],
+    ['Billing Inc.', 'Billing Inc.'],
+    ['Node.js', 'Node.js'],
+    ['Billing.', 'Billing'],
+    ['Billing...', 'Billing...'],
+    ['"Billing."', '"Billing."'],
+    ['Billing!', 'Billing!']
+  ])('keeps the cited name %j as %j', async (value, shown) => {
+    const l = await withA(
+      { name: F(value), techLabel: F(value) },
+      { district: { name: F(value) }, edges: { [E]: { rate: F(value) } } }
+    )
+    expect(l.districts.d1.name).toBe(shown)
+    expect(l.buildings.a.name).toBe(shown)
+    expect(l.buildings.a.techLabel).toBe(shown)
+    expect(l.edges[E].rate).toBe(shown)
+  })
+
+  it.each(['Billing. Handles every payment', 'v2. API', '.', '解析。加密'])('keeps the code-derived name when the cited name %j holds a sentence break', async (value) => {
+    const l = await withA(
+      { name: F(value), techLabel: F(value), floors: [{ name: F(value), members: ['src/a/one.ts'] }] },
+      { district: { name: F(value) }, edges: { [E]: { rate: F(value) } } }
+    )
+    expect(l.districts.d1.name).toBe('Alpha')
+    expect(l.buildings.a.name).toBe('a-name')
+    expect(l.buildings.a.techLabel).toBe('IPC')
+    expect(l.edges[E].rate).toBe('')
+    expect(l.buildings.a.floors.map((f) => f.name)).toEqual(['one', 'two'])
+  })
+
+  it('keeps chips whole, drops one that holds a sentence break, and takes a lone full stop off', async () => {
+    const chips = ['Node.js.', 'Next.js', 'U.S.', 'Loading...', 'Node.js. Extra claim.', '.', `${'z'.repeat(40)}.`, `${'z'.repeat(41)}.`]
+    const l = await withA({ stack: F(chips), floors: [{ name: F('Core.'), tech: F(chips), members: ['src/a/one.ts', 'src/a/two.ts'] }] }, { edges: { [E]: { tech: F(chips) } } })
+    const kept = ['Node.js', 'Next.js', 'U.S.', 'Loading...', 'z'.repeat(40)]
+    expect(l.buildings.a.stack).toEqual(kept)
+    expect(l.buildings.a.floors).toEqual([{ name: 'Core', tech: kept, members: ['src/a/one.ts', 'src/a/two.ts'] }])
+    expect(l.edges[E].tech).toEqual(kept)
+  })
+
+  it('an edge label is a description: it keeps its first sentence', async () => {
+    const l = await withA({}, { edges: { [E]: { label: F('Hands the view its data. Then more.') } } })
+    expect(l.edges[E].label).toBe('Hands the view its data.')
+  })
+
+  // M3: the model's floors partition the building, so one uncited floor among cited ones drops them all.
+  it('keeps the file-derived floors when one of several floors is uncited, or the model lists none', async () => {
+    const derived = [
+      { name: 'one', tech: [], members: ['src/a/one.ts'] },
+      { name: 'two', tech: [], members: ['src/a/two.ts'] }
+    ]
+    const mixed = await withA({ floors: [{ name: F('Entry'), members: ['src/a/one.ts'] }, { name: 'Uncited', members: ['src/a/two.ts'] }] })
+    expect(mixed.buildings.a.floors).toEqual(derived)
+    const none = await withA({ name: F('Named'), floors: [] })
+    expect(none.buildings.a.name).toBe('Named')
+    expect(none.buildings.a.floors).toEqual(derived)
+    const both = await withA({ floors: [{ name: F('Entry'), members: ['src/a/one.ts'] }, { name: F('Rest'), members: ['src/a/two.ts'] }] })
+    expect(both.buildings.a.floors).toEqual([
+      { name: 'Entry', tech: [], members: ['src/a/one.ts'] },
+      { name: 'Rest', tech: [], members: ['src/a/two.ts'] }
+    ])
   })
 })
