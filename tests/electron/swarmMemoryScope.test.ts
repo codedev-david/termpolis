@@ -143,3 +143,35 @@ describe('cancel checkpoints in memorySearch', () => {
     expect(scored).toBe(2) // rerank off: the cross-encoder is never asked
   })
 })
+
+describe('WP5: keys that keep the case on Linux, and short Git Bash spellings (review I6)', () => {
+  it('a note keyed before WP5 (the path lowercased) still matches the folder however its case is spelled', async () => {
+    drop([line('old', 'axolotl gill notes', { project: 'Repo', projectKey: sha('/srv/x/repo') })])
+    initSwarmMemory(dir)
+    expect(ids(await memorySearch({ query: 'axolotl gill', project: '/srv/X/Repo', limit: 5 }))).toEqual(['old'])
+    expect(ids(memoryList({ project: '/srv/X/Repo' }))).toEqual(['old'])
+  })
+
+  it.runIf(process.platform === 'linux')('Linux: two folders that differ only in case keep their notes apart', async () => {
+    initSwarmMemory(dir)
+    const upper = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes upper', project: '/srv/x/Repo' })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'tapir notes lower', project: '/srv/x/repo' })
+    expect(upper.projectKey).toBe(sha('/srv/x/Repo'))
+    expect(ids(await memorySearch({ query: 'tapir notes', project: '/srv/x/Repo', strictProject: true, limit: 5 }))).toEqual([upper.id])
+  })
+
+  it.runIf(process.platform === 'win32')('Windows: a Git Bash short spelling is read as the long folder, and a note keyed by the short spelling keeps matching', async () => {
+    const long = fs.realpathSync.native(dir)
+    const target = path.join(long, 'Project Folder With Long Name')
+    fs.mkdirSync(target)
+    const short = target.replace('Project Folder With Long Name', 'PROJEC~1')
+    const bash = `/${short[0].toLowerCase()}${short.slice(2).split(path.sep).join('/')}`
+    drop([line('then', 'manatee feeding schedule', { project: 'PROJEC~1', projectKey: sha(bash.replace(/^\/(\w)/, '$1:').toLowerCase()) })])
+    initSwarmMemory(dir)
+    if (!fs.existsSync(short)) return // 8.3 names are off on this volume: nothing to spell out
+    const e = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'manatee feeding new', project: bash })
+    expect(e.projectKey).toBe(projectKeyOf(target))
+    expect(ids(await memorySearch({ query: 'manatee feeding', project: bash, limit: 5 }))).toEqual([e.id, 'then'].sort())
+    expect(ids(await memoryListLong({ project: bash }))).toEqual([e.id, 'then'].sort())
+  })
+})

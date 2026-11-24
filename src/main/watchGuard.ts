@@ -121,9 +121,10 @@ export async function probeNestedRepo(absDir: string): Promise<boolean> {
   }
 }
 
-/** Platforms whose usual file systems fold case (NTFS, APFS), so `Src` and `src` are one directory there. A
- *  lookup, not a comparison, so the rule has no branch that only one platform can reach. */
-export const CASE_FOLDING_PLATFORMS: ReadonlySet<string> = new Set(['win32', 'darwin'])
+/** Platforms whose usual file systems fold case (NTFS, APFS), so `Src` and `src` are one directory there: the one case
+ *  rule, kept in shared/caseFolding.ts (WP5) so project and folder keys read the same set. */
+import { CASE_FOLDING_PLATFORMS } from '../shared/caseFolding'
+export { CASE_FOLDING_PLATFORMS }
 
 export interface IgnoreFilterOptions {
   /** The watched root. Event names are relative to it. */

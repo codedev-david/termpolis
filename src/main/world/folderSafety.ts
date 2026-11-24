@@ -7,15 +7,20 @@
 //    so a symlink committed to a hostile repository can never lead indexing to a file elsewhere.
 import * as fsp from 'node:fs/promises'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
+import { foldsCase } from '../../shared/caseFolding'
 
-/** A folder as a comparable key: resolved, and lowercased where the file system ignores case. */
-export function folderKey(p: string, isWindows: boolean = process.platform === 'win32'): string {
+/** Whether this platform's file systems ignore case (WP5 X03: the one rule project keys, the code index and the watchers use).
+ *  The `isWindows` options below name this: true folds case. */
+const FOLDS_CASE = foldsCase()
+
+/** A folder as a comparable key: resolved, and lowercased where the file system ignores case (Windows and macOS). */
+export function folderKey(p: string, isWindows: boolean = FOLDS_CASE): string {
   const r = resolve(p)
   return isWindows ? r.toLowerCase() : r
 }
 
 /** Whether `child` is `parent` itself or somewhere inside it. */
-export function isInside(parent: string, child: string, isWindows: boolean = process.platform === 'win32'): boolean {
+export function isInside(parent: string, child: string, isWindows: boolean = FOLDS_CASE): boolean {
   const rel = relative(folderKey(parent, isWindows), folderKey(child, isWindows))
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }

@@ -339,9 +339,10 @@ import { lumopolisNonce, registerLumopolisIpc } from './world/lumopolisOpen'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
 import { adoptAnnotationAliases, createAnnotationStore, withAnnotations } from './world/annotations'
-import { createSourceRegistry } from './world/sources'
+import { createSourceRegistry, keyForSource } from './world/sources'
+import { adoptWorldAliases } from './world/worldAdoption'
 import { testPickedFolder, testSavePath } from './world/testHooks'
-import { createWorldStore } from './world/worldStore'
+import { createWorldStore, worldFileName } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { createWorldRuns } from './world/worldRuns'
@@ -651,7 +652,7 @@ async function reflectOnTask(
 import { buildContextPrimer, type PrimerRecent, type PrimerSearch } from './contextPrimer'
 import { createPrimerCache } from './primerCache'
 import { createAskPrimer, createAskPrimerWarm, lockAwareBuild, trackWrittenProjects } from './askPrimer'
-import { expandShortPath, projectKeyAliases } from './projectKey'
+import { expandShortPath, learnCaseRule, projectKeyAliases } from './projectKey'
 import type { HostLaneName } from './hostLane'
 import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
@@ -2875,7 +2876,19 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
   }),
   warm: (root) => { void askPrimerWarm(root) },
   // WPA fix M2: a root whose key WPA changed (a Git Bash or WSL spelling) brings the annotations made under its older key along.
-  prepare: async (root) => { await adoptAnnotationAliases(worldUserData, graphKeyForRoot(root), projectKeyAliases(root).slice(1)) },
+  // WP5: on Linux the key now keeps the folder's case, so the saved world and its recent-list line follow too (copied, never moved).
+  prepare: async (root) => {
+    await learnCaseRule(root) // WP5 (review S6): on a Mac, whether the folder's volume keeps case, before it is keyed
+    const key = graphKeyForRoot(root)
+    const aliases = projectKeyAliases(root).slice(1)
+    await adoptWorldAliases(key, aliases, {
+      store: createWorldStore(worldUserData),
+      hasWorld: (k) => fsPromises.access(join(worldUserData, 'world', worldFileName(k))).then(() => true, () => false),
+      registry: worldSources,
+      keyOf: keyForSource,
+    })
+    await adoptAnnotationAliases(worldUserData, key, aliases)
+  },
 }, worldDesigner, {
   registry: worldSources,
   designs: worldDesignStore,
@@ -4149,7 +4162,8 @@ function dropAskPrimers(): void { askPrimers.clear() }
 // and release passes, a sync reload, a key or encryption change, an import), and the store restarting, drops the primers.
 onMemoryChanged(() => dropAskPrimers())
 /** WPA fix I5: the Ask's folder with its 8.3 short parts spelled out, before it keys the cache and scopes the reads. */
-const expandAskRoot = (root: string): Promise<string> => expandShortPath(root)
+// WP5 (review S6): and on a Mac, whether its volume keeps case, before it is keyed.
+const expandAskRoot = (root: string): Promise<string> => expandShortPath(root).then(async (long) => (await learnCaseRule(long), long))
 const askPrimer = createAskPrimer({
   cache: askPrimers,
   limit: () => getPrimerLimit(),

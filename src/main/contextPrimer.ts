@@ -26,7 +26,7 @@ import { adaptiveGate, dedupeHits, diversifyHits, dropOverlapping, dropPrefixDup
 import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
-import { projectKeyAliases, projectKeyOf } from './projectKey'
+import { projectKeyAliases } from './projectKey'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -359,12 +359,14 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // of the folder (and, once memory sync stamps a memory with its repository's key, by that key and the aliases of
   // the computers that wrote it), so whose key a note carries is its to judge, not the path hash worked out here.
   // Only a read that named no project has to be told apart by key in this builder: two repos can share a folder name.
-  const projectKey = opts.projectPath && opts.projectPath.trim() ? projectKeyOf(opts.projectPath.trim()) : undefined
+  // WP5: every key this folder's notes may carry (projectKeyAliases), so a note written under an older spelling, or on
+  // Linux before WP5 kept the case, is this folder's own and not another's.
+  const ownKeys = new Set(opts.projectPath && opts.projectPath.trim() ? projectKeyAliases(opts.projectPath.trim()) : [])
   const foreignNote = (h: PrimerHit, scoped = false): boolean => {
     if (!isClaudeNote(h)) return false
     if (slugOf(h) !== project) return true
-    if (project === '') return !(projectKey !== undefined && h.projectKey === projectKey) // belongs to no project
-    return !scoped && projectKey !== undefined && h.projectKey !== undefined && h.projectKey !== projectKey
+    if (project === '') return !(h.projectKey !== undefined && ownKeys.has(h.projectKey)) // belongs to no project
+    return !scoped && ownKeys.size > 0 && h.projectKey !== undefined && !ownKeys.has(h.projectKey)
   }
   const withoutForeignNotes = (hits: PrimerHit[], scoped: boolean): PrimerHit[] =>
     (hits.some((h) => foreignNote(h, scoped)) ? hits.filter((h) => !foreignNote(h, scoped)) : hits)

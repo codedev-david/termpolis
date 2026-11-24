@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { foldsCase } from '../../src/main/projectKey'
 import {
   FORBIDDEN_FOLDER,
   confinedReader,
@@ -29,7 +30,9 @@ describe('folderKey and isInside', () => {
     const p = join(dir, 'Shop')
     expect(folderKey(p, true)).toBe(folderKey(p, false).toLowerCase())
     expect(folderKey(p, false)).toBe(p)
-    expect(folderKey(p)).toBe(process.platform === 'win32' ? p.toLowerCase() : p)
+    // WP5 X03: the one case rule project keys use (Windows and macOS fold case, Linux keeps it).
+    expect(folderKey(p)).toBe(process.platform === 'win32' || process.platform === 'darwin' ? p.toLowerCase() : p)
+    expect(folderKey(p) === p.toLowerCase()).toBe(foldsCase())
   })
 
   it('is true for the folder itself and anything below it, false for a sibling, a parent or a look-alike prefix', () => {

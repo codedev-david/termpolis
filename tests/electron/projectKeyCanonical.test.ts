@@ -1,11 +1,11 @@
 // WPA item 4: one folder, one key, however the path is spelled.
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import * as crypto from 'crypto'
 import {
-  canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart, SHORT_SCAN_MAX,
-  SHORT_MEMO_MAX, SHORT_MEMO_HIT_MS, SHORT_MEMO_MISS_MS,
+  canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart, SHORT_SCAN_MAX, foldsCase,
+  SHORT_MEMO_MAX, SHORT_MEMO_HIT_MS, SHORT_MEMO_MISS_MS, learnCaseRule, _resetCaseRuleForTests,
 } from '../../src/main/projectKey'
-import type { ShortPathFs } from '../../src/main/projectKey'
+import type { CaseProbeFs, ShortPathFs } from '../../src/main/projectKey'
 import { promises as fsp } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -26,7 +26,7 @@ describe('canonicalProjectPath', () => {
     for (const f of forms) expect(canonicalProjectPath(f, 'win32')).toBe('c:/users/david/repos/termpolis')
   })
   it('the Git Bash drive is only read as a drive on Windows', () => {
-    expect(canonicalProjectPath('/c/Users/x', 'linux')).toBe('/c/users/x')
+    expect(canonicalProjectPath('/c/Users/x', 'linux')).toBe('/c/Users/x') // Linux keeps the case (WP5 X02)
     expect(canonicalProjectPath('/c/Users/x', 'darwin')).toBe('/c/users/x')
   })
   it('a one-letter folder that is not first, or a longer first folder, is left alone', () => {
@@ -259,6 +259,161 @@ describe('expandShortPath on a real Windows file system (8.3 names)', () => {
       // The junction first, as a link (never through it), then the folder.
       await fsp.rm(path.join(parent, 'junctionnamewpa'), { force: true }).catch(() => fsp.rmdir(path.join(parent, 'junctionnamewpa')).catch(() => {}))
       await fsp.rm(parent, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('WP5 X02/X03: one case rule for project keys and folder keys', () => {
+  it('foldsCase: Windows and macOS ignore case, Linux keeps it; it defaults to this platform', () => {
+    expect(foldsCase('win32')).toBe(true)
+    expect(foldsCase('darwin')).toBe(true)
+    expect(foldsCase('linux')).toBe(false)
+    expect(foldsCase()).toBe(foldsCase(process.platform))
+  })
+  it('on Linux two folders that differ only in case are two keys; on Windows and macOS one', () => {
+    expect(projectKeyOf('/home/me/Repo', 'linux')).not.toBe(projectKeyOf('/home/me/repo', 'linux'))
+    expect(canonicalProjectPath('/home/me/Repo', 'linux')).toBe('/home/me/Repo')
+    expect(projectKeyOf('/Users/me/Repo', 'darwin')).toBe(projectKeyOf('/Users/me/repo', 'darwin'))
+    expect(projectKeyOf('C:\\Me\\Repo', 'win32')).toBe(projectKeyOf('c:\\me\\repo', 'win32'))
+  })
+  it('on Linux the lowercased key every note had before WP5 stays an alias, right after the new key', () => {
+    expect(projectKeyAliases('/home/me/Repo', 'linux')).toEqual([sha('/home/me/Repo'), sha('/home/me/repo')])
+    expect(projectKeyAliases('/home/me//Repo', 'linux')).toEqual([sha('/home/me/Repo'), sha('/home/me/repo'), sha('/home/me//repo')])
+  })
+})
+
+describe('WP5, review I6: a Git Bash spelling with an 8.3 part', () => {
+  const fakeFs = (tree: Record<string, string[]>, ids: Record<string, number>): ShortPathFs => ({
+    readdir: vi.fn(async (dir: string) => { if (!tree[dir]) throw new Error('ENOENT'); return tree[dir] }),
+    ino: vi.fn(async (p: string) => { if (ids[p] === undefined) throw new Error('ENOENT'); return ids[p] }),
+  })
+  const tree = (): ShortPathFs => fakeFs(
+    { 'C:\\Users\\': ['Public', 'DavidEngelhart'] },
+    { 'C:\\Users\\DAVIDE~1': 7, 'C:\\Users\\Public': 1, 'C:\\Users\\DavidEngelhart': 7 },
+  )
+  it('is read as its Windows path before the parts are looked up, and hits the native long path\'s key', async () => {
+    const long = 'C:\\Users\\DavidEngelhart\\repo'
+    for (const spelled of ['/c/Users/DAVIDE~1/repo', '/cygdrive/c/Users/DAVIDE~1/repo/', '"/c/Users/DAVIDE~1/repo"', 'file:///C:/Users/DAVIDE~1/repo']) {
+      const out = await expandShortPath(spelled, 'win32', tree())
+      expect(out).toBe(long)
+      expect(projectKeyOf(out, 'win32')).toBe(projectKeyOf(long, 'win32'))
+    }
+    // A part with no long name leaves the shell spelling as it was.
+    expect(await expandShortPath('/c/Users/NOPE~1/repo', 'win32', tree())).toBe('/c/Users/NOPE~1/repo')
+    // A POSIX folder Windows cannot name, or a UNC share, is probed as given.
+    const fs = tree()
+    expect(await expandShortPath('/usr/DAVIDE~1', 'win32', fs)).toBe('/usr/DAVIDE~1')
+    expect((fs.ino as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/usr/DAVIDE~1')
+    const unc = fakeFs({ '//srv/share/': ['Longer Name'] }, { '//srv/share/LONGER~1': 3, '//srv/share/Longer Name': 3 })
+    expect(await expandShortPath('//srv/share/LONGER~1', 'win32', unc)).toBe('//srv/share/Longer Name')
+  })
+  it('the keys of the short spelling asked with stay aliases of the long one, so a note written under it keeps matching', () => {
+    const long = 'C:\\Users\\DavidEngelhart\\repo'
+    const asked = '/c/Users/DAVIDE~1/repo'
+    const keys = projectKeyAliases(long, 'win32', asked)
+    expect(keys.slice(0, 3)).toEqual(projectKeyAliases(long, 'win32'))
+    expect(keys).toContain(sha('c:/users/davide~1/repo')) // what WPA gave it while the shell spelling was never expanded
+    expect(keys).toContain(sha('/c/users/davide~1/repo')) // what it was given before WPA
+    expect(projectKeyAliases(long, 'win32', long)).toEqual(projectKeyAliases(long, 'win32'))
+    expect(projectKeyAliases(long, 'win32', 7)).toEqual(projectKeyAliases(long, 'win32'))
+  })
+})
+
+describe('WP5, review I6, on a real Windows file system', () => {
+  it('a Git Bash spelling of a real short name and the native long path hit the same key', async (ctx) => {
+    if (process.platform !== 'win32') { console.warn('skipped: 8.3 short names exist only on Windows'); ctx.skip(); return }
+    const parent = await fsp.mkdtemp(path.join(os.tmpdir(), 'wp5i6-'))
+    try {
+      await fsp.mkdir(path.join(parent, 'longfoldernamewpfive'))
+      let shortOn = true
+      try { await fsp.lstat(path.join(parent, 'LONGFO~1')) } catch { shortOn = false }
+      if (!shortOn) { console.warn('skipped: 8.3 short names are turned off on this volume (fsutil 8dot3name)'); ctx.skip(); return }
+      const native = path.join(await expandShortPath(parent), 'longfoldernamewpfive')
+      const short = path.join(parent, 'LONGFO~1')
+      const bash = `/${short[0].toLowerCase()}${short.slice(2).split(path.sep).join('/')}`
+      expect(projectKeyOf(bash)).not.toBe(projectKeyOf(native)) // the spelling alone cannot tell them apart
+      expect(projectKeyOf(await expandShortPath(bash))).toBe(projectKeyOf(native))
+    } finally {
+      await fsp.rm(parent, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('WP5, review S6: a Mac folder keeps its case on a case-sensitive volume', () => {
+  // A fake volume: `ids` gives each path that exists its file id; a path not in it does not exist.
+  const volume = (ids: Record<string, number>): CaseProbeFs & ReturnType<typeof vi.fn> =>
+    vi.fn(async (p: string) => {
+      if (ids[p] === undefined) throw new Error('ENOENT')
+      return { dev: 1n, ino: BigInt(ids[p]) }
+    }) as CaseProbeFs & ReturnType<typeof vi.fn>
+  afterEach(() => _resetCaseRuleForTests())
+
+  it('folds case on macOS until the folder\'s volume is found to keep it, and then keeps the case of it and what is inside it', async () => {
+    expect(projectKeyOf('/Volumes/Work/Project', 'darwin')).toBe(projectKeyOf('/Volumes/Work/project', 'darwin'))
+    const fs = volume({ '/Volumes/Work/Project': 3, '/Volumes/Work/project': 4 }) // pROJECT absent: two folders differ only in case
+    expect(await learnCaseRule('/Volumes/Work/Project/', 'darwin', fs)).toBe(false)
+    expect(fs.mock.calls.map((c) => c[0])).toEqual(['/Volumes/Work/Project', '/Volumes/Work/pROJECT'])
+    expect(canonicalProjectPath('/Volumes/Work/Project', 'darwin')).toBe('/Volumes/Work/Project')
+    expect(canonicalProjectPath('/Volumes/Work/Project/Sub', 'darwin')).toBe('/Volumes/Work/Project/Sub')
+    expect(projectKeyOf('/Volumes/Work/Project', 'darwin')).not.toBe(projectKeyOf('/Volumes/Work/project', 'darwin'))
+    // A sibling never asked about, or a folder whose name only starts the same, keeps the macOS rule.
+    expect(canonicalProjectPath('/Volumes/Work/ProjectTwo', 'darwin')).toBe('/volumes/work/projecttwo')
+    // The key every note had before carries on as an alias, so saved notes and worlds are still found.
+    expect(projectKeyAliases('/Volumes/Work/Project', 'darwin')).toEqual([sha('/Volumes/Work/Project'), sha('/volumes/work/project')])
+    // Asked again: answered from what it learned, with no file system call.
+    expect(await learnCaseRule('/Volumes/Work/Project', 'darwin', fs)).toBe(false)
+    expect(fs).toHaveBeenCalledTimes(2)
+  })
+
+  it('folds case on a volume that ignores it (the default APFS): the swapped name is the same entry', async () => {
+    const fs = volume({ '/Users/me/Repo': 7, '/Users/me/rEPO': 7 })
+    expect(await learnCaseRule('/Users/me/Repo', 'darwin', fs)).toBe(true)
+    expect(canonicalProjectPath('/Users/me/Repo', 'darwin')).toBe('/users/me/repo')
+    // Another entry under the swapped name (another device, or another file) is a volume that keeps case.
+    const other = vi.fn(async (p: string) => ({ dev: p.endsWith('rEPO') ? 2n : 1n, ino: 7n }))
+    expect(await learnCaseRule('/Users/me/Repo', 'darwin', other)).toBe(true) // remembered from the first ask
+    _resetCaseRuleForTests()
+    expect(await learnCaseRule('/Users/me/Repo', 'darwin', other)).toBe(false)
+  })
+
+  it('asks the nearest ancestor with a letter that can be read, and keeps the macOS rule when there is none', async () => {
+    const fs = volume({ '/srv/Data': 1 }) // the folder itself (not yet made) and '123' have nothing to ask with
+    expect(await learnCaseRule('/srv/Data/123/new', 'darwin', fs)).toBe(false)
+    expect(fs.mock.calls.map((c) => c[0])).toEqual(['/srv/Data/123/new', '/srv/Data', '/srv/dATA'])
+    expect(canonicalProjectPath('/srv/Data/123/new', 'darwin')).toBe('/srv/Data/123/new')
+    expect(await learnCaseRule('/1/2', 'darwin', volume({}))).toBe(true)
+    expect(await learnCaseRule('/nothing/here', 'darwin', volume({}))).toBe(true)
+    expect(canonicalProjectPath('/nothing/here', 'darwin')).toBe('/nothing/here'.toLowerCase())
+  })
+
+  it('touches nothing off macOS, nor for a bare name, and answers the platform rule', async () => {
+    const fs = volume({})
+    expect(await learnCaseRule('C:\\Work\\Repo', 'win32', fs)).toBe(true)
+    expect(await learnCaseRule('/home/me/Repo', 'linux', fs)).toBe(false)
+    expect(await learnCaseRule('repo', 'darwin', fs)).toBe(true)
+    expect(await learnCaseRule('repo', 'linux', fs)).toBe(false)
+    expect(fs).not.toHaveBeenCalled()
+  })
+
+  it('remembers a bounded number of answers', async () => {
+    const fs = volume({})
+    for (let i = 0; i < 300; i++) await learnCaseRule(`/a/f${i}x`, 'darwin', fs)
+    const calls = fs.mock.calls.length
+    await learnCaseRule('/a/f0x', 'darwin', fs) // the oldest answer was dropped: asked again
+    expect(fs.mock.calls.length).toBeGreaterThan(calls)
+    await learnCaseRule('/a/f299x', 'darwin', fs)
+    expect(fs.mock.calls.length).toBe(calls + 2)
+  })
+
+  it.runIf(process.platform === 'darwin')('on this Mac: a folder on the boot volume answers as the volume does', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'wp5s6-Case-'))
+    try {
+      const folds = await learnCaseRule(dir)
+      let sameEntry = true
+      try { await fsp.lstat(dir.replace('wp5s6-Case-', 'WP5S6-cASE-')) } catch { sameEntry = false }
+      expect(folds).toBe(sameEntry)
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true })
     }
   })
 })

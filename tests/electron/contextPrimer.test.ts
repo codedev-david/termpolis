@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { MIN_RECENT_CHARS, buildContextPrimer, worldPrimerLine, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
-import { projectKeyOf } from '../../src/main/projectKey'
+import { projectKeyAliases, projectKeyOf } from '../../src/main/projectKey'
 import { KEEP_SCORE, lessonSubstance } from '../../src/main/lessonSubstance'
 
 const hits: PrimerHit[] = [
@@ -804,6 +804,17 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
 
     it('ignores a blank full path', async () => {
       expect((await build([note('n1', 'a note', { projectKey: otherKey })], { projectPath: '   ' }))!).toContain('a note')
+    })
+
+    // WP5: a note keyed by an older spelling of this folder (projectKeyAliases) is this folder's own, not another's.
+    it('a note keyed by an older spelling of this folder is shown in a search nothing scoped', async () => {
+      const aliasKey = projectKeyAliases(MINE)[1]
+      expect(aliasKey).toBeDefined()
+      const list = [note('n1', 'a note written from another spelling of my termpolis', { projectKey: aliasKey }), note('n2', 'a note about the other termpolis', { projectKey: otherKey })]
+      const search = vi.fn(async (o: { project?: string }) => (o.project ? [] : list))
+      const out = (await buildContextPrimer(search, { query: 'q', project: proj, projectPath: MINE, now: NOW }))!
+      expect(out).toContain('another spelling of my termpolis')
+      expect(out).not.toContain('the other termpolis')
     })
   })
 

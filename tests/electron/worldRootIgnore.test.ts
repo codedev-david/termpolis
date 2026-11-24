@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { parseRootIgnore, readRootIgnore } from '../../src/main/world/rootIgnore'
+import { foldsCaseAt, parseRootIgnore, readRootIgnore } from '../../src/main/world/rootIgnore'
 
 describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', () => {
   it('a name or glob with no slash matches at any depth, files and folders alike', () => {
@@ -94,6 +94,49 @@ describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', 
       fs.writeFileSync(path.join(dir, '.gitignore'), 'out-of-here/\r\n')
       const ig = await readRootIgnore(dir)
       expect(ig?.('out-of-here', true)).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // WP5, WP1 F1: git matches ignoring case when core.ignorecase is on, which it sets on a file system that folds case.
+  it('matches ignoring case only when asked to', () => {
+    const exact = parseRootIgnore('Build/\n*.LOG\n')
+    expect(exact('build', true)).toBe(false)
+    expect(exact('a.log', false)).toBe(false)
+    expect(exact('Build', true)).toBe(true)
+    const folded = parseRootIgnore('Build/\n*.LOG\n', { foldCase: true })
+    expect(folded('build', true)).toBe(true)
+    expect(folded('src/a.log', false)).toBe(true)
+    expect(parseRootIgnore('*.log\n!Keep.log\n', { foldCase: true })('keep.LOG', false)).toBe(false)
+  })
+
+  it('asks the folder\'s file system whether it folds case, as git does: the .gitignore under another case is the same file', async () => {
+    const ids = (map: Record<string, { dev: bigint | number; ino: bigint | number }>) =>
+      async (p: string) => {
+        const id = map[path.basename(p)]
+        if (!id) throw new Error('ENOENT')
+        return id
+      }
+    expect(await foldsCaseAt('/r', ids({ '.gitignore': { dev: 1n, ino: 9n }, '.GITIGNORE': { dev: 1n, ino: 9n } }))).toBe(true)
+    expect(await foldsCaseAt('/r', ids({ '.gitignore': { dev: 1n, ino: 9n }, '.GITIGNORE': { dev: 1n, ino: 8n } }))).toBe(false)
+    expect(await foldsCaseAt('/r', ids({ '.gitignore': { dev: 1n, ino: 9n }, '.GITIGNORE': { dev: 2n, ino: 9n } }))).toBe(false)
+    expect(await foldsCaseAt('/r', ids({ '.gitignore': { dev: 1n, ino: 9n } }))).toBe(false)
+    // No file ids (0), or no .gitignore at all: the platform decides (Windows and macOS fold case).
+    const byPlatform = process.platform === 'win32' || process.platform === 'darwin'
+    expect(await foldsCaseAt('/r', ids({ '.gitignore': { dev: 1, ino: 0 } }))).toBe(byPlatform)
+    expect(await foldsCaseAt('/r', ids({}))).toBe(byPlatform)
+  })
+
+  it('reads a real folder\'s case rule into its matcher', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'root-ignore-case-'))
+    try {
+      fs.writeFileSync(path.join(dir, '.gitignore'), 'Dist/\n')
+      const folds = await foldsCaseAt(dir)
+      expect(folds).toBe(fs.existsSync(path.join(dir, '.GITIGNORE')))
+      expect((await readRootIgnore(dir))?.('dist', true)).toBe(folds)
+      const same = async () => ({ dev: 1n, ino: 5n })
+      expect((await readRootIgnore(dir, same))?.('dist', true)).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

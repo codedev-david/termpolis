@@ -9,8 +9,12 @@
 // walk never enters that folder.
 // Not supported, and left out (the line is skipped): [] character classes and backslash escapes (so \! and \# lines
 // too); nor are .gitignore files further down, .git/info/exclude or the user's global excludes read.
-import { readFile } from 'node:fs/promises'
+// Case (WP5, WP1 F1): git matches patterns ignoring case when core.ignorecase is on, and sets it when it makes a repository
+// on a file system that ignores case (Windows and macOS, as a rule). A folder outside git has no config to read, so the
+// walk asks its file system the same question git asks: whether the .gitignore answers to another case (foldsCaseAt).
+import { lstat, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { foldsCase } from '../../shared/caseFolding'
 
 /** Whether a folder-relative path (`/` separated) is ignored; `isDir` tells a folder from a file. */
 export type IgnoreMatcher = (rel: string, isDir: boolean) => boolean
@@ -26,7 +30,7 @@ interface Rule {
 const glob = (part: string): string =>
   part.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*+/g, '[^/]*').replace(/\?/g, '[^/]')
 
-function rule(line: string): Rule | null {
+function rule(line: string, foldCase: boolean): Rule | null {
   let p = line.replace(/\s+$/, '')
   if (p === '' || p.startsWith('#') || /[[\\]/.test(p)) return null
   const negated = p.startsWith('!')
@@ -47,12 +51,16 @@ function rule(line: string): Rule | null {
     if (part === '**') re += i === 0 ? (last ? '.*' : '(?:.*/)?') : last ? '/.+' : '(?:/.+)?'
     else re += (i > 0 && !(i === 1 && parts[0] === '**') ? '/' : '') + glob(part)
   })
-  return { re: new RegExp(`^${re}$`), dirOnly, negated }
+  return { re: new RegExp(`^${re}$`, foldCase ? 'i' : ''), dirOnly, negated }
 }
 
-/** The matcher for a .gitignore's text. */
-export function parseRootIgnore(text: string): IgnoreMatcher {
-  const rules = text.split(/\r?\n/).map(rule).filter((r): r is Rule => r !== null)
+/** The matcher for a .gitignore's text; `foldCase` matches its patterns ignoring case, as git does with core.ignorecase. */
+export function parseRootIgnore(text: string, opts: { foldCase?: boolean } = {}): IgnoreMatcher {
+  const foldCase = opts.foldCase === true
+  const rules = text
+    .split(/\r?\n/)
+    .map((line) => rule(line, foldCase))
+    .filter((r): r is Rule => r !== null)
   return (rel, isDir) => {
     let ignored = false
     for (const r of rules) if ((isDir || !r.dirOnly) && r.re.test(rel)) ignored = !r.negated
@@ -60,8 +68,24 @@ export function parseRootIgnore(text: string): IgnoreMatcher {
   }
 }
 
+/** One path's device and file id (lstat: a link is never followed). */
+export type FileIdOf = (path: string) => Promise<{ dev: bigint | number; ino: bigint | number }>
+const realFileId: FileIdOf = (p) => lstat(p, { bigint: true })
+
+/**
+ * Whether the file system under `root` ignores case, found as git finds it for core.ignorecase: the .gitignore asked for
+ * under another case is the same file (same device and file id). A file system with no file ids (0), or a .gitignore gone
+ * since it was read, is judged by the platform (Windows and macOS fold case).
+ */
+export async function foldsCaseAt(root: string, fileId: FileIdOf = realFileId): Promise<boolean> {
+  const own = await fileId(join(root, '.gitignore')).catch(() => null)
+  if (!own || !own.ino) return foldsCase()
+  const other = await fileId(join(root, '.GITIGNORE')).catch(() => null)
+  return other !== null && other.dev === own.dev && other.ino === own.ino
+}
+
 /** The matcher for `root`'s own .gitignore; undefined when it has none, or it cannot be read. */
-export async function readRootIgnore(root: string): Promise<IgnoreMatcher | undefined> {
+export async function readRootIgnore(root: string, fileId?: FileIdOf): Promise<IgnoreMatcher | undefined> {
   const text = await readFile(join(root, '.gitignore'), 'utf8').catch(() => null)
-  return text === null ? undefined : parseRootIgnore(text)
+  return text === null ? undefined : parseRootIgnore(text, { foldCase: await foldsCaseAt(root, fileId) })
 }
