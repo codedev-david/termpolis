@@ -4,7 +4,7 @@
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
 import { createThreeRenderer, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
-import { SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
+import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
@@ -560,22 +560,66 @@ describe('threeRenderer drawn in software', () => {
     }
   })
 
-  it('a fence that never signals holds the looping motions SOFTWARE_LOOP_MAX_MS apart, and a change is still drawn at once', () => {
+  /** Runs screen frames (16 ms) until the next one drawn, at most `max`; returns when it was drawn (performance.now). */
+  const drawnNext = (r: ThreeRenderer, max = 1000): number => {
+    const n = frames(r)
+    for (let k = 0; k < max && frames(r) === n; k++) h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    return performance.now()
+  }
+
+  // world-responsive on the Linux runners: a change was drawn on the next frame whatever the GPU process was still
+  // doing, and a looping frame whose fence had not come was drawn SOFTWARE_LOOP_MAX_MS after the last, so frames
+  // queued in the GPU process, a draw call blocked the page for up to 18 s and Chromium's GPU watchdog ended it.
+  it('a fence that never signals holds every frame back SOFTWARE_FENCE_MAX_MS, a change and the looping motions alike', () => {
     gpu.gpuName = SWIFTSHADER
     gpu.fences.on = true
     gpu.fences.signalAfter = null
     const r = idle(DEFAULT_OPTS)
-    drawnOver(r, 1000)
-    const drawn = drawnOver(r, 3200)
-    expect(drawn).toBeLessThanOrEqual(3200 / SOFTWARE_LOOP_MAX_MS + 1)
-    expect(drawn).toBeGreaterThanOrEqual(Math.floor(3200 / (SOFTWARE_LOOP_MAX_MS + 16)))
-    expect(h.frames.pending()).toBe(1) // never stopped
-    expect(gpu.fences.live.size).toBeLessThanOrEqual(1) // the ones given up on are deleted
-    h.frames.run(3)
-    const n = frames(r)
+    let at = drawnNext(r)
+    for (let k = 0; k < 3; k++) {
+      const next = drawnNext(r)
+      expect(next - at).toBeGreaterThanOrEqual(SOFTWARE_FENCE_MAX_MS)
+      expect(next - at).toBeLessThan(SOFTWARE_FENCE_MAX_MS + 16)
+      at = next
+    }
+    // A change just after a frame waits for that frame's fence too, and is never given up on.
     r.setHovered('a')
+    expect(drawnOver(r, SOFTWARE_FENCE_MAX_MS - 32)).toBe(0)
+    expect(h.frames.pending()).toBe(1)
+    expect(drawnNext(r) - at).toBeLessThan(SOFTWARE_FENCE_MAX_MS + 16)
+    expect(gpu.fences.live.size).toBe(1) // the ones given up on are deleted
+    r.dispose()
+    expect(gpu.fences.live.size).toBe(0)
+  })
+
+  it('a change waits for the GPU to finish the last frame, and is drawn on the first screen frame after', async () => {
+    gpu.gpuName = SWIFTSHADER
+    gpu.fences.on = true
+    gpu.fences.signalAfter = 300 // a city that takes the GPU process 300 ms a frame
+    const r = idle(REDUCED, still())
+    expect(h.frames.pending()).toBe(0) // nothing loops: it sleeps, the last frame's fence kept
+    h.frames.advance(1000)
+    // Long since finished: the change is drawn at once.
+    r.setHovered('p')
     h.frames.step()
-    expect(frames(r)).toBe(n + 1)
+    const at = performance.now()
+    expect(drawnOver(r, 0)).toBe(0)
+    // The next change, a frame later: held until that frame's fence signals.
+    r.setHovered('q')
+    expect(drawnOver(r, 300 - 32)).toBe(0)
+    const next = drawnNext(r)
+    expect(next - at).toBeGreaterThanOrEqual(300)
+    expect(next - at).toBeLessThan(300 + 16)
+    // A flight (moving every frame) is drawn one frame in flight at a time: one frame each 300 ms, not 60 a second.
+    let landed = false
+    void r.flyTo({ pos: [10, 50, 60], target: [0, 0, 0] }).then(() => { landed = true })
+    const drawn = drawnOver(r, 1600)
+    expect(drawn).toBeLessThanOrEqual(1600 / 300 + 1)
+    expect(drawn).toBeGreaterThanOrEqual(Math.floor(1600 / (300 + 16)))
+    expect(gpu.fences.live.size).toBeLessThanOrEqual(1)
+    for (let k = 0; !landed && k < 600; k++) { h.frames.step(); await Promise.resolve() }
+    expect(landed).toBe(true) // it still lands, in fewer frames
     r.dispose()
   })
 

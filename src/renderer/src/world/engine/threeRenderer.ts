@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3, pixelBudgetRatio, SOFTWARE_MAX_PIXELS } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3, pixelBudgetRatio, SOFTWARE_MAX_PIXELS } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -2730,8 +2730,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // Frames are drawn on demand: each change (a draw, a hover, a panel, a hand on the camera, a resize) wakes the
   // loop, which draws while anything moves (a flight, an ease, a change, a pulse, a glide, the looping motions
   // when motion is not reduced, labels still finding their places) and SETTLE_FRAMES more, then asks for no frame
-  // until the next change. An idle city with reduced motion draws nothing. Drawn in software, a frame with nothing
-  // but the looping motions moving is followed by the next one when loopDue says, not on the next frame.
+  // until the next change. An idle city with reduced motion draws nothing. Drawn in software, no frame is drawn while
+  // the GPU is still drawing the last (lastDrawn), and a frame with nothing but the looping motions moving is followed
+  // by the next one loopGap later, not on the next frame.
   const fwd = new THREE.Vector3()
   const right = new THREE.Vector3()
   const up = new THREE.Vector3(0, 1, 0)
@@ -2748,19 +2749,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let loopOnly = false
   let drawnAt = 0
   /**
-   * Drawn in software with only the looping motions moving: whether the next frame is due. Not while the GPU is still
-   * drawing the last one (its fence is not signalled; it is drawn anyway SOFTWARE_LOOP_MAX_MS after, so a fence that
-   * never comes stops nothing), and then loopGap after the last, which the time it took sets.
+   * Drawn in software: whether the GPU has finished the last frame (its fence is signalled, or SOFTWARE_FENCE_MAX_MS
+   * have gone by without it), so no frame is drawn while it is still drawing one. Once it has, what the frame took
+   * sets the looping motions' pace (loopGap; at most a frame of the screen's late, since the fence is read once a
+   * frame), and the fence is deleted.
    */
-  function loopDue(now: number): boolean {
+  function lastDrawn(now: number): boolean {
+    if (!fence) return true
     const since = now - drawnAt
-    if (fence) {
-      const gl = fences()
-      if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && since < SOFTWARE_LOOP_MAX_MS) return false
-      loopGap = softwareLoopGap(since) // at most a frame of the screen's late: the fence is read once a frame
-      dropFence(true)
-    }
-    return since >= loopGap
+    const gl = fences()
+    if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && since < SOFTWARE_FENCE_MAX_MS) return false
+    loopGap = softwareLoopGap(since)
+    dropFence(true)
+    return true
   }
   /**
    * Something changed: frames are drawn until it settles. Asks for a frame unless one is asked for already, or
@@ -2788,9 +2789,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     raf = 0
     // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
     if (host.clientWidth === 0 || host.clientHeight === 0) return
-    // Drawn in software with only the looping motions moving and no change since: this frame is skipped until the
-    // next looping frame is due (loopDue; the clock keeps the wall time, so the motions keep their speed).
-    if (software && loopOnly && !changed && !loopDue(performance.now())) {
+    // Drawn in software: this frame is skipped while the GPU is still drawing the last (lastDrawn), and, with only
+    // the looping motions moving and no change since, until loopGap after the last (the clock keeps the wall time,
+    // so the motions keep their speed).
+    const now = performance.now()
+    if (software && (!lastDrawn(now) || (loopOnly && !changed && now - drawnAt < loopGap))) {
       raf = requestAnimationFrame(animate)
       return
     }
@@ -2869,7 +2872,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
     // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
-    // draws them at the pace loopDue sets: see animate).
+    // draws them at the pace loopGap sets: see animate).
     const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true))
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
