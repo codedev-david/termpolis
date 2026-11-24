@@ -134,7 +134,8 @@ class JsImportMatcher implements Matcher {
  * after e and C the first `{` at or after B. Without the clause the regex matches iff B is `{` and the last non-space
  * before it is a `)` at or after e. `clause` reads the stretch from e to B once and returns the last `)` before B that
  * a clause the regex would accept follows (-1 when none); the rule then also matches when that `)` is at or after e.
- * Either way the match ends just past C. Heads come in order, so e only grows, and each stretch is read once a pass.
+ * Either way the match ends just past C. Heads come in order, so e only grows, and each stretch is read once a pass;
+ * C is remembered too, as every head after a `}` with no `{` near shares it.
  */
 class MethodMatcher implements Matcher {
   lastIndex = 0
@@ -142,6 +143,7 @@ class MethodMatcher implements Matcher {
   private c = -1 // the first { at or after b (-1 when none)
   private solid = -1 // the last non-space before b (-1 when none)
   private clauseAt = -1 // the last ) before b that an accepted clause follows (-1 when none)
+  private readonly open = new NextOf('{') // c: many heads past a `}` share the next `{`
 
   constructor(
     private readonly head: RegExp,
@@ -149,7 +151,10 @@ class MethodMatcher implements Matcher {
   ) {}
 
   exec(text: string): RegExpExecArray | null {
-    if (this.lastIndex === 0) this.b = -1
+    if (this.lastIndex === 0) {
+      this.b = -1
+      this.open.reset()
+    }
     this.head.lastIndex = this.lastIndex
     for (let h = this.head.exec(text); h !== null; h = this.head.exec(text)) {
       const e = h.index + h[0].length
@@ -175,7 +180,7 @@ class MethodMatcher implements Matcher {
       if (!WS.test(ch)) this.solid = b
     }
     this.b = b
-    this.c = text[b] === '{' ? b : text.indexOf('{', b)
+    this.c = text[b] === '{' ? b : this.open.find(text, b)
     this.clauseAt = this.c >= 0 ? this.clause(text, e, b, this.c) : -1
   }
 }

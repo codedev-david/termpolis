@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractFile, languageForFile, type CodeSymbol } from '../../src/main/codeGraphExtract'
+import { linear } from './_linearTime'
 
 const names = (syms: CodeSymbol[]) => syms.map((s) => s.name)
 const byName = (syms: CodeSymbol[], n: string) => syms.find((s) => s.name === n)
@@ -477,6 +478,17 @@ describe('codeGraphExtract', () => {
       }
       // Thousands of blocks that never close: each is found, and the scans for where they end stay linear.
       within(() => expect(extractFile('a.ts', '  a() {\n'.repeat(N / 8))!.symbols.length).toBe(Math.floor(N / 8)))
+    })
+
+    it('method heads after a `}` with no `{` past it share the scan for the next `{`, up to 512 KB', () => {
+      // Each head here has a `}` first, so its facts are read afresh; the `{` the clause needs was searched for again
+      // from each one, to the end of the file.
+      const lines: [string, string][] = [['a.ts', '  a(x)}\n'], ['A.cs', '  a b(x)}\n'], ['a.ts', '  a(x): T}\n'], ['A.cs', '  a b(x) where }\n']]
+      for (const [file, line] of lines) {
+        linear((n) => expect(extractFile(file, line.repeat(Math.floor(n / line.length)))!.symbols).toEqual([]), 128 * 1024, line)
+      }
+      // The `{` they share still ends the match where it did: b's return type runs past its `}` to c's `{`, as before.
+      expect(show('a.ts', 'class K {\n  a(x)}\n  b(x): T}\n  c(): T {\n  }\n}\n').s).toEqual([['K', 'class', 1, 2], ['b', 'method', 3, 5]])
     })
 
     it('const arrows: async, typed, untyped single parameter, multi-line parameters; values are not arrows', () => {
