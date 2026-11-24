@@ -968,4 +968,37 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     doc.buildings[0].members = ['C:Usersdevrepo\\src\\a.ts', 'C:Users\\dev\\x.ts']
     expect(sanitizeWorld(doc, win).buildings[0].members).toEqual(['src/a.ts', `${OUTSIDE}/x.ts`])
   })
+
+  it("reads this machine's folders percent-encoded in a URL, in either case of the hex, as those folders", () => {
+    const mac: SanitizeContext = { root: '/Users/dev/repo', home: '/Users/dev', userData: '/Users/dev/Library/Application Support/Termpolis' }
+    const text: Array<[SanitizeContext, string, string]> = [
+      [posix, 'GET /open?path=%2Fhome%2Fdev%2Frepo%2Fsrc%2Fa.ts&line=3', 'GET /open?path=src/a.ts&line=3'],
+      [posix, 'see ?path=%2fhome%2fdev%2fx now', `see ?path=${OUTSIDE}/x now`],
+      [posix, 'see ?path=%2FHOME%2FDEV now', `see ?path=${OUTSIDE} now`],
+      [posix, 'see %2Fhome%2Fdev%7E1%2Fx now', `see ${OUTSIDE}/x now`],
+      [posix, 'see %2Fhome%2Fdev%2F%E9.ts now', `see ${OUTSIDE}/%E9.ts now`],
+      [win, 'see C%3A%5CUsers%5Cdev%5Crepo%5Cx.json now', 'see x.json now'],
+      [win, 'see c%3a%5cusers%5cdev%5cx now', `see ${OUTSIDE}/x now`],
+      [win, 'see C:%5CUsers%5Cdev%5Cx now', `see ${OUTSIDE}/x now`],
+      [win, 'open file:///c%3A/Users/dev/repo/src/a.ts now', 'open src/a.ts now'],
+      [win, 'see %2F:%2FUsers%2Fdev%2Fx now', `see %2F:${OUTSIDE}/x now`],
+      [win, '{"uri":"vscode://file/c%3A%5CUsers%5Cdev%5Cx"}', `{"uri":"vscode://file/${OUTSIDE}/x"}`],
+      [mac, 'see %2FUsers%2Fdev%2FLibrary%2FApplication%20Support%2FTermpolis%2Fx now', `see ${OUTSIDE}/x now`],
+    ]
+    for (const [ctx, input, want] of text) {
+      const out = sanitizeText(input, ctx)
+      expect(out).toBe(want)
+      expect(out.toLowerCase()).not.toContain('dev')
+    }
+    // Text naming no folder of this machine's keeps its escapes, and so does this machine's folder written plainly.
+    for (const kept of ['see %2Fhome%2Fann%2Fx now', 'see %2Fhome%2Fdevon%2Fx now', 'a 100%3A1 ratio', 'see a%2Fb.ts now', 'see D%3A%5CUsers%5Cdev now', 'see x%2FUsers%2Fdev now']) {
+      expect(sanitizeText(kept, kept.includes('Users') ? win : posix)).toBe(kept)
+    }
+    expect(sanitizeText('see /home/dev/a%20b.ts now', posix)).toBe(`see ${OUTSIDE}/a%20b.ts now`)
+    // As a path field.
+    expect(relativePath('%2Fhome%2Fdev%2Frepo%2Fsrc%2Fa.ts', posix)).toBe('src/a.ts')
+    expect(relativePath('C%3A%5CUsers%5Cdev%5Cx', win)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('src/a%2Fb.ts', posix)).toBe('src/a%2Fb.ts')
+    expect(relativePath('%2F:%2FUsers%2Fdev%2Fx', win)).toBe(`${OUTSIDE}/x`)
+  })
 })

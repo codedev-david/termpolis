@@ -170,7 +170,8 @@ function resolveRelative(segments: string[]): string {
  * `<outside the project>` alone too.
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
-  const read = placedPath(p, ctx)
+  // A path holding a known folder percent-encoded (decodeUrls) is one path: every escape in it is decoded.
+  const read = placedPath(decodeUrls(p, ctx) === p ? p : unescapeUrl(p), ctx)
   const named = `${OUTSIDE}/${baseName(norm(ctx.home).split('/'))}`
   const after = read.slice(named.length)
   return named !== `${OUTSIDE}/` && read.toLowerCase().startsWith(named.toLowerCase()) && !/^[\w.-]/.test(after) ? OUTSIDE + after : read
@@ -297,6 +298,54 @@ function baseSource(base: string): string {
   return `(?:[\\\\/]{2}[?.]|(?<!${IN_UNC})(?=/)|(?<![\\\\/]{2}[^\\s\\\\/"'<>|]+|${IN_UNC}))` + parts.map(escapeRe).join(SEP)
 }
 
+/** A separator as a URL may write it: a slash, a backslash, or either percent-encoded. */
+const URL_SEP = '(?:[\\\\/]|%2F|%5C)+'
+/** A folder name as a URL may write it: as it is or percent-encoded. */
+const urlName = (s: string): string => (encodeURIComponent(s) === s ? escapeRe(s) : `(?:${escapeRe(s)}|${escapeRe(encodeURIComponent(s))})`)
+
+/**
+ * A RegExp source (for the `i` flag) matching folder `base` as a URL may write it, its colon and separators
+ * percent-encoded or not (`C%3A%5CUsers%5Cann`, `%2Fhome%2Fann`), the drive left out as baseSource's `bare` form
+ * does; null for a UNC folder.
+ */
+function urlSource(base: string): string | null {
+  const parts = norm(base).split('/')
+  const names = parts.slice(1).map(urlName).join(URL_SEP)
+  const drive = /^([A-Za-z]):$/.exec(parts[0])
+  if (drive) return `(?:${drive[1]}(?::|%3A)|(?<!\\w|(?<!\\w)[a-z](?::|%3A)))${URL_SEP}${names}`
+  return parts[0] === '' && parts[1] !== '' ? URL_SEP + names : null
+}
+
+/** Each percent escape (a run as one character where it decodes as one) as the character it stands for. */
+const unescapeUrl = (s: string): string => s.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+  try {
+    return decodeURIComponent(run)
+  } catch {
+    return run.replace(/%[0-9a-f]{2}/gi, (e) => { try { return decodeURIComponent(e) } catch { return e } })
+  }
+})
+
+/** Per context: the project root, userData and home folders, longest first, as urlSource writes them. */
+const urlForms = new WeakMap<SanitizeContext, RegExp>()
+
+/**
+ * Text `s` with every path of the project root, userData and home folders that a URL percent-encodes
+ * (`?path=%2Fhome%2Fann%2Fx`, `file:///c%3A/Users/ann`) decoded, its secrets redacted again, up to a character no URL
+ * path holds (whitespace, a quote, `<>|&#?`), so the known pass takes it. Only a folder written with an encoded colon
+ * or separator in it or right after it is decoded, and only at a whole name or a name running on as knownPattern's
+ * `beside` does: a folder written plainly keeps its escapes (`a%20b.ts`).
+ */
+function decodeUrls(s: string, ctx: SanitizeContext): string {
+  let re = urlForms.get(ctx)
+  if (!re) {
+    const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
+      .sort((a, b) => norm(b).length - norm(a).length).map(urlSource).filter((b): b is string => b !== null)
+    re = new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?=[\\\\/~+%]|(?![\\w-]|\\.[\\w.-]))([^\\s"'<>|&#?]*)`, 'gi')
+    urlForms.set(ctx, re)
+  }
+  return s.replace(re, (m: string, base: string, rest: string) => (base.includes('%') || /^%(?:2F|5C)/i.test(rest) ? redact(unescapeUrl(m)) : m))
+}
+
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */
 const redact = (text: string): string => redactSecrets(text).replace(/<redacted(?:-[a-z]+)?>/g, '[redacted]')
 
@@ -344,7 +393,7 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
     return gluedBase(base, a.slice(1, -2) as string[], t.slice(end)) ?? m
   }), text)
   // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
-  return (text) => unglue(redact(text)).replace(known, knownHit).replace(revealing, revealingHit)
+  return (text) => unglue(decodeUrls(redact(text), ctx)).replace(known, knownHit).replace(revealing, revealingHit)
 }
 
 /**
