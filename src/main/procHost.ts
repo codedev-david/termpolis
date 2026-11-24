@@ -279,7 +279,7 @@ export async function handleProcMessage(msg: ProcHostMessage, post?: (m: ProcTre
 
 /** The part of `process` the host's exit handling needs. */
 export interface HostProcessLike {
-  on(event: 'SIGTERM' | 'SIGINT' | 'disconnect' | 'exit', listener: () => void): unknown
+  on(event: 'SIGTERM' | 'SIGINT' | 'exit', listener: () => void): unknown
   exit(code?: number): void
 }
 
@@ -290,10 +290,17 @@ export interface HostExitDeps extends KillTreeDeps {
 /**
  * The host ends the process groups of its `tree` runs on its way out (macOS and Linux). They are
  * detached, so they would outlive it: a SIGTERM or SIGINT to the host (shutdownProcHost's kill, a Ctrl+C
- * in a dev terminal) or the loss of its parent sends them SIGTERM, and the host exits after the grace;
- * its 'exit', however it was reached (process.exit on an unhandled rejection included), sends SIGKILL to
- * every group still unanswered. Only process.kill(-pid): nothing is spawned or listed. A host killed
- * outright runs none of this, which is why it also reports each group to main (ProcTreeMsg).
+ * in a dev terminal) sends them SIGTERM, and the host exits after the grace; its 'exit', however it was
+ * reached (process.exit on an unhandled rejection included), sends SIGKILL to every group still
+ * unanswered. Only process.kill(-pid): nothing is spawned or listed. A host killed outright runs none of
+ * this, which is why it also reports each group to main (ProcTreeMsg).
+ *
+ * Nothing here can see main die, and nothing tries. A utilityProcess has no Node IPC channel, so no
+ * 'disconnect'; its parentPort emits only 'message' and closes silently when the pipe breaks (Electron
+ * 43, shell/services/node/parent_port.cc); and on macOS and Linux Chromium ends a child whose browser
+ * channel breaks with TerminateCurrentProcessImmediately, before any JS (a timer polling process.ppid
+ * included) could run. So a crash of main itself leaves a POSIX group running; every exit main lives
+ * through is covered, here or in procClient.
  *
  * Windows has nothing to do here: a `tree` run's child is not detached there, so libuv puts it in this
  * host's kill-on-close job, and it ends with the host on any exit, a crash included. Its own ordinary
@@ -311,7 +318,6 @@ export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDep
   }
   proc.on('SIGTERM', leave)
   proc.on('SIGINT', leave)
-  proc.on('disconnect', leave)
   proc.on('exit', () => {
     for (const pid of groupsInFlight) signalProcessGroup(pid, 'SIGKILL', deps)
     groupsInFlight.clear()

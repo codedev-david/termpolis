@@ -252,7 +252,7 @@ describe('the host ends its groups on its way out', () => {
     return runExec('claude', ['-p'], { tree: true }, undefined, { platform: 'linux', endTree: vi.fn() })
   }
 
-  it.each(['SIGTERM', 'SIGINT', 'disconnect'] as const)('on %s: SIGTERM to every group, exit after the grace, and SIGKILL to what is left on exit', (event) => {
+  it.each(['SIGTERM', 'SIGINT'] as const)('on %s: SIGTERM to every group, exit after the grace, and SIGKILL to what is left on exit', (event) => {
     void group(4242)
     void group(4343)
     const proc = new FakeProc()

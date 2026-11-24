@@ -3,8 +3,12 @@
 // Electron), with the same exit handlers the real host installs and the same messages main sends it.
 // The run is a node stand-in for `claude -p` that starts a child of its own and sleeps.
 //
+// What the fork harness shares with a utilityProcess: the host's signal and exit handlers, which are
+// Node's own. What it does not: the fork's IPC channel stands in for parentPort, and a utilityProcess has
+// no 'disconnect', so nothing here tests the loss of main (procHost.ts says why nothing handles it).
+//
 //   * macOS and Linux: the run is a detached process group, so nothing ends it with the host unless
-//     someone signals it. A host told to go (SIGTERM, or its parent gone) signals it itself; a host killed
+//     someone signals it. A host told to go (SIGTERM or SIGINT) signals it itself; a host killed
 //     outright cannot, and main signals the group the host reported.
 //   * Windows: the run is in the host's kill-on-close job, and ends with the host however it ends.
 //
@@ -51,8 +55,7 @@ beforeAll(async () => {
     `const host = require(${JSON.stringify(bundle)})`,
     'host.installHostExitHandlers(process)',
     'process.on("message", (m) => {',
-    // A host whose parent is gone has no one to answer.
-    '  const send = (x) => { if (process.connected) process.send(x) }',
+    '  const send = (x) => process.send(x)',
     '  void host.handleProcMessage(m, send).then((r) => { if (r) send(r) })',
     '})',
   ].join('\n'))
@@ -145,7 +148,7 @@ afterAll(() => {
 describe.skipIf(isWin)('a host told to go ends its runs first (macOS and Linux)', () => {
   it.each([
     ['a SIGTERM', (host: ChildProcess) => { host.kill('SIGTERM') }],
-    ['the loss of its parent', (host: ChildProcess) => { host.disconnect() }],
+    ['a SIGINT', (host: ChildProcess) => { host.kill('SIGINT') }],
   ])('on %s, the run\'s whole group ends with it', async (_how, tell) => {
     const { host, exited } = forkHost()
     const pidFile = join(dir, `pids-${++seq}.json`)
