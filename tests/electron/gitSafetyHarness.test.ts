@@ -19,7 +19,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeGitAsync, _resetGitBinForTests } from '../../src/main/gitCommand'
@@ -72,9 +72,36 @@ const runs = (file: string): string => `'${slash(file)}'`
 const fired = (): string[] => readdirSync(markers).sort()
 const clearMarkers = (): void => { for (const f of readdirSync(markers)) rmSync(join(markers, f), { force: true }) }
 
+/** Copies the folder `from` to `to` (made, parents too) one entry at a time. A git folder holds only folders and files. */
+function copyTree(from: string, to: string): void {
+  mkdirSync(to, { recursive: true })
+  for (const e of readdirSync(from, { withFileTypes: true })) {
+    if (e.isDirectory()) copyTree(join(from, e.name), join(to, e.name))
+    else if (e.isFile()) copyFileSync(join(from, e.name), join(to, e.name))
+    else throw new Error(`copyTree: ${join(from, e.name)} is neither a folder nor a file`)
+  }
+}
+
 /** A repository with one commit holding a.txt (and whatever `files` adds), on branch main. */
+/** Whether `dir`'s file system keeps a folder name that ends in a space, with a file inside it, exactly as given. */
+function holdsTrailingSpace(dir: string): boolean {
+  const probe = join(dir, 'probe ')
+  try {
+    mkdirSync(probe)
+    writeFileSync(join(probe, 'f'), '')
+    return readdirSync(dir).includes('probe ') && readdirSync(probe).includes('f')
+  } catch {
+    return false
+  } finally {
+    rmSync(probe, { recursive: true, force: true })
+    rmSync(join(dir, 'probe'), { recursive: true, force: true })
+  }
+}
+
 function newRepo(name: string, files: Record<string, string> = {}): string {
   const dir = join(base, name)
+  // A retried case starts from an empty folder, or its commit finds nothing to commit and hides the first error.
+  rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   git(dir, ['init', '-q', '-b', 'main'])
   writeFileSync(join(dir, 'a.txt'), 'alpha\nbeta\n')
@@ -709,7 +736,7 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     const src = newRepo('nested-src', { '.gitattributes': '*.dat filter=nested\n', 'x.dat': 'one\n' })
     const outer = newRepo('nested-clone')
     const evil = join(outer, 'evil')
-    cpSync(join(src, '.git'), evil, { recursive: true })
+    copyTree(join(src, '.git'), evil)
     git(outer, ['add', '-A'])
     git(outer, ['commit', '-q', '-m', 'a folder that is a git folder'])
     git(evil, ['config', 'core.bare', 'false'])
@@ -731,7 +758,9 @@ describe('git safety harness: the person’s own setup keeps working', () => {
    *  with its work tree that repository, and x.dat there edited. */
   function attackerGitDir(gitDir: string, name: string): void {
     const src = newRepo(`${name}-src`, { '.gitattributes': `*.dat filter=${name}\n`, 'x.dat': 'one\n' })
-    cpSync(join(src, '.git'), gitDir, { recursive: true })
+    // Not fs.cpSync: its native recursive copy on the macOS runner fails now and then with ENOENT on the first
+    // folder inside a fresh destination (`a/.git/objects`, `.git /objects`), whatever the case.
+    copyTree(join(src, '.git'), gitDir)
     git(gitDir, ['config', 'core.bare', 'false'])
     git(gitDir, ['config', 'core.worktree', slash(src)])
     git(gitDir, ['config', `filter.${name}.clean`, runs(plantProgram(`${name}-clean`, 'cat\n'))])
@@ -739,15 +768,27 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     dirty(src, 'x.dat', 'two\n')
   }
 
-  it('a .git file naming `../.git ` (a trailing space) is the folder `.git ` git opens, never the clone’s kept scan', async () => {
-    // Windows refuses a path with a trailing space, so git never opens such a folder there.
-    if (isWindows) return
+  it('a .git file naming `../.git ` (a trailing space) is the folder `.git ` git opens, never the clone’s kept scan', async (ctx) => {
     clearMarkers()
     const proj = newRepo('ws-proj')
+    // The fixture is a folder named `.git ` with files in it, copied in place (never through git's index, which
+    // refuses any path that folds to .git). The case is about the folder git opens, so it runs wherever the file
+    // system holds that name and git opens it: Linux and macOS. On Windows NTFS can hold it (Node writes through
+    // \\?\ paths) but git drops the trailing space and opens `.git`, so there is no such folder for git to open.
+    if (!holdsTrailingSpace(proj)) {
+      ctx.skip('this file system cannot hold a folder name ending in a space')
+      return
+    }
     attackerGitDir(join(proj, '.git '), 'ws')
     const sub = join(proj, 'sub')
     mkdirSync(sub)
     writeFileSync(join(sub, '.git'), 'gitdir: ../.git \n')
+    // rev-parse runs no filter, so asking it which folder it opened fires nothing.
+    if (!git(sub, ['rev-parse', '--absolute-git-dir'], true).replace(/\r?\n$/, '').endsWith('/.git ')) {
+      expect(fired()).toEqual([])
+      ctx.skip('git here does not open a folder whose name ends in a space')
+      return
+    }
     _resetGitBinForTests()
     await safeGitAsync(['status', '--porcelain'], opts(proj))
     await quiet(safeGitAsync(['status', '--porcelain'], opts(sub)))
