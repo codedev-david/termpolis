@@ -632,7 +632,7 @@ describe('the process groups a host reports (macOS and Linux)', () => {
     expect(_trackedGroupsForTests()).toEqual([])
   })
 
-  it('at quit: shutdownProcHost sends SIGTERM, a run the host still answers is forgotten, and will-quit SIGKILLs the rest', () => {
+  it('at quit: shutdownProcHost sends SIGTERM, a run the host answers after it still gets its SIGKILL, and will-quit SIGKILLs the rest', () => {
     vi.useFakeTimers()
     const { transports } = install()
     const a = treeCall(transports)
@@ -641,16 +641,30 @@ describe('the process groups a host reports (macOS and Linux)', () => {
     b.t.tree(b.id, B)
     shutdownProcHost()
     expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [B, 'SIGTERM']])
-    // The host, ending its own groups, answers B before it goes: B's pid is no longer ours to signal.
+    // The host answers B before it goes. That only says B's pipes closed: a member that ignores
+    // SIGTERM and let go of them is still there, so B stays tracked for its SIGKILL.
     a.t.reply({ id: b.id, ok: false, error: { message: 'cancelled', code: 'ABORT_ERR' } })
     a.t.exit(0)
     expect(H.signalProcessGroup).toHaveBeenCalledTimes(2)
+    expect(_trackedGroupsForTests()).toEqual([A, B])
     endProcHostGroupsNow()
-    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[A, 'SIGKILL']])
+    expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[A, 'SIGKILL'], [B, 'SIGKILL']])
     expect(_trackedGroupsForTests()).toEqual([])
-    // The grace's timer went with it.
+    // The grace's timers went with them.
     vi.advanceTimersByTime(TREE_KILL_GRACE_MS * 2)
-    expect(H.signalProcessGroup).toHaveBeenCalledTimes(3)
+    expect(H.signalProcessGroup).toHaveBeenCalledTimes(4)
+  })
+
+  it('a run answered after main sent its group SIGTERM still gets the SIGKILL at the grace', () => {
+    vi.useFakeTimers()
+    const { transports } = install()
+    const { id, t } = treeCall(transports)
+    t.tree(id, A)
+    shutdownProcHost()
+    t.reply({ id, ok: false, error: { message: 'cancelled', code: 'ABORT_ERR' } })
+    vi.advanceTimersByTime(TREE_KILL_GRACE_MS)
+    expect(H.signalProcessGroup.mock.calls).toEqual([[A, 'SIGTERM'], [A, 'SIGKILL']])
+    expect(_trackedGroupsForTests()).toEqual([])
   })
 
   it('a shutdown after a crash does not signal the crashed host\'s group twice', () => {

@@ -38,7 +38,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   _resetProcHostForTests()
   nextPid = 4242
-  H.signalProcessGroup.mockClear()
+  H.signalProcessGroup.mockReset().mockReturnValue('sent')
   H.execFile.mockReset().mockImplementation((_bin: string, _args: string[], o: Record<string, unknown>, cb: ExecFileCb) => {
     spawnOpts = o
     done = cb
@@ -270,6 +270,28 @@ describe('the host ends its groups on its way out', () => {
     proc.emit('exit')
     expect(H.signalProcessGroup.mock.calls.slice(2)).toEqual([[4242, 'SIGKILL', deps], [4343, 'SIGKILL', deps]])
     expect(treeGroupsInFlight()).toEqual([])
+  })
+
+  it('SIGKILLs at the exit every group it sent SIGTERM, a run answered in the grace included, but not one gone at the SIGTERM', async () => {
+    const killed = Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM' }) as NodeJS.ErrnoException
+    const answeredA = group(4242)
+    const answerA = done
+    void group(4343)
+    const answeredC = group(4444)
+    const answerC = done
+    H.signalProcessGroup.mockImplementation((pid: number) => (pid === 4444 ? 'gone' : 'sent'))
+    const proc = new FakeProc()
+    installHostExitHandlers(proc, deps)
+    proc.emit('SIGTERM')
+    // Both answer in the grace, which only means their pipes closed. 4242 got the SIGTERM, so a member
+    // that ignores it and let go of the pipes may still be there; 4444 had no one left to get it.
+    answerA(killed, '', '')
+    answerC(killed, '', '')
+    await Promise.all([answeredA, answeredC])
+    expect(treeGroupsInFlight()).toEqual([4343])
+    vi.advanceTimersByTime(50)
+    proc.emit('exit')
+    expect(H.signalProcessGroup.mock.calls.slice(3)).toEqual([[4242, 'SIGKILL', deps], [4343, 'SIGKILL', deps]])
   })
 
   it('exits at once with no group in flight, signalling nothing', () => {

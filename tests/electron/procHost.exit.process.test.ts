@@ -60,14 +60,30 @@ beforeAll(async () => {
     '})',
   ].join('\n'))
   labeller = join(dir, 'labeller.cjs')
+  const stubborn = [
+    "process.on('SIGTERM', () => {})",
+    "const { renameSync, writeFileSync } = require('fs')",
+    'const [file, lab] = process.argv.slice(1)',
+    "writeFileSync(file + '.tmp', JSON.stringify({ labeller: Number(lab), grandchild: process.pid }))",
+    "renameSync(file + '.tmp', file)",
+    'setTimeout(() => {}, 120000)',
+  ].join('\n')
   writeFileSync(labeller, [
+    `const STUBBORN = ${JSON.stringify(stubborn)}`,
     "const { spawn } = require('child_process')",
     "const { renameSync, writeFileSync } = require('fs')",
+    "const stubborn = process.argv[3] === 'stubborn'",
+    "if (!stubborn) {",
     // An ordinary child, the way an agent's tool subprocess is one: in the stand-in's process group on
     // POSIX, and in the stand-in's own kill-on-close job on Windows.
-    "const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true })",
-    "writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
-    "renameSync(process.argv[2] + '.tmp', process.argv[2])",
+    "  const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true })",
+    "  writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
+    "  renameSync(process.argv[2] + '.tmp', process.argv[2])",
+    "} else {",
+    // A member that ignores SIGTERM and holds none of the run's pipes: the run is answered as soon as
+    // the stand-in dies, while this one lives on. It writes the pid file once its handler is in.
+    "  spawn(process.execPath, ['-e', STUBBORN, process.argv[2], String(process.pid)], { stdio: 'ignore', windowsHide: true })",
+    "}",
     'setTimeout(() => {}, 120000)',
   ].join('\n'))
 }, 60_000)
@@ -122,8 +138,8 @@ function forkHost(): { host: ChildProcess; exited: Promise<void> } {
   return { host, exited }
 }
 
-function labelRequest(id: number, pidFile: string): ProcExecMsg {
-  return { kind: 'exec', id, bin: process.execPath, args: [labeller, pidFile], opts: { tree: true, timeout: 60_000 } }
+function labelRequest(id: number, pidFile: string, ...extra: string[]): ProcExecMsg {
+  return { kind: 'exec', id, bin: process.execPath, args: [labeller, pidFile, ...extra], opts: { tree: true, timeout: 60_000 } }
 }
 
 afterEach(() => {
@@ -162,6 +178,25 @@ describe.skipIf(isWin)('a host told to go ends its runs first (macOS and Linux)'
     expect(await waitDead(lab)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
     await exited
+  }, 60_000)
+
+  it('a member that ignores SIGTERM and let go of the run\'s pipes still gets SIGKILL, though the run was answered', async () => {
+    const { host, exited } = forkHost()
+    const pidFile = join(dir, `pids-${++seq}.json`)
+    const reports: Array<ProcTreeMsg | ProcResult> = []
+    host.on('message', (m) => { reports.push(m as ProcTreeMsg | ProcResult) })
+    host.send(labelRequest(1, pidFile, 'stubborn'))
+    const { labeller: lab, grandchild } = await readPids(pidFile)
+    await vi.waitFor(() => expect(reports).toContainEqual({ kind: 'tree', id: 1, pid: lab }), { timeout: 5_000, interval: 20 })
+    host.kill('SIGTERM')
+    // The stand-in dies on the SIGTERM, its pipes close, and the host answers the run within the grace.
+    await vi.waitFor(() => expect(reports.some((r) => r.kind === 'result' && r.id === 1)).toBe(true), { timeout: 5_000, interval: 20 })
+    expect(await waitDead(lab)).toBe(true)
+    // Answered, and the member that ignored the SIGTERM is still there...
+    expect(isAlive(grandchild)).toBe(true)
+    // ...until the host leaves at the end of the grace.
+    await exited
+    expect(await waitDead(grandchild)).toBe(true)
   }, 60_000)
 })
 

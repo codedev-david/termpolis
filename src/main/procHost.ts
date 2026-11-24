@@ -292,7 +292,9 @@ export interface HostExitDeps extends KillTreeDeps {
  * detached, so they would outlive it: a SIGTERM or SIGINT to the host (shutdownProcHost's kill, a Ctrl+C
  * in a dev terminal) sends them SIGTERM, and the host exits after the grace; its 'exit', however it was
  * reached (process.exit on an unhandled rejection included), sends SIGKILL to every group still
- * unanswered. Only process.kill(-pid): nothing is spawned or listed. A host killed outright runs none of
+ * unanswered and to every group it sent SIGTERM, answered since or not: a run is answered when its pipes
+ * close, and a member that ignores SIGTERM and has let go of them is still there (stop() escalates the
+ * same way). Only process.kill(-pid): nothing is spawned or listed. A host killed outright runs none of
  * this, which is why it also reports each group to main (ProcTreeMsg).
  *
  * Nothing here can see main die, and nothing tries. A utilityProcess has no Node IPC channel, so no
@@ -309,17 +311,22 @@ export interface HostExitDeps extends KillTreeDeps {
  */
 export function installHostExitHandlers(proc: HostProcessLike, deps: HostExitDeps = {}): void {
   let leaving = false
+  /** The groups leave() sent SIGTERM that were there to get it: each gets its SIGKILL at the exit. */
+  const termed = new Set<number>()
   const leave = (): void => {
     if (leaving) return
     leaving = true
     if (groupsInFlight.size === 0) return proc.exit(0)
-    for (const pid of groupsInFlight) signalProcessGroup(pid, 'SIGTERM', deps)
+    for (const pid of groupsInFlight) {
+      if (signalProcessGroup(pid, 'SIGTERM', deps) !== 'gone') termed.add(pid)
+    }
     setTimeout(() => proc.exit(0), deps.graceMs ?? TREE_KILL_GRACE_MS)
   }
   proc.on('SIGTERM', leave)
   proc.on('SIGINT', leave)
   proc.on('exit', () => {
-    for (const pid of groupsInFlight) signalProcessGroup(pid, 'SIGKILL', deps)
+    for (const pid of new Set([...termed, ...groupsInFlight])) signalProcessGroup(pid, 'SIGKILL', deps)
+    termed.clear()
     groupsInFlight.clear()
   })
 }

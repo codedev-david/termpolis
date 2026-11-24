@@ -220,8 +220,10 @@ function ensureTransport(): ProcTransport | null {
         return
       }
       if (!msg || msg.kind !== 'result') return
-      // The run is over: its pid is no longer the host's to report, nor main's to signal.
-      forgetGroup(msg.id)
+      // The run is over: its pid is no longer the host's to report, nor main's to signal. Unless main is
+      // already ending the group: the answer only means its pipes closed, and a member that ignores
+      // SIGTERM and let go of them is still there, so the SIGKILL stays armed (endProcessTree's rule).
+      if (groups.get(msg.id)?.host !== null) forgetGroup(msg.id)
       const p = pending.get(msg.id)
       if (!p) return
       pending.delete(msg.id)
