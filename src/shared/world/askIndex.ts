@@ -89,8 +89,11 @@ export function tokenize(text: string): string[] {
     .map((t) => t.replace(/(ies)$/, 'y').replace(/(ing|ed|es|s)$/, '').replace(/(.)\1$/, '$1') || t)
 }
 
-/** A name or question as typed, for the exact-name match: one Unicode form, lower case, spaces trimmed and folded. */
-const plainName = (s: string): string => s.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+/**
+ * A name or question as typed, for the exact-name match: one Unicode form, lower case, spaces trimmed and folded, and
+ * no variation selector (U+FE0E, U+FE0F), which keyboards and emoji pickers add or leave out for one same emoji.
+ */
+const plainName = (s: string): string => s.normalize('NFC').replace(/[\uFE0E\uFE0F]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
 
 /** Rebuilt in memory from the texts, never JSON round-tripped: the null-prototype maps do not survive JSON. */
 export interface Bm25 { docs: number; avgLen: number; df: Record<string, number>; tf: Record<string, number>[]; len: number[] }

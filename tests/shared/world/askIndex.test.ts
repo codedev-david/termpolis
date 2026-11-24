@@ -427,6 +427,14 @@ describe('names in every script', () => {
     expect(nameFit([named('blank', ' ')], ' ')).toEqual([0])
   })
 
+  it('nameFit fits an emoji typed with or without a variation selector, on either side', () => {
+    const e = [named('heart', '\u2764\uFE0F'), named('plain', '\u2764'), named('text', '\u2764\uFE0E'), named('vs', '\uFE0F')]
+    for (const q of ['\u2764', '\u2764\uFE0F', '\u2764\uFE0E', ' \u2764\uFE0F ']) expect(nameFit(e, q)).toEqual([WHOLE_NAME, WHOLE_NAME, WHOLE_NAME, 0])
+    // A selector alone is no name, and a question of selectors alone asks for none.
+    expect(nameFit(e, '\uFE0F')).toEqual([0, 0, 0, 0])
+    expect(nameFit(e, '\u2764\u2764\uFE0F')).toEqual([0, 0, 0, 0])
+  })
+
   it('rankAsk adds a part whose whole name is the question even when no keyword finds it, within the limit', () => {
     const e = [named('a', 'A'), named('b', 'B'), named('c', 'C')]
     expect(rankAsk(e, { keyword: [1, 0, 0], named: [0, 0, WHOLE_NAME] }).map((h) => h.id)).toEqual(['c', 'a'])
