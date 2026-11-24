@@ -24,10 +24,14 @@ export default function globalSetup(): () => void {
   // every spec has its own --user-data-dir (so its own single-instance lock) and the app's ports fall back to
   // free ones. Windows has no way to match a process by its arguments short of listing every process's
   // command line, which this suite does not do, so there nothing is stopped.
+  // Left as is: a second run started in this same checkout while one is going still stops the first one's app.
+  // Left as is on Windows: an app left behind keeps running and can hold node-pty's files open (EBUSY on a rebuild).
   if (process.platform !== 'win32') {
     const main = path.resolve('out', 'main', 'index.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     // No shell: `sh -c "pkill -f …"` would carry the pattern in its own command line and be killed too.
-    try { execFileSync('pkill', ['-f', main], { stdio: 'ignore' }) } catch { /* exit 1: none left over */ }
+    // Anchored to the whole argument (pkill -f matches the space-joined command line as an extended regex), so a
+    // longer path ending in the same text, or index.js.map, does not match.
+    try { execFileSync('pkill', ['-f', `(^| )${main}( |$)`], { stdio: 'ignore' }) } catch { /* exit 1: none left over */ }
   }
 
   // Clean lockfiles
