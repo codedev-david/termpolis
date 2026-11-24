@@ -27,11 +27,14 @@
 //
 // What can still let a superlinear rule through is that early pass: it decides on the fastest of 2 or 3 reads of n,
 // and when load slowed every one of them, the ratio reads low. A quadratic rule measures 38 to 66 here, so it passes
-// early only if its ratio reads at least 3.2 times too low in two rounds in a row. Replaying the per-round times of 4300
-// linear checks on two loaded cores with coverage on, scaled to a ratio of 38: one round let 1 check in 58 pass early,
-// two in a row 1 in 250; at a ratio of 64, 1 in 390 and 1 in 4300. On the 800 checks whose n takes 10 ms or more, as a
-// quadratic rule's does, two in a row let none through (one round: 3). Past the early pass, a superlinear rule fails
-// however long it re-measures, since its fastest time at 8n never comes down to 24 times its time at n.
+// early only if its ratio reads at least 3.2 times too low in two rounds in a row. Three replays of the per-round times
+// of linear checks on two loaded cores with coverage on (each check's running ratios scaled by q over its median ratio;
+// 4300 checks from 20 runs, replayed twice, and 2150 from 10 more runs) agree on the order of magnitude: at q = 38, two
+// rounds in a row let 1 check in a few hundred to a few thousand pass early (1 in 250, 1 in 2000 and 1 in 200), several
+// times rarer than one round did; at q = 64, 1 in 1000 or fewer. A quadratic rule's n takes hundreds of milliseconds,
+// and on the checks whose n took 10 ms or more the two-round rule let at most 2 of about 900 through at q = 38 (none of
+// 450 in the third replay). Past the early pass, a superlinear rule fails however long it re-measures, since its
+// fastest time at 8n never comes down to 24 times its time at n.
 //
 // TERMPOLIS_LINEAR_LOG names a file that each check appends one JSON line to (times, ratio, margin = limit / ratio,
 // rounds, `first`, the ratio after the first 5 rounds when the check ran that far, and `trace`, the time of n and of
