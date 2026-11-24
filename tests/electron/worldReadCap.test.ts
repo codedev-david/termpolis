@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { compileWorldStaged, readBeat, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
+import { compileWorldStaged, readBeat, readManifests, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
 import { RUNS_GRACE_MS, RUNS_WAIT_MS, testClaims, type TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
@@ -358,6 +358,49 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; a search or a source of test results ran out of time \(searches 16000 ms, main's runs 20000 ms\)$/)
     warn.mockRestore()
+  })
+
+  it('manifests keep their own answers: what was read when the window ends stays, a read that never returns costs only itself, and the compile says it ran out (fix round 4, M5)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const pkg = (name: string): string => JSON.stringify({ name })
+    const found = [`${ROOT}/src/app/package.json`, `${ROOT}/src/lib/package.json`, `${ROOT}/src/lib/svc.yml`, `${ROOT}/node_modules/y/package.json`, '/elsewhere/package.json']
+    const d = deps({
+      glob: async (_root, patterns) => (patterns.some((p) => p.includes('package.json')) ? found : []),
+      // src/lib's package.json never answers; the other two do.
+      readFile: (p) => (p.endsWith('src/lib/package.json') ? new Promise<string | null>(() => undefined) : Promise.resolve(p.endsWith('.yml') ? 'kind: Service\nmetadata:\n  name: lib-svc\n' : pkg('@acme/app')))
+    })
+    let out: Awaited<ReturnType<typeof compile>> | null = null
+    void compile(d).then((o) => (out = o))
+    await vi.advanceTimersByTimeAsync(SEARCH_TIME_MS + 10)
+    const done = out as unknown as Awaited<ReturnType<typeof compile>>
+    expect(done).not.toBeNull()
+    // The names of the two manifests read are there; the stuck one's are not, and nothing else was lost with it.
+    expect(Object.values(done.doc.runtimeNames).flat().sort()).toEqual(['app', 'lib-svc'])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/ran out of time/)
+  })
+
+  it('readManifests: a search that fails finds none, a window already shut reads nothing, and a read landing after the window is not counted (fix round 4, M5)', async () => {
+    const shut = new AbortController()
+    shut.abort()
+    const readFile = vi.fn(async () => JSON.stringify({ name: 'a' }))
+    const one = async () => [`${ROOT}/package.json`]
+    expect(await readManifests({ glob: one, readFile }, ROOT, shut.signal)).toEqual({ found: [], complete: false })
+    expect(await readManifests({ glob: () => Promise.reject(new Error('walk failed')), readFile }, ROOT, new AbortController().signal)).toEqual({ found: [], complete: true })
+    expect(await readManifests({ glob: () => { throw new Error('sync') }, readFile }, ROOT, new AbortController().signal)).toEqual({ found: [], complete: true })
+    // Unreadable, too big, or naming nothing: skipped, and the search is still complete.
+    const three = async () => [`${ROOT}/a/package.json`, `${ROOT}/b/package.json`, `${ROOT}/c/package.json`, `${ROOT}\\d\\package.json`]
+    const texts: Record<string, string | null> = { a: null, b: 'x'.repeat(256 * 1024 + 1), c: '{}', d: JSON.stringify({ name: 'd' }) }
+    expect(await readManifests({ glob: three, readFile: async (p) => texts[p.split('/').slice(-2)[0]] }, ROOT, new AbortController().signal)).toEqual({ found: [['d/package.json', ['d']]], complete: true })
+    // The window shuts while a read is out: that read's answer, when it lands, is dropped.
+    const window = new AbortController()
+    let land!: (t: string) => void
+    const late = readManifests({ glob: one, readFile: () => new Promise<string>((r) => (land = r)) }, ROOT, window.signal)
+    await vi.waitFor(() => expect(land).toBeTypeOf('function'))
+    window.abort()
+    land(JSON.stringify({ name: 'late' }))
+    expect(await late).toEqual({ found: [], complete: false })
   })
 
   it('a late source keeps the reports already read; a building they say nothing of keeps its last status, or reads as not yet checked (fix round 3, N2)', async () => {

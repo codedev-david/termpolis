@@ -227,16 +227,50 @@ export function manifestServiceNames(file: string, text: string): string[] {
   return cleanRuntimeNames(found)
 }
 
-/** Runtime names the manifests under the project give, by building: a manifest's names go to the building with the most members in its folder. */
-async function manifestNames(deps: CompileDeps, root: string, g: Grouping, paths: string[]): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>()
+/** Manifests read at once while the search window is open: a few, so they finish early and never crowd the file reads. */
+const MANIFEST_CONCURRENCY = 4
+
+/**
+ * The manifests under the project and the runtime names each gives, read as they are found, on the search window's
+ * clock as the reports on disk are (testStatus.ts, fix round 3, N2): at `signal` the search and the reads stop, and
+ * what was read by then is kept, so a late manifest costs its own names and no one else's (fix round 4, M5). A read
+ * that never returns stops counting at the window too. `complete` is false when the window cut anything short.
+ */
+export async function readManifests(
+  deps: Pick<CompileDeps, 'glob' | 'readFile'>,
+  root: string,
+  signal: AbortSignal
+): Promise<{ found: Array<[string, string[]]>; complete: boolean }> {
   const prefix = `${root.replace(/\\/g, '/')}/`
-  for (const abs of paths.map((p) => p.replace(/\\/g, '/')).filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules')).sort().slice(0, MAX_MANIFESTS)) {
-    const text = await safeRead(deps.readFile, abs)
-    if (text === null || text.length > MAX_MANIFEST_CHARS) continue
-    const rel = abs.slice(prefix.length)
-    const names = manifestServiceNames(rel, text)
-    if (names.length === 0) continue
+  const got: Array<[string, string[]] | null> = []
+  const stopped = new Promise<false>((resolve) => (signal.aborted ? resolve(false) : signal.addEventListener('abort', () => resolve(false), { once: true })))
+  const search = async (): Promise<boolean> => {
+    const listed = await Promise.resolve()
+      .then(() => deps.glob(root, MANIFEST_PATTERNS, { signal }))
+      .catch((): string[] => [])
+    const paths = listed
+      .map((p) => p.replace(/\\/g, '/'))
+      .filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules'))
+      .sort()
+      .slice(0, MAX_MANIFESTS)
+    got.length = paths.length
+    await eachLimit(paths, MANIFEST_CONCURRENCY, async (abs, i) => {
+      if (signal.aborted) return
+      const text = await safeRead(deps.readFile, abs)
+      const rel = abs.slice(prefix.length)
+      got[i] = text === null || text.length > MAX_MANIFEST_CHARS || signal.aborted ? null : [rel, manifestServiceNames(rel, text)]
+    })
+    return !signal.aborted
+  }
+  const complete = await Promise.race([search(), stopped])
+  // In path order, as read by now: a read that lands after the window is not counted.
+  return { found: got.filter((x): x is [string, string[]] => x != null && x[1].length > 0), complete }
+}
+
+/** Runtime names the manifests give, by building: a manifest's names go to the building with the most members in its folder. */
+function manifestNames(g: Grouping, found: Array<[string, string[]]>): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const [rel, names] of found) {
     const dir = rel.includes('/') ? `${rel.slice(0, rel.lastIndexOf('/'))}/` : ''
     let best: { id: string; n: number } | null = null
     for (const b of g.buildings) {
@@ -767,9 +801,6 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     if (last === undefined || last[0] !== stage) stages.push([stage, Date.now()])
     deps.onProgress?.(stage, pct)
   }
-  // A search still running when the window ends gives null: the compile goes on without it.
-  const late = new Promise<null>((resolve) => signal.addEventListener('abort', () => resolve(null), { once: true }))
-  const within = <T>(p: Promise<T>): Promise<T | null> => Promise.race([p, late])
   let ranOut = false
   progress('structure', 0)
   const prior = isStageCache(input.cache) ? input.cache : null
@@ -778,7 +809,8 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
   const root = snap.root.replace(/\/+$/, '')
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   // Slow reads of the whole tree start now, so they overlap the file reads rather than wait behind them.
-  const manifestsFound = within(Promise.resolve().then(() => deps.glob(root, MANIFEST_PATTERNS, { signal })).catch((): string[] => []))
+  // On the window's clock, keeping what was read by then (fix round 4, M5).
+  const manifestsFound = readManifests(deps, root, signal)
   // Not raced with the window: each source keeps its own clock and what it found by then (testStatus.ts, N2).
   const runsFound = readTestSources(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }, signal)
   // More files than a map reads: all are parts of the world, only the capped set is read (readCap.ts).
@@ -958,9 +990,9 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   }
   progress('layout', 86)
-  const fromManifests = manifestsFound.then((listed) => {
-    if (listed === null) ranOut = true
-    return manifestNames(deps, root, g, listed ?? [])
+  const fromManifests = manifestsFound.then(({ found, complete }) => {
+    if (!complete) ranOut = true
+    return manifestNames(g, found)
   })
   for (const [id, list] of await beating(fromManifests, (n) => progress('layout', Math.min(MANIFEST_BEAT_TOP, 86 + n)))) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   progress('layout', 95)
