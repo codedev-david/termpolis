@@ -16,10 +16,12 @@ import { baseKey } from './detectors/common'
 import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
 import { markTwoWay } from '../../shared/world/cardFacts'
-import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
+import { domainToASCII, domainToUnicode } from 'node:url'
+import { edgeId, groupProject, idSlug, isIgnored, resolveImport, shortHash, uniqueIds, type GroupBuilding, type Grouping } from './group'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { languageForFile } from '../codeGraphExtract'
 import { mergeAnnotations } from './annotations'
+import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
@@ -46,6 +48,8 @@ export interface CompileDeps {
   ciRuns?: () => Promise<TestRun[]>
   /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
   annotations?: () => Promise<Record<string, Claim[]>>
+  /** Moves the saved annotations of renamed parts (old id → new id) to their new ids, once (idMigration.ts). Absent: only this compile's copy is renamed. */
+  renameAnnotations?: (renames: Record<string, string>) => Promise<void>
   onProgress?: (stage: CompileStage, pct: number) => void
   /**
    * A file's scan made from the text the snapshot already read (worldHost prescans), so a first map reads each file
@@ -311,39 +315,69 @@ function seenInCode(e: Grouping['edges'][number], g: Grouping, snap: GraphSnapsh
   return seenIn([...importers].sort())
 }
 
-/** Agent CLIs and non-local web services the buildings reach, each with one conduit per building. */
+/**
+ * A web host as one orb knows it: `ascii`, its punycode form (url.domainToASCII), is who it is, so a host written in
+ * Unicode and in punycode is one orb; `name`, what the orb shows, is that host in Unicode again (the host as written,
+ * lowercased, for an ordinary host). A host domainToASCII refuses keeps its own spelling for both.
+ */
+function hostOf(key: string): { ascii: string; name: string } {
+  const host = key.toLowerCase()
+  const ascii = domainToASCII(host) || host
+  return { ascii, name: domainToUnicode(ascii) || host }
+}
+
+/** Two orbs are one when they are the same kind and the same agent or host (a host in punycode, so its two spellings are one). */
+const orbKey = (x: Pick<External, 'kind' | 'name'>): string => `${x.kind}\0${x.kind === 'service' ? hostOf(x.name).ascii : x.name}`
+
+/**
+ * Agent CLIs and non-local web services the buildings reach, each with one conduit per building. An orb's id is
+ * `x-` plus the slug of its punycode form, so an ordinary host keeps the id it always had and a Unicode host gets
+ * a readable one (`x-xn-wgv71a-jp`), never a bare `x-` (G10). Two orbs whose slugs collide (`api.foo.com` and
+ * `api-foo.com`, or an agent and a host of one name) both take `--` plus a short hash of what they are, so they
+ * never share an orb; an orb whose slug no other shares keeps its plain id (G09).
+ */
 function externalsOf(g: Grouping): { externals: External[]; edges: WorldEdge[] } {
-  const externals = new Map<string, External>()
-  const edges = new Map<string, WorldEdge>()
+  const found = new Map<string, { ext: Omit<External, 'id'>; base: string }>()
+  const links: { from: string; who: string; bd: Boundary; tech: string }[] = []
   for (const b of g.buildings) {
     for (const bd of b.boundaries) {
-      let found: { kind: External['kind']; name: string; tech: string } | null = null
+      let hit: { kind: External['kind']; name: string; ascii: string; tech: string } | null = null
       if (bd.kind === 'spawn' && AGENT_CLIS.has(baseKey(bd.key).toLowerCase())) {
-        found = { kind: 'agent', name: baseKey(bd.key).toLowerCase(), tech: 'Spawn' }
+        const name = baseKey(bd.key).toLowerCase()
+        hit = { kind: 'agent', name, ascii: name, tech: 'Spawn' }
       } else if (bd.kind === 'http-out' && !LOCAL_HOSTS.has(bd.key.toLowerCase())) {
-        found = { kind: 'service', name: bd.key.toLowerCase(), tech: 'HTTP client' }
+        hit = { kind: 'service', ...hostOf(bd.key), tech: 'HTTP client' }
       }
-      if (!found) continue
-      const x: External = { id: `x-${slug(found.name)}`, name: found.name, kind: found.kind, fog: false }
-      if (!externals.has(x.id)) externals.set(x.id, x)
-      const id = edgeId({ from: b.id, to: x.id })
-      if (edges.has(id)) continue
-      edges.set(id, {
-        id,
-        from: b.id,
-        to: x.id,
-        cargo: cargoOf([bd.kind]),
-        label: `${bd.kind} ${bd.key}`.slice(0, MAX_LABEL),
-        how: [],
-        why: [],
-        tech: [found.tech],
-        rate: '',
-        twoWay: false,
-        claims: seenIn([`${bd.file}:${bd.line}`])
-      })
+      if (!hit) continue
+      const who = orbKey({ kind: hit.kind, name: hit.ascii })
+      if (!found.has(who)) found.set(who, { ext: { name: hit.name, kind: hit.kind, fog: false }, base: `x-${idSlug(hit.ascii)}` })
+      links.push({ from: b.id, who, bd, tech: hit.tech })
     }
   }
-  return { externals: [...externals.values()].sort((a, z) => cmp(a.id, z.id)), edges: [...edges.values()] }
+  const whos = [...found.keys()].sort()
+  const ids = uniqueIds(whos.map((who) => ({ base: (found.get(who) as { base: string }).base, tag: shortHash(who), order: who })))
+  const idOf = new Map(whos.map((who, i) => [who, ids[i]]))
+  const edges = new Map<string, WorldEdge>()
+  for (const { from, who, bd, tech } of links) {
+    const to = idOf.get(who) as string
+    const id = edgeId({ from, to })
+    if (edges.has(id)) continue
+    edges.set(id, {
+      id,
+      from,
+      to,
+      cargo: cargoOf([bd.kind]),
+      label: `${bd.kind} ${bd.key}`.slice(0, MAX_LABEL),
+      how: [],
+      why: [],
+      tech: [tech],
+      rate: '',
+      twoWay: false,
+      claims: seenIn([`${bd.file}:${bd.line}`])
+    })
+  }
+  const externals = whos.map((who): External => ({ id: idOf.get(who) as string, ...(found.get(who) as { ext: Omit<External, 'id'> }).ext }))
+  return { externals: externals.sort((a, z) => cmp(a.id, z.id)), edges: [...edges.values()] }
 }
 
 /** Districts with their dependencies first; ties and cycles broken by id. */
@@ -566,7 +600,7 @@ function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<Wor
 }
 
 export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {
-  const { previous } = input
+  let { previous } = input
   let { snap } = input
   const progress = (stage: CompileStage, pct: number): void => deps.onProgress?.(stage, pct)
   progress('structure', 0)
@@ -629,6 +663,13 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const reused = prior?.grouping !== undefined && prior.structureHash === structureHash
   const g = reused ? regroupLines(prior.grouping as Grouping, prior, entries) : groupProject(snap, bounds)
   const changed = input.changed ? [...new Set([...input.changed, ...differs])].sort() : undefined
+  const ext = externalsOf(g)
+  // A world compiled under the old id rules: its parts the new rules renamed take their new ids before anything reads them by id.
+  const renames = previous ? idRenames(previous, g, ext, orbKey) : new Map<string, string>()
+  if (renames.size > 0) {
+    previous = renameDoc(previous as WorldDoc, renames)
+    await deps.renameAnnotations?.(Object.fromEntries(renames)).catch(() => undefined)
+  }
 
   progress('status', 55)
   const testsByMember = linkTests(snap, g)
@@ -690,7 +731,6 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       growth: b.growth
     }
   })
-  const ext = externalsOf(g)
   // A line whose reverse the code also makes runs both ways: both lines say so and keep their ids.
   const edges: WorldEdge[] = markTwoWay([
     ...g.edges.map((e): WorldEdge => {
@@ -755,7 +795,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     ...(traced !== null ? { filesRead: traced.size, filesListed: files.length } : {})
   }
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
-  const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc
+  const merged = deps.annotations ? mergeAnnotations(doc, renameClaims(await deps.annotations(), renames)) : doc
   progress('layout', 100)
   return { doc: input.plan ? overlayPlan(merged, input.plan, previous) : merged, cache }
 }

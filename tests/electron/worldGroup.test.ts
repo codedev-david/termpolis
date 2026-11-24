@@ -9,8 +9,11 @@ import {
   groupProject,
   isIgnored,
   nameStem,
+  idSlug,
   resolveImport,
+  shortHash,
   slug,
+  uniqueIds,
   type Grouping
 } from '../../src/main/world/group'
 
@@ -75,6 +78,61 @@ describe('slug', () => {
     expect(slug('  A__B--c/memoryHost ')).toBe('a-b-c-memoryhost')
     expect(slug('_')).toBe('')
     expect(slug('')).toBe('')
+  })
+})
+
+describe('shortHash and idSlug (WP5: G10, G15, F03)', () => {
+  it('shortHash is six lowercase hex digits, stable, and differs for different input', () => {
+    expect(shortHash('')).toBe('811c9d')
+    expect(shortHash('src/a-b')).toMatch(/^[0-9a-f]{6}$/)
+    expect(shortHash('src/a-b')).toBe(shortHash('src/a-b'))
+    expect(shortHash('src/a-b')).not.toBe(shortHash('src/a_b'))
+  })
+
+  it('idSlug keeps a readable slug, and gives a name with none u plus its hash, never root', () => {
+    expect(idSlug('src/Main')).toBe('src-main')
+    expect(idSlug('')).toBe('')
+    expect(idSlug('🚀')).toBe(`u${shortHash('🚀')}`)
+    expect(idSlug('文档')).toBe(`u${shortHash('文档')}`)
+    expect(idSlug('文档')).not.toBe(idSlug('资料'))
+  })
+})
+
+describe('uniqueIds (WP5: G14)', () => {
+  it('keeps a base no other item shares, tags shared bases, and hashes a tag that still collides', () => {
+    const ids = uniqueIds([
+      { base: 'b-a', tag: 'x', order: 'a/x.ts' },
+      { base: 'b-q', tag: 'x', order: 'q/1/x.ts' },
+      { base: 'b-q', tag: 'x', order: 'q/2/x.ts' },
+      { base: 'b-q', tag: 'y', order: 'q/y.ts' },
+      { base: 'd-r', tag: '', order: 'r' },
+      { base: 'd-r', tag: '', order: 'R' }
+    ])
+    expect(ids).toEqual([
+      'b-a',
+      `b-q--x--${shortHash('q/1/x.ts')}`,
+      `b-q--x--${shortHash('q/2/x.ts')}`,
+      'b-q--y',
+      `d-r--${shortHash('r')}`,
+      `d-r--${shortHash('R')}`
+    ])
+  })
+
+  it('a colliding item that comes or goes leaves the others ids alone', () => {
+    const two = [
+      { base: 'b-q', tag: 'x', order: 'q/m/x.ts' },
+      { base: 'b-q', tag: 'x', order: 'q/z/x.ts' }
+    ]
+    const before = uniqueIds(two)
+    const after = uniqueIds([{ base: 'b-q', tag: 'x', order: 'q/a/x.ts' }, ...two])
+    expect(after.slice(1)).toEqual(before)
+  })
+
+  it('two items with the same base and order (a hash that cannot tell them apart) still get distinct ids, in order', () => {
+    expect(uniqueIds([
+      { base: 'b-q', tag: '', order: 'same' },
+      { base: 'b-q', tag: '', order: 'same' }
+    ])).toEqual([`b-q--${shortHash('same')}`, `b-q--${shortHash('same')}-2`])
   })
 })
 
@@ -349,7 +407,7 @@ describe('groupProject', () => {
     ])
   })
 
-  it('collisions: natural ids first, then --basename, then -2 in path order', () => {
+  it('collisions: natural ids first, then --basename, then -- a short hash of the first path', () => {
     const s = snap({
       'src/a-b/y.ts': [],
       'src/a-b-2/z.ts': [],
@@ -365,18 +423,90 @@ describe('groupProject', () => {
     })
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
-    // Districts carry no tag: the natural d-src-a-b-2 keeps its id, so a_b skips to -3.
-    expect(home(g, 'src/a-b/y.ts').districtId).toBe('d-src-a-b')
+    // Districts carry no tag: the natural d-src-a-b-2 keeps its id, and a-b and a_b each take a hash of their folder.
+    expect(home(g, 'src/a-b/y.ts').districtId).toBe(`d-src-a-b--${shortHash('src/a-b')}`)
     expect(home(g, 'src/a-b-2/z.ts').districtId).toBe('d-src-a-b-2')
-    expect(home(g, 'src/a_b/x.ts').districtId).toBe('d-src-a-b-3')
+    expect(home(g, 'src/a_b/x.ts').districtId).toBe(`d-src-a-b--${shortHash('src/a_b')}`)
     // src/main.ts and the src/main/{x,y} building share b-src-main, so both are tagged.
     expect(home(g, 'src/main.ts').id).toBe('b-src-main--main')
     expect(home(g, 'src/main/x/a.ts')).toMatchObject({ id: 'b-src-main--a', name: 'a', members: ['src/main/x/a.ts', 'src/main/y/b.ts'] })
     // A natural id is never suffixed.
     expect(home(g, 'src/main-2.ts').id).toBe('b-src-main-2')
-    // Same base and same first basename: -2 in path order.
-    expect(home(g, 'src/q/a/x.ts').id).toBe('b-src-q--x')
-    expect(home(g, 'src/q/b/x.ts').id).toBe('b-src-q--x-2')
+    // Same base and same first basename: a hash of each first member's path, so neither depends on the other.
+    expect(home(g, 'src/q/a/x.ts').id).toBe(`b-src-q--x--${shortHash('src/q/a/x.ts')}`)
+    expect(home(g, 'src/q/b/x.ts').id).toBe(`b-src-q--x--${shortHash('src/q/b/x.ts')}`)
+  })
+
+  it('G14: a new earlier path with the same base and basename leaves its siblings ids and their notes alone', () => {
+    const base: Record<string, string[]> = {
+      'src/q/b/x.ts': ['../d/k'],
+      'src/q/d/k.ts': ['../b/x'],
+      'src/q/e/x.ts': ['../f/k'],
+      'src/q/f/k.ts': ['../e/x']
+    }
+    const idOf = (g: Grouping): Record<string, string> => Object.fromEntries(g.buildings.flatMap((b) => b.members.map((m) => [m, b.id])))
+    const before = idOf(groupProject(snap(base), []))
+    const after = idOf(groupProject(snap({ ...base, 'src/q/a/x.ts': ['../c/k'], 'src/q/c/k.ts': ['../a/x'] }), []))
+    expect(after['src/q/a/x.ts']).toBe(`b-src-q--x--${shortHash('src/q/a/x.ts')}`)
+    for (const [f, id] of Object.entries(before)) expect(after[f]).toBe(id)
+  })
+
+  // Review K5: a file renamed in a slug-collision group must not hand its siblings' ids (and their notes) to another file.
+  it('K5: renaming one file of a slug-collision group leaves the other files their ids', () => {
+    const idOf = (g: Grouping): Record<string, string> => Object.fromEntries(g.buildings.flatMap((b) => b.members.map((m) => [m, b.id])))
+    const before = idOf(groupProject(snap({ 'src/a!.ts': [], 'src/a$.ts': [], 'src/a%.ts': [] }), []))
+    const after = idOf(groupProject(snap({ 'src/b!.ts': [], 'src/a$.ts': [], 'src/a%.ts': [] }), []))
+    expect(new Set(Object.values(before)).size).toBe(3)
+    expect(after['src/a$.ts']).toBe(before['src/a$.ts'])
+    expect(after['src/a%.ts']).toBe(before['src/a%.ts'])
+  })
+
+  it('K5: a colliding building takes its tag and suffix from its own front door, not from whichever file sorts first', () => {
+    // Two buildings in src/q whose folders slug alike (q-x, q_x): each is named after the file the rest of it imports from.
+    const base: Record<string, string[]> = {
+      'src/q-x/api.ts': ['./util', './more'],
+      'src/q-x/util.ts': [],
+      'src/q-x/more.ts': [],
+      'src/q_x/api.ts': ['./util', './more'],
+      'src/q_x/util.ts': [],
+      'src/q_x/more.ts': []
+    }
+    const g = groupProject(snap(base), [])
+    const door = (gr: Grouping, f: string): string => home(gr, f).id
+    expect(door(g, 'src/q-x/api.ts')).toBe(`b-src-q-x--api--${shortHash('src/q-x/api.ts')}`)
+    expect(door(g, 'src/q_x/api.ts')).toBe(`b-src-q-x--api--${shortHash('src/q_x/api.ts')}`)
+    // A file that sorts before the others joins one building: neither building's id moves.
+    const grown = groupProject(snap({ ...base, 'src/q-x/aaa.ts': [], 'src/q-x/api.ts': ['./util', './more', './aaa'] }), [])
+    expect(home(grown, 'src/q-x/aaa.ts').id).toBe(door(g, 'src/q-x/api.ts'))
+    expect(door(grown, 'src/q-x/api.ts')).toBe(door(g, 'src/q-x/api.ts'))
+    expect(door(grown, 'src/q_x/api.ts')).toBe(door(g, 'src/q_x/api.ts'))
+  })
+
+  // Review K6: naming a building's front door searched its imports from every member, so a 20k-file chain was quadratic.
+  it('K6: a 20k-file import chain in one building is named in bounded work, after the file that reaches the rest', () => {
+    const N = 20000
+    const name = (i: number): string => `src/chain/item${String(i).padStart(5, '0')}.ts`
+    const m: Record<string, string[]> = {}
+    for (let i = 0; i < N; i++) m[name(i)] = i + 1 < N ? [`./item${String(i + 1).padStart(5, '0')}`] : []
+    const t0 = Date.now()
+    const g = groupProject(snap(m), [], { maxBuildings: 1 })
+    const ms = Date.now() - t0
+    const b = home(g, name(0))
+    expect(b.members.length).toBe(N)
+    expect(b.name).toBe('item00000')
+    expect(ms).toBeLessThan(10000) // 31 s before the budget on a laptop; about 1 s with it
+    // The same input names the same building, however far the search got.
+    expect(home(groupProject(snap(m), [], { maxBuildings: 1 }), name(N - 1)).name).toBe('item00000')
+  }, 60000)
+
+  it('G15 and F03: folders and files named only in a non-Latin script or emoji get readable distinct ids, not root', () => {
+    const s = snap({ '文档/a.ts': [], '资料/b.ts': [], '🚀.ts': [], 'z.ts': [] })
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(home(g, '文档/a.ts').districtId).toBe(`d-u${shortHash('文档')}`)
+    expect(home(g, '资料/b.ts').districtId).toBe(`d-u${shortHash('资料')}`)
+    expect(home(g, '🚀.ts')).toMatchObject({ id: `b-u${shortHash('🚀')}`, name: '🚀', districtId: 'd-root' })
+    expect(g.districts.find((d) => d.id === `d-u${shortHash('文档')}`)?.name).toBe('文档')
   })
 
   it('ids stay put when an unrelated cluster joins the same folder', () => {
@@ -482,8 +612,8 @@ describe('groupProject', () => {
     const s = snap({ 'a.ts': ['./b'], 'b.ts': ['./a'], '_.ts': [], 'main.ts': ['./renderer'], 'renderer.ts': ['./main'] })
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
-    // '_' slugs to nothing, so its id falls back to 'root'; with no tag it keeps the bare base.
-    expect(home(g, '_.ts')).toMatchObject({ id: 'b-root', name: '_' })
+    // '_' slugs to nothing, so its id is u plus a hash of the name, never the root folder's 'root'.
+    expect(home(g, '_.ts')).toMatchObject({ id: `b-u${shortHash('_')}`, name: '_' })
     expect(home(g, 'a.ts')).toMatchObject({ id: 'b-root--a', name: 'a', districtId: 'd-root' })
     // 'main' and 'renderer' would pass for process entries, and the root folder has no name.
     expect(home(g, 'main.ts')).toMatchObject({ name: 'root', members: ['main.ts', 'renderer.ts'] })

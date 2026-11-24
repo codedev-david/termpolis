@@ -18,7 +18,7 @@ import {
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
 import { BUILTIN_TECH } from '../../src/main/world/techStack'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
+import { edgeId, shortHash, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
 import { edgeSummary } from '../../src/shared/world/edgeText'
@@ -1282,5 +1282,123 @@ describe('isStageCache', () => {
     ['an edge with bad via', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', to: 'b', via: null }] } }]
   ])('rejects %s', (_name, v) => {
     expect(isStageCache(v)).toBe(false)
+  })
+})
+
+describe('ids and keys (WP5: G09, G10, F03 and the one-time rename)', () => {
+  const person = { text: 'Confirmed by a person', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'confirmed in Lumopolis' }] }
+  const orb = (kind: string, ascii: string): string => shortHash(`${kind}\0${ascii}`)
+  const byId = <T extends { id: string }>(list: T[]): T[] => [...list].sort((p, q) => (p.id < q.id ? -1 : 1))
+  const compileFiles = (files: Record<string, string>, over: Partial<CompileDeps> = {}, previous: WorldDoc | null = null): Promise<WorldDoc> =>
+    compileWorld({ snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous }, mkDeps(files, { glob: async () => [], ...over }))
+
+  it('G09: hosts that slug alike are two orbs, each line on its own host', async () => {
+    const doc = await compileFiles({ 'a.ts': "fetch('https://api.foo.com/a')\n", 'z.ts': "fetch('https://api-foo.com/b')\n" })
+    expectValid(doc)
+    const dot = `x-api-foo-com--${orb('service', 'api.foo.com')}`
+    const dash = `x-api-foo-com--${orb('service', 'api-foo.com')}`
+    expect(doc.externals).toEqual(
+      byId([
+        { id: dot, name: 'api.foo.com', kind: 'service' as const, fog: false },
+        { id: dash, name: 'api-foo.com', kind: 'service' as const, fog: false }
+      ])
+    )
+    expect(doc.edges.find((e) => e.from === 'b-a')?.to).toBe(dot)
+    expect(doc.edges.find((e) => e.from === 'b-z')?.to).toBe(dash)
+    // An agent and a host of one name are two orbs too.
+    const both = await compileFiles({ 'a.ts': "spawn('claude', [])\nfetch('https://claude/x')\n" })
+    expect(both.externals.map((x) => x.id).sort()).toEqual([`x-claude--${orb('agent', 'claude')}`, `x-claude--${orb('service', 'claude')}`].sort())
+  })
+
+  it('G10: an IDN host is one readable orb in either spelling, shown in Unicode, and hosts made only of unicode never share one', async () => {
+    const doc = await compileFiles({
+      'a.ts': "fetch('https://日本.jp/a')\nfetch('https://xn--wgv71a.jp/b')\n",
+      'b.ts': "fetch('https://中国.cn/a')\nfetch('https://Bücher.de/x')\n"
+    })
+    expectValid(doc)
+    expect(doc.externals).toEqual([
+      { id: 'x-xn-bcher-kva-de', name: 'bücher.de', kind: 'service', fog: false },
+      { id: 'x-xn-fiqs8s-cn', name: '中国.cn', kind: 'service', fog: false },
+      { id: 'x-xn-wgv71a-jp', name: '日本.jp', kind: 'service', fog: false }
+    ])
+    expect(doc.edges.filter((e) => e.to === 'x-xn-wgv71a-jp').map((e) => e.from)).toEqual(['b-a'])
+  })
+
+  it('a host url.domainToASCII refuses keeps its own spelling', async () => {
+    const doc = await compileFiles({ 'a.ts': "fetch('https://A|B/x')\nfetch('https://%/y')\n" })
+    expect(doc.externals).toEqual(
+      byId([
+        { id: 'x-a-b', name: 'a|b', kind: 'service' as const, fog: false },
+        { id: `x-u${shortHash('%')}`, name: '%', kind: 'service' as const, fog: false }
+      ])
+    )
+  })
+
+  it('F03: a file named only in emoji is a readable building, not root', async () => {
+    const doc = await compileFiles({ '🚀.ts': 'export const a = 1\n', 'z.ts': 'export const z = 1\n' })
+    expectValid(doc)
+    expect(doc.buildings.map((b) => [b.id, b.name])).toEqual([[`b-u${shortHash('🚀')}`, '🚀'], ['b-z', 'z']])
+  })
+
+  it('a world compiled under the old id rules keeps its notes, positions and names on the renamed parts, and asks the store to move them once', async () => {
+    const files = { '🚀.ts': "fetch('https://api.foo.com/a')\n", 'z.ts': "fetch('https://api-foo.com/b')\n" }
+    const now = await compileFiles(files)
+    const rocket = `b-u${shortHash('🚀')}`
+    const dot = `x-api-foo-com--${orb('service', 'api.foo.com')}`
+    const dash = `x-api-foo-com--${orb('service', 'api-foo.com')}`
+    // The same world as the old rules made it: the rocket was b-root, and both hosts one orb named after the first.
+    const back = new Map([
+      [rocket, 'b-root'],
+      [dot, 'x-api-foo-com'],
+      [dash, 'x-api-foo-com'],
+      [edgeId({ from: rocket, to: dot }), edgeId({ from: 'b-root', to: 'x-api-foo-com' })],
+      [edgeId({ from: 'b-z', to: dash }), edgeId({ from: 'b-z', to: 'x-api-foo-com' })]
+    ])
+    const m = (id: string): string => back.get(id) ?? id
+    const old: WorldDoc = {
+      ...now,
+      buildings: now.buildings.map((b) => ({ ...b, id: m(b.id), name: b.id === rocket ? 'Launcher' : b.name })),
+      edges: now.edges.map((e) => ({ ...e, id: m(e.id), from: m(e.from), to: m(e.to) })),
+      externals: [{ id: 'x-api-foo-com', name: 'api.foo.com', kind: 'service', fog: false }],
+      layout: {
+        ...now.layout,
+        positions: { ...Object.fromEntries(Object.entries(now.layout.positions).map(([k, v]) => [m(k), v])), 'x-api-foo-com': [500, 12, 500] }
+      }
+    }
+    const stored = { 'b-root': [person], [edgeId({ from: 'b-z', to: 'x-api-foo-com' })]: [person] }
+    const renameAnnotations = vi.fn(async (_renames: Record<string, string>) => undefined)
+    const doc = await compileWorld(
+      { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: old, changed: [] },
+      mkDeps(files, { glob: async () => [], annotations: async () => stored, renameAnnotations })
+    )
+    expectValid(doc)
+    expect(renameAnnotations).toHaveBeenCalledTimes(1)
+    expect(renameAnnotations).toHaveBeenCalledWith({
+      'b-root': rocket,
+      'x-api-foo-com': dot,
+      [edgeId({ from: 'b-root', to: 'x-api-foo-com' })]: edgeId({ from: rocket, to: dot }),
+      [edgeId({ from: 'b-z', to: 'x-api-foo-com' })]: edgeId({ from: 'b-z', to: dash })
+    })
+    // The note follows the part; the orb keeps its place; the untouched building keeps its label.
+    expect(doc.buildings.find((b) => b.id === rocket)?.claims.slice(-1)[0]).toEqual(person)
+    expect(doc.buildings.find((b) => b.id === rocket)?.name).toBe('Launcher')
+    expect(doc.edges.find((e) => e.id === edgeId({ from: 'b-z', to: dash }))?.claims.slice(-1)[0]).toEqual(person)
+    expect(doc.layout.positions[dot]).toEqual([500, 12, 500])
+    // Compiled again over its own doc, nothing more is renamed; a store that cannot move them never fails the compile.
+    const failing = vi.fn(async (_renames: Record<string, string>): Promise<void> => {
+      throw new Error('locked')
+    })
+    const again = await compileWorld(
+      { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: doc },
+      mkDeps(files, { glob: async () => [], renameAnnotations: failing })
+    )
+    expect(failing).not.toHaveBeenCalled()
+    expect(again.buildings.map((b) => b.id)).toEqual(doc.buildings.map((b) => b.id))
+    const tolerant = await compileWorld(
+      { snap: snapOf(files, {}), projectKey: 'ids', head: HEAD, previous: old },
+      mkDeps(files, { glob: async () => [], renameAnnotations: failing })
+    )
+    expect(failing).toHaveBeenCalledTimes(1)
+    expect(tolerant.layout.positions[dot]).toEqual([500, 12, 500])
   })
 })

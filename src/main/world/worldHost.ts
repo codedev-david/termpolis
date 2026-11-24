@@ -810,6 +810,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       // A cloned repository's own transcripts and CI are not this machine's: no runs from main for it.
       ...(cloned ? {} : { transcriptRuns: askTranscripts(projectKey, root), ciRuns: askCi(projectKey) }),
       annotations: () => st.annotations.list(projectKey),
+      renameAnnotations: async (renames) => st.annotations.rename(projectKey, renames),
       onProgress: (stage, pct) => postProgress(projectKey, stage, pct)
     }
   }

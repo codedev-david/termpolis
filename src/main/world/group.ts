@@ -20,8 +20,11 @@
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    non-test member reaching most of the building, then most imported from outside it, skipping
 //    names that would pass for the district or a main/renderer/preload entry.
-// 6. Ids are slugs of member paths. A base no other building shares is used as is; colliding
-//    bases get '--' plus the first member's basename, and -2, -3 (path order) only if that collides.
+// 6. Ids are slugs of member paths (a name with no letter or digit a slug keeps, such as an emoji or
+//    a non-Latin script, is 'u' plus a short hash of the name, never 'root', which is the repository
+//    root's alone). A base no other building shares is used as is; colliding bases get '--' plus the
+//    first member's basename, and only if that collides '--' plus a short hash of the first member's
+//    path, so a new path never renumbers its siblings.
 // 7. Edges come from resolved imports, fork/worker targets and provide/consume boundary pairs.
 import type { GraphSnapshot } from '../codeGraph'
 import type { BuildingGrowth, District } from '../../shared/world/types'
@@ -97,6 +100,10 @@ export const COHESIVE_WEIGHT = 2
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
+/** How many import steps naming one building's front door may take (review K6): a search from every member is quadratic on
+ *  a long chain. Members with the fewest importers inside the building are searched first, as they reach the most; past the
+ *  budget a member counts only what it reached, and one never searched counts only itself, so the same input names alike. */
+export const FRONT_DOOR_BUDGET = 2_000_000
 
 /** Stable id of a grouping edge (edges carry none). Labels and the compiled world key on it. */
 export function edgeId(e: { from: string; to: string }): string {
@@ -108,6 +115,19 @@ export function slug(s: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
+}
+
+/** A short, stable hash of a string (FNV-1a, 32 bits, the first six hex digits): the readable part of an id
+ *  when a name has none, or the part that tells colliding ids apart. Never contains '-'. */
+export function shortHash(s: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 6)
+}
+
+/** slug(s), or for a name a slug keeps nothing of (an emoji, a non-Latin script) 'u' plus its shortHash; '' stays ''. */
+export function idSlug(s: string): string {
+  return slug(s) || (s ? `u${shortHash(s)}` : '')
 }
 
 /** True for files under dependency, virtual-environment, cache and build output folders, and minified or bundled files. */
@@ -414,27 +434,37 @@ function clusterFree(imports: number[][], district: Int32Array, owner: Int32Arra
 
 /**
  * Ids that stay put when unrelated items come and go. A base no other item shares is used as is,
- * so natural ids are never suffixed. Items sharing a base become `base--tag` (no tag: `base`),
- * and only if that still collides `-2`, `-3`, ... in path order. Slugs never contain '--', so a
- * tagged id cannot take a natural one.
+ * so natural ids are never suffixed. Items sharing a base become `base--tag` (no tag: `base`), and
+ * when that still collides every one of them becomes `base--tag--<shortHash(order)>`, so an item
+ * that comes or goes never renumbers the others (G14). Slugs never contain '--', so a tagged or
+ * hashed id cannot take a natural one. Two orders whose hashes collide (or two equal orders) get
+ * -2, -3, ... in order: only that, which no real project meets, depends on what else is there.
  */
-function uniqueIds(items: readonly { base: string; tag: string; order: string }[]): string[] {
-  const uses = new Map<string, number>()
-  for (const it of items) uses.set(it.base, (uses.get(it.base) ?? 0) + 1)
+export function uniqueIds(items: readonly { base: string; tag: string; order: string }[]): string[] {
+  const count = (keys: string[]): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const k of keys) m.set(k, (m.get(k) ?? 0) + 1)
+    return m
+  }
+  const baseUses = count(items.map((it) => it.base))
+  const wants = items.map((it) => (baseUses.get(it.base) === 1 ? it.base : it.tag ? `${it.base}--${it.tag}` : it.base))
+  const wantUses = count(wants)
   const out = new Array<string>(items.length)
   const used = new Set<string>()
-  const colliding: { k: string; want: string; i: number }[] = []
   items.forEach((it, i) => {
-    if (uses.get(it.base) === 1) {
+    if (baseUses.get(it.base) === 1) {
       out[i] = it.base
       used.add(it.base)
-      return
     }
-    const want = it.tag ? `${it.base}--${it.tag}` : it.base
-    colliding.push({ k: `${want}\0${it.order}`, want, i })
   })
-  colliding.sort((x, y) => cmp(x.k, y.k))
-  for (const { want, i } of colliding) {
+  const rest: { k: string; want: string; i: number }[] = []
+  items.forEach((it, i) => {
+    if (baseUses.get(it.base) === 1) return
+    const want = wantUses.get(wants[i]) === 1 ? wants[i] : `${wants[i]}--${shortHash(it.order)}`
+    rest.push({ k: `${want}\0${it.order}`, want, i })
+  })
+  rest.sort((x, y) => cmp(x.k, y.k))
+  for (const { want, i } of rest) {
     let id = want
     for (let k = 2; used.has(id); k++) id = `${want}-${k}`
     used.add(id)
@@ -791,39 +821,35 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const folded = new Map<number, number>()
   for (let b = 0; b < nb; b++) folded.set(bUf.find(b), (folded.get(bUf.find(b)) ?? -1) + 1)
   const districtRoots = [...new Set(district)].sort((x, y) => x - y)
-  const dIds = uniqueIds(districtRoots.map((d) => ({ base: `d-${slug(dirs[d]) || 'root'}`, tag: '', order: dirs[d] })))
+  const dIds = uniqueIds(districtRoots.map((d) => ({ base: `d-${idSlug(dirs[d]) || 'root'}`, tag: '', order: dirs[d] })))
   const dIdOf = new Map(districtRoots.map((d, i) => [d, dIds[i]]))
   const anchors = liveB.map((b) => {
     const m = members.get(b) as string[]
     return bEntry[b] >= 0 ? stripExt(files[bEntry[b]]) : m.length === 1 ? stripExt(m[0]) : commonDir(m)
   })
-  const bIds = uniqueIds(
-    liveB.map((b, i) => {
-      const first = (members.get(b) as string[])[0]
-      return { base: `b-${slug(anchors[i]) || 'root'}`, tag: slug(baseKey(first)), order: first }
-    })
-  )
-  const bIdOf = new Map(liveB.map((b, i) => [b, bIds[i]]))
   const boundariesOf = new Map<number, Boundary[]>(liveB.map((b) => [b, []]))
   for (const bd of kept) (boundariesOf.get(finalOf(index.get(bd.file) as number)) as Boundary[]).push(bd)
   // A plain building is named after its front door: the non-test member whose imports reach most
   // of the building, then the one most imported from outside it, then most imported overall, then
   // path order; names that would pass for the district or a main/renderer/preload entry are skipped.
-  const frontDoor = (b: number, dName: string): string => {
+  const frontDoor = (b: number, dName: string): number => {
     const own = new Set((members.get(b) as string[]).map((f) => index.get(f) as number))
     const key = new Map<number, number[]>()
-    for (const i of own) {
+    const inside = new Map([...own].map((i) => [i, importers[i].filter((j) => own.has(j)).length]))
+    let budget = FRONT_DOOR_BUDGET
+    for (const i of [...own].sort((x, y) => (inside.get(x) as number) - (inside.get(y) as number) || x - y)) {
       const seen = new Set([i])
-      const stack = [i]
-      while (stack.length) {
+      const stack = budget > 0 ? [i] : []
+      while (stack.length && budget > 0) {
         for (const g of imports[stack.pop() as number]) {
           if (own.has(g) && !seen.has(g)) {
             seen.add(g)
             stack.push(g)
           }
         }
+        budget--
       }
-      const outside = importers[i].filter((j) => !own.has(j)).length
+      const outside = importers[i].length - (inside.get(i) as number)
       key.set(i, [TEST_NAME.test(files[i]) ? 0 : 1, seen.size, outside, importers[i].length])
     }
     const rank = (x: number, y: number): number => {
@@ -836,8 +862,20 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       const k = memberKey(files[i])
       return k !== dName && !ENTRY_PROCESSES.has(k)
     })
-    return pick === undefined ? '' : memberKey(files[pick])
+    return pick === undefined ? -1 : pick
   }
+  // Each building's own anchor file: its entry, else its front door, else its first member. A colliding id takes its tag and
+  // suffix from it (review K5), so a file that joins a building, or a sibling renamed, never moves the id or its notes.
+  const doors = liveB.map((b) => (bEntry[b] >= 0 ? -1 : frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root')))
+  const anchorFile = (b: number, i: number): string =>
+    bEntry[b] >= 0 ? files[bEntry[b]] : doors[i] >= 0 ? files[doors[i]] : (members.get(b) as string[])[0]
+  const bIds = uniqueIds(
+    liveB.map((b, i) => {
+      const own = anchorFile(b, i)
+      return { base: `b-${idSlug(anchors[i]) || 'root'}`, tag: idSlug(baseKey(own)), order: own }
+    })
+  )
+  const bIdOf = new Map(liveB.map((b, i) => [b, bIds[i]]))
   const buildings: GroupBuilding[] = liveB.map((b, i) => {
     const m = members.get(b) as string[]
     // The first member's own seed folder, so a renderer file stays 'renderer' after a district merge.
@@ -845,7 +883,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     return {
       id: bIds[i],
       districtId: dIdOf.get(bDist[b]) as string,
-      name: bEntry[b] >= 0 ? bProc[b] : frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root') || lastSeg(anchors[i]) || 'root',
+      name: bEntry[b] >= 0 ? bProc[b] : (doors[i] >= 0 ? memberKey(files[doors[i]]) : '') || lastSeg(anchors[i]) || 'root',
       members: m,
       process: bEntry[b] >= 0 ? runsIn(bProc[b]) : ENTRY_PROCESSES.has(dName) ? runsIn(dName) : '',
       boundaries: boundariesOf.get(b) as Boundary[],

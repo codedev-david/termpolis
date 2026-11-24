@@ -2076,6 +2076,12 @@ describe('annotate', () => {
         added.push([k, id, c])
         const cur = byKey.get(k) ?? {}
         byKey.set(k, { ...cur, [id]: [...(cur[id] ?? []), c] })
+      },
+      rename: async (k, renames) => {
+        const cur = byKey.get(k) ?? {}
+        const next: Record<string, Claim[]> = {}
+        for (const [id, cs] of Object.entries(cur)) next[renames[id] ?? id] = [...(next[renames[id] ?? id] ?? []), ...cs]
+        byKey.set(k, next)
       }
     }
   }
@@ -2119,6 +2125,21 @@ describe('annotate', () => {
     expect(compile).toHaveBeenCalled()
     const deps = compile.mock.calls[0][1]
     expect(await (deps.annotations as () => Promise<unknown>)()).toEqual({ 'b-api': [person('Kept across compiles')] })
+  })
+
+  // WP5 (G14): a compile that renames a part moves its saved annotations, in this project's store only.
+  it('a compile moves the annotations of a renamed part to its new id', async () => {
+    const ann = memAnnotations()
+    await ann.add('k1', 'b-old', person('Follows the rename'))
+    await ann.add('k2', 'b-old', person('Another project'))
+    const compile = vi.fn(async (input: CompileInput) => doc(input.projectKey))
+    const h = harness({ compile, createAnnotations: () => ann })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    const deps = compile.mock.calls[0][1] as CompileDeps
+    await deps.renameAnnotations?.({ 'b-old': 'b-new' })
+    expect(await ann.list('k1')).toEqual({ 'b-new': [person('Follows the rename')] })
+    expect(await ann.list('k2')).toEqual({ 'b-old': [person('Another project')] })
   })
 })
 

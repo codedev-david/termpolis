@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
+import { renameClaims } from './idMigration'
 import type { WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
@@ -25,6 +26,11 @@ export interface AnnotationStore {
   list(key: string): Promise<Record<string, Claim[]>>
   /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM. */
   add(key: string, itemId: string, claim: Claim): Promise<void>
+  /**
+   * Moves each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
+   * both kept once and the item capped as an add caps it (idMigration.ts). Writes only when an old id had any.
+   */
+  rename(key: string, renames: Record<string, string>): Promise<void>
 }
 
 const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
@@ -255,6 +261,18 @@ export function createAnnotationStore(dir: string): AnnotationStore {
           const all = await read(key)
           all[itemId] = capClaims([...(all[itemId] ?? []), clean])
           await writeAtomic(fileOf(key), JSON.stringify(all))
+        })
+      }),
+    rename: (key, renames) =>
+      lock(key, async () => {
+        const moved = (all: Record<string, Claim[]>): boolean => Object.keys(all).some((id) => Object.hasOwn(renames, id))
+        if (!moved(await read(key))) return // the common case: nothing to move, no lock file taken
+        await withAnnotationFileLock(fileOf(key), async () => {
+          const all = await read(key)
+          if (!moved(all)) return
+          const next = renameClaims(all, new Map(Object.entries(renames)))
+          for (const id of Object.keys(next)) next[id] = capClaims(next[id])
+          await writeAtomic(fileOf(key), JSON.stringify(next))
         })
       })
   }
