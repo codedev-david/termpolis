@@ -167,8 +167,9 @@ describe('codeGraphExtract', () => {
       expect(ex.symbols.map((s) => [s.name, s.startLine])).toEqual([['a', 1], ['b', 3], ['c', 5]])
     })
 
-    it('extracts a large or hostile Kotlin file in time linear in its size', () => {
+    describe('extracts a large or hostile Kotlin file in time linear in its size', () => {
       // Reading 8 times the text takes under 24 times as long (see _linearTime); each took seconds before at these sizes.
+      // One test per input, so each stays well inside the test timeout on a loaded runner with coverage on.
       const N = 64 * 1024
       const big = (size: number): string => {
         const lines: string[] = ['package a']
@@ -182,13 +183,16 @@ describe('codeGraphExtract', () => {
       }
       const symbols = (file: string) => (src: string): CodeSymbol[] => extractFile(file, src)!.symbols
       const none = (syms: CodeSymbol[]): void => expect(syms).toEqual([])
-      linear(big, symbols('Big.kt'), N, 'Big.kt', (syms, src) => expect(syms.length).toBeGreaterThan(src.length / 100))
-      linear((n) => '\n'.repeat(n) + 'class A', symbols('Blank.kt'), N, 'Blank.kt', (syms, src) => expect(byName(syms, 'A')!.startLine).toBe(src.length - 6))
-      linear((n) => fill('@a\n', n), symbols('Ann.kt'), N, 'Ann.kt', none)
-      linear((n) => fill('public\n', n), symbols('Mods.kt'), N, 'Mods.kt', none)
-      linear((n) => 'fun ' + 'a'.repeat(n), symbols('Long.kt'), N, 'Long.kt', none)
-      // A modifier on the line above no longer joins a declaration; an annotation above still does.
-      expect(names(extractFile('Split.kt', 'public\nclass A\n@Inject\nfun b() {}')!.symbols)).toEqual(['A', 'b'])
+      it.each<[string, (n: number) => string, (syms: CodeSymbol[], src: string) => void]>([
+        ['Big.kt', big, (syms, src) => expect(syms.length).toBeGreaterThan(src.length / 100)],
+        ['Blank.kt', (n) => '\n'.repeat(n) + 'class A', (syms, src) => expect(byName(syms, 'A')!.startLine).toBe(src.length - 6)],
+        ['Ann.kt', (n) => fill('@a\n', n), none],
+        ['Mods.kt', (n) => fill('public\n', n), none],
+        ['Long.kt', (n) => 'fun ' + 'a'.repeat(n), none]
+      ])('%s', (file, make, check) => linear(make, symbols(file), N, file, check))
+      it('joins an annotation above a declaration, but no longer a modifier', () => {
+        expect(names(extractFile('Split.kt', 'public\nclass A\n@Inject\nfun b() {}')!.symbols)).toEqual(['A', 'b'])
+      })
     })
 
     it('finds the same call names as a name-then-paren regex, a long word run included', () => {
@@ -302,8 +306,13 @@ describe('codeGraphExtract', () => {
     interface Probe<R> { read: (src: string) => R; check?: (result: R, src: string) => void }
     const unit = (u: string): Make => (n) => fill(u, n)
     const grows = <R>(make: Make, probe: Probe<R>, label = ''): void => linear(make, probe.read, N, label, probe.check)
+    // A labelled input, so a test per input can name it; a unit's label is the unit as JSON.
+    type Case = [string, Make]
+    const named = (...units: string[]): Case[] => units.map((u) => [JSON.stringify(u), unit(u)])
     // What a large or odd file can hold with no declaration in it: runs of blank lines, spaces, CRLF and tabs.
-    const empty = [' ', '\n', '\r\n', '\n ', '\t'].map(unit)
+    const empty = named(' ', '\n', '\r\n', '\n ', '\t')
+    // The checks below that time several inputs run one test per input (`it.each` over Cases), so that each test
+    // stays well inside the test timeout on a loaded runner with coverage on, re-measuring included.
     const none = (found: unknown[]): void => expect(found).toEqual([])
     const noSymbols = (file: string): Probe<CodeSymbol[]> => ({ read: (src) => extractFile(file, src)!.symbols, check: none })
     const noImports = (file: string): Probe<string[]> => ({ read: (src) => extractFile(file, src)!.imports, check: none })
@@ -341,14 +350,17 @@ describe('codeGraphExtract', () => {
       })
     })
 
-    it('Java: 30k `public` or `static ` lines, blank runs, a 5000-method interface and a long where run', () => {
-      for (const make of [...empty, unit('public\n'), unit('static \n'), unit('  a b(x)\n'), (n: number) => ' a b(' + fill(') where ', n)]) {
-        grows(make, noSymbols('A.java'))
-      }
+    // 30k `public` or `static ` lines and a long where run.
+    const modifierRuns: Case[] = [...empty, ...named('public\n', 'static \n', '  a b(x)\n'), ['" a b(" then ") where "', (n) => ' a b(' + fill(') where ', n)]]
+    it.each(modifierRuns)('Java: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('A.java'), label))
+
+    it('Java: a 5000-method interface is one symbol, in time linear in its size', () => {
       const big = (n: number): string => 'public interface Big {\n' + fill('  void method(int x, String y);\n', n) + '}\n'
       // A method with no body is no symbol.
       grows(big, { read: (src) => names(extractFile('Big.java', src)!.symbols), check: (found) => expect(found).toEqual(['Big']) })
-      // A declaration after a blank run is found on its own line.
+    })
+
+    it('Java: a declaration after a blank run is found on its own line, in time linear in the run', () => {
       grows((n) => '\n'.repeat(n) + 'public class B {}', { read: (src) => show('B.java', src).s, check: (s, src) => expect(s).toEqual([['B', 'class', src.length - 16, src.length - 16]]) })
     })
 
@@ -401,11 +413,7 @@ describe('codeGraphExtract', () => {
       expect(show('a.py', bom + 'from os import path\nimport sys\n').i).toEqual(['os', 'sys'])
     })
 
-    it('C#: modifier lines, blank runs and a long where run', () => {
-      for (const make of [...empty, unit('public\n'), unit('static \n'), unit('  a b(x)\n'), (n: number) => ' a b(' + fill(') where ', n)]) {
-        grows(make, noSymbols('A.cs'))
-      }
-    })
+    it.each(modifierRuns)('C#: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('A.cs'), label))
 
     it('Swift: attributes before func and class, on their own line or the same one', () => {
       const src = J(
@@ -429,9 +437,7 @@ describe('codeGraphExtract', () => {
       expect(names(extractFile('A.swift', '@available(iOS 13, *)\n@MainActor\nfunc run() {}\n@objc func go() {}')!.symbols)).toEqual(['run', 'go'])
     })
 
-    it('Swift: attribute lines, modifier lines and blank runs', () => {
-      for (const make of [...empty, unit('@a\n'), unit('public\n'), unit('static \n')]) grows(make, noSymbols('A.swift'))
-    })
+    it.each([...empty, ...named('@a\n', 'public\n', 'static \n')])('Swift: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('A.swift'), label))
 
     it('JS imports: default, named, multi-line, side-effect, type-only, namespace, a list over 2000 characters', () => {
       const long = 'import {' + Array.from({ length: 400 }, (_, i) => ` name${i}`).join(',') + "\n} from './long'"
@@ -451,11 +457,8 @@ describe('codeGraphExtract', () => {
       expect(extractFile('imports.ts', src)!.imports).toEqual(['./x', './ab', './ce', './side.css', './types', 'ns', '@scope/pkg', './long', './r'])
     })
 
-    it('JS imports: `import` then 50k spaces, import lines with no source, blank runs', () => {
-      for (const make of [...empty, (n: number) => 'import' + ' '.repeat(n) + '!', unit('import x\n'), (n: number) => 'export' + ' '.repeat(n)]) {
-        grows(make, noImports('a.ts'))
-      }
-    })
+    const importRuns: Case[] = [...empty, ['"import" then spaces then "!"', (n) => 'import' + ' '.repeat(n) + '!'], ...named('import x\n'), ['"export" then spaces', (n) => 'export' + ' '.repeat(n)]]
+    it.each(importRuns)('JS imports: %s reads as no import, in time linear in its size', (label, make) => grows(make, noImports('a.ts'), label))
 
     it('JS functions: plain, generator, async, default export, a name on the next line', () => {
       const src = J('function plain() {}', 'function* gen() {}', 'async function later() {}', 'export default function named() {}', 'export function', '  split() {}', 'functionX() {}')
@@ -494,18 +497,22 @@ describe('codeGraphExtract', () => {
       expect(show('methods.ts', src).s).toEqual([['A', 'class', 1, 22], ['render', 'method', 2, 3], ['load', 'method', 4, 5], ['name', 'method', 6, 8], ['m', 'method', 11, 14], ['build', 'method', 15, 16]])
     })
 
-    it('TS methods: calls with no body, `public` lines, typed calls, unclosed blocks and blank runs', () => {
-      for (const make of [...empty, unit('  a(x)\n'), unit('  public\n'), unit('  a(x): T\n'), unit('  a(x)}\n')]) grows(make, noSymbols('a.ts'))
-      // Thousands of blocks that never close: each is found, and the scans for where they end stay linear.
+    // Calls with no body, `public` lines, typed calls and blank runs.
+    it.each([...empty, ...named('  a(x)\n', '  public\n', '  a(x): T\n', '  a(x)}\n')])('TS methods: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('a.ts'), label))
+
+    it('TS methods: thousands of blocks that never close are each found, and the scans for where they end stay linear', () => {
       grows(unit('  a() {\n'), { read: (src) => extractFile('a.ts', src)!.symbols, check: (syms, src) => expect(syms.length).toBe(src.length / 8) })
     })
 
-    it('method heads after a `}` with no `{` past it share the scan for the next `{`, up to 512 KB', () => {
-      // Each head here has a `}` first, so its facts are read afresh; the `{` the clause needs was searched for again
-      // from each one, to the end of the file.
-      const lines: [string, string][] = [['a.ts', '  a(x)}\n'], ['A.cs', '  a b(x)}\n'], ['a.ts', '  a(x): T}\n'], ['A.cs', '  a b(x) where }\n']]
-      for (const [file, line] of lines) grows(unit(line), noSymbols(file), line)
-      // The `{` they share still ends the match where it did: b's return type runs past its `}` to c's `{`, as before.
+    // Each head here has a `}` first, so its facts are read afresh; the `{` the clause needs was searched for again
+    // from each one, to the end of the file.
+    it.each([['a.ts', '  a(x)}\n'], ['A.cs', '  a b(x)}\n'], ['a.ts', '  a(x): T}\n'], ['A.cs', '  a b(x) where }\n']])(
+      'method heads after a `}` with no `{` past it share the scan for the next `{`, up to 512 KB (%s %j)',
+      (file, line) => grows(unit(line), noSymbols(file), line)
+    )
+
+    it('method heads sharing a `{` still end where they did', () => {
+      // b's return type runs past its `}` to c's `{`, as before.
       expect(show('a.ts', 'class K {\n  a(x)}\n  b(x): T}\n  c(): T {\n  }\n}\n').s).toEqual([['K', 'class', 1, 2], ['b', 'method', 3, 5]])
     })
 
@@ -524,16 +531,18 @@ describe('codeGraphExtract', () => {
         'const async = async => 1'
       )
       expect(show('consts.ts', src).s).toEqual([['a', 'const', 1, 1], ['b', 'const', 2, 2], ['c', 'const', 3, 3], ['d', 'const', 4, 4], ['f', 'const', 5, 5], ['async', 'const', 11, 11]])
-      for (const make of ['const a: x\n', 'const a = (\n', 'const a = async\n'].map(unit)) grows(make, noSymbols('a.ts'))
     })
 
-    it('Go: an import block reads quoted paths at the start of a line; blank runs stay linear', () => {
+    it.each(named('const a: x\n', 'const a = (\n', 'const a = async\n'))('const arrows: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('a.ts'), label))
+
+    it('Go: an import block reads quoted paths at the start of a line', () => {
       const src = J('package m', 'import (', '  "fmt"', '  alias "net/http"', '  _ "embed"', '\t"os"', ')', 'import "strings"', 'func Run() {', '}')
       expect(show('m.go', src)).toEqual({ s: [['Run', 'function', 9, 10]], i: ['fmt', 'os'] })
-      for (const make of empty) grows(make, noImports('m.go'))
     })
 
-    it('Go: a method receiver closes within four lines; unclosed `func (` lines stay linear up to 512 KB', () => {
+    it.each(empty)('Go: %s reads as no import, in time linear in its size', (label, make) => grows(make, noImports('m.go'), label))
+
+    it('Go: a method receiver closes within four lines', () => {
       const src = J('package m', 'func Plain() {', '}', 'func (s *Server) Handle(w http.ResponseWriter) {', '}', 'func (Server)  Bare() {}', 'func\tTabbed() {}', 'func (s *S[T]) Gen() {}')
       expect(show('m.go', src).s).toEqual([['Plain', 'function', 2, 3], ['Handle', 'function', 4, 5], ['Bare', 'function', 6, 6], ['Tabbed', 'function', 7, 7], ['Gen', 'function', 8, 8]])
       // A receiver split over lines is read as before (from its `func` line), up to four lines; past that it names nothing.
@@ -542,8 +551,9 @@ describe('codeGraphExtract', () => {
       // A `func` with no name names nothing: the `func` on the next line is not its name but a head of its own.
       expect(show('m.go', 'func\nfunc Named() {}\nfunc\nfunc\n').s).toEqual([['Named', 'function', 2, 2]])
       expect(show('m.go', 'func (s *S)\nfunc M() {}\nfunc (s *S) funcy() {}').s).toEqual([['M', 'function', 2, 2], ['funcy', 'function', 3, 3]])
-      for (const line of ['func (\n', 'func (a\n', 'func  (a b\n']) grows(unit(line), noSymbols('m.go'), line)
     })
+
+    it.each(named('func (\n', 'func (a\n', 'func  (a b\n'))('Go: unclosed %s lines read as no symbol, in time linear in their number, up to 512 KB', (label, make) => grows(make, noSymbols('m.go'), label))
 
     it('Rust: `pub(...)` visibility closes on its line; an open `pub(` per line stays linear', () => {
       const src = J('pub(crate) fn a() {}', 'pub(super) async fn b() {}', 'pub fn c() {}', 'fn d() {}', 'pub(in crate::x) struct S;', 'pub(crate) trait T {}', 'use crate::x::y;')
@@ -579,10 +589,11 @@ describe('codeGraphExtract', () => {
       expect(show('a.ts', "import a\nimport b from 'y'\n").i).toEqual(['y'])
     })
 
-    // One test per language, so each stays well inside the test timeout on a loaded runner with coverage on.
-    it.each(['ts', 'py', 'go', 'rs', 'java', 'kt', 'cs', 'rb', 'tf', 'swift', 'bicep'])('%s reads long blank runs, spaces, tabs or CRLF in time linear in their size', (ext) => {
-      const odd = [...empty, unit('public\n'), unit('@a\n'), (n: number) => 'from' + ' '.repeat(n), (n: number) => 'import' + ' '.repeat(n), unit('resource "a\n')]
-      for (const make of odd) grows(make, extract(`f.${ext}`), ext)
+    // Long blank runs, spaces, tabs or CRLF, and lines no language declares anything with: one test per language and input.
+    const odd: Case[] = [...empty, ...named('public\n', '@a\n'), ['"from" then spaces', (n) => 'from' + ' '.repeat(n)], ['"import" then spaces', (n) => 'import' + ' '.repeat(n)], ...named('resource "a\n')]
+    const exts = ['ts', 'py', 'go', 'rs', 'java', 'kt', 'cs', 'rb', 'tf', 'swift', 'bicep']
+    it.each(exts.flatMap((ext) => odd.map(([label, make]) => [ext, label, make] as const)))('%s reads %s in time linear in its size', (ext, label, make) => {
+      grows(make, extract(`f.${ext}`), `${ext} ${label}`)
     })
   })
 })

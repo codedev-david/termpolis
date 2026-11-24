@@ -552,19 +552,26 @@ describe('hostile input stays linear', () => {
     expect(refs('a.py', 'from a import (x,\n' + 'y = 1\n'.repeat(1000) + 'from b import (c,\n  d)\n')).toEqual(['py:f:a:x', 'py:f:b:c,d'])
   })
 
+  // One test per input, so each stays well inside the test timeout on a loaded runner with coverage on.
+  it.each<[string, (n: number) => string, string[]]>([
+    ['"use a" lines', (n) => fill('use a\n', n), []],
+    ['"]" then "mod x;" lines', (n) => fill(']\nmod x;\n', n), ['rs:m:x']],
+    ['"#[a]" lines then "mod x;"', (n) => fill('#[a]\n', n) + 'mod x;', ['rs:m:x']]
+  ])('reads a Rust use with no `;` in reach as nothing, in linear time (%s)', (label, make, want) => grows(make, reads('src/lib.rs', want), label))
+
   it('reads a Rust use with no `;` in reach as nothing, and the next one', () => {
-    grows((n) => fill('use a\n', n), reads('src/lib.rs', []))
     expect(refs('src/lib.rs', 'use crate::a::b\n' + 'x'.repeat(2001) + ';\nuse crate::c;')).toEqual(['rs:u:crate::c'])
-    grows((n) => fill(']\nmod x;\n', n), reads('src/lib.rs', ['rs:m:x']))
-    grows((n) => fill('#[a]\n', n) + 'mod x;', reads('src/lib.rs', ['rs:m:x']))
   })
 
-  it('reads `from` followed by a long run of spaces as nothing, in linear time, and keeps relative and spaced forms', () => {
-    // The two `[ \t]+` around an empty module split the run every way: 2.3 s on main for 50k spaces.
-    grows((n) => 'from' + ' '.repeat(n), reads('a.py', []), 'spaces')
-    grows((n) => 'from' + ' '.repeat(n) + 'import x', reads('a.py', []), 'spaces then import')
-    grows((n) => 'from' + fill('\t \t', n) + '\n', reads('a.py', []), 'tabs')
-    grows((n) => fill('from \n', n), reads('a.py', []), 'lines')
+  // The two `[ \t]+` around an empty module split the run every way: 2.3 s on main for 50k spaces.
+  it.each<[string, (n: number) => string]>([
+    ['spaces', (n) => 'from' + ' '.repeat(n)],
+    ['spaces then import', (n) => 'from' + ' '.repeat(n) + 'import x'],
+    ['tabs', (n) => 'from' + fill('\t \t', n) + '\n'],
+    ['lines', (n) => fill('from \n', n)]
+  ])('reads `from` followed by a long run of %s as nothing, in linear time', (label, make) => grows(make, reads('a.py', []), label))
+
+  it('keeps relative and spaced `from` forms', () => {
     expect(refs('a.py', 'from\t \tos.path   import  join\nfrom . import b\nfrom ..pkg import (c,\n  d)\nfrom\t.x import y\n')).toEqual(['py:f:os.path:join', 'py:f:.:b', 'py:f:..pkg:c,d', 'py:f:.x:y'])
     // A `from` with no module no longer swallows the lines of its `(` list: the import under it is read.
     expect(refs('a.py', 'from  import (\nimport os\n)\n')).toEqual(['py:i:os'])

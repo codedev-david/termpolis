@@ -1159,20 +1159,23 @@ describe('manifestServiceNames', () => {
     expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '  name: second'))).toEqual(['second'])
   })
 
-  it('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
+  describe('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
     // Reading 8 times the block takes under 24 times as long (see _linearTime); the regex before took seconds at 50k.
+    // One test per input, so each stays well inside the test timeout on a loaded runner with coverage on.
     const N = 64 * 1024
     const read = (src: string): string[] => manifestServiceNames('k8s/a.yaml', src)
     const names = (want: string[]) => (found: string[]): void => expect(found).toEqual(want)
     const head = 'kind: Deployment\nmetadata:\n'
+    const cases: [string, (n: number) => string, string[]][] = []
     for (const body of ['\n', '\r\n', '  \n', ' \r\n', '  a: b\n', '  a\n\n', ' ']) {
-      linear((n) => head + fill(body, n), read, N, JSON.stringify(body), names([]))
-      linear((n) => head + fill(body, n) + '\nx: 1\n  name: late', read, N, `${JSON.stringify(body)} then a late name`, names([]))
+      cases.push([JSON.stringify(body), (n) => head + fill(body, n), []])
+      cases.push([`${JSON.stringify(body)} then a late name`, (n) => head + fill(body, n) + '\nx: 1\n  name: late', []])
     }
-    linear((n) => head + '\t'.repeat(n) + '\n', read, N, 'tabs', names([]))
-    linear((n) => head + fill('  name:\n', n), read, N, 'empty names', names([]))
-    linear((n) => 'kind: Service\n' + fill('metadata:\n  labels:\n', n), read, N, 'metadata blocks', names([]))
-    linear((n) => head + fill('  a: b\n\n', n) + '  name: found', read, N, 'found', names(['found']))
+    cases.push(['tabs', (n) => head + '\t'.repeat(n) + '\n', []])
+    cases.push(['empty names', (n) => head + fill('  name:\n', n), []])
+    cases.push(['metadata blocks', (n) => 'kind: Service\n' + fill('metadata:\n  labels:\n', n), []])
+    cases.push(['found', (n) => head + fill('  a: b\n\n', n) + '  name: found', ['found']])
+    it.each(cases)('%s', (label, make, want) => linear(make, read, N, label, names(want)))
   })
 })
 
