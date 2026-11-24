@@ -31,6 +31,8 @@ beforeAll(() => {
     // taskkill /T. On POSIX it must stay in the stand-in's group, which is what gets signalled.
     "const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
     "process.stdout.write('{\"labels\": [\"half an answer\"\\n')",
+    // Only a request answered by its pipes closing carries this: the backstop answers with none.
+    "process.stderr.write('labeller up\\n')",
     "writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ labeller: process.pid, grandchild: grandchild.pid }))",
     "renameSync(process.argv[2] + '.tmp', process.argv[2])",
     'setTimeout(() => {}, 120000)',
@@ -106,24 +108,28 @@ describe('a labelling exec with tree, on real processes', () => {
     const { labeller, grandchild } = await readPids(pidFile, run)
     expect(isAlive(labeller)).toBe(true)
     expect(isAlive(grandchild)).toBe(true)
-    const t0 = Date.now()
     ac.abort()
     const r = await run
     // Half an answer was printed, and none of it comes back: nothing from a cancelled run is labelled.
     expect(r.stdout).toBe('')
     expect(r.error).toMatchObject({ message: 'cancelled', code: 'ABORT_ERR' })
-    // Settled by the tree's pipes closing, well inside the 60 s timeout.
-    expect(Date.now() - t0).toBeLessThan(20_000)
+    // Settled by the tree's pipes closing, which means the whole tree let go of them, not by the
+    // backstop (which answers with no stderr) or the 60 s timeout (which reads as a timeout).
+    expect(r.stderr).toContain('labeller up')
     expect(await waitDead(labeller)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
   }, 60_000)
 
   it('the timeout ends the whole tree too, not only the direct child', async () => {
     const pidFile = join(dir, `pids-${++seq}.json`)
-    const run = execCaptureOffThread(process.execPath, [script, pidFile], { tree: true, timeout: 3_000 })
+    // Long enough for a cold node start and the pid file on a slow runner, before the timeout fires.
+    const run = execCaptureOffThread(process.execPath, [script, pidFile], { tree: true, timeout: 10_000 })
     const { labeller, grandchild } = await readPids(pidFile, run)
     const r = await run
-    expect(r.error).toMatchObject({ killed: true, signal: 'SIGTERM' })
+    expect(r.error).toMatchObject({ message: 'timed out after 10000ms', killed: true, signal: 'SIGTERM' })
+    // A timeout keeps what was printed, and the pipes closing (not the backstop) answered it.
+    expect(r.stdout).toContain('half an answer')
+    expect(r.stderr).toContain('labeller up')
     expect(await waitDead(labeller)).toBe(true)
     expect(await waitDead(grandchild)).toBe(true)
   }, 60_000)
