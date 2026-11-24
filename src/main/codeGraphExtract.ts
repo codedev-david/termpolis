@@ -650,6 +650,8 @@ function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent',
 export function extractFile(file: string, content: string): FileExtract | null {
   const rules = rulesForFile(file)
   if (!rules || !content) return null
+  // A byte-order mark (Visual Studio writes one) is no part of line 1: the rules' `^[ \t]*` would not reach past it.
+  if (content.charCodeAt(0) === 0xfeff) content = content.slice(1)
   const lines = content.split('\n')
   const starts = lineStarts(content)
   const scan: BlockScan = { left: BLOCK_SCAN_FACTOR * content.length + BLOCK_SCAN_MIN, from: new Map() }

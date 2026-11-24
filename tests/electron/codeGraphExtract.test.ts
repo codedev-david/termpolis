@@ -377,6 +377,19 @@ describe('codeGraphExtract', () => {
       expect(show('T.cs', 'class X {\n\n    public sealed class Tests(int a)\n        : Base(a)\n    {\n    }\n}').s).toEqual([['X', 'class', 1, 7], ['Tests', 'class', 3, 6]])
     })
 
+    it('a byte-order mark before a declaration on line 1 hides nothing (C#, Java, Swift)', () => {
+      const bom = '﻿'
+      expect(show('A.cs', bom + 'public class A {}').s).toEqual([['A', 'class', 1, 1]])
+      expect(show('A.cs', bom + 'public sealed record R(int A);\npublic interface IA {}').s).toEqual([['R', 'class', 1, 1], ['IA', 'interface', 2, 2]])
+      expect(show('A.java', bom + 'public class A {\n  void m() {\n  }\n}').s).toEqual([['A', 'class', 1, 4], ['m', 'method', 2, 3]])
+      expect(show('A.swift', bom + 'public class A {}\nfunc f() {}').s).toEqual([['A', 'class', 1, 1], ['f', 'function', 2, 2]])
+      // A file that is only a mark reads as an empty one. TS classes and Python's first import, which never read past
+      // a mark, are found too.
+      expect(show('A.cs', bom)).toEqual({ s: [], i: [] })
+      expect(show('a.ts', bom + 'class A {}\n').s).toEqual([['A', 'class', 1, 1]])
+      expect(show('a.py', bom + 'from os import path\nimport sys\n').i).toEqual(['os', 'sys'])
+    })
+
     it('C#: modifier lines, blank runs and a long where run', () => {
       for (const src of [...empty, 'public\n'.repeat(30000), 'static \n'.repeat(30000), '  a b(x)\n'.repeat(N / 9), ' a b(' + ') where '.repeat(6249)]) {
         within(() => expect(extractFile('A.cs', src)!.symbols).toEqual([]))
