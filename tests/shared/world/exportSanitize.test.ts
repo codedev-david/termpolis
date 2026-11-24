@@ -875,4 +875,31 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(out.members).toEqual([`${OUTSIDE}/a.ts`])
     expect(out.name).toBe(`Reads ${OUTSIDE}/x.ts`)
   })
+
+  it('takes a folder beside a known one only for a run-on with ~, + or a non-ASCII letter, so a sign after the project keeps its words', () => {
+    // The project followed by a sign or a word joined to it: the project reads as `.`, and nothing after it is lost.
+    const signs: Array<[string, string]> = [
+      ['cd R&&npm test', 'cd .&&npm test'],
+      ['bold **R** here', 'bold **.** here'],
+      ['see R\u2019s tests', 'see .\u2019s tests'],
+      ['see R(main) now', 'see .(main) now'],
+      ['see R#readme now', 'see .#readme now'],
+      ['see R=1 now', 'see .=1 now'],
+      ['see R@{u} now', 'see .@{u} now'],
+      ['see R* now', 'see .* now'],
+    ]
+    for (const [ctx, root] of [[posix, '/home/dev/repo'], [win, 'C:\\Users\\dev\\repo']] as Array<[SanitizeContext, string]>) {
+      for (const [text, want] of signs) expect(sanitizeText(text.replace('R', root), ctx)).toBe(want)
+    }
+    // The home folder followed by a sign keeps the sign and what follows it too.
+    expect(sanitizeText('cd /home/dev&&npm test', posix)).toBe(`cd ${OUTSIDE}&&npm test`)
+    expect(sanitizeText('see C:\\Users\\dev\u2019s files', win)).toBe(`see ${OUTSIDE}\u2019s files`)
+    // A run-on with ~, + or a non-ASCII letter is a folder beside it, its name never shown (R2 holds).
+    const beside: Array<[SanitizeContext, string]> = [
+      [win, 'see /c/Users/DEV~1/x now'], [win, 'see C:\\Users\\dev\u00e9\\x now'], [win, 'see C:\\Users\\dev+old\\x now'],
+      [posix, 'see /home/dev~1/x now'], [posix, 'see /home/dev+old/x now'], [posix, 'see /home/dev\u00e9/x now'],
+      [posix, 'see /home/dev/repo~1/x now'],
+    ]
+    for (const [ctx, text] of beside) expect(sanitizeText(text, ctx)).toBe(`see ${OUTSIDE}/x now`)
+  })
 })

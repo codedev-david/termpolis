@@ -259,11 +259,14 @@ function knownPattern(ctx: SanitizeContext): RegExp {
   const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
     .sort((a, b) => norm(b).length - norm(a).length).map(baseSource)
   // A `file:` URL of a known folder is taken whole. `(?!)` never matches, so with no folder known the pass changes
-  // nothing. A folder ends at a whole name: at a separator, whitespace, a quote, the end of the text, or punctuation
-  // that ends a sentence or a list (a dot only when no name follows it). A name running on with something other than
-  // a letter, digit, `_`, `-` or a dot (an 8.3 short name `ANN~1`, `ann+x`) is a folder beside it, taken whole as
-  // group 2. One running on with a name character is another folder, left to the revealing pass.
-  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?:${FOLDER_END}|(?![\\w.-])([^\\s\\\\/"'<>|]+?)${FOLDER_END})((?:[\\\\/]${REST})?)`, 'gi')
+  // nothing. A name running on with `~`, `+` or a letter outside ASCII (an 8.3 short name `ANN~1`, `ann+x`, `anné`)
+  // is a folder beside it, taken whole as group 2 up to a whole name's end: a separator, whitespace, a quote, the end
+  // of the text, or punctuation that ends a sentence or a list (a dot only when no name follows it). Otherwise the
+  // folder ends wherever no letter, digit, `_`, `-` or dot-and-name follows, so a sign after it (`&&`, `**`, `’s`,
+  // `(main)`, `#x`, `=1`, `@{u}`) keeps its words, and a name running on with a name character is another folder,
+  // left to the revealing pass.
+  const beside = `(?=[~+]|(?![\\x00-\\x7f])[\\p{L}\\p{M}])([^\\s\\\\/"'<>|]+?)${FOLDER_END}`
+  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?:${beside}|(?![\\w-]|\\.[\\w.-]))((?:[\\\\/]${REST})?)`, 'giu')
 }
 
 /** sanitizeText for one context, its patterns built once (a world holds thousands of strings). */
