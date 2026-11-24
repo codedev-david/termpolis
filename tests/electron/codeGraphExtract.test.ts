@@ -501,7 +501,10 @@ describe('codeGraphExtract', () => {
     it.each([...empty, ...named('  a(x)\n', '  public\n', '  a(x): T\n', '  a(x)}\n')])('TS methods: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('a.ts'), label))
 
     it('TS methods: thousands of blocks that never close are each found, and the scans for where they end stay linear', () => {
-      grows(unit('  a() {\n'), { read: (src) => extractFile('a.ts', src)!.symbols, check: (syms, src) => expect(syms.length).toBe(src.length / 8) })
+      // At half of N: every block here gives a symbol, so a read is slow, and at N this one test took up to 18 s of
+      // its 30 on two loaded cores with coverage on. The parser before the fix still measures a ratio of 62 at this size.
+      const read = (src: string) => extractFile('a.ts', src)!.symbols
+      linear(unit('  a() {\n'), read, N / 2, '  a() {', (syms, src) => expect(syms.length).toBe(src.length / 8))
     })
 
     // Each head here has a `}` first, so its facts are read afresh; the `{` the clause needs was searched for again
