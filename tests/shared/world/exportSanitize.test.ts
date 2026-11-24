@@ -923,6 +923,9 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(sanitizeText('see \\\\?\\home\\dev\\repo\\src\\a.ts now', posix)).toBe('see src/a.ts now')
     expect(sanitizeText('see \\\\.\\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
     expect(sanitizeText('see https://example.com/home/dev/x now', posix)).toBe(`see https://example.com/${OUTSIDE}/x now`)
+    // A drive path of this machine running on inside a UNC token is still read, as before UNC tokens were matched
+    // whole, and the host's own path is left to the revealing pass.
+    expect(sanitizeText('see \\\\host\\share;C:\\Users\\dev\\repo\\a.ts now', win)).toBe(`see ${OUTSIDE}/share;a.ts now`)
   })
 
   it("reads a drive with no separator after it, or with separators left out between this machine's own folder names, as the drive path", () => {

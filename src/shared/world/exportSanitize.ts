@@ -75,8 +75,17 @@ export function isRevealingPath(text: string): boolean {
   return new RegExp(REVEALING_PATH, 'i').test(text)
 }
 
+/**
+ * `s` without the slashes it ends with. A loop, not `/\/+$/`: that pattern retries at every slash of a run and fails
+ * at each one the run does not end the text with, so a long run of slashes would cost the square of its length.
+ */
+const trimSlashes = (s: string): string => {
+  let end = s.length
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end--
+  return s.slice(0, end)
+}
 /** Forward slashes, no trailing slash. */
-const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '')
+const norm = (p: string): string => trimSlashes(p.replace(/\\/g, '/'))
 /** A drive path or a UNC path: compared without regard to case. */
 const windowsLike = (p: string): boolean => /^[A-Za-z]:(\/|$)/.test(p) || p.startsWith('//')
 const isAbsolute = (p: string): boolean => /^[A-Za-z]:(\/|$)/.test(p) || p.startsWith('/')
@@ -192,7 +201,7 @@ function placedPath(p: string, ctx: SanitizeContext): string {
   const kept = plainPath(p, true)
   if (!kept.startsWith('/')) return resolveRelative(kept.split('/'))
   // An absolute path read as inside the project has a project folder to be inside of.
-  const inRoot = under(kept.replace(/\/+$/, ''), norm(ctx.root as string))
+  const inRoot = under(trimSlashes(kept), norm(ctx.root as string))
   return inRoot ? resolveRelative(inRoot) : read
 }
 
@@ -270,17 +279,28 @@ function onDrive(n: string, ctx: SanitizeContext): string {
 const SEP = '[\\\\/]+'
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /**
- * Somewhere inside a UNC path (`\\host\share\...`, `\\?\UNC\host\...`, either JSON-escaped): its double backslash
- * starts the token, after the text's start or a character no path runs on with. A known folder found there is a
- * folder on that host, left whole to the revealing pass, so neither the host nor the share name shows.
+ * A UNC path (`\\host\share\...`, `\\?\UNC\host\...`, either JSON-escaped) as one token: its double backslash after
+ * the text's start or a character no path runs on with, up to a space, a quote, an angle bracket or a pipe. A known
+ * folder found inside it is a folder on that host, left whole to the revealing pass, so neither the host nor the share
+ * name shows (knownPattern takes the token and reads only the forms that name this machine inside it). Matching the
+ * token forward costs its length once; asking at each slash whether a token started behind it would scan back over
+ * the token every time, the square of its length.
  */
-const IN_UNC = `(?:^|[^\\w.:\\\\/$~%-])\\\\{2,}[^\\s\\\\/"'<>|][^\\s"'<>|]*`
+const UNC_TOKEN = `(?<![\\w.:\\\\/$~%-])\\\\{2,}[^\\s\\\\/"'<>|][^\\s"'<>|]*`
+/**
+ * Where a known folder written with a separator first may start: at a run of separators, or after its first one.
+ * Each run is then tried twice at most, not once per separator, which on a long run (`////…`) would cost the square
+ * of its length. A match starting deeper in a run starts at one of these two as well, and its leftmost start is
+ * what the replace finds: the second covers a run whose first separator ends a host's name (`\\host\/home/ann`).
+ */
+const RUN_START = '(?:(?<![\\\\/])|(?<=(?<![\\\\/])[\\\\/]))'
 
 /**
  * A RegExp source (for the `i` flag) matching folder `base` however a text writes it: either slash, doubled
- * backslashes (JSON), the long forms `\\?\` and `\\.\`, and a drive as an admin share (`\\host\C$`).
+ * backslashes (JSON), the long forms `\\?\` and `\\.\`, and a drive as an admin share (`\\host\C$`). With `inUnc`, only
+ * the forms that name this machine even inside a UNC path (UNC_TOKEN): a drive, an admin share and the long forms.
  */
-function baseSource(base: string): string {
+function baseSource(base: string, inUnc: boolean): string {
   const n = norm(base)
   const parts = n.split('/')
   const drive = /^([A-Za-z]):$/.exec(parts[0])
@@ -288,23 +308,28 @@ function baseSource(base: string): string {
     const rest = parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
     // Git Bash, Cygwin and WSL write the drive as a folder (`/c/...`, `/cygdrive/c/...`, `/mnt/c/...`). Only below
     // the drive itself: a drive-root project would otherwise claim any `/c/` in the text.
-    const bash = rest ? `|[\\\\/]+(?:(?:cygdrive|mnt)${SEP})?${drive[1]}` : ''
+    const bash = rest ? `|(?<![\\\\/])[\\\\/]+(?:(?:cygdrive|mnt)${SEP})?${drive[1]}` : ''
     // Rooted on the current drive, the drive left out (`\Users\ann`): not right after a drive letter, a share's `$`, a
     // name character or another slash, so `D:\Users\ann`, `\\host\D$\Users\ann` and `x\Users\ann` are not taken for
     // it, while `..\Users\ann`, `a.ts:12:\Users\ann`, `cwd:\Users\ann`, `-\Users\ann` and `$\Users\ann` are. Nor
     // anywhere inside a UNC path (`\\host\share$\Users\ann`). Only below the drive itself too.
-    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])|(?<![\\w\\\\/]|(?<!\\w)[a-z]:|[\\\\/]{2}[^\\s\\\\/"'<>|]+[\\\\/][a-z]\\$|${IN_UNC})` : ''
+    const rooted = inUnc ? '' : `|(?=[\\\\/])(?<![\\w\\\\/]|(?<!\\w)[a-z]:|[\\\\/]{2}[^\\s\\\\/"'<>|]+[\\\\/][a-z]\\$)`
+    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])${rooted}` : ''
     return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash}${bare})${rest}`
   }
   if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
   // A POSIX folder, also in the long form with no drive after the prefix (`\\?\home\ann`), and written with a
   // backslash after anything (`..\home\ann`, `cwd:\home\ann`) but a host's name: in `\\host\home\ann`, and anywhere
   // else inside a UNC path (`\\host\share\home\ann`), it is a folder on that host.
-  return `(?:[\\\\/]{2}[?.]|(?<!${IN_UNC})(?=/)|(?<![\\\\/]{2}[^\\s\\\\/"'<>|]+|${IN_UNC}))` + parts.map(escapeRe).join(SEP)
+  const plain = inUnc ? '' : `|${RUN_START}(?:(?=/)|(?=[\\\\/])(?<![\\\\/]{2}[^\\s\\\\/"'<>|]+))`
+  return `(?:[\\\\/]{2}[?.]${plain})` + parts.map(escapeRe).join(SEP)
 }
 
 /** A separator as a URL may write it: a slash, a backslash, or either percent-encoded. */
-const URL_SEP = '(?:[\\\\/]|%2F|%5C)+'
+const URL_SEP_ONE = '(?:[\\\\/]|%2F|%5C)'
+const URL_SEP = `${URL_SEP_ONE}+`
+/** The start of a run of URL separators: a run is tried there only (RUN_START), not once per separator in it. */
+const URL_RUN = `(?<!${URL_SEP_ONE})`
 /** A folder name as a URL may write it: as it is or percent-encoded. */
 const urlName = (s: string): string => (encodeURIComponent(s) === s ? escapeRe(s) : `(?:${escapeRe(s)}|${escapeRe(encodeURIComponent(s))})`)
 
@@ -317,8 +342,11 @@ function urlSource(base: string): string | null {
   const parts = norm(base).split('/')
   const names = parts.slice(1).map(urlName).join(URL_SEP)
   const drive = /^([A-Za-z]):$/.exec(parts[0])
-  if (drive) return `(?:${drive[1]}(?::|%3A)|(?<!\\w|(?<!\\w)[a-z](?::|%3A)))${URL_SEP}${names}`
-  return parts[0] === '' && parts[1] !== '' ? URL_SEP + names : null
+  // The drive left out: at the run's start, or else (after a name) right after the run's first slash or backslash, the
+  // first place in the run no letter or digit comes before (`%2F` ends with one).
+  const first = `(?:${URL_RUN}|(?<=${URL_RUN}(?:%2F|%5C)*[\\\\/]))`
+  if (drive) return `(?:${drive[1]}(?::|%3A)|(?=[\\\\/%])${first}(?<!\\w|(?<!\\w)[a-z](?::|%3A)))${URL_SEP}${names}`
+  return parts[0] === '' && parts[1] !== '' ? URL_RUN + URL_SEP + names : null
 }
 
 /** Each percent escape (a run as one character where it decodes as one) as the character it stands for. */
@@ -370,13 +398,16 @@ const redact = (text: string): string => redactSecrets(text).replace(/<redacted(
 /** Where a known folder's last name ends (knownPattern). */
 const FOLDER_END = `(?=$|[\\s\\\\/"'\`,;:!?)\\]}<>|]|\\.(?![\\w.-]))`
 
-/** Punctuation that ends a sentence, not a path. */
-const TRAILING = /[.,;:!?)\]}]+$/
+/** Punctuation that ends a sentence, not a path: the run the text ends with, tried at a run's start only (RUN_START). */
+const TRAILING = /(?<![.,;:!?)\]}])[.,;:!?)\]}]+$/
 
-/** The project root, home and userData folders, longest first, each ending at a whole name, then the rest of the path. */
-function knownPattern(ctx: SanitizeContext): RegExp {
+/**
+ * The project root, home and userData folders, longest first, each ending at a whole name, then the rest of the path
+ * (groups 1 to 3), or else a UNC token (group 4, UNC_TOKEN). With `inUnc`, the forms baseSource reads inside one.
+ */
+function knownPattern(ctx: SanitizeContext, inUnc: boolean): RegExp {
   const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
-    .sort((a, b) => norm(b).length - norm(a).length).map(baseSource)
+    .sort((a, b) => norm(b).length - norm(a).length).map((b) => baseSource(b, inUnc))
   // A `file:` URL of a known folder is taken whole. `(?!)` never matches, so with no folder known the pass changes
   // nothing. A name running on with `~`, `+` or a letter outside ASCII (an 8.3 short name `ANN~1`, `ann+x`, `anné`)
   // is a folder beside it, taken whole as group 2 up to a whole name's end: a separator, whitespace, a quote, the end
@@ -385,25 +416,31 @@ function knownPattern(ctx: SanitizeContext): RegExp {
   // `(main)`, `#x`, `=1`, `@{u}`) keeps its words, and a name running on with a name character is another folder,
   // left to the revealing pass.
   const beside = `(?=[~+]|(?![\\x00-\\x7f])[\\p{L}\\p{M}])([^\\s\\\\/"'<>|]+?)${FOLDER_END}`
-  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?:${beside}|(?![\\w-]|\\.[\\w.-]))((?:[\\\\/]${REST})?)`, 'giu')
+  const unc = inUnc ? '' : `|(${UNC_TOKEN})`
+  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?:${beside}|(?![\\w-]|\\.[\\w.-]))((?:[\\\\/]${REST})?)${unc}`, 'giu')
 }
 
 /** sanitizeText for one context, its patterns built once (a world holds thousands of strings). */
 function textCleaner(ctx: SanitizeContext): (text: string) => string {
-  const known = knownPattern(ctx)
+  const known = knownPattern(ctx, false)
+  const knownInUnc = knownPattern(ctx, true)
   const revealing = new RegExp(REVEALING_PATH, 'gi')
   const rewrite = (path: string, tail: string): string => relativePath(path.slice(0, path.length - tail.length), ctx) + tail
   // A known folder named alone keeps its last character; a path running on drops the punctuation ending a sentence.
   // A folder beside a known one is outside the project, and its name is never shown, not even as the basename.
   // A folder whose first slash follows a name (`vscode://file/Users/ann`, `a/home/ann`) keeps that slash, so the name
   // stays apart from what replaces the folder.
-  const knownHit = (_m: string, base: string, beside: string | undefined, rest: string, at: number, whole: string): string => {
+  const folderHit = (base: string, beside: string | undefined, rest: string, at: number, whole: string): string => {
     const tail = rest ? (TRAILING.exec(rest) ?? [''])[0] : ''
     const lead = base.startsWith('/') && /\w/.test(whole.charAt(at - 1)) ? '/' : ''
     if (!beside) return lead + rewrite(base + rest, tail)
     const out = rewrite(base + beside + rest, tail)
     return lead + (out.toLowerCase().includes(beside.toLowerCase()) ? OUTSIDE + tail : out)
   }
+  // Inside a UNC token only the forms that name this machine there are read, each character once.
+  const knownHit = (_m: string, base: string | undefined, beside: string | undefined, rest: string, token: string | undefined, at: number, whole: string): string =>
+    (token === undefined ? folderHit(base as string, beside, rest, at, whole)
+      : token.replace(knownInUnc, (_n: string, b: string, s: string | undefined, r: string, i: number) => folderHit(b, s, r, at + i, whole)))
   const revealingHit = (m: string): string => rewrite(m, (TRAILING.exec(m) ?? [''])[0])
   // A known drive folder written with separators left out is first written out whole (gluedBase), after no name
   // character, so the known pass takes it.
