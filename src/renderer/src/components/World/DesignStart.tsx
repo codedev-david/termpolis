@@ -81,7 +81,7 @@ export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): J
             aria-label={mic.status === 'listening' ? 'Stop listening' : 'Describe by voice'}
             onClick={mic.toggle}
             disabled={drafting !== null}
-            className={`absolute right-2 top-2 px-1 ${mic.status === 'listening' ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${mic.status === 'transcribing' ? ' animate-pulse' : ''}`}
+            className={`absolute right-2 top-2 px-1 ${mic.status === 'listening' ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${mic.status === 'transcribing' ? ' motion-safe:animate-pulse' : ''}`}
           >
             <i className="fa-solid fa-microphone" aria-hidden="true" />
           </button>
@@ -89,7 +89,7 @@ export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): J
       </div>
       {mic.errorMsg && <p role="alert" className="text-xs text-[#f14c4c]">{mic.errorMsg}</p>}
       {mic.notice && <p role="status" className="text-xs text-[#9ca3af]">{mic.notice}</p>}
-      {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] animate-pulse">Drafting your design…</p>}
+      {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] motion-safe:animate-pulse">Drafting your design…</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>

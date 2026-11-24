@@ -328,6 +328,7 @@ describe('CloneDialog', () => {
     fireEvent.keyDown(url(), { key: 'Enter' })
     expect(api.worldClone).toHaveBeenCalledWith('https://x.dev/a.git', 'dev')
     expect(screen.getByRole('progressbar', { name: 'Cloning' })).toBeInTheDocument()
+    expect((screen.getByRole('progressbar', { name: 'Cloning' }).firstElementChild as Element).className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
     expect(url()).toBeDisabled()
     // Enter again while cloning starts nothing new.
     fireEvent.keyDown(url(), { key: 'Enter' })
@@ -550,7 +551,7 @@ describe('DesignStart', () => {
     vm.status = 'transcribing'
     vm.errorMsg = null
     mount()
-    expect(screen.getByRole('button', { name: 'Describe by voice' }).className).toContain('animate-pulse')
+    expect(screen.getByRole('button', { name: 'Describe by voice' }).className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
   })
 
   it('shows the 5-minute cap note quietly, as a status and not an alert, and drops it once the hook clears it', () => {
@@ -574,6 +575,7 @@ describe('DesignStart', () => {
     fireEvent.change(box(), { target: { value: 'A shop' } })
     fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
     expect(screen.getByRole('status')).toHaveTextContent('Drafting your design…')
+    expect(screen.getByRole('status').className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
     await settle()
     // Ctrl+Enter while drafting starts nothing new.
     fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true })

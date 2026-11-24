@@ -2598,6 +2598,21 @@ describe('WorldView on a big monitor', () => {
 describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2D map, a hidden window', () => {
   const notice = () => screen.queryByTestId('world-notice')
 
+  it('with no WebGL at all the card over the 2D map is solid (the page is composited in software); a GPU user who picks 2D keeps glass', async () => {
+    h.webgl = false
+    bridge()
+    await mount()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveAttribute('data-solid', '')
+    cleanup()
+    h.webgl = true
+    bridge()
+    await mount()
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).not.toHaveAttribute('data-solid')
+  })
+
   it('a map drawn in software gets a solid card and legend, as the viewer says when made and when its graphics come back', async () => {
     h.software = true
     bridge()

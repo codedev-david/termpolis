@@ -588,7 +588,7 @@ describe('WorldAsk', () => {
       a.unmount()
       vm.status = 'transcribing'
       render(<WorldAsk viewer={makeViewer() as never} root="r" />)
-      expect(screen.getByLabelText('Ask by voice').className).toContain('animate-pulse')
+      expect(screen.getByLabelText('Ask by voice').className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
     })
 
     it('shows the hook notice (the 5-minute cap) as a quiet status line, not an alert; none without one', () => {

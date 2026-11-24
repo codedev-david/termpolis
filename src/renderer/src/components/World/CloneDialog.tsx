@@ -116,7 +116,7 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
       {reason !== null && <p data-testid="world-clone-reason" className="text-xs text-[#f0b429]">{reason}</p>}
       {cloning && (
         <div role="progressbar" aria-label="Cloning" className="h-1.5 w-full overflow-hidden rounded bg-[#1e1e1e]">
-          <div className="h-full w-1/3 animate-pulse rounded bg-[#0078d4]" />
+          <div className="h-full w-1/3 motion-safe:animate-pulse rounded bg-[#0078d4]" />
         </div>
       )}
       {signingIn && <p className="text-xs text-[#9ca3af]">Finish signing in in the window that opened…</p>}
