@@ -1,7 +1,7 @@
 // WPA item 1: the finished primer, cached per project in main, stale-while-revalidate, in memory only.
 import { describe, it, expect, vi } from 'vitest'
 import { createPrimerCache, PRIMER_FRESH_MS, PRIMER_CACHE_MAX, PRIMER_MAX_AGE_MS, PRIMER_MAX_BUILDS } from '../../src/main/primerCache'
-import { projectKeyOf } from '../../src/main/projectKey'
+import { projectKeyOf, foldsCase } from '../../src/main/projectKey'
 
 const ROOT = '/srv/work/termpolis'
 
@@ -47,7 +47,10 @@ describe('primerCache', () => {
     const { cache, calls } = harness()
     await cache.get('/srv/Work/Termpolis/', 10)
     expect(calls[0].root).toBe('/srv/Work/Termpolis/')
-    expect(cache.has('/srv/work/termpolis', 10)).toBe(true)
+    expect(cache.has('/srv/Work/Termpolis', 10)).toBe(true)
+    // WP5: the key folds case only where the platform's file systems do (Windows, macOS). On Linux `/srv/work/termpolis`
+    // is another folder, so it has its own entry and this one does not answer for it.
+    expect(cache.has('/srv/work/termpolis', 10)).toBe(foldsCase())
   })
 
   it('serves stale past the fresh window and refreshes once in the background; the next ask gets the new one', async () => {
