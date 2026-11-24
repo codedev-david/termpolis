@@ -1052,6 +1052,39 @@ describe('WorldAsk: speech in bounded pieces that always ends (T6)', () => {
     expect(lastBusy(l.link)).toBe(false)
   })
 
+  /** Still speaking one ms before `ms`, given up on at `ms`. */
+  async function givenUpAt(l: ReturnType<typeof makeLink>, ms: number) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms - 1) })
+    expect(lastBusy(l.link)).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(lastBusy(l.link)).toBe(false)
+  }
+
+  it('a 220-character CJK piece, with no spaces, gets 500 ms a character, not the one word its spaces count', async () => {
+    const cjk = '项目'.repeat(110)
+    const { l } = await answered(cjk)
+    expect(said().map((u) => u.text)).toEqual([cjk])
+    // By words it would be given up on at 5.8 s, long before an engine could read it.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(lastBusy(l.link)).toBe(true)
+    // 220 x 500 ms, plus 5 s.
+    await givenUpAt(l, 115_000 - 6000)
+  })
+
+  it('a piece made mostly of file paths gets 400 ms for each slash and dot, which are read out as words', async () => {
+    const paths = 'See src/renderer/src/components/World/WorldAsk.tsx, src/renderer/src/components/World/useWorldAsk.ts and src/renderer/src/world/engine/createWorldViewer.ts.'
+    const { l } = await answered(paths)
+    expect(said().map((u) => u.text)).toEqual([paths])
+    // Five words would give 9 s. By characters: 20 symbols x 400 ms and 136 others x 120 ms, plus 5 s.
+    await givenUpAt(l, 29_320)
+  })
+
+  it('ordinary English keeps its word budget, the larger of the two', async () => {
+    const { l } = await answered(words('alpha', 30) + '.')
+    // 30 x 800 ms (the 180 characters come to 21.9 s), plus 5 s.
+    await givenUpAt(l, 29_000)
+  })
+
   it('a piece that ends before the watchdog clears it; the watchdog of a hushed answer changes nothing later', async () => {
     const { l } = await answered('One. ' + words('two', 40) + '. ' + words('three', 40) + '.')
     act(() => { said()[0].onend() })

@@ -66,8 +66,18 @@ const speechPieces = (line: string): string[] => {
   if (cur !== '') out.push(cur)
   return out
 }
-/** How long a piece may take before it is given up on: twice a slow 400 ms a word, plus 5 s for the engine to start. */
-const pieceBudget = (piece: string): number => piece.split(' ').length * 800 + 5000
+/** A character read as a syllable or more of its own: CJK, kana, Hangul and their full-width punctuation. */
+const WIDE_CHAR = /[ᄀ-ᇿ⺀-鿿가-힯豈-﫿︰-﹏＀-￯]|[\ud840-\ud87f][\udc00-\udfff]/
+/** A letter, a digit or a space: anything else (a path's slash or dot, an underscore) is read out as a word. */
+const PLAIN_CHAR = /[\p{L}\p{N}\s]/u
+/** How long a piece may take before it is given up on (T6): the longer of two estimates, each about twice a slow pace,
+ *  plus 5 s for the engine to start, which is also the floor. By words, 800 ms a word; by characters, 500 ms for a wide
+ *  one, 400 ms for a symbol and 120 ms for any other, so CJK text and a run of paths, with few spaces, get their time. */
+const pieceBudget = (piece: string): number => {
+  let byChars = 0
+  for (const ch of piece) byChars += WIDE_CHAR.test(ch) ? 500 : PLAIN_CHAR.test(ch) ? 120 : 400
+  return Math.max(piece.split(' ').length * 800, byChars) + 5000
+}
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
   const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
