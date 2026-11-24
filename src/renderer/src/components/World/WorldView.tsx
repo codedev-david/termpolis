@@ -55,6 +55,7 @@ import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveFr
 import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
+import { tourCard } from '../../world/engine/cards'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 import { WORLD_OPENED_EVENT } from './worldOpen'
@@ -587,6 +588,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     armedRef.current = false
     fallbackIdRef.current = null
     setCard(null)
+    // A tour or a flight under way stops here: paused, it would otherwise caption over the 2D map (T3).
+    viewer?.cancelActions()
     setMap2d(on)
   }
 
@@ -600,8 +603,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }
   const onTour = (tour: Tour): void => {
     armedRef.current = false
-    if (viewer && !map2d) void viewer.play([{ type: 'tour', steps: tour.steps }])
-    else setCard(null)
+    if (viewer && !map2d) { void viewer.play([{ type: 'tour', steps: tour.steps }]); return }
+    // The 2D map has no camera to fly: the tour shows as its captions in order (T3).
+    fallbackIdRef.current = null
+    setCard(tourCard(tour))
   }
   const resetView = (): void => {
     armedRef.current = true

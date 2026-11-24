@@ -429,8 +429,9 @@ describe('WorldView', () => {
 
     // Toolbar actions have no viewer to drive, and do not throw.
     fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
+    // A tour shows as its captions instead (T3).
     fireEvent.change(screen.getByRole('combobox', { name: 'Tours' }), { target: { value: 't1' } })
-    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(screen.getByTestId('world-card')).toHaveTextContent('First lookThe app talks to its memory.')
     fireEvent.click(screen.getByTestId('world-layer-processes'))
     fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'glass' } })
     fireEvent.click(screen.getByTestId('world-reset'))
@@ -1586,6 +1587,33 @@ describe('WorldView 2D map switch and bookmarks', () => {
       fireEvent.change(tours, { target: { value: tours.options[1].value } })
       expect(viewer().play).not.toHaveBeenCalled()
     }
+  })
+
+  it('a tour picked on the 2D map shows its captions in order as a card, with or without a viewer (T3)', async () => {
+    const doc = minimal()
+    doc.tours = [{ id: 't1', title: 'First <look>', steps: [{ ids: ['b1'], caption: 'Start here.' }, { ids: ['b2'], caption: 'Then <this>.' }] }]
+    for (const gl of [true, false]) {
+      cleanup()
+      h.webgl = gl
+      bridge({ worldGet: vi.fn(async () => ok(doc)) })
+      await mount()
+      if (gl) fireEvent.click(screen.getByTestId('world-map2d'))
+      fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+      const c = card() as HTMLElement
+      expect(c.querySelector('h3')).toHaveTextContent('First <look>')
+      expect([...c.querySelectorAll('ol > li')].map((li) => li.textContent)).toEqual(['Start here.', 'Then <this>.'])
+      if (gl) expect(viewer().play).not.toHaveBeenCalled()
+    }
+  })
+
+  it('switching to the 2D map stops what the viewer is playing, so a tour cannot caption over the map (T3)', async () => {
+    bridge()
+    await mount()
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(viewer().play).toHaveBeenCalledTimes(1)
+    expect(viewer().cancelActions).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    expect(viewer().cancelActions).toHaveBeenCalledTimes(1)
   })
 
   it('the 2D heading shows the project display name, not the hashed key', async () => {

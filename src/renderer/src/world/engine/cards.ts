@@ -1,5 +1,5 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
-import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import type { Claim, Evidence, Tour, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
 import { AI_NAME, BUILD_STATUS_TEXT as STATUS, RUNS_IN_LABEL, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
@@ -150,3 +150,7 @@ export function techCard(doc: WorldDoc, techId: string): string {
     + (nodes.length ? section(CARD_HEADINGS.usedInside, `<ul>${nodeRows}</ul>`) : '')
     + (edges.length ? section(CARD_HEADINGS.carriesConnections, `<ul>${edgeRows}</ul>`) : '')
 }
+
+/** A tour as a card, for the 2D map (the 3D city plays it instead): its title over its captions in order. */
+export const tourCard = (t: Tour): string =>
+  `<h3>${esc(t.title)}</h3><ol>${t.steps.map((s) => `<li>${esc(s.caption)}</li>`).join('')}</ol>`

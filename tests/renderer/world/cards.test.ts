@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from '../../../src/renderer/src/world/engine/cards'
+import { buildingCard, edgeCard, escapeHtml, techCard, tourCard, usesTech } from '../../../src/renderer/src/world/engine/cards'
 import { CARD_HEADINGS } from '../../../src/shared/world/cardFacts'
 import { building, claim, edge, minimal, rich } from './helpers'
 
@@ -360,5 +360,12 @@ describe('read-only cards', () => {
     expect(html).not.toContain('data-confirm')
     expect(html).not.toContain('data-evidence')
     expect(html).toContain('<span class="ev-ref">file src/a.ts:3</span>')
+  })
+})
+
+describe('tourCard', () => {
+  it('is the tour title over its captions in order, escaped (the 2D map shows a tour this way)', () => {
+    expect(tourCard({ id: 't', title: 'A <b>', steps: [{ ids: [], caption: 'one & two' }, { ids: ['x'], caption: 'three' }] }))
+      .toBe('<h3>A &lt;b&gt;</h3><ol><li>one &amp; two</li><li>three</li></ol>')
   })
 })
