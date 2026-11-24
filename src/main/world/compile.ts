@@ -200,11 +200,17 @@ const K8S_DOC = /^kind:\s*(?:Deployment|Service)\s*$/m
 // A line's trailing \r (one or more, as a file run twice through a CRLF conversion has) is read as space.
 const K8S_META = /^metadata:\s*$/
 const K8S_KEY_NAME = /^name:[ \t]*['"]?([\w.-]+)['"]?\s*$/
+// A `name:` with its value on the next line, as a plain scalar indented deeper.
+const K8S_KEY_EMPTY = /^name:\s*$/
+const K8S_SCALAR = /^['"]?([\w.-]+)['"]?\s*$/
+
+const leadOf = (line: string): number => line.length - line.replace(/^[ \t]+/, '').length
 
 /**
  * The `name:` of a Kubernetes document's top-level `metadata:` block: a key at the block's own indent (the smallest
- * seen so far), so a `name:` nested deeper (a label called name) is not taken. Blank and comment lines are skipped,
- * and the block ends at the first line that is not indented. Each line is read once.
+ * seen so far), so a `name:` nested deeper (a label called name) is not taken. Its value is on the same line, or on
+ * the next one indented deeper. Blank and comment lines are skipped, and the block ends at the first line that is
+ * not indented. Each line is read once, and once more as the value of an empty `name:` above it.
  */
 function k8sName(doc: string): string | null {
   const lines = doc.split('\n')
@@ -215,11 +221,17 @@ function k8sName(doc: string): string | null {
       const line = lines[i + 1]
       const key = line.trimStart()
       if (key === '' || key.startsWith('#')) continue
-      const lead = line.length - line.replace(/^[ \t]+/, '').length
+      const lead = leadOf(line)
       if (lead === 0) break
       if (indent < 0 || lead < indent) indent = lead
-      const m = lead === indent ? K8S_KEY_NAME.exec(line.slice(lead)) : null
+      if (lead !== indent) continue
+      const rest = line.slice(lead)
+      const m = K8S_KEY_NAME.exec(rest)
       if (m) return m[1]
+      const next = K8S_KEY_EMPTY.test(rest) && i + 2 < lines.length ? lines[i + 2] : ''
+      const deeper = leadOf(next)
+      const value = deeper > indent ? K8S_SCALAR.exec(next.slice(deeper)) : null
+      if (value) return value[1]
     }
   }
   return null

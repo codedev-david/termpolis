@@ -1147,6 +1147,16 @@ describe('manifestServiceNames', () => {
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Deployment\nmetadata:\nspec:\n  name: no')).toEqual([])
     // A metadata: block that ends unnamed, then a second one at the top level that is named.
     expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\nmetadata:\n  labels: {}\nmetadata:\n  name: later\n')).toEqual(['later'])
+    // A name: with its value on the next line, indented deeper, quoted or not, CRLF or not.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '    nl-web'))).toEqual(['nl-web'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:  ', "      'nl.q'", '  namespace: x').replace(/\n/g, '\r\n'))).toEqual(['nl.q'])
+    // ...but not a value at the block's indent or above, nor a key, a blank line or the end of the file under it.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '  namespace: x'))).toEqual([])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '    app: x'))).toEqual([])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '', '    later'))).toEqual([])
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\nmetadata:\n  name:')).toEqual([])
+    // An empty name: does not stop the search: a name: further down the block is read.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '  name: second'))).toEqual(['second'])
   })
 
   it('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
@@ -1160,6 +1170,7 @@ describe('manifestServiceNames', () => {
       linear((n) => head + fill(body, n) + '\nx: 1\n  name: late', read, N, `${JSON.stringify(body)} then a late name`, names([]))
     }
     linear((n) => head + '\t'.repeat(n) + '\n', read, N, 'tabs', names([]))
+    linear((n) => head + fill('  name:\n', n), read, N, 'empty names', names([]))
     linear((n) => 'kind: Service\n' + fill('metadata:\n  labels:\n', n), read, N, 'metadata blocks', names([]))
     linear((n) => head + fill('  a: b\n\n', n) + '  name: found', read, N, 'found', names(['found']))
   })
