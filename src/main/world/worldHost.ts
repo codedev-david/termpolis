@@ -564,10 +564,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const withPrescan = (d: CompileDeps, scans: Map<string, StageFile | null> | undefined): CompileDeps =>
     scans ? { ...d, scanned: (f) => scans.get(f) } : d
   /**
-   * Per project: the first map drawn from the listing while its files are read, and when. Served by get while the
-   * compile after it runs (or, before that compile starts, for PRESCAN_TTL_MS); never stored.
+   * Per project: the first map drawn from the listing while its files are read. Served by get while the files are
+   * read and the compile after them runs (or, once the read ends with no compile, for PRESCAN_TTL_MS); never stored.
    */
-  const provisional = new Map<string, { doc: WorldDoc; at: number }>()
+  const provisional = new Map<string, { doc: WorldDoc }>()
   /** Projects whose compile call is running in the host. */
   const running = new Set<string>()
   /** Per project: the first map being drawn now, which its compile waits for (bounded) before it starts (M4). */
@@ -866,7 +866,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const doc = firstMap(paths, key, head, now())
         // The run ended first (its compile saved a world, or the snapshot failed): nothing to draw.
         if (!runPct.has(key)) return
-        provisional.set(key, { doc, at: now() })
+        provisional.set(key, { doc })
         post({ kind: 'updated', projectKey: key })
       } catch (e) {
         console.warn('[world] first map from the listing failed:', e)
@@ -891,11 +891,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
 
   /** Drops what a run whose compile never came left behind: its progress and its first map, after PRESCAN_TTL_MS (M5).
    *  A pane still on that map is told, as dropFirst tells it (fix round 2, m3). */
-  const sweepRuns = (): void => {
+  const sweepRuns = (only?: string): void => {
     const at = now()
     for (const [k, t] of snapAt) {
-      // A compile that came took its key out (and a snapshot made while one runs never puts it in).
-      if (at - t <= PRESCAN_TTL_MS) continue
+      // A compile that came took its key out (and a snapshot made while one runs never puts it in). The clock starts
+      // when the read ENDED: a read still going has no entry, so its first map stays however long the read takes (N1).
+      if ((only !== undefined && k !== only) || at - t <= PRESCAN_TTL_MS) continue
       snapAt.delete(k)
       runPct.delete(k)
       dropFirst(k, new Error(UNFINISHED))
@@ -1017,10 +1018,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const stored = await st.store.load(key)
       if (stored) return stored
       if (opts?.provisional !== true) return null
-      const drawn = provisional.get(key)
       // A first map whose compile never came (the call that asked for it failed before it) is dropped, and the
-      // panes still on it are told (fix round 2, m3).
-      if (drawn && !running.has(key) && now() - drawn.at > PRESCAN_TTL_MS) dropFirst(key, new Error(UNFINISHED))
+      // panes still on it are told (fix round 2, m3). Timed from the end of the read, as sweepRuns times it (N1).
+      sweepRuns(key)
       return provisional.get(key)?.doc ?? null
     },
     // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved

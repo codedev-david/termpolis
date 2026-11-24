@@ -169,8 +169,8 @@ async function members(key: string): Promise<string[] | null> {
   }, key)
 }
 
-/** One look at the world under the key the recorder watches, ms after it started. */
-interface Sample { t: number; n: number | null; provisional: boolean; note: string }
+/** One look at the world under the key the recorder watches, ms after it started; `error`: the pane showed its error. */
+interface Sample { t: number; n: number | null; provisional: boolean; note: string; error: boolean }
 interface Recorded { samples: Sample[]; progress: { t: number; root: string; key: string; stage: string; pct: number }[] }
 
 /**
@@ -182,7 +182,7 @@ async function startRecorder(key: string, everyMs: number): Promise<void> {
   await page.evaluate(
     ({ k, every }) => {
       interface Doc { buildings: { members: string[] }[]; provisional?: boolean }
-      interface Look { t: number; n: number | null; provisional: boolean; note: string }
+      interface Look { t: number; n: number | null; provisional: boolean; note: string; error: boolean }
       interface Api {
         worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }>
         onWorldProgress: (cb: (e: { root: string; projectKey: string; stage: string; pct: number }) => void) => () => void
@@ -197,7 +197,8 @@ async function startRecorder(key: string, everyMs: number): Promise<void> {
         const res = await w.termpolis.worldGet(k).catch(() => ({ success: false, data: null }))
         const d = res.success && res.data ? res.data : null
         const note = document.querySelector('[data-testid="world-notice"]')?.textContent ?? ''
-        rec.samples.push({ t: Math.round(performance.now() - t0), n: d ? d.buildings.reduce((a, b) => a + b.members.length, 0) : null, provisional: d?.provisional === true, note })
+        const error = document.querySelector('[data-testid="world-error"]') !== null
+        rec.samples.push({ t: Math.round(performance.now() - t0), n: d ? d.buildings.reduce((a, b) => a + b.members.length, 0) : null, provisional: d?.provisional === true, note, error })
         if (d && d.provisional !== true) off()
         else setTimeout(() => void look(), every)
       }
@@ -351,6 +352,10 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     const r = await recorded(dir)
     const t = timings(r)
     expect(t.risesOnly, `progress only rises: ${JSON.stringify(r.progress)}`).toBe(true)
+    // Once the first map is up it stays up until the complete world replaces it, and the pane never shows its error
+    // meanwhile, however long the reads take (fix round 3, N1).
+    const shown = r.samples.slice(r.samples.findIndex((s) => s.n !== null))
+    expect(shown.filter((s) => s.n === null || s.error), `the first map stays up with no error: ${JSON.stringify(shown.filter((s) => s.n === null || s.error))}`).toEqual([])
     const got = (await members(key))!
     expect(got.length).toBeGreaterThan(0)
     if (withGit) {

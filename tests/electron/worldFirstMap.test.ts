@@ -145,6 +145,40 @@ describe('the first map of a big project (WP4a)', () => {
     for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1])
   })
 
+  it('a read that runs past PRESCAN_TTL_MS keeps its first map up, says nothing, and the world grows from it (N1)', async () => {
+    const h = setup()
+    await h.init()
+    const reads = gate()
+    h.state.readGate = reads.wait
+    const snapshot = h.call<GraphSnapshot>('snapshotFromFiles', '/r', early())
+    await until(() => h.updated() === 1)
+    const first = await h.pane()
+    // The reads are still going long after the first map was drawn: every look still gets it, and no error is posted.
+    h.state.clock += PRESCAN_TTL_MS * 3
+    expect((await h.pane()).provisional).toBe(true)
+    expect((await h.pane()).provisional).toBe(true)
+    expect(h.failures()).toEqual([])
+    reads.open()
+    const snap = await snapshot
+    // The read has just ended: the map is still up, and the compile that follows keeps its places (layoutFrom).
+    expect((await h.pane()).provisional).toBe(true)
+    const doc = await h.call<WorldDoc>('compile', 'k1', snap, HEAD)
+    for (const d of first.districts) expect(doc.layout.positions[d.id]).toEqual(first.layout.positions[d.id])
+    expect(h.failures()).toEqual([])
+    // The clock of a read that ended with no compile still runs, for this key only: another key's look leaves it be.
+    const other = setup()
+    await other.init()
+    await other.call('snapshotFromFiles', '/r', early())
+    await other.call('snapshotFromFiles', '/r2', early(HEAD, 'k2'))
+    await until(() => other.updated() === 1 && other.updated('k2') === 1)
+    other.state.clock += PRESCAN_TTL_MS + 1
+    expect(await other.pane('k2')).toBeNull()
+    expect(other.failures('k2')).toEqual([UNFINISHED])
+    expect(other.failures()).toEqual([])
+    expect(await other.pane()).toBeNull()
+    expect(other.failures()).toEqual([UNFINISHED])
+  })
+
   it('nothing is drawn for a small listing, a world already stored, or a snapshot made for no project (which reports nothing)', async () => {
     const small = setup({ provisionalMinFiles: undefined })
     await small.init()
