@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, CONTROLS_DAMPING_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -745,7 +745,7 @@ describe('frame-rate independent easing', () => {
   }
 
   it('reaches the same point at the same wall time at 10, 30 and 60 fps', () => {
-    for (const rate of [FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, 12]) {
+    for (const rate of [FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, CONTROLS_DAMPING_RATE, 12]) {
       for (const seconds of [0.2, 0.5, 1]) {
         const at60 = run(60, seconds, rate)
         expect(run(30, seconds, rate)).toBeCloseTo(at60, 6)
@@ -758,6 +758,7 @@ describe('frame-rate independent easing', () => {
     expect(easeShare(FLOOR_RISE_RATE, 1 / 60)).toBeCloseTo(5 / 60, 9)
     expect(easeShare(FLOOR_TURN_RATE, 1 / 60)).toBeCloseTo(4 / 60, 9)
     expect(easeShare(FOG_RATE, 1 / 60)).toBeCloseTo(2 / 60, 9)
+    expect(easeShare(CONTROLS_DAMPING_RATE, 1 / 60)).toBeCloseTo(0.05, 9) // OrbitControls' own dampingFactor
   })
 
   it('a frame of no time (or negative) moves nothing; a long one never overshoots', () => {

@@ -434,6 +434,42 @@ describe('threeRenderer drawn in software', () => {
     r.dispose()
   })
 
+  it('the glide after a drag takes the same wall time at any frame rate, so a slow screen draws fewer frames of it', () => {
+    /** A drag across the canvas and its glide at `ms` a frame: the frames the glide drew, how long it took, how far it turned. */
+    const glide = (ms: number): { drawn: number; ms: number; turned: number } => {
+      const r = idle(REDUCED, still())
+      const canvas = r.canvas
+      Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 800 })
+      Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 600 })
+      canvas.setPointerCapture = (): void => {}
+      canvas.releasePointerCapture = (): void => {}
+      const az = (): number => { const c = r.getCamera(); return Math.atan2(c.pos[0] - c.target[0], c.pos[2] - c.target[2]) }
+      const a0 = az()
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, clientX: 100, clientY: 100, pointerType: 'mouse', bubbles: true }))
+      for (let x = 110; x <= 150; x += 10) {
+        canvas.ownerDocument.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 100, pointerType: 'mouse', bubbles: true }))
+        canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 100, pointerType: 'mouse', bubbles: true }))
+      }
+      canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, button: 0, clientX: 150, clientY: 100, pointerType: 'mouse', bubbles: true }))
+      const n = frames(r)
+      const t0 = h.frames.now
+      for (let k = 0; k < 5000 && h.frames.pending() > 0; k++) h.frames.step(ms)
+      const out = { drawn: frames(r) - n - SETTLE_FRAMES, ms: h.frames.now - t0 - SETTLE_FRAMES * ms, turned: az() - a0 }
+      r.dispose()
+      h.host.remove()
+      h.host = makeHost(800, 600)
+      return out
+    }
+    const fast = glide(1000 / 60)
+    const slow = glide(200) // about the rate of a city drawn in software
+    expect(fast.drawn).toBeGreaterThan(60)
+    expect(slow.ms).toBeGreaterThan(fast.ms * 0.6)
+    expect(slow.ms).toBeLessThan(fast.ms * 1.4)
+    expect(slow.drawn).toBeLessThan(fast.drawn / 8)
+    expect(slow.turned).toBeCloseTo(fast.turned, 2) // the same glide, drawn in fewer frames
+    expect(Math.abs(fast.turned)).toBeGreaterThan(0.01)
+  })
+
   /** Runs screen frames until the next one drawn. */
   const toNextFrame = (r: ThreeRenderer): void => {
     const n = frames(r)
