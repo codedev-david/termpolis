@@ -17,13 +17,21 @@
 //   slows both sides or is discarded, instead of landing on one side only.
 // - A read of n counts as no less than FLOOR_MS, so a read of a millisecond or two does not turn a collection into
 //   a ratio. Every rule these tests guard took far longer than that at n before its fix.
-// - A ratio under half the limit after two rounds passes at once. Otherwise the check runs 5 rounds and compares,
-//   and while the ratio is at or over the limit it runs 5 more, keeping the fastest times so far, up to 3 attempts.
-//   A superlinear rule fails every attempt, since its fastest time at 8n never comes down to 24 times its time at n,
-//   and a ratio of twice the limit after an attempt fails at once, as no linear rule comes near it.
+// - A ratio under half the limit in two rounds in a row, from the second round on, passes at once (so at round 3 at
+//   the earliest). Otherwise the check runs 5 rounds and compares, and while the ratio is at or over the limit it runs
+//   5 more, keeping the fastest times so far, up to 3 attempts. A ratio of twice the limit after an attempt fails at
+//   once, as no linear rule comes near it.
+//
+// What can still let a superlinear rule through is that early pass: it decides on the fastest of 2 or 3 reads of n,
+// and when load slowed every one of them, the ratio reads low. A quadratic rule measures 38 to 66 here, so it passes
+// early only if its ratio reads at least 3.2 times too low in two rounds in a row. With one round (the rule before
+// fix round 5), a reading that far off came in about 1 check in 400 on two loaded cores; the logs of fix round 5 put
+// the two-round rule's odds in the wp7 report. Past the early pass, a superlinear rule fails every attempt, since its
+// fastest time at 8n never comes down to 24 times its time at n.
 //
 // TERMPOLIS_LINEAR_LOG names a file that each check appends one JSON line to (times, ratio, margin = limit / ratio,
-// rounds, and `first`, the ratio after the first 5 rounds when the check ran that far).
+// rounds, `first`, the ratio after the first 5 rounds when the check ran that far, and `trace`, the time of n and of
+// 8n read in each round).
 import { appendFileSync } from 'fs'
 import { expect } from 'vitest'
 
@@ -62,18 +70,24 @@ export function linear<T, R>(make: (n: number) => T, read: (input: T) => R, n: n
   let rounds = 0
   let first = Infinity
   let reps = GROWTH
+  let clear = 0
+  const trace: number[][] = []
   while (rounds < ROUNDS * ATTEMPTS) {
-    t1 = Math.min(t1, time(read, small, reps) / reps)
-    t8 = Math.min(t8, time(read, large, 1))
+    const a = time(read, small, reps) / reps
+    const b = time(read, large, 1)
+    trace.push([a, b])
+    t1 = Math.min(t1, a)
+    t8 = Math.min(t8, b)
     rounds++
     ratio = t8 / Math.max(t1, FLOOR_MS)
     reps = Math.min(MAX_REPS, Math.max(GROWTH, Math.round(t8 / t1)))
     if (rounds === ROUNDS) first = ratio
-    if (rounds >= CLEAR_AFTER && ratio < LIMIT / 2) break
+    clear = rounds >= CLEAR_AFTER && ratio < LIMIT / 2 ? clear + 1 : 0
+    if (clear === 2) break
     if (rounds % ROUNDS === 0 && (ratio < LIMIT || ratio >= 2 * LIMIT)) break
   }
   const log = process.env.TERMPOLIS_LINEAR_LOG
-  if (log) appendFileSync(log, JSON.stringify({ test: expect.getState().currentTestName, label, n, t1, t8, ratio, margin: LIMIT / ratio, rounds, first, reps }) + '\n')
+  if (log) appendFileSync(log, JSON.stringify({ test: expect.getState().currentTestName, label, n, t1, t8, ratio, margin: LIMIT / ratio, rounds, first, reps, trace }) + '\n')
   sink = undefined
   expect(ratio, `${label} n=${n}: ${t1.toFixed(1)} ms, 8n: ${t8.toFixed(1)} ms, ${rounds} rounds`).toBeLessThan(LIMIT)
 }
