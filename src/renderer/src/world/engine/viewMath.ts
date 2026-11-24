@@ -95,13 +95,15 @@ export function fitView(points: V3[], dir: V3, fovDeg: number, aspect: number, m
 }
 
 /**
- * The most pixels the drawing buffer holds when the GPU is drawn in software: a 2560 x 1440 screen's. In software
+ * The most pixels the drawing buffer holds when the GPU is drawn in software: a 1920 x 1080 screen's. In software
  * every pixel of every pass (the city, the glow's chain, the output) is the CPU's work, so a frame costs in step with
- * the buffer: a 5120 x 2880 view is four times this, and with thousands of parts in sight one frame took the GPU
- * process past Chromium's GPU watchdog, which ended the process; two such ends leave the map in 2D for good. A bigger
- * view is drawn at this many pixels and stretched to fit, as the low quality tier draws at half the ratio.
+ * the buffer, and with thousands of parts in sight one frame at 4K or 5K took the GPU process past Chromium's GPU
+ * watchdog, which ended the process; two such ends leave the map in 2D for good. With the canvas no longer
+ * multisampled, a 2560 x 1440 budget still saw one such end at 3840 x 2160 in two runs of six; at 1920 x 1080 none
+ * in six. A bigger view is drawn at this many pixels and stretched to fit, as the low quality tier draws at half the
+ * ratio; a GPU draws at the full ratio.
  */
-export const SOFTWARE_MAX_PIXELS = 2560 * 1440
+export const SOFTWARE_MAX_PIXELS = 1920 * 1080
 
 /**
  * The pixel ratio `want` for a view `width` x `height` (CSS pixels), lowered where needed so the drawing buffer holds
