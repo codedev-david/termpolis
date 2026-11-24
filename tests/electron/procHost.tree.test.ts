@@ -49,6 +49,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   vi.useRealTimers()
 })
 
@@ -316,7 +317,8 @@ describe('the host ends its groups on its way out', () => {
     expect(proc.exit).toHaveBeenCalledTimes(1)
   })
 
-  it('takes the grace from the test-only variable, read once when the handlers are installed', () => {
+  it('takes the grace from the test-only variable under NODE_ENV=test, read once when the handlers are installed', () => {
+    vi.stubEnv('NODE_ENV', 'test')
     vi.stubEnv(HOST_GRACE_ENV, '10000')
     void group(4242)
     const proc = new FakeProc()
@@ -327,15 +329,31 @@ describe('the host ends its groups on its way out', () => {
     expect(proc.exit).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
     expect(proc.exit).toHaveBeenCalledTimes(1)
-    vi.unstubAllEnvs()
+  })
+
+  it('keeps the 2 s grace when the variable is set but NODE_ENV is not test, as in the app', () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv(HOST_GRACE_ENV, '10000')
+    void group(4242)
+    const proc = new FakeProc()
+    installHostExitHandlers(proc)
+    proc.emit('SIGTERM')
+    vi.advanceTimersByTime(1_999)
+    expect(proc.exit).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(proc.exit).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([undefined, 'production', 'development', 'TEST'])('hostGraceMs ignores the variable under NODE_ENV %j', (nodeEnv) => {
+    expect(hostGraceMs({ ...(nodeEnv === undefined ? {} : { NODE_ENV: nodeEnv }), [HOST_GRACE_ENV]: '10000' })).toBe(2_000)
   })
 
   it.each([undefined, '', 'abc', '0', '-5', '1.5', '60001'])('hostGraceMs keeps the 2 s default for %j', (v) => {
-    expect(hostGraceMs(v === undefined ? {} : { [HOST_GRACE_ENV]: v })).toBe(2_000)
+    expect(hostGraceMs(v === undefined ? { NODE_ENV: 'test' } : { NODE_ENV: 'test', [HOST_GRACE_ENV]: v })).toBe(2_000)
   })
 
   it.each([['1', 1], ['10000', 10_000], ['60000', 60_000]])('hostGraceMs takes %s', (v, ms) => {
-    expect(hostGraceMs({ [HOST_GRACE_ENV]: v })).toBe(ms)
+    expect(hostGraceMs({ NODE_ENV: 'test', [HOST_GRACE_ENV]: v })).toBe(ms)
   })
 
   it('on an exit it did not ask for (an unhandled rejection), SIGKILLs every group still unanswered, and none already answered', async () => {

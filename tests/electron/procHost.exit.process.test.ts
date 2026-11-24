@@ -56,6 +56,8 @@ beforeAll(async () => {
     'host.installHostExitHandlers(process)',
     'process.on("message", (m) => {',
     '  const send = (x) => process.send(x)',
+    // Test probe: the grace this host took from its environment.
+    "  if (m === 'grace?') return send({ grace: host.hostGraceMs() })",
     '  void host.handleProcMessage(m, send).then((r) => { if (r) send(r) })',
     '})',
   ].join('\n'))
@@ -130,9 +132,14 @@ async function readPids(file: string): Promise<{ labeller: number; grandchild: n
   throw new Error('the stand-in never started')
 }
 
+/** The environment a host gets for a test grace: ours (NODE_ENV=test from vitest included) plus the variable. */
+function hostEnv(graceMs: number): NodeJS.ProcessEnv {
+  return { ...process.env, [HOST_GRACE_ENV]: String(graceMs) }
+}
+
 /** Fork a host, with its exit grace set when given. Its pid joins the cleanup until it is seen to exit. */
 function forkHost(graceMs?: number): { host: ChildProcess; exited: Promise<void> } {
-  const env = graceMs === undefined ? process.env : { ...process.env, [HOST_GRACE_ENV]: String(graceMs) }
+  const env = graceMs === undefined ? process.env : hostEnv(graceMs)
   const host = fork(runner, [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], windowsHide: true, env })
   hosts.push(host)
   const exited = new Promise<void>((resolve) => host.once('exit', () => resolve()))
@@ -162,6 +169,18 @@ afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true })
 })
 
+describe('the forked host', () => {
+  it('inherits NODE_ENV=test, so it honours the test grace the stubborn-member test gives it', async () => {
+    expect(hostEnv(10_000).NODE_ENV).toBe('test')
+    const { host, exited } = forkHost(10_000)
+    const grace = new Promise<unknown>((resolve) => host.once('message', resolve))
+    host.send('grace?')
+    expect(await grace).toEqual({ grace: 10_000 })
+    host.kill('SIGKILL')
+    await exited
+  }, 60_000)
+})
+
 describe.skipIf(isWin)('a host told to go ends its runs first (macOS and Linux)', () => {
   it.each([
     ['a SIGTERM', (host: ChildProcess) => { host.kill('SIGTERM') }],
@@ -183,7 +202,8 @@ describe.skipIf(isWin)('a host told to go ends its runs first (macOS and Linux)'
 
   it('a member that ignores SIGTERM and let go of the run\'s pipes still gets SIGKILL, though the run was answered', async () => {
     // The assertion that the member outlived the answer must land inside the host's grace. 2 s is the
-    // app's; 10 s here keeps a stalled runner from closing the grace before it is made.
+    // app's; 10 s here keeps a stalled runner from closing the grace before it is made. The host honours
+    // the variable only under NODE_ENV=test, which vitest sets and the fork inherits ('the forked host').
     const { host, exited } = forkHost(10_000)
     const pidFile = join(dir, `pids-${++seq}.json`)
     const reports: Array<ProcTreeMsg | ProcResult> = []

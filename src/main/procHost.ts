@@ -292,13 +292,15 @@ export interface HostExitDeps extends KillTreeDeps {
 
 /**
  * Tests only: the real-process suite sets this in a forked host's environment to lengthen its exit grace,
- * so a stalled runner cannot outlast it. Nothing in the app sets it, so the host keeps TREE_KILL_GRACE_MS.
+ * so a stalled runner cannot outlast it. It is honoured only under NODE_ENV=test (as agentPaths gates
+ * TERMPOLIS_TEST_SHIM_DIR), so the app keeps TREE_KILL_GRACE_MS even if someone sets it.
  */
 export const HOST_GRACE_ENV = 'TERMPOLIS_TEST_PROC_HOST_GRACE_MS'
 
-/** The host's exit grace: HOST_GRACE_ENV when it is a whole number of ms from 1 to 60 000, else the 2 s default. */
+/** The host's exit grace: under NODE_ENV=test, HOST_GRACE_ENV when it is a whole number of ms from 1 to
+ *  60 000; else the 2 s default. */
 export function hostGraceMs(env: NodeJS.ProcessEnv = process.env): number {
-  const ms = Number(env[HOST_GRACE_ENV])
+  const ms = env.NODE_ENV === 'test' ? Number(env[HOST_GRACE_ENV]) : NaN
   return Number.isInteger(ms) && ms >= 1 && ms <= 60_000 ? ms : TREE_KILL_GRACE_MS
 }
 
