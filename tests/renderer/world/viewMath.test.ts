@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -772,6 +772,10 @@ describe('frame-rate independent easing', () => {
     expect(frameStep(5)).toBe(MAX_FRAME_DT)
     expect(MAX_FRAME_DT).toBe(0.25)
     expect(frameStep(-0.01)).toBe(0)
+    // Drawn in software the looping motions wait up to SOFTWARE_LOOP_MAX_MS: that step is kept, and a spike after it cut.
+    expect(SOFTWARE_FRAME_DT).toBe(0.75)
+    expect(frameStep(0.5, SOFTWARE_FRAME_DT)).toBe(0.5)
+    expect(frameStep(5, SOFTWARE_FRAME_DT)).toBe(SOFTWARE_FRAME_DT)
   })
 })
 
@@ -791,6 +795,21 @@ describe('softwareRenderer', () => {
     }
     // Ten frames a second: the motions still read as motion (each keeps its wall-clock speed), at a sixth of the cost.
     expect(SOFTWARE_LOOP_MS).toBe(100)
+  })
+
+  it('spaces the looping frames in software so the GPU spends at most a quarter of the time on them, between 100 and 500 ms', () => {
+    expect(SOFTWARE_LOOP_SHARE).toBe(0.25)
+    expect(SOFTWARE_LOOP_MAX_MS).toBe(500)
+    // A cheap city (or a frame finished by the next screen frame) keeps the 100 ms pace.
+    expect(softwareLoopGap(0)).toBe(SOFTWARE_LOOP_MS)
+    expect(softwareLoopGap(16)).toBe(SOFTWARE_LOOP_MS)
+    expect(softwareLoopGap(25)).toBe(SOFTWARE_LOOP_MS)
+    // A frame of 60 or 100 ms: one every 240 or 400 ms.
+    expect(softwareLoopGap(60)).toBe(240)
+    expect(softwareLoopGap(100)).toBe(400)
+    // The Termpolis repository's city on a 4-core runner (150 to 200 ms a frame), or slower: still two a second.
+    expect(softwareLoopGap(150)).toBe(SOFTWARE_LOOP_MAX_MS)
+    expect(softwareLoopGap(5000)).toBe(SOFTWARE_LOOP_MAX_MS)
   })
 })
 

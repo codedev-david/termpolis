@@ -471,9 +471,12 @@ export function turnAcross(h: readonly [number, number], degrees: readonly numbe
  */
 export const MAX_FRAME_DT = 0.25
 
-/** A frame's step in seconds, from the clock's delta: never negative, cut only at MAX_FRAME_DT. */
-export function frameStep(delta: number): number {
-  return Math.min(Math.max(0, delta), MAX_FRAME_DT)
+/**
+ * A frame's step in seconds, from the clock's delta: never negative, cut only at `max` (MAX_FRAME_DT; drawn in
+ * software, SOFTWARE_FRAME_DT, since the looping motions there are drawn up to SOFTWARE_LOOP_MAX_MS apart on purpose).
+ */
+export function frameStep(delta: number, max = MAX_FRAME_DT): number {
+  return Math.min(Math.max(0, delta), max)
 }
 
 /**
@@ -484,6 +487,33 @@ export function frameStep(delta: number): number {
  * frame.
  */
 export const SOFTWARE_LOOP_MS = 100
+
+/**
+ * The share of the time the looping motions alone may keep a GPU drawn in software busy. A frame there costs what the
+ * city costs: 100 ms apart, the Termpolis repository's own city (700 draw calls through the glow's passes) still held
+ * three of a 4-core runner's cores (5 to 7 frames a second, each taking the GPU process 150 to 200 ms), every call
+ * into the page waited seconds behind it, and the map's own compile was starved. The next looping frame now waits
+ * until the GPU has finished the last one, and then until that frame's cost is this share of the time between them.
+ */
+export const SOFTWARE_LOOP_SHARE = 0.25
+
+/**
+ * The longest time between two looping frames in software, however long one took: the motions still move twice a
+ * second, and a frame whose fence never comes is drawn this long after the last.
+ */
+export const SOFTWARE_LOOP_MAX_MS = 500
+
+/** The longest frame step drawn in software: the longest wait between looping frames, and a spike's MAX_FRAME_DT. */
+export const SOFTWARE_FRAME_DT = SOFTWARE_LOOP_MAX_MS / 1000 + MAX_FRAME_DT
+
+/**
+ * The time from one looping frame in software to the next, from how long the GPU took to finish the last one
+ * (`costMs`, from the frame drawn to its fence signalled): at least SOFTWARE_LOOP_MS, so a cheap city keeps that pace,
+ * and at most SOFTWARE_LOOP_MAX_MS.
+ */
+export function softwareLoopGap(costMs: number): number {
+  return Math.min(SOFTWARE_LOOP_MAX_MS, Math.max(SOFTWARE_LOOP_MS, costMs / SOFTWARE_LOOP_SHARE))
+}
 
 /**
  * Whether the WebGL renderer's name is a software one: SwiftShader (Chromium's own, also where the GPU is blocklisted

@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -442,8 +442,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   let bufferCap = readCap()
   /**
-   * Whether the context is drawn in software (softwareRenderer): its looping motions alone are then drawn every
-   * SOFTWARE_LOOP_MS, not every frame. Read again when the context comes back (it may come back on another GPU).
+   * Whether the context is drawn in software (softwareRenderer): its looping motions alone are then drawn once the
+   * last frame is finished and softwareLoopGap after it, not every frame. Read again when the context comes back (it may come back on another GPU).
    */
   const readSoftware = (): boolean => {
     const gl = renderer.getContext()
@@ -452,6 +452,27 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return softwareRenderer(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER))
   }
   let software = readSoftware()
+  /**
+   * Drawn in software: the fence put in after the last frame drawn (signalled once the GPU has finished drawing it),
+   * and the time the looping motions alone wait from one frame to the next (softwareLoopGap of the last frame's cost).
+   * A context with no fences (WebGL 1) keeps SOFTWARE_LOOP_MS.
+   */
+  let fence: WebGLSync | null = null
+  let loopGap = SOFTWARE_LOOP_MS
+  /** The context, with its WebGL 2 fences where it has them. */
+  const fences = (): WebGL2RenderingContext => renderer.getContext() as WebGL2RenderingContext
+  /** Forgets the fence (deleted while the context is there to delete it). */
+  const dropFence = (deleted: boolean): void => {
+    if (fence && deleted) fences().deleteSync(fence)
+    fence = null
+  }
+  /** A fence after the frame just drawn, in place of the last one. */
+  const putFence = (): void => {
+    const gl = fences()
+    if (typeof gl.fenceSync !== 'function') return
+    dropFence(true)
+    fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+  }
   /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
   const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
@@ -471,6 +492,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onContextLost = (e: Event): void => {
     e.preventDefault()
     lost = true
+    dropFence(false) // its context is gone, and the fence with it
     cancelAnimationFrame(raf)
     raf = 0
     rig.land()
@@ -483,6 +505,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     lost = false
     bufferCap = readCap()
     software = readSoftware()
+    loopGap = SOFTWARE_LOOP_MS
     fitBuffer()
     if (lastModel && lastText) draw(lastModel, lastText, allLabels)
     wake()
@@ -2693,7 +2716,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // loop, which draws while anything moves (a flight, an ease, a change, a pulse, a glide, the looping motions
   // when motion is not reduced, labels still finding their places) and SETTLE_FRAMES more, then asks for no frame
   // until the next change. An idle city with reduced motion draws nothing. Drawn in software, a frame with nothing
-  // but the looping motions moving is followed by the next one SOFTWARE_LOOP_MS later, not on the next frame.
+  // but the looping motions moving is followed by the next one when loopDue says, not on the next frame.
   const fwd = new THREE.Vector3()
   const right = new THREE.Vector3()
   const up = new THREE.Vector3(0, 1, 0)
@@ -2709,6 +2732,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** The last frame drawn had only the looping motions moving, and when it was drawn (performance.now). */
   let loopOnly = false
   let drawnAt = 0
+  /**
+   * Drawn in software with only the looping motions moving: whether the next frame is due. Not while the GPU is still
+   * drawing the last one (its fence is not signalled; it is drawn anyway SOFTWARE_LOOP_MAX_MS after, so a fence that
+   * never comes stops nothing), and then loopGap after the last, which the time it took sets.
+   */
+  function loopDue(now: number): boolean {
+    const since = now - drawnAt
+    if (fence) {
+      const gl = fences()
+      if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && since < SOFTWARE_LOOP_MAX_MS) return false
+      loopGap = softwareLoopGap(since) // at most a frame of the screen's late: the fence is read once a frame
+      dropFence(true)
+    }
+    return since >= loopGap
+  }
   /**
    * Something changed: frames are drawn until it settles. Asks for a frame unless one is asked for already, or
    * nothing may draw (paused, lost, disposed, still being built).
@@ -2735,9 +2773,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     raf = 0
     // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
     if (host.clientWidth === 0 || host.clientHeight === 0) return
-    // Drawn in software with only the looping motions moving and no change since: this frame is skipped until
-    // SOFTWARE_LOOP_MS have passed (the clock keeps the wall time, so the motions keep their speed).
-    if (software && loopOnly && !changed && performance.now() - drawnAt < SOFTWARE_LOOP_MS) {
+    // Drawn in software with only the looping motions moving and no change since: this frame is skipped until the
+    // next looping frame is due (loopDue; the clock keeps the wall time, so the motions keep their speed).
+    if (software && loopOnly && !changed && !loopDue(performance.now())) {
       raf = requestAnimationFrame(animate)
       return
     }
@@ -2750,6 +2788,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       drawing = false
       loopOnly = motion === 'looping'
       drawnAt = performance.now()
+      if (software) putFence()
       idleLeft = motion !== 'still' ? SETTLE_FRAMES : idleLeft - 1
       if (raf === 0 && !disposed && !paused && !lost && idleLeft > 0) raf = requestAnimationFrame(animate)
     }
@@ -2760,7 +2799,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    */
   function drawFrame(): FrameMotion {
     frameNo++
-    const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
+    // Only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion (nor, in software, the
+    // looping motions drawn up to SOFTWARE_LOOP_MAX_MS apart).
+    const dt = frameStep(clock.getDelta(), software ? SOFTWARE_FRAME_DT : MAX_FRAME_DT)
     tickChanges()
     let moving = changes.active() > 0
     /** An open building's flow dots run (they loop for as long as it stays open). */
@@ -2813,7 +2854,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
     // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
-    // draws them every SOFTWARE_LOOP_MS: see animate).
+    // draws them at the pace loopDue sets: see animate).
     const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true))
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
@@ -3113,6 +3154,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       changes.stop()
       cancelAnimationFrame(raf)
       raf = 0
+      dropFence(true)
       ro?.disconnect()
       dropRatioQuery()
       dropContextListeners()
