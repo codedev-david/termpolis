@@ -44,7 +44,7 @@ describe('threeRenderer scene build', () => {
   it('sets up the renderer, the composer chain, the lights and the backdrop', () => {
     const r = createThreeRenderer(host, DEFAULT_OPTS)
     const gl = rendererOf()
-    expect(gl.args).toEqual([{ antialias: true }])
+    expect(gl.args).toEqual([{ antialias: false }]) // the city is drawn into the composer's targets, never the canvas
     expect(gl.pixelRatios).toEqual([1])
     expect(gl.sizes[0]).toEqual([800, 600])
     expect(gl.toneMapping).toBe(THREE.ACESFilmicToneMapping)
@@ -65,6 +65,16 @@ describe('threeRenderer scene build', () => {
     expect(r.motionState()).toMatchObject({ bloom: true, stars: 3500, dust: 600 })
     expect(document.getElementById('lumopolis-world-style')).not.toBeNull()
     r.dispose()
+  })
+
+  it("draws the city into render targets without samples, so a multisampled canvas would smooth none of it", async () => {
+    // The premise of a canvas without multisampling at high quality: three's EffectComposer makes its targets without
+    // samples, and the passes draw the city there. Were that to change, the canvas's setting would be worth a new look.
+    const { EffectComposer } = await vi.importActual<typeof import('three/examples/jsm/postprocessing/EffectComposer.js')>('three/examples/jsm/postprocessing/EffectComposer.js')
+    const stub = { getPixelRatio: () => 1, getSize: (v: THREE.Vector2) => v.set(8, 8) } as unknown as THREE.WebGLRenderer
+    const composer = new EffectComposer(stub)
+    expect(composer.renderTarget1.samples).toBe(0)
+    expect(composer.renderTarget2.samples).toBe(0)
   })
 
   it('at low quality: no antialias, half pixel ratio, no composer and no dust; frames render straight', () => {

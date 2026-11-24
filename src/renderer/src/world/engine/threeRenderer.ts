@@ -427,7 +427,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const size = (): [number, number] => [Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)]
   let [width, height] = size()
 
-  const renderer = new THREE.WebGLRenderer({ antialias: high })
+  // No multisampling, at either tier. At high quality the city is drawn into the glow chain's render targets, which
+  // three's EffectComposer makes without samples, and only the output pass's full-screen copy reaches the canvas:
+  // a multisampled canvas smoothed no edge of the city, yet it held four samples a pixel and was resolved every
+  // frame. Drawn in software that is the CPU's work, and with the rest of a frame it took the GPU process past
+  // Chromium's GPU watchdog at 4K and 5K (two such ends leave the map in 2D for good).
+  const renderer = new THREE.WebGLRenderer({ antialias: false })
   /**
    * The largest drawing buffer the GPU takes, [across, down]: the smallest of its biggest render buffer, its biggest
    * texture (the glow's passes draw into textures the buffer's size) and its biggest viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser

@@ -1000,11 +1000,12 @@ describe('readableOpacity', () => {
 
 describe('pixelBudgetRatio', () => {
   it('keeps the wanted ratio while the buffer fits the budget, and lowers it to hold exactly the budget past it', () => {
-    expect(SOFTWARE_MAX_PIXELS).toBe(2560 * 1440)
-    expect(pixelBudgetRatio(1, 2560, 1440, SOFTWARE_MAX_PIXELS)).toBe(1) // exactly the budget
-    expect(pixelBudgetRatio(2, 1280, 720, SOFTWARE_MAX_PIXELS)).toBe(2) // a 2x screen whose buffer is 2560 x 1440
-    expect(pixelBudgetRatio(1, 5120, 2880, SOFTWARE_MAX_PIXELS)).toBeCloseTo(0.5)
-    expect(pixelBudgetRatio(0.5, 5120, 2880, SOFTWARE_MAX_PIXELS)).toBe(0.5) // the low tier's buffer is 1440p already
+    expect(SOFTWARE_MAX_PIXELS).toBe(1920 * 1080)
+    expect(pixelBudgetRatio(1, 1920, 1080, SOFTWARE_MAX_PIXELS)).toBe(1) // exactly the budget
+    expect(pixelBudgetRatio(2, 960, 540, SOFTWARE_MAX_PIXELS)).toBe(2) // a 2x screen whose buffer is 1920 x 1080
+    expect(pixelBudgetRatio(1, 3840, 2160, SOFTWARE_MAX_PIXELS)).toBeCloseTo(0.5)
+    expect(pixelBudgetRatio(1, 5120, 2880, SOFTWARE_MAX_PIXELS)).toBeCloseTo(0.375)
+    expect(pixelBudgetRatio(0.5, 3840, 2160, SOFTWARE_MAX_PIXELS)).toBe(0.5) // the low tier's buffer at 4K is 1080p already
     const r = pixelBudgetRatio(2, 3840, 2160, SOFTWARE_MAX_PIXELS)
     expect(3840 * r * 2160 * r).toBeCloseTo(SOFTWARE_MAX_PIXELS, 0)
     expect(pixelBudgetRatio(1.5, 0, 0, SOFTWARE_MAX_PIXELS)).toBe(1.5) // no area: the ratio as wanted
