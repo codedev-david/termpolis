@@ -1026,6 +1026,17 @@ describe('WorldAsk: speech in bounded pieces that always ends (T6)', () => {
     expect(said().map((u) => u.text).join(' ')).toBe(spokenText(text))
   })
 
+  it('a word cut into pieces is never cut between the two halves of an emoji', async () => {
+    const run = 'a' + '😀'.repeat(150)
+    await answered(run)
+    act(() => { said()[0].onend() })
+    const pieces = said().map((u) => u.text)
+    // 220 would end on the first half of an emoji: the cut moves back to 219.
+    expect(pieces.map((p) => p.length)).toEqual([219, 82])
+    for (const p of pieces) expect(/^[\udc00-\udfff]|[\ud800-\udbff]$/.test(p)).toBe(false)
+    expect(pieces.join('')).toBe(spokenText(run))
+  })
+
   it('a run-on sentence is broken between words, and a word longer than a piece is cut', async () => {
     const run = words('delta', 100) + ' ' + 'x'.repeat(300) + ' end.'
     await answered(run)

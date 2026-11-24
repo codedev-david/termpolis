@@ -60,7 +60,14 @@ const speechPieces = (line: string): string[] => {
   for (const sentence of line.split(/(?<=[.!?]) /)) {
     if (sentence.length <= SPOKEN_PIECE_CHARS) { add(sentence); continue }
     for (const word of sentence.split(' ')) {
-      for (let i = 0; i < word.length; i += SPOKEN_PIECE_CHARS) add(word.slice(i, i + SPOKEN_PIECE_CHARS))
+      for (let i = 0; i < word.length;) {
+        let end = Math.min(i + SPOKEN_PIECE_CHARS, word.length)
+        // Never between the two halves of an emoji or a rare CJK character: the cut moves back one.
+        const last = word.charCodeAt(end - 1)
+        if (end < word.length && last >= 0xd800 && last <= 0xdbff) end--
+        add(word.slice(i, end))
+        i = end
+      }
     }
   }
   if (cur !== '') out.push(cur)
