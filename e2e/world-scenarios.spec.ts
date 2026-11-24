@@ -135,10 +135,14 @@ async function worldKey(dir: string, asFolder: boolean): Promise<string> {
   }
   // The app's look-up gives up after 3 s and answers null (an uncached git on a busy machine), and null reads as "no
   // repository": the test would then map `dir`'s own spelling while the pane maps the top, two entries for one
-  // folder. Inside a repository, ask again until the app answers.
+  // folder. git run here says whether there is a repository; while there is, the app is asked again until it answers,
+  // each ask bounded by the app's own 3 s, for as long as the test may run (no shorter clock of its own: fix round 3).
   let found = await findRoot()
   if (found === null && gitTopOf(dir) !== null) {
-    await expect.poll(async () => (found = await findRoot()), { message: `the app finds ${dir}'s repository top`, timeout: 20_000 }).not.toBeNull()
+    for (let tries = 1; found === null; tries++) {
+      await page.waitForTimeout(Math.min(2000, 250 * tries))
+      found = await findRoot()
+    }
   }
   const key = found ?? dir
   expect(realKey(key), `the app finds ${dir}'s repository top as git does`).toBe(realKey(gitTop(dir)))
