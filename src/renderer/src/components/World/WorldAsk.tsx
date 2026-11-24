@@ -298,7 +298,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
       <p className="sr-only" aria-live="polite" data-testid="world-ask-live">{heard}</p>
       {state === 'thinking' && (
         <div className="flex items-center gap-2">
-          <div role="status" className="animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
+          <div role="status" className="motion-safe:animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
             Thinking…
           </div>
           <button

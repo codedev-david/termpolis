@@ -36,6 +36,10 @@ export const gpu = {
   failDispose: null as Error | null,
   /** What the renderer's context answers for MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE and MAX_VIEWPORT_DIMS (a lost context: null). */
   limits: { renderbuffer: 16384 as unknown, texture: 16384 as unknown, viewport: [16384, 16384] as unknown },
+  /** The GPU's name the context answers (null: none), and whether it gives it through WEBGL_debug_renderer_info (the
+   *  unmasked name) or only as RENDERER. */
+  gpuName: null as unknown,
+  debugInfo: true,
   reset(): void {
     gpu.renderers.length = 0
     gpu.composers.length = 0
@@ -44,6 +48,8 @@ export const gpu = {
     gpu.outputPasses.length = 0
     gpu.failRenderer = gpu.failComposer = gpu.failDispose = null
     gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
+    gpu.gpuName = null
+    gpu.debugInfo = true
   },
 }
 
@@ -102,10 +108,15 @@ export class FakeWebGLRenderer {
     if (gpu.failDispose) throw gpu.failDispose
   }
   forceContextLoss(): void { this.contextLost++ }
-  /** A context answering the buffer limits (gpu.limits) and nothing else. */
-  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; getParameter(p: number): unknown } {
-    const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport }
-    return { MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, getParameter: (p) => (p in answers ? answers[p] : null) }
+  /** A context answering the buffer limits (gpu.limits) and the GPU's name (gpu.gpuName), and nothing else. */
+  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; getParameter(p: number): unknown; getExtension(name: string): unknown } {
+    // The unmasked name (0x9246) only through the extension; RENDERER (0x1f01) names it too when there is none.
+    const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport, [gpu.debugInfo ? 0x9246 : 0x1f01]: gpu.gpuName }
+    return {
+      MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, RENDERER: 0x1f01,
+      getParameter: (p) => (p in answers ? answers[p] : null),
+      getExtension: (name) => (name === 'WEBGL_debug_renderer_info' && gpu.debugInfo ? { UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
+    }
   }
 }
 

@@ -476,6 +476,24 @@ export function frameStep(delta: number): number {
   return Math.min(Math.max(0, delta), MAX_FRAME_DT)
 }
 
+/**
+ * The time between two frames of the looping motions alone (the seals' rings, the packets, the fog, the pulses, the
+ * dust, the opening turn) when the GPU is drawn in software: there each frame costs the CPU, and at the screen's 60
+ * frames a second the looping motions kept half of a 4-core machine busy for as long as the city was open, slowing
+ * every program started meanwhile (an Ask's agent). Every other motion, and each change, is still drawn on the next
+ * frame.
+ */
+export const SOFTWARE_LOOP_MS = 100
+
+/**
+ * Whether the WebGL renderer's name is a software one: SwiftShader (Chromium's own, also where the GPU is blocklisted
+ * or a VM or remote desktop has none), Mesa's llvmpipe, softpipe and lavapipe, Windows' Basic Render Driver (WARP)
+ * and Apple's software renderer. Anything else, or no name, is taken for a GPU.
+ */
+export function softwareRenderer(name: unknown): boolean {
+  return typeof name === 'string' && /swiftshader|llvmpipe|softpipe|lavapipe|basic render|software/i.test(name)
+}
+
 /** The share of the way an ease at `rate` covers in `dt` seconds: the same state at the same wall time at any frame rate. */
 export function easeShare(rate: number, dt: number): number {
   return dt > 0 ? 1 - Math.exp(-rate * dt) : 0

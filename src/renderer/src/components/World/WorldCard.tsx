@@ -4,7 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type CSSProperties, type MouseEvent, type Ref } from 'react'
 import type { Evidence } from '../../../../shared/world/types'
 import { cleanRuntimeNames, MAX_RUNTIME_NAMES } from '../../../../shared/world/runtimeNames'
-import { CARD_INSET_PX, CARD_WIDTH_PX, useUiZoom } from './worldPane'
+import { CARD_INSET_PX, CARD_WIDTH_PX, SOLID_PANEL, useUiZoom } from './worldPane'
 
 const EVIDENCE_KINDS = ['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person']
 
@@ -44,6 +44,8 @@ export interface WorldCardProps {
   maxHeight?: number | null
   /** True when a click on the map opened the card: it then lets clicks through for CARD_CLICK_GRACE_MS. */
   clickThrough?: boolean
+  /** The map is drawn in software (WorldDrawn.software): the card is opaque, with no blur of the map behind it. */
+  solid?: boolean
 }
 
 /**
@@ -59,10 +61,12 @@ export const CARD_FADE_PX = 24
 /**
  * The prototype's inspector look (world-relationships.html): a dark glass panel, the name large, section
  * headings small capitals in sky blue so they read as labels and the text under them as values, status
- * pills, technology chips and dotted links. Scoped to .world-card so nothing leaks into the app.
+ * pills, technology chips and dotted links. Scoped to .world-card so nothing leaks into the app. Drawn in software,
+ * the card is solid (SOLID_PANEL) instead of glass.
  */
 const CARD_CSS = `
 .world-card{display:flex;flex-direction:column;overflow:hidden;background:rgba(8,12,22,.78);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:12px 6px 12px 14px;font-size:13px;line-height:1.45;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.world-card[data-solid]{background:${SOLID_PANEL};backdrop-filter:none}
 .world-card-close{position:absolute;top:8px;right:calc(10px + var(--world-card-gutter, 0px));z-index:2;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
 .world-card-close:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
 .world-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-wrap:anywhere;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
@@ -114,7 +118,7 @@ const CARD_CSS = `
  */
 export const CARD_CLICK_GRACE_MS = 500
 
-export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null, clickThrough = false }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null, clickThrough = false, solid = false }: WorldCardProps): JSX.Element {
   const zoom = useUiZoom()
   // Only how the card opened counts: a later card shown in it takes clicks at once.
   const [opening, setOpening] = useState(clickThrough)
@@ -200,6 +204,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       aria-label="Lumopolis details"
       data-testid="world-card"
       className="world-card"
+      data-solid={solid ? '' : undefined}
       // Top left over the map, where the prototype's inspector sits (the legend is top right).
       style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxWidth: `calc(100% - ${CARD_INSET_PX * 2}px)`, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3, ...zoom, ...(opening ? { pointerEvents: 'none' as const } : {}), ...(gutter > 0 ? { '--world-card-gutter': `${gutter}px` } : {}) } as CSSProperties}
     >

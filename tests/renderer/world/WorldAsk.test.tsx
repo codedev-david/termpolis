@@ -232,6 +232,9 @@ describe('WorldAsk', () => {
     fireEvent.change(input(), { target: { value: 'q' } })
     fireEvent.keyDown(input(), { key: 'Enter' })
     expect(screen.getByRole('status')).toHaveTextContent('Thinking…')
+    // It pulses only where motion is not reduced: an endless pulse is a motion like any other.
+    expect(screen.getByRole('status').className.split(' ')).toContain('motion-safe:animate-pulse')
+    expect(screen.getByRole('status').className.split(' ')).not.toContain('animate-pulse')
   })
 
   it('a new question while thinking cancels the previous ask and the running actions', async () => {

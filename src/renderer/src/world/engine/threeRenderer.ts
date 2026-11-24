@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -133,9 +133,10 @@ export interface ThreeRenderer {
   /**
    * How many process shells and conduits the last draw put up, and how many changes are still animating (as of
    * now: the changes run on the wall clock, so a count read between frames is not a frame old). `frames`: how many
-   * frames have been drawn since the renderer was built (nothing is drawn while nothing changes).
+   * frames have been drawn since the renderer was built (nothing is drawn while nothing changes). `software`: the
+   * context is drawn in software (softwareRenderer), as read when it was made or last came back.
    */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean }
   /**
    * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
@@ -365,6 +366,8 @@ export function sameLayout(a: ReadonlyMap<string, Nudge>, b: ReadonlyMap<string,
   return true
 }
 const vec = (p: Vec3): THREE.Vector3 => new THREE.Vector3(p[0], p[1], p[2])
+/** What a frame left moving: something that ends, only the looping motions (which never do), or nothing. */
+type FrameMotion = 'moving' | 'looping' | 'still'
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return
@@ -438,6 +441,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return [side(0), side(1)]
   }
   let bufferCap = readCap()
+  /**
+   * Whether the context is drawn in software (softwareRenderer): its looping motions alone are then drawn every
+   * SOFTWARE_LOOP_MS, not every frame. Read again when the context comes back (it may come back on another GPU).
+   */
+  const readSoftware = (): boolean => {
+    const gl = renderer.getContext()
+    // The unmasked name where the browser gives it (Chromium names the GPU in RENDERER too).
+    const info = gl.getExtension('WEBGL_debug_renderer_info') as { UNMASKED_RENDERER_WEBGL: number } | null
+    return softwareRenderer(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER))
+  }
+  let software = readSoftware()
   /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
   const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
@@ -468,6 +482,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onContextRestored = (): void => {
     lost = false
     bufferCap = readCap()
+    software = readSoftware()
     fitBuffer()
     if (lastModel && lastText) draw(lastModel, lastText, allLabels)
     wake()
@@ -2677,7 +2692,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // Frames are drawn on demand: each change (a draw, a hover, a panel, a hand on the camera, a resize) wakes the
   // loop, which draws while anything moves (a flight, an ease, a change, a pulse, a glide, the looping motions
   // when motion is not reduced, labels still finding their places) and SETTLE_FRAMES more, then asks for no frame
-  // until the next change. An idle city with reduced motion draws nothing.
+  // until the next change. An idle city with reduced motion draws nothing. Drawn in software, a frame with nothing
+  // but the looping motions moving is followed by the next one SOFTWARE_LOOP_MS later, not on the next frame.
   const fwd = new THREE.Vector3()
   const right = new THREE.Vector3()
   const up = new THREE.Vector3(0, 1, 0)
@@ -2686,12 +2702,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let wirePulse = 0.55 + 0.45 * Math.sin(0) // the ghost pulse's level, as the last frame set it
   /** The labels' places the last frame drew: a frame that moves one is not idle. */
   let lastShown: ReadonlyMap<string, Nudge> = new Map()
+  /** A frame is being drawn: a wake from inside it (the controls' change event) is that frame's own, not a change. */
+  let drawing = false
+  /** A change woke the loop since the last frame: the next frame is drawn at once, whatever the renderer. */
+  let changed = true
+  /** The last frame drawn had only the looping motions moving, and when it was drawn (performance.now). */
+  let loopOnly = false
+  let drawnAt = 0
   /**
    * Something changed: frames are drawn until it settles. Asks for a frame unless one is asked for already, or
    * nothing may draw (paused, lost, disposed, still being built).
    */
   function wake(): void {
     idleLeft = SETTLE_FRAMES
+    if (!drawing) changed = true
     if (raf !== 0 || !started || disposed || paused || lost) return
     // The time spent idle is not a frame: nothing jumps on the first frame back. (The very first frame starts the clock.)
     if (clock.running) clock.getDelta()
@@ -2711,16 +2735,30 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     raf = 0
     // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
     if (host.clientWidth === 0 || host.clientHeight === 0) return
-    let moving = true // a frame that throws keeps the loop going, as it always did
+    // Drawn in software with only the looping motions moving and no change since: this frame is skipped until
+    // SOFTWARE_LOOP_MS have passed (the clock keeps the wall time, so the motions keep their speed).
+    if (software && loopOnly && !changed && performance.now() - drawnAt < SOFTWARE_LOOP_MS) {
+      raf = requestAnimationFrame(animate)
+      return
+    }
+    changed = false
+    let motion: FrameMotion = 'moving' // a frame that throws keeps the loop going, as it always did
+    drawing = true
     try {
-      moving = drawFrame()
+      motion = drawFrame()
     } finally {
-      idleLeft = moving ? SETTLE_FRAMES : idleLeft - 1
+      drawing = false
+      loopOnly = motion === 'looping'
+      drawnAt = performance.now()
+      idleLeft = motion !== 'still' ? SETTLE_FRAMES : idleLeft - 1
       if (raf === 0 && !disposed && !paused && !lost && idleLeft > 0) raf = requestAnimationFrame(animate)
     }
   }
-  /** Draws one frame; returns whether anything is still moving (another frame will differ from this one). */
-  function drawFrame(): boolean {
+  /**
+   * Draws one frame; returns whether anything is still moving (another frame will differ from this one): 'looping'
+   * when only the looping motions are, which never stop.
+   */
+  function drawFrame(): FrameMotion {
     frameNo++
     const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
     tickChanges()
@@ -2772,8 +2810,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
     }
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
-    // the selection ring and the dust never stop, so a city with any of them draws every frame.
-    if (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true)) moving = true
+    // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
+    // draws them every SOFTWARE_LOOP_MS: see animate).
+    const looping = !reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true)
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
@@ -2828,7 +2867,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
       dustGeo.attributes.position.needsUpdate = true
     }
-    if (controls.update()) moving = true // the slow opening turn, or the glide after a hand lets go (damping)
+    // The slow opening turn (it loops until a hand, a key or a flight ends it), or the glide after a hand lets go (damping).
+    const turning = controls.autoRotate
+    if (controls.update() && !turning) moving = true
     // Semantic zoom: districts (blocks, district names), buildings (blocks, building names), floors (floors, seams, floor labels).
     retier()
     // Semantic zoom and no overlaps (layLabels); then how strongly each shown label reads. District
@@ -2860,7 +2901,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     else renderer.render(scene, camera)
     drawCalls = renderer.info.render.calls
     labelRenderer.render(scene, camera)
-    return moving
+    return moving ? 'moving' : looping || turning ? 'looping' : 'still'
   }
   started = true
   wake()
@@ -2963,7 +3004,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // comes (a starved frame rate, a 5K view drawn in software, must not hold a finished change open).
       tickChanges()
       return {
-        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo,
+        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo, software,
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
         slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),

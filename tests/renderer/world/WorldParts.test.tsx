@@ -4,7 +4,7 @@ import { CARD_CLICK_GRACE_MS, CARD_FADE_PX, WorldCard } from '../../../src/rende
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
-import { UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
+import { SOLID_PANEL, UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
 const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
@@ -13,6 +13,17 @@ const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
 const nextFrame = (): Promise<void> => new Promise((done) => { requestAnimationFrame(() => done()) })
 
 describe('WorldCard', () => {
+  it('is glass over a map a GPU draws, and solid with no backdrop blur over one drawn in software', () => {
+    const { rerender } = render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+    const card = screen.getByTestId('world-card')
+    const css = (card.querySelector('style') as HTMLStyleElement).textContent as string
+    expect(css).toMatch(/\.world-card\{[^}]*backdrop-filter:blur\(10px\)/)
+    expect(css).toContain(`.world-card[data-solid]{background:${SOLID_PANEL};backdrop-filter:none}`)
+    expect(card).not.toHaveAttribute('data-solid')
+    rerender(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} solid {...noop} />)
+    expect(card).toHaveAttribute('data-solid', '')
+  })
+
   it('is a polite live region, so a screen reader reads a card that opens or changes (R11)', () => {
     render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} onTech={() => {}} onConfirm={() => {}} onEvidence={() => {}} />)
     const body = screen.getByRole('region', { name: 'Details' })

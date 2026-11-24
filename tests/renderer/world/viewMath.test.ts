@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -772,6 +772,25 @@ describe('frame-rate independent easing', () => {
     expect(frameStep(5)).toBe(MAX_FRAME_DT)
     expect(MAX_FRAME_DT).toBe(0.25)
     expect(frameStep(-0.01)).toBe(0)
+  })
+})
+
+describe('softwareRenderer', () => {
+  it('knows the software renderers by name, and takes anything else (or no name) for a GPU', () => {
+    for (const name of [
+      'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)', // the CI runners' Electron
+      'Google SwiftShader',
+      'llvmpipe (LLVM 15.0.7, 256 bits)',
+      'softpipe',
+      'ANGLE (Mesa, lavapipe, Vulkan 1.3)',
+      'ANGLE (Microsoft, Microsoft Basic Render Driver (0x0000008C) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+      'Apple Software Renderer',
+    ]) expect(softwareRenderer(name), name).toBe(true)
+    for (const name of ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)', 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11)', 'Apple M2', 'Mali-G78', '', null, undefined, 42]) {
+      expect(softwareRenderer(name), String(name)).toBe(false)
+    }
+    // Ten frames a second: the motions still read as motion (each keeps its wall-clock speed), at a sixth of the cost.
+    expect(SOFTWARE_LOOP_MS).toBe(100)
   })
 })
 

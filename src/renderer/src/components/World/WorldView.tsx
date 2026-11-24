@@ -148,6 +148,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** The graphics were lost twice while open: the 2D map shows from then on. */
   const [glGone, setGlGone] = useState(false)
   const webgl = webglFound && !glGone
+  /** The 3D map is drawn in software (WorldDrawn.software): the card and the legend over it are opaque, not blurred glass. */
+  const [solid, setSolid] = useState(false)
   // WebGL missing at the start (a GPU blocked for a while, a driver update) is looked for again when the window comes
   // back to the front, so the 3D map appears without reopening the pane. Only while it is missing: a live map's own
   // context is never crowded by a test context, and a map that loses its graphics says so itself (onGraphics).
@@ -611,11 +613,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           if (!map2dRef.current) { fallbackIdRef.current = null; setCard(null) }
           setNotice((n) => (n === GRAPHICS_LOST ? null : n))
           setGlPaused(false)
+          // The context may come back on another GPU, or in software.
+          setSolid(v.drawn().software)
         }
         else { setNotice(GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
       },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
+    setSolid(v.drawn().software)
     setViewer(v)
     return () => {
       offSelect()
@@ -1048,7 +1053,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
+        {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"
@@ -1117,7 +1122,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         {repoUpdate && tokenOpen && (
           <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={() => setTokenOpen(false)} />
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} solid={solid} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 'min(360px, calc(100% - 24px))', ...zoom }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />
