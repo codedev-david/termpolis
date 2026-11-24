@@ -418,9 +418,10 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
   }
   const stemOf = (file: string): string => baseName(file).replace(/\.[^.]*$/, '')
   for (const m of fileSet) add(byStem, stemOf(m), m)
-  // The source files of each stem, counted once: a test whose stem names exactly one links to it at any depth.
+  // The source-code files of each stem, counted once: a test whose stem names exactly one links to it at any depth.
+  // A config.json or a README is no source, so it neither links nor makes a code file's stem ambiguous.
   const sourcesByStem = new Map<string, string[]>()
-  for (const m of fileSet) if (!TEST_FILE.test(m)) add(sourcesByStem, stemOf(m), m)
+  for (const m of fileSet) if (!TEST_FILE.test(m) && languageForFile(m) !== null) add(sourcesByStem, stemOf(m), m)
   const byTarget = new Map<string, string[]>()
   for (const t of tests) {
     const targets = new Set<string>()
@@ -438,7 +439,7 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
       })
       if (candidates.length === 1) targets.add(candidates[0])
       else {
-        const only = sourcesByStem.get(stem)
+        const only = stem === '' ? undefined : sourcesByStem.get(stem)
         if (only?.length === 1) targets.add(only[0])
       }
     }

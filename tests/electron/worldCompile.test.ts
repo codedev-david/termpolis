@@ -660,6 +660,19 @@ describe('compileWorld', () => {
     expect(refs('src/foo.ts')).toEqual(['tests/foo.test.ts'])
     // An import is evidence wherever the test lives.
     expect(refs('packages/b/src/deep/index.ts')).toEqual(['tools/index.test.ts'])
+    for (const f of ['packages/a/src/index.ts', 'packages/b/src/index.ts']) expect(refs(f)).not.toContain('tools/index.test.ts')
+  })
+
+  it.each([
+    { name: 'a lone data file of that stem', files: { 'tests/config.test.ts': '', 'docs/config.json': '{}' }, member: 'docs/config.json', status: 'gap' },
+    { name: 'a unique source file beside a data file of that stem', files: { 'tests/config.test.ts': '', 'docs/config.json': '{}', 'src/config.ts': 'export const c = 1' }, member: 'src/config.ts', status: 'verified' },
+    { name: 'an empty stem', files: { 'tests/.test.ts': '', 'src/.ts': 'export const c = 1' }, member: 'src/.ts', status: 'gap' }
+  ])('the any-depth name link counts source code only and never an empty stem: $name', async ({ files, member, status }) => {
+    const report = JSON.stringify({ testResults: Object.keys(files).filter((f) => f.startsWith('tests/')).map((name) => ({ name, status: 'passed', endTime: 1 })) })
+    const deps = mkDeps(files, { readFile: async (p) => (p === REPORT ? report : (files[p.slice(ROOT.length + 1) as keyof typeof files] ?? null)) })
+    const doc = await compileWorld({ snap: snapOf(files, {}), projectKey: 'k', head: HEAD, previous: null }, deps)
+    expectValid(doc)
+    expect(doc.buildings.find((b) => b.members.includes(member))?.status).toBe(status)
   })
 
   it('a deleted file relabels its building and leaves no floor listing it; a building new since previous is labelled', async () => {
