@@ -43,6 +43,7 @@ import {
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
+import { prepareIsolatedLaunch, type IsolatedLaunch } from './readOnlyIsolation'
 import { CODEX_AUTO_APPROVED_TOOLS, RESTRICTED_RUN_TOOLS } from '../shared/agentIntegration'
 import { PRIMER_CLOSE, PRIMER_OPEN, PRIMER_PREFACE } from '../shared/headlessPrompt'
 
@@ -103,6 +104,10 @@ export interface ExecRequest {
   /** Don't write the outcome to the brain. For output another machine asked for, which
    *  must not become a later run's primer. */
   noRemember?: boolean
+  /** A read-only run that can read its folder and nothing else: no MCP server of the person's, no
+   *  command, no file write, whatever the agent (see readOnlyIsolation.ts). A run whose isolation
+   *  can't be set up doesn't start. Ignored with `write`. */
+  isolated?: boolean
 }
 
 /** The `agent_exec` verb's arguments, as executeTool passes them on. */
@@ -267,13 +272,14 @@ function claudeLinkedReadOnlyArgs(model: string | undefined, mcpConfig: string):
  *  saving its session (`noPersist`) is told to: claude's flag goes ahead of `-p`, codex's with its
  *  other options; agy has none. `opts.cwd` is the spawn's to use, and codex is also told it with
  *  `-C`. The caller checks it first: runHeadless takes only an absolute path, which can never be
- *  read as a flag. */
+ *  read as a flag. `opts.isolateArgs` are an isolated run's Codex options (readOnlyIsolation.ts),
+ *  placed with its other options; the other agents' isolation is in their environment. */
 export function execCommand(
   agent: ExecAgent,
   model: string | undefined,
   write: boolean,
   timeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS,
-  opts: { linkedJob?: LinkedJobArgs; cwd?: string; baseUrl?: string } = {},
+  opts: { linkedJob?: LinkedJobArgs; cwd?: string; baseUrl?: string; isolateArgs?: readonly string[] } = {},
 ): { bin: string; args: string[] } {
   const job = opts.linkedJob
   if (agent === 'codex') {
@@ -293,6 +299,7 @@ export function execCommand(
       ...(job ? codexLinkedJobArgs(job) : []),
       ...(job && write ? CODEX_LINKED_WRITE_ARGS : []),
       ...(job?.noPersist ? [CODEX_NO_PERSIST] : []),
+      ...(opts.isolateArgs ?? []),
       ...(opts.cwd ? ['-C', opts.cwd] : []),
       ...(opts.baseUrl ? ['-c', `openai_base_url=${JSON.stringify(opts.baseUrl)}`] : []),
     )
@@ -340,6 +347,8 @@ export interface ExecDeps {
    *  Linked machines job, whose session must not become this computer's memory. Absent, or failing,
    *  and the job runs without the flag, as on a CLI that has none. */
   noPersist?: (agent: ExecAgent) => Promise<boolean>
+  /** Sets up an isolated run's launch (ExecRequest.isolated). Test seam; prepareIsolatedLaunch when absent. */
+  isolation?: (agent: ExecAgent, cwd: string, env: Readonly<Record<string, string>>) => Promise<IsolatedLaunch>
 }
 
 /** Per-run MCP plumbing for one Linked machines job. */
@@ -396,6 +405,15 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   const prompt = buildExecPrompt(req.task, primer)
   const primerChars = prompt.length - req.task.length
   const timeoutMs = req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
+  // Set up before the job's MCP plumbing, so a run that can't be isolated has nothing to dispose of.
+  let isolation: IsolatedLaunch | null = null
+  if (req.isolated && req.write !== true) {
+    try {
+      isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {})
+    } catch (err) {
+      return { ok: false, agent, output: '', error: err instanceof Error ? err.message : String(err), code: -1, durationMs: now() - started, primerChars }
+    }
+  }
   // Asked before the job's MCP plumbing is made, so nothing is left to dispose of while it waits.
   const noPersist = req.linkedJob !== undefined && (await canRunUnsaved(deps, agent))
   const mcp = req.linkedJob === undefined ? null : linkedJobMcpFor(deps, req.linkedJob, agent)
@@ -409,11 +427,14 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
     ...(linkedJob ? { linkedJob } : {}),
     ...(req.cwd ? { cwd: req.cwd } : {}),
     ...(req.baseUrl ? { baseUrl: req.baseUrl } : {}),
+    ...(isolation && isolation.args.length > 0 ? { isolateArgs: isolation.args } : {}),
   })
-  // Only what this run has, so deliver's options never carry an explicit undefined.
+  // Only what this run has, so deliver's options never carry an explicit undefined. The isolation's
+  // variables go on top of the caller's: a caller's HOME must not undo agy's own home for the run.
+  const env = isolation ? { ...req.env, ...isolation.env } : req.env
   const extra = {
     ...(req.cwd ? { cwd: req.cwd } : {}),
-    ...(req.env ? { env: req.env } : {}),
+    ...(env ? { env } : {}),
     ...(req.signal ? { signal: req.signal } : {}),
   }
 
@@ -460,6 +481,8 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
     } catch {
       /* a temp file left behind must not change the run's outcome */
     }
+    // A temp folder left behind must not change the run's outcome either.
+    if (isolation) await isolation.dispose().catch(() => undefined)
   }
 }
 

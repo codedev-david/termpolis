@@ -778,7 +778,7 @@ describe('makeWorldLlm', () => {
   it('codex/gemini call run read-only with no primer and no remember, returning trimmed output', async () => {
     const run = vi.fn(async () => res({ output: '  hi  ' }))
     expect(await makeWorldLlm('gemini', 'flash', { run })('prompt')).toBe('hi')
-    expect(run).toHaveBeenCalledWith({ task: 'prompt', agent: 'gemini', model: 'flash', write: false, timeoutMs: 120_000, noPrimer: true, noRemember: true })
+    expect(run).toHaveBeenCalledWith({ task: 'prompt', agent: 'gemini', model: 'flash', write: false, isolated: true, noRemember: true, timeoutMs: 120_000, noPrimer: true })
   })
 
   it('returns null on failure, empty output, a throw, or no run', async () => {

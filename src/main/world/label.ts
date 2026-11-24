@@ -9,6 +9,7 @@ import type { ModelCatalog } from '../modelCatalog'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { Claim, Evidence, EvidenceKind, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
+import { LUMOPOLIS_RUN } from './agentProfile'
 import { cargoOf } from './cargoTypes'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
 import {
@@ -180,7 +181,7 @@ export function makeWorldLlm(
   if (!run) return async () => null
   return async (prompt) => {
     try {
-      const res = await run({ task: prompt, agent, model, write: false, timeoutMs: LABEL_CALL_TIMEOUT_MS, noPrimer: true, noRemember: true })
+      const res = await run({ task: prompt, agent, model, ...LUMOPOLIS_RUN, timeoutMs: LABEL_CALL_TIMEOUT_MS, noPrimer: true })
       const out = res.ok ? res.output.trim() : ''
       return out === '' ? null : out
     } catch {

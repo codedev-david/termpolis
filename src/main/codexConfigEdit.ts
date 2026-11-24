@@ -430,6 +430,32 @@ function unsupportedShape(doc: Doc, forAdd: boolean): string | null {
   return null
 }
 
+/**
+ * The names of every MCP server this config sets, in file order, each once: from `[mcp_servers.<name>]`
+ * headers (and their sub-tables), from dotted keys (`mcp_servers.<name>.command = …`) and from keys under a
+ * `[mcp_servers]` header. A shape whose names can't be read line by line, `mcp_servers` as an inline table
+ * or an array of tables, is an error, never a short list: the caller switches the servers off by name.
+ */
+export function codexMcpServerNames(text: string): { names: string[] } | { error: string } {
+  const doc = parse(text)
+  if ('error' in doc) return doc
+  const names: string[] = []
+  const add = (name: string): void => {
+    if (!names.includes(name)) names.push(name)
+  }
+  for (const t of doc.tables) {
+    if (t.path[0] === 'mcp_servers' && t.array) return { error: 'mcp_servers is written as an array of tables ([[…]])' }
+    if (t.path[0] === 'mcp_servers' && t.path.length >= 2) add(t.path[1])
+    for (const k of t.keys) {
+      const full = [...t.path, ...k.key]
+      if (full[0] !== 'mcp_servers') continue
+      if (full.length === 1) return { error: 'mcp_servers is set as an inline table' }
+      add(full[1])
+    }
+  }
+  return { names }
+}
+
 /** Is Termpolis's MCP server in this config, and what does it run? */
 export function codexServerState(text: string): CodexServerState {
   const doc = parse(text)

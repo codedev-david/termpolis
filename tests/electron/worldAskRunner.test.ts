@@ -55,7 +55,7 @@ describe('createAskRunner', () => {
     await runner.ask(REQ)
     expect(client.read).toHaveBeenCalledWith('C:/repo', { text: 'What is this?', limit: 20 }, { signal: expect.any(AbortSignal) })
     const [req, deps] = execFn.mock.calls[0] as [ExecRequest, unknown]
-    expect(req).toMatchObject({ cwd: 'C:/repo', write: false, noRemember: true, timeoutMs: 90_000 })
+    expect(req).toMatchObject({ cwd: 'C:/repo', write: false, isolated: true, noRemember: true, timeoutMs: 90_000 })
     expect(req.agent).toBe('claude')
     expect(req.model).toBeUndefined()
     expect(req.baseUrl).toBeUndefined()
@@ -69,7 +69,7 @@ describe('createAskRunner', () => {
     const { runner, execFn } = setup(async () => okRes('hi'), DOC, undefined, undefined, { agent: () => 'codex', runEnv, primer })
     await runner.ask({ ...REQ, model: 'gpt-5.5-mini' })
     expect(execFn).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, noRemember: true }),
+      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, isolated: true, noRemember: true }),
       expect.objectContaining({ primer: expect.any(Function) })
     )
     expect(runEnv).toHaveBeenCalledWith('codex', 'C:/repo')

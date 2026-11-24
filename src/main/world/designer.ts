@@ -11,6 +11,7 @@ import { estimateTokens } from '../../shared/world/tokens'
 import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
+import { LUMOPOLIS_RUN } from './agentProfile'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
@@ -180,7 +181,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       try {
         res = await deps.exec(
           {
-            task, agent, cwd, write: false, noRemember: true, noPrimer: true, timeoutMs: deps.timeoutMs ?? DEFAULT_DESIGN_TIMEOUT_MS, signal: ctl.signal,
+            task, agent, cwd, ...LUMOPOLIS_RUN, noPrimer: true, timeoutMs: deps.timeoutMs ?? DEFAULT_DESIGN_TIMEOUT_MS, signal: ctl.signal,
             ...(isSafeModelId(model) ? { model } : {}),
             env: route.env,
             ...(route.baseUrl ? { baseUrl: route.baseUrl } : {})

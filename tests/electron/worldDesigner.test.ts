@@ -66,7 +66,7 @@ describe('createDesigner draft', () => {
     const res = await designer.draft('  A shop that takes orders  ')
     const [req, deps] = execFn.mock.calls[0] as [ExecRequest, unknown]
     const cwd = join(dir, 'world', 'designs', 'id1')
-    expect(req).toMatchObject({ cwd, write: false, noRemember: true, noPrimer: true, timeoutMs: 90_000 })
+    expect(req).toMatchObject({ cwd, write: false, isolated: true, noRemember: true, noPrimer: true, timeoutMs: 90_000 })
     expect(req.signal).toBeInstanceOf(AbortSignal)
     expect(req.agent).toBe('claude')
     expect(req.model).toBeUndefined()
@@ -114,7 +114,7 @@ describe('createDesigner draft', () => {
     const { designer, execFn } = setup(async () => okRes(reply('', DRAFT_OPS)), { agent: () => 'codex', runEnv })
     await designer.draft('A shop', undefined, 'gpt-5.5-mini')
     expect(execFn).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, noRemember: true, noPrimer: true }),
+      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, isolated: true, noRemember: true, noPrimer: true }),
       expect.anything()
     )
     expect(runEnv).toHaveBeenCalledWith('codex', join(dir, 'world', 'designs', 'id1'))
@@ -211,7 +211,7 @@ describe('createDesigner refine', () => {
     for (const id of ['core', 'api', 'db']) expect(res.doc.layout.positions[id]).toEqual(before.layout.positions[id])
     expect(await store.load('design:id1')).toEqual(res.doc)
     const req = execFn.mock.calls[0][0] as ExecRequest
-    expect(req).toMatchObject({ cwd: join(dir, 'world', 'designs', 'id1'), write: false, noRemember: true, noPrimer: true })
+    expect(req).toMatchObject({ cwd: join(dir, 'world', 'designs', 'id1'), write: false, isolated: true, noRemember: true, noPrimer: true })
     expect(req.task).toContain('DESIGN DATA')
     expect(req.task).toContain('"id":"api"')
     expect(req.task).toContain('Takes orders.')

@@ -6,6 +6,7 @@ import { estimateTokens } from '../../shared/world/tokens'
 import type { AskNoMemory, AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
+import { LUMOPOLIS_RUN } from './agentProfile'
 import { buildAskPrompt, summarize } from './askContext'
 import type { WorldClient } from './worldClient'
 
@@ -161,7 +162,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       try {
         res = await deps.exec(
           {
-            task: prompt, agent, cwd: root, write: false, noRemember: true, timeoutMs: deps.timeoutMs ?? 90_000, signal: ctl.signal,
+            task: prompt, agent, cwd: root, ...LUMOPOLIS_RUN, timeoutMs: deps.timeoutMs ?? 90_000, signal: ctl.signal,
             ...(isSafeModelId(req.model) ? { model: req.model } : {}),
             env: run.env,
             ...(run.baseUrl ? { baseUrl: run.baseUrl } : {})

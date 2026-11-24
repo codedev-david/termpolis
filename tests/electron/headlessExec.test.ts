@@ -22,6 +22,7 @@ import {
   type ExecRequest,
 } from '../../src/main/headlessExec'
 import { RESTRICTED_RUN_TOOLS } from '../../src/shared/agentIntegration'
+import type { IsolatedLaunch } from '../../src/main/readOnlyIsolation'
 
 const okDeliver = (stdout: string, code = 0, stderr = ''): ExecDeps['deliver'] =>
   vi.fn(async () => ({ stdout, stderr, code }))
@@ -671,5 +672,97 @@ describe('headlessExec/a linked job told not to save its session (noPersist)', (
     await runHeadless({ task: 't', agent: 'claude' }, { deliver, noPersist: probe })
     expect(probe).not.toHaveBeenCalled()
     expect(vi.mocked(deliver).mock.calls[0][1]).not.toContain('--no-session-persistence')
+  })
+})
+
+describe('headlessExec/an isolated read-only run (isolated)', () => {
+  const launch = (over: Partial<IsolatedLaunch> = {}): IsolatedLaunch => ({
+    args: [], env: { TERMPOLIS_READ_ONLY_RUN: '1' }, dispose: vi.fn(async () => undefined), ...over,
+  })
+
+  it('puts Codex\'s isolation options with its other options, before -C and the prompt, and its variables on the run', async () => {
+    const deliver = okDeliver('ok')
+    const iso = launch({ args: ['-c', 'mcp_servers.docs.enabled=false'] })
+    const isolation = vi.fn(async () => iso)
+    const res = await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', isolated: true, env: { A: '1' }, baseUrl: 'http://127.0.0.1:9/x' },
+      { deliver, isolation, isDirectory: anyDir },
+    )
+    expect(res.ok).toBe(true)
+    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' })
+    const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(bin).toBe('codex')
+    expect(args).toEqual([
+      'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
+      '-c', 'mcp_servers.docs.enabled=false',
+      '-C', '/r', '-c', 'openai_base_url="http://127.0.0.1:9/x"', PROMPT_TOKEN,
+    ])
+    expect(opts).toEqual({ timeoutMs: EXEC_DEFAULT_TIMEOUT_MS, cwd: '/r', env: { A: '1', TERMPOLIS_READ_ONLY_RUN: '1' } })
+    expect(iso.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives agy its own home on top of the caller\'s environment, and leaves its argv as it was', async () => {
+    const deliver = okDeliver('ok')
+    const iso = launch({ env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: '/tmp/h', USERPROFILE: '/tmp/h' } })
+    await runHeadless(
+      { task: 't', agent: 'gemini', cwd: '/r', isolated: true, env: { HOME: '/real' }, timeoutMs: 90_000 },
+      { deliver, isolation: async () => iso, isDirectory: anyDir },
+    )
+    const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(bin).toBe('agy')
+    expect(args).toEqual(['--mode', 'plan', '--print-timeout', '90s', '-p', PROMPT_TOKEN])
+    expect(opts.env).toEqual({ HOME: '/tmp/h', USERPROFILE: '/tmp/h', TERMPOLIS_READ_ONLY_RUN: '1' })
+    expect(iso.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the isolation an empty environment when the caller gave none', async () => {
+    const isolation = vi.fn(async () => launch())
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation, isDirectory: anyDir })
+    expect(isolation).toHaveBeenCalledWith('claude', '/r', {})
+    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
+  })
+
+  it('does not start a run whose isolation can\'t be set up, and says why', async () => {
+    const deliver = okDeliver('ok')
+    const linkedJobMcp = vi.fn(() => null)
+    const res = await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', isolated: true },
+      { deliver, linkedJobMcp, isolation: async () => { throw new Error('can\'t switch Codex\'s MCP servers off') }, isDirectory: anyDir, now: () => 0 },
+    )
+    expect(res).toEqual({ ok: false, agent: 'codex', output: '', error: 'can\'t switch Codex\'s MCP servers off', code: -1, durationMs: 0, primerChars: 0 })
+    expect(deliver).not.toHaveBeenCalled()
+    expect(linkedJobMcp).not.toHaveBeenCalled()
+    const odd = await runHeadless(
+      { task: 't', agent: 'gemini', cwd: '/r', isolated: true },
+      { deliver, isolation: async () => { throw 'no temp folder' }, isDirectory: anyDir },
+    )
+    expect(odd.error).toBe('no temp folder')
+  })
+
+  it('ignores isolated on a write run', async () => {
+    const isolation = vi.fn(async () => launch())
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true, write: true }, { deliver, isolation, isDirectory: anyDir })
+    expect(isolation).not.toHaveBeenCalled()
+    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('workspace-write')
+  })
+
+  it('cleans up after a run that failed, and a cleanup that fails never changes the outcome', async () => {
+    const iso = launch({ dispose: vi.fn(async () => { throw new Error('busy') }) })
+    const failing: ExecDeps['deliver'] = vi.fn(async () => { throw new Error('spawn failed') })
+    const res = await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { deliver: failing, isolation: async () => iso, isDirectory: anyDir })
+    expect(res).toMatchObject({ ok: false, error: 'spawn failed' })
+    expect(iso.dispose).toHaveBeenCalledTimes(1)
+    const ok = await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { deliver: okDeliver('fine'), isolation: async () => iso, isDirectory: anyDir })
+    expect(ok).toMatchObject({ ok: true, output: 'fine' })
+  })
+
+  it('sets the run up with prepareIsolatedLaunch when no isolation is given', async () => {
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isDirectory: anyDir })
+    const [, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args).toContain('--strict-mcp-config')
+    expect(opts.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 })

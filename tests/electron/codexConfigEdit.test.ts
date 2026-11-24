@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  addCodexToolApprovals, codexConfigSets, codexServerState, codexTrustedProjects,
+  addCodexToolApprovals, codexConfigSets, codexMcpServerNames, codexServerState, codexTrustedProjects,
   stripCodexProjectTrust, stripCodexServer, tomlString, upsertCodexServer,
   type CodexServerSpec, type TomlEdit,
 } from '../../src/main/codexConfigEdit'
@@ -830,5 +830,40 @@ describe('stripCodexProjectTrust', () => {
       text: lf('[mcp_servers.termpolis]', 'command = "a"', '', '[mcp_servers.termpolis]', 'command = "b"'),
       removed: ['/home/me'],
     })
+  })
+})
+
+describe('codexMcpServerNames', () => {
+  it('lists every server once, in file order, from headers, sub-tables, dotted keys and keys under [mcp_servers]', () => {
+    const text = lf(
+      'model = "gpt-5"',
+      'mcp_servers.inline_one.command = "a"',
+      '[mcp_servers.docs]',
+      'command = "docs-mcp"',
+      '[mcp_servers.docs.env]',
+      'X = "1"',
+      '[mcp_servers."quoted-name"]',
+      'command = "q"',
+      '[mcp_servers]',
+      'under = { command = "u" }',
+      'docs.args = ["again"]',
+      '[projects."C:/x"]',
+      'trust_level = "trusted"',
+      '[profiles.p]',
+      'model = "o3"',
+    )
+    expect(codexMcpServerNames(text)).toEqual({ names: ['inline_one', 'docs', 'quoted-name', 'under'] })
+  })
+
+  it('lists none for a config with no servers, or an empty one', () => {
+    expect(codexMcpServerNames(lf('model = "gpt-5"', '[projects."C:/x"]', 'trust_level = "trusted"'))).toEqual({ names: [] })
+    expect(codexMcpServerNames('')).toEqual({ names: [] })
+    expect(codexMcpServerNames(lf('[mcp_servers]'))).toEqual({ names: [] })
+  })
+
+  it('is an error, never a short list, for a shape whose names it can\'t read', () => {
+    expect(codexMcpServerNames(lf('mcp_servers = { docs = { command = "d" } }'))).toEqual({ error: 'mcp_servers is set as an inline table' })
+    expect(codexMcpServerNames(lf('[[mcp_servers]]', 'name = "docs"'))).toEqual({ error: 'mcp_servers is written as an array of tables ([[…]])' })
+    expect(codexMcpServerNames(lf('[mcp_servers.docs', 'command = "d"'))).toHaveProperty('error')
   })
 })
