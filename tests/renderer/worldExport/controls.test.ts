@@ -3,6 +3,7 @@
 // tours and Ask picks reach the viewer (3D) or the card panel (2D).
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorldGraphics, WorldViewer } from '../../../src/renderer/src/world/engine'
+import { tourCard } from '../../../src/renderer/src/world/engine/cards'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import type { PageMeta } from '../../../src/shared/world/exportMeta'
 import { REMOVALS_ID } from '../../../src/shared/world/designPatch'
@@ -529,6 +530,8 @@ describe('buildPage: the 2D map', () => {
     control('tour').click()
     expect(body().querySelector('h3')!.textContent).toBe(doc.tours[0].title)
     expect(body().querySelector('li')!.textContent).toBe(doc.tours[0].steps[0].caption)
+    // The app's own tour card, the one copy the 2D map in the app shows too.
+    expect(body().innerHTML).toBe(tourCard(doc.tours[0]))
     page.pick('tech:ipc', 'term')
     expect(body().textContent).toContain('ipc')
     body().querySelector<HTMLElement>('[data-node], [data-tech]')?.click()

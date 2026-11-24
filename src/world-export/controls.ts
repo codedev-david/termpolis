@@ -5,6 +5,7 @@
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
+import { tourCard } from '../renderer/src/world/engine/cards'
 import { freeArea } from '../renderer/src/world/engine/viewMath'
 import type { AskKind } from '../shared/world/askIndex'
 import { REMOVALS_ID } from '../shared/world/designPatch'
@@ -154,10 +155,6 @@ export function legendHtml(doc: WorldDoc, processes: boolean): string {
   }
   return html
 }
-
-/** A tour as a card, for the 2D map (the 3D city plays it instead). */
-const tourCard = (t: Tour): string =>
-  `<h3>${esc(t.title)}</h3><ol>${t.steps.map((s) => `<li>${esc(s.caption)}</li>`).join('')}</ol>`
 
 export interface Page {
   /** Where the Ask box goes. */
