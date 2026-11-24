@@ -23,7 +23,7 @@ function fakeViewer() {
     }),
     load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
     setLabelScale: vi.fn(), setPanels: vi.fn(),
-    apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
+    apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), resetView: vi.fn(), setPaused: vi.fn(), cancelActions: vi.fn(), dispose: vi.fn(),
   }
 }
 type Fake = ReturnType<typeof fakeViewer>
@@ -493,6 +493,17 @@ describe('buildPage: the 2D map', () => {
     expect(q('.wx-map2d').hidden).toBe(true)
     expect(viewer.setPaused).toHaveBeenLastCalledWith(false)
     expect(toggle.textContent).toBe('2D map')
+  })
+
+  it('cancels the running tour and its actions on the way to the 2D map, so no caption is written over it, and cancels nothing on the way back', () => {
+    const { control, viewer } = setup()
+    control('tour').click()
+    expect(viewer.play).toHaveBeenCalledTimes(1)
+    expect(viewer.cancelActions).not.toHaveBeenCalled()
+    control('map2d').click()
+    expect(viewer.cancelActions).toHaveBeenCalledTimes(1)
+    control('map2d').click()
+    expect(viewer.cancelActions).toHaveBeenCalledTimes(1)
   })
 
   it('opens read-only cards from map clicks; a district closes the card', () => {

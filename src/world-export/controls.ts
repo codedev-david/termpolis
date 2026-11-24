@@ -463,6 +463,8 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (on && !mapDrawn) drawMap()
     map2d.hidden = !on
     viewHost.hidden = on
+    // A running tour stops with the city: a step waiting out its dwell would write its caption over the map.
+    if (on) viewer?.cancelActions()
     viewer?.setPaused(on)
     showCard(null)
   }
