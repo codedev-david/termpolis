@@ -383,7 +383,8 @@ const GO: LangRules = {
   defs: [
     // The receiver closes within four lines: `[^)]*` ran from every `func (` to the next `)`, so thousands of unclosed
     // ones each read on to the end of the file (half a minute at 512 KB). A line is read by at most the four heads above.
-    { kind: 'function', re: /^func\s+(?:\([^)\n]*(?:\n[^)\n]*){0,3}\)\s*)?([A-Za-z_]\w*)/gm },
+    // A `func` with no name is none: the keyword `func` on the next line is not its name, and is read as its own head.
+    { kind: 'function', re: /^func\s+(?:\([^)\n]*(?:\n[^)\n]*){0,3}\)\s*)?(?!func\b)([A-Za-z_]\w*)/gm },
     { kind: 'struct', re: /^type\s+([A-Za-z_]\w*)\s+struct\b/gm },
     { kind: 'interface', re: /^type\s+([A-Za-z_]\w*)\s+interface\b/gm },
   ],

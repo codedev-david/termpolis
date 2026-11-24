@@ -539,6 +539,9 @@ describe('codeGraphExtract', () => {
       // A receiver split over lines is read as before (from its `func` line), up to four lines; past that it names nothing.
       expect(show('m.go', 'func (\n\ts *Server,\n) Handle() {}\nfunc (a\nb) Far() {}').s).toEqual([['Handle', 'function', 1, 1], ['Far', 'function', 4, 4]])
       expect(show('m.go', 'func (\n\ta,\n\tb,\n) Four() {}\nfunc (\n\ta,\n\tb,\n\tc,\n) Five() {}').s).toEqual([['Four', 'function', 1, 1]])
+      // A `func` with no name names nothing: the `func` on the next line is not its name but a head of its own.
+      expect(show('m.go', 'func\nfunc Named() {}\nfunc\nfunc\n').s).toEqual([['Named', 'function', 2, 2]])
+      expect(show('m.go', 'func (s *S)\nfunc M() {}\nfunc (s *S) funcy() {}').s).toEqual([['M', 'function', 2, 2], ['funcy', 'function', 3, 3]])
       for (const line of ['func (\n', 'func (a\n', 'func  (a b\n']) grows(unit(line), noSymbols('m.go'), line)
     })
 
