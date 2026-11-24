@@ -50,6 +50,16 @@ async function terminalText(): Promise<string> {
   )
 }
 
+/** The terminal's logical lines (rows a long line wrapped onto are joined back), so a marker that a long
+ *  shell prompt (a macOS runner's hostname) pushes across a row break still reads as one string. */
+async function terminalLogicalText(): Promise<string> {
+  return await page.evaluate(() => {
+    const lines = (window as unknown as { __termpolis_terminal_lines?: (id?: string) => string[] }).__termpolis_terminal_lines?.() ?? []
+    return lines.join('
+')
+  })
+}
+
 test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
   test.setTimeout(120_000)
 
@@ -118,7 +128,7 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     await menu.locator('button:has-text("Paste")').click()
 
     // The marker is echoed by the shell on the input line.
-    await expect.poll(terminalText, { timeout: 15000 }).toContain(MARKER)
+    await expect.poll(terminalLogicalText, { timeout: 15000 }).toContain(MARKER)
   })
 
   // A long multi-line paste must reach the program as ONE bracketed paste with \r line breaks —
