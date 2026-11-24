@@ -535,6 +535,8 @@ const at60 = (perFrame: number): number => -60 * Math.log(1 - perFrame)
 export const FLOOR_RISE_RATE = at60(5 / 60)
 export const FLOOR_TURN_RATE = at60(4 / 60)
 export const FOG_RATE = at60(2 / 60)
+/** The camera's glide after a hand lets go (OrbitControls damping): the 0.05 of what is left that its default spends a frame at 60 fps. */
+export const CONTROLS_DAMPING_RATE = at60(0.05)
 
 /** Whether two free areas are the same to within half a pixel on every side. */
 export function sameArea(a: FreeArea, b: FreeArea): boolean {
