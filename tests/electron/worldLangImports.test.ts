@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { fill, linear } from './_linearTime'
 import { blankPython, blankRust, expandUse, goModulePath, relativeSpec, resolveLangImports, scanLangImports, type GoModule } from '../../src/main/world/langImports'
 import { resolveImport } from '../../src/main/world/group'
 
@@ -537,38 +538,39 @@ describe('byte-order marks and CRLF line endings', () => {
 })
 
 describe('hostile input stays linear', () => {
-  const within = (ms: number, f: () => unknown): void => {
-    const t = performance.now()
-    f()
-    expect(performance.now() - t).toBeLessThan(ms)
-  }
+  // Each input is read at n and 4n characters, and the larger must take under 8 times as long: a quadratic rule takes
+  // about 16 (see _linearTime). Each rule guarded here took seconds at these sizes before its fix.
+  const N = 64 * 1024
+  const grows = (make: (n: number) => string, read: (src: string) => unknown, label = ''): void => linear(make, read, N, label)
+  const reads = (file: string, want: string[]) => (src: string): void => expect(refs(file, src)).toEqual(want)
 
   it('reads an unclosed parenthesised Python list as its first line, without searching ahead from every one', () => {
     // 32,000 unclosed lists: the old bounded `\([^)]{0,4000}\)` searched 4,000 characters ahead from each one.
-    within(1500, () => expect(refs('a.py', 'from a import (\n'.repeat(32000))).toEqual(['py:f:a:']))
+    grows((n) => fill('from a import (\n', n), reads('a.py', ['py:f:a:']))
     expect(refs('a.py', 'from a import (x,\n' + 'y = 1\n'.repeat(1000) + 'from b import (c,\n  d)\n')).toEqual(['py:f:a:x', 'py:f:b:c,d'])
   })
 
   it('reads a Rust use with no `;` in reach as nothing, and the next one', () => {
-    within(1500, () => expect(refs('src/lib.rs', 'use a\n'.repeat(40000))).toEqual([]))
+    grows((n) => fill('use a\n', n), reads('src/lib.rs', []))
     expect(refs('src/lib.rs', 'use crate::a::b\n' + 'x'.repeat(2001) + ';\nuse crate::c;')).toEqual(['rs:u:crate::c'])
-    within(1500, () => expect(refs('src/lib.rs', ']\nmod x;\n'.repeat(30000))).toEqual(['rs:m:x']))
-    within(1500, () => expect(refs('src/lib.rs', '#[a]\n'.repeat(30000) + 'mod x;')).toEqual(['rs:m:x']))
+    grows((n) => fill(']\nmod x;\n', n), reads('src/lib.rs', ['rs:m:x']))
+    grows((n) => fill('#[a]\n', n) + 'mod x;', reads('src/lib.rs', ['rs:m:x']))
   })
 
   it('reads `from` followed by a long run of spaces as nothing, in linear time, and keeps relative and spaced forms', () => {
     // The two `[ \t]+` around an empty module split the run every way: 2.3 s on main for 50k spaces.
-    within(1000, () => expect(refs('a.py', 'from' + ' '.repeat(50000))).toEqual([]))
-    within(1000, () => expect(refs('a.py', 'from' + ' '.repeat(50000) + 'import x')).toEqual([]))
-    within(1000, () => expect(refs('a.py', 'from' + '\t \t'.repeat(17000) + '\n')).toEqual([]))
-    within(1000, () => expect(refs('a.py', 'from \n'.repeat(10000))).toEqual([]))
+    grows((n) => 'from' + ' '.repeat(n), reads('a.py', []), 'spaces')
+    grows((n) => 'from' + ' '.repeat(n) + 'import x', reads('a.py', []), 'spaces then import')
+    grows((n) => 'from' + fill('\t \t', n) + '\n', reads('a.py', []), 'tabs')
+    grows((n) => fill('from \n', n), reads('a.py', []), 'lines')
     expect(refs('a.py', 'from\t \tos.path   import  join\nfrom . import b\nfrom ..pkg import (c,\n  d)\nfrom\t.x import y\n')).toEqual(['py:f:os.path:join', 'py:f:.:b', 'py:f:..pkg:c,d', 'py:f:.x:y'])
     // A `from` with no module no longer swallows the lines of its `(` list: the import under it is read.
     expect(refs('a.py', 'from  import (\nimport os\n)\n')).toEqual(['py:i:os'])
   })
 
   it("bounds a Kotlin file's declaration scan on one long line", () => {
-    within(1500, () => expect(scanLangImports('a.kt', 'fun ' + 'a'.repeat(200000))).toEqual({ refs: [] }))
-    within(1500, () => expect(scanLangImports('a.kt', 'fun <' + '<'.repeat(200000))).toEqual({ refs: [] }))
+    const none = (src: string): void => expect(scanLangImports('a.kt', src)).toEqual({ refs: [] })
+    grows((n) => 'fun ' + 'a'.repeat(n), none)
+    grows((n) => 'fun <' + '<'.repeat(n), none)
   })
 })

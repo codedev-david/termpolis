@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractFile, languageForFile, type CodeSymbol } from '../../src/main/codeGraphExtract'
-import { linear } from './_linearTime'
+import { fill, linear } from './_linearTime'
 
 const names = (syms: CodeSymbol[]) => syms.map((s) => s.name)
 const byName = (syms: CodeSymbol[], n: string) => syms.find((s) => s.name === n)
@@ -168,20 +168,24 @@ describe('codeGraphExtract', () => {
     })
 
     it('extracts a large or hostile Kotlin file in time linear in its size', () => {
-      const within = (ms: number, f: () => unknown): void => {
-        const t = performance.now()
-        f()
-        expect(performance.now() - t).toBeLessThan(ms)
+      // Reading 4 times the text takes under 8 times as long (see _linearTime); each took seconds before at these sizes.
+      const N = 64 * 1024
+      const big = (size: number): string => {
+        const lines: string[] = ['package a']
+        let length = 0
+        for (let n = 0; length < size; n++) {
+          const add = [`data class User${n}(val name: String)`, `fun helper${n}(x: Int): Int = x`, `class Service${n} {`, '  @JvmStatic fun op(id: String): Int {', '    return 1', '  }', '}']
+          lines.push(...add)
+          length += add.join('\n').length + 1
+        }
+        return lines.join('\n')
       }
-      const big: string[] = ['package a']
-      for (let n = 0; big.join('\n').length < 200 * 1024; n++) {
-        big.push(`data class User${n}(val name: String)`, `fun helper${n}(x: Int): Int = x`, `class Service${n} {`, '  @JvmStatic fun op(id: String): Int {', '    return 1', '  }', '}')
-      }
-      within(3000, () => expect(extractFile('Big.kt', big.join('\n'))!.symbols.length).toBeGreaterThan(1000))
-      within(3000, () => expect(byName(extractFile('Blank.kt', '\n'.repeat(8000) + 'class A')!.symbols, 'A')!.startLine).toBe(8001))
-      within(3000, () => expect(extractFile('Ann.kt', '@a\n'.repeat(64000))!.symbols).toEqual([]))
-      within(3000, () => expect(extractFile('Mods.kt', 'public\n'.repeat(30000))!.symbols).toEqual([]))
-      within(3000, () => expect(extractFile('Long.kt', 'fun ' + 'a'.repeat(100000))!.symbols).toEqual([]))
+      const none = (file: string) => (src: string): void => expect(extractFile(file, src)!.symbols).toEqual([])
+      linear(big, (src) => expect(extractFile('Big.kt', src)!.symbols.length).toBeGreaterThan(src.length / 100), N, 'Big.kt')
+      linear((n) => '\n'.repeat(n) + 'class A', (src) => expect(byName(extractFile('Blank.kt', src)!.symbols, 'A')!.startLine).toBe(src.length - 6), N, 'Blank.kt')
+      linear((n) => fill('@a\n', n), none('Ann.kt'), N, 'Ann.kt')
+      linear((n) => fill('public\n', n), none('Mods.kt'), N, 'Mods.kt')
+      linear((n) => 'fun ' + 'a'.repeat(n), none('Long.kt'), N, 'Long.kt')
       // A modifier on the line above no longer joins a declaration; an annotation above still does.
       expect(names(extractFile('Split.kt', 'public\nclass A\n@Inject\nfun b() {}')!.symbols)).toEqual(['A', 'b'])
     })
@@ -189,9 +193,8 @@ describe('codeGraphExtract', () => {
     it('finds the same call names as a name-then-paren regex, a long word run included', () => {
       const ex = extractFile('m.ts', 'function f() {\n  a1 (x); 9b(y); $c\n(z); if (q) {}; obj.d(); 1e2(); 42(w); f()\n}')!
       expect(ex.references).toEqual(['f', 'a1', 'b', '$c', 'd', 'e2'])
-      const t = performance.now()
-      extractFile('m.ts', 'x'.repeat(200000) + '(')
-      expect(performance.now() - t).toBeLessThan(3000)
+      // A word run with a `(` at its end: reading 4 times the run takes under 8 times as long (see _linearTime).
+      linear((n) => 'x'.repeat(n) + '(', (src) => expect(extractFile('m.ts', src)!.references).toEqual([src.slice(0, -1)]), 64 * 1024, 'word run')
     })
 
     it('inline object types in param/return annotations do NOT truncate the block (real-repo bug)', () => {
@@ -289,15 +292,17 @@ describe('codeGraphExtract', () => {
       const ex = extractFile(file, src)!
       return { s: ex.symbols.map((x) => [x.name, x.kind, x.startLine, x.endLine]), i: ex.imports }
     }
-    // Under 1 s on any CI runner; each input runs in a few ms here and took seconds before.
-    const within = (f: () => unknown): void => {
-      const t = performance.now()
-      f()
-      expect(performance.now() - t).toBeLessThan(1000)
-    }
-    const N = 50000
+    // Each hostile input is read at n and at 4n characters, and the larger must take under 8 times as long: a rule
+    // that is quadratic in the input takes about 16 (see _linearTime). Every rule these tests guard took seconds at
+    // 50k characters before its fix, so its quadratic part is far past the timer's noise at n.
+    const N = 64 * 1024
+    type Make = (n: number) => string
+    const unit = (u: string): Make => (n) => fill(u, n)
+    const grows = (make: Make, read: (src: string) => unknown, label = ''): void => linear(make, read, N, label)
     // What a large or odd file can hold with no declaration in it: runs of blank lines, spaces, CRLF and tabs.
-    const empty = [' '.repeat(N), '\n'.repeat(N), '\r\n'.repeat(N / 2), '\n '.repeat(N / 2), '\t'.repeat(N)]
+    const empty = [' ', '\n', '\r\n', '\n ', '\t'].map(unit)
+    const noSymbols = (file: string) => (src: string): void => expect(extractFile(file, src)!.symbols).toEqual([])
+    const noImports = (file: string) => (src: string): void => expect(extractFile(file, src)!.imports).toEqual([])
 
     it('Java: modifiers in any order, generic returns, annotations, multi-line parameters, constructors', () => {
       const src = J(
@@ -332,13 +337,13 @@ describe('codeGraphExtract', () => {
     })
 
     it('Java: 30k `public` or `static ` lines, blank runs, a 5000-method interface and a long where run', () => {
-      for (const src of [...empty, 'public\n'.repeat(30000), 'static \n'.repeat(30000), '  a b(x)\n'.repeat(N / 9), ' a b(' + ') where '.repeat(6249)]) {
-        within(() => expect(extractFile('A.java', src)!.symbols).toEqual([]))
+      for (const make of [...empty, unit('public\n'), unit('static \n'), unit('  a b(x)\n'), (n: number) => ' a b(' + fill(') where ', n)]) {
+        grows(make, noSymbols('A.java'))
       }
-      const big = 'public interface Big {\n' + '  void method(int x, String y);\n'.repeat(5000) + '}\n'
-      within(() => expect(names(extractFile('Big.java', big)!.symbols)).toEqual(['Big'])) // a method with no body is no symbol
+      const big = (n: number): string => 'public interface Big {\n' + fill('  void method(int x, String y);\n', n) + '}\n'
+      grows(big, (src) => expect(names(extractFile('Big.java', src)!.symbols)).toEqual(['Big'])) // a method with no body is no symbol
       // A declaration after a blank run is found on its own line.
-      within(() => expect(show('B.java', '\n'.repeat(N) + 'public class B {}').s).toEqual([['B', 'class', N + 1, N + 1]]))
+      grows((n) => '\n'.repeat(n) + 'public class B {}', (src) => expect(show('B.java', src).s).toEqual([['B', 'class', src.length - 16, src.length - 16]]))
     })
 
     it('C#: records, constructors with `: base(a)`, where clauses, a brace on the next line', () => {
@@ -391,8 +396,8 @@ describe('codeGraphExtract', () => {
     })
 
     it('C#: modifier lines, blank runs and a long where run', () => {
-      for (const src of [...empty, 'public\n'.repeat(30000), 'static \n'.repeat(30000), '  a b(x)\n'.repeat(N / 9), ' a b(' + ') where '.repeat(6249)]) {
-        within(() => expect(extractFile('A.cs', src)!.symbols).toEqual([]))
+      for (const make of [...empty, unit('public\n'), unit('static \n'), unit('  a b(x)\n'), (n: number) => ' a b(' + fill(') where ', n)]) {
+        grows(make, noSymbols('A.cs'))
       }
     })
 
@@ -419,9 +424,7 @@ describe('codeGraphExtract', () => {
     })
 
     it('Swift: attribute lines, modifier lines and blank runs', () => {
-      for (const src of [...empty, '@a\n'.repeat(N / 3), 'public\n'.repeat(30000), 'static \n'.repeat(30000)]) {
-        within(() => expect(extractFile('A.swift', src)!.symbols).toEqual([]))
-      }
+      for (const make of [...empty, unit('@a\n'), unit('public\n'), unit('static \n')]) grows(make, noSymbols('A.swift'))
     })
 
     it('JS imports: default, named, multi-line, side-effect, type-only, namespace, a list over 2000 characters', () => {
@@ -443,8 +446,8 @@ describe('codeGraphExtract', () => {
     })
 
     it('JS imports: `import` then 50k spaces, import lines with no source, blank runs', () => {
-      for (const src of [...empty, 'import' + ' '.repeat(N) + '!', 'import x\n'.repeat(N / 9), 'export' + ' '.repeat(N)]) {
-        within(() => expect(extractFile('a.ts', src)!.imports).toEqual([]))
+      for (const make of [...empty, (n: number) => 'import' + ' '.repeat(n) + '!', unit('import x\n'), (n: number) => 'export' + ' '.repeat(n)]) {
+        grows(make, noImports('a.ts'))
       }
     })
 
@@ -453,8 +456,8 @@ describe('codeGraphExtract', () => {
       expect(show('f.ts', src).s.filter((x) => x[1] === 'function')).toEqual([
         ['plain', 'function', 1, 1], ['gen', 'function', 2, 2], ['later', 'function', 3, 3], ['named', 'function', 4, 4], ['split', 'function', 5, 5]
       ])
-      within(() => expect(extractFile('a.ts', 'function' + ' '.repeat(N))!.symbols).toEqual([]))
-      within(() => extractFile('a.ts', 'function\n'.repeat(N / 9))) // each `function` names the next, as before
+      grows((n) => 'function' + ' '.repeat(n), noSymbols('a.ts'))
+      grows(unit('function\n'), (src) => extractFile('a.ts', src)) // each `function` names the next, as before
     })
 
     it('TS methods: return types, getters, generics, multi-line parameters, keywords and long or assigned types', () => {
@@ -486,20 +489,16 @@ describe('codeGraphExtract', () => {
     })
 
     it('TS methods: calls with no body, `public` lines, typed calls, unclosed blocks and blank runs', () => {
-      for (const src of [...empty, '  a(x)\n'.repeat(N / 7), '  public\n'.repeat(N / 9), '  a(x): T\n'.repeat(N / 10), '  a(x)}\n'.repeat(N / 8)]) {
-        within(() => expect(extractFile('a.ts', src)!.symbols).toEqual([]))
-      }
+      for (const make of [...empty, unit('  a(x)\n'), unit('  public\n'), unit('  a(x): T\n'), unit('  a(x)}\n')]) grows(make, noSymbols('a.ts'))
       // Thousands of blocks that never close: each is found, and the scans for where they end stay linear.
-      within(() => expect(extractFile('a.ts', '  a() {\n'.repeat(N / 8))!.symbols.length).toBe(Math.floor(N / 8)))
+      grows(unit('  a() {\n'), (src) => expect(extractFile('a.ts', src)!.symbols.length).toBe(src.length / 8))
     })
 
     it('method heads after a `}` with no `{` past it share the scan for the next `{`, up to 512 KB', () => {
       // Each head here has a `}` first, so its facts are read afresh; the `{` the clause needs was searched for again
       // from each one, to the end of the file.
       const lines: [string, string][] = [['a.ts', '  a(x)}\n'], ['A.cs', '  a b(x)}\n'], ['a.ts', '  a(x): T}\n'], ['A.cs', '  a b(x) where }\n']]
-      for (const [file, line] of lines) {
-        linear((n) => expect(extractFile(file, line.repeat(Math.floor(n / line.length)))!.symbols).toEqual([]), 128 * 1024, line)
-      }
+      for (const [file, line] of lines) linear(unit(line), noSymbols(file), 128 * 1024, line)
       // The `{` they share still ends the match where it did: b's return type runs past its `}` to c's `{`, as before.
       expect(show('a.ts', 'class K {\n  a(x)}\n  b(x): T}\n  c(): T {\n  }\n}\n').s).toEqual([['K', 'class', 1, 2], ['b', 'method', 3, 5]])
     })
@@ -519,15 +518,13 @@ describe('codeGraphExtract', () => {
         'const async = async => 1'
       )
       expect(show('consts.ts', src).s).toEqual([['a', 'const', 1, 1], ['b', 'const', 2, 2], ['c', 'const', 3, 3], ['d', 'const', 4, 4], ['f', 'const', 5, 5], ['async', 'const', 11, 11]])
-      for (const s of ['const a: x\n'.repeat(N / 11), 'const a = (\n'.repeat(N / 12), 'const a = async\n'.repeat(N / 16)]) {
-        within(() => expect(extractFile('a.ts', s)!.symbols).toEqual([]))
-      }
+      for (const make of ['const a: x\n', 'const a = (\n', 'const a = async\n'].map(unit)) grows(make, noSymbols('a.ts'))
     })
 
     it('Go: an import block reads quoted paths at the start of a line; blank runs stay linear', () => {
       const src = J('package m', 'import (', '  "fmt"', '  alias "net/http"', '  _ "embed"', '\t"os"', ')', 'import "strings"', 'func Run() {', '}')
       expect(show('m.go', src)).toEqual({ s: [['Run', 'function', 9, 10]], i: ['fmt', 'os'] })
-      for (const s of empty) within(() => expect(extractFile('m.go', s)!.imports).toEqual([]))
+      for (const make of empty) grows(make, noImports('m.go'))
     })
 
     it('Go: a method receiver closes within four lines; unclosed `func (` lines stay linear up to 512 KB', () => {
@@ -536,9 +533,7 @@ describe('codeGraphExtract', () => {
       // A receiver split over lines is read as before (from its `func` line), up to four lines; past that it names nothing.
       expect(show('m.go', 'func (\n\ts *Server,\n) Handle() {}\nfunc (a\nb) Far() {}').s).toEqual([['Handle', 'function', 1, 1], ['Far', 'function', 4, 4]])
       expect(show('m.go', 'func (\n\ta,\n\tb,\n) Four() {}\nfunc (\n\ta,\n\tb,\n\tc,\n) Five() {}').s).toEqual([['Four', 'function', 1, 1]])
-      for (const line of ['func (\n', 'func (a\n', 'func  (a b\n']) {
-        linear((n) => expect(extractFile('m.go', line.repeat(Math.floor(n / line.length)))!.symbols).toEqual([]), 128 * 1024, line)
-      }
+      for (const line of ['func (\n', 'func (a\n', 'func  (a b\n']) linear(unit(line), noSymbols('m.go'), 128 * 1024, line)
     })
 
     it('Rust: `pub(...)` visibility closes on its line; an open `pub(` per line stays linear', () => {
@@ -547,7 +542,7 @@ describe('codeGraphExtract', () => {
         s: [['a', 'function', 1, 1], ['b', 'function', 2, 2], ['c', 'function', 3, 3], ['d', 'function', 4, 4], ['S', 'struct', 5, 5], ['T', 'trait', 6, 6]],
         i: ['crate::x::y']
       })
-      within(() => expect(extractFile('m.rs', 'pub(\n'.repeat(N / 5))!.symbols).toEqual([]))
+      grows(unit('pub(\n'), noSymbols('m.rs'))
     })
 
     it('block ends: a long file of one-line symbols reads each line about once, and ordinary nesting is unchanged', () => {
@@ -557,10 +552,10 @@ describe('codeGraphExtract', () => {
       expect(ex.symbols).toHaveLength(5001)
       expect(ex.symbols[0].endLine).toBe(5003) // as before: an arrow with no braces runs to the next multi-line block
       expect(byName(ex.symbols, 'last')!.endLine).toBe(5003)
-      within(() => extractFile('many.ts', 'const a = () => 1\n'.repeat(N / 18)))
-      // Python blocks that nest deeper and deeper.
-      const deep = Array.from({ length: 300 }, (_, i) => ' '.repeat(i) + 'def f' + i + '():').join('\n')
-      within(() => expect(extractFile('deep.py', deep)!.symbols).toHaveLength(300))
+      grows(unit('const a = () => 1\n'), (src) => extractFile('many.ts', src))
+      // Python blocks that nest deeper and deeper: k of them hold about k * k / 2 characters, so 4n is twice as deep.
+      const deep = (n: number): string => Array.from({ length: Math.round(Math.sqrt(2 * n)) }, (_, i) => ' '.repeat(i) + 'def f' + i + '():').join('\n')
+      grows(deep, (src) => expect(extractFile('deep.py', src)!.symbols).toHaveLength(src.split('\n').length))
       // A class holding methods holding blocks: each symbol still ends at its own closing brace.
       const nested = J('class A {', '  m() {', '    if (x) {', '    }', '  }', '  n() {', '  }', '}', 'function g() {', '}')
       expect(show('n.ts', nested).s).toEqual([['A', 'class', 1, 8], ['m', 'method', 2, 5], ['n', 'method', 6, 7], ['g', 'function', 9, 10]])
@@ -579,9 +574,9 @@ describe('codeGraphExtract', () => {
     })
 
     it('every language reads 50k characters of blank runs, spaces, tabs or CRLF in time linear in its size', () => {
-      const odd = [...empty, 'public\n'.repeat(N / 7), '@a\n'.repeat(N / 3), 'from' + ' '.repeat(N), 'import' + ' '.repeat(N), 'resource "a\n'.repeat(N / 12)]
+      const odd = [...empty, unit('public\n'), unit('@a\n'), (n: number) => 'from' + ' '.repeat(n), (n: number) => 'import' + ' '.repeat(n), unit('resource "a\n')]
       for (const ext of ['ts', 'py', 'go', 'rs', 'java', 'kt', 'cs', 'rb', 'tf', 'swift', 'bicep']) {
-        for (const src of odd) within(() => extractFile(`f.${ext}`, src))
+        for (const make of odd) grows(make, (src) => extractFile(`f.${ext}`, src), ext)
       }
     })
   })
