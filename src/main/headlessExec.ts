@@ -68,6 +68,12 @@ export const EXEC_MAX_TIMEOUT_MS = 60 * 60_000
  *  deadline, with room to spare, so it can't belong to a live run. */
 export const AGY_HOME_STALE_MS = EXEC_MAX_TIMEOUT_MS + 10 * 60_000
 
+/** True when a failed run says the agent's program could not be found. */
+export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
+
+/** The MCP list check found the agent's CLI isn't installed: the run answers as a run of a missing CLI does. */
+class MissingCli extends Error {}
+
 /** A caller's timeout, clamped to [EXEC_MIN_TIMEOUT_MS, EXEC_MAX_TIMEOUT_MS]. Anything that isn't
  *  a number (JSON turns a NaN into null) is left to the default. Pure. */
 export function clampExecTimeout(t: unknown): number | undefined {
@@ -416,15 +422,19 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   let isolation: IsolatedLaunch | null = null
   if (req.isolated && req.write !== true) {
     // The MCP list check is spawned exactly as the run will be: same deliver, folder, environment and signal.
+    // A CLI that isn't installed fails here first, and says so as the run itself would.
     const run: McpListRun = async (bin, args, o) => {
       const res = await deliverWithDeadline(deps.deliver, bin, args, '', o.timeoutMs, DELIVER_GRACE_MS, {
         cwd: o.cwd, env: o.env, ...(req.signal ? { signal: req.signal } : {}),
       })
+      const stderr = (res.stderr ?? '').trim()
+      if (res.code !== 0 && isMissingCli(stderr)) throw new MissingCli(stderr)
       return { stdout: res.stdout, code: res.code }
     }
     try {
       isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {}, run)
     } catch (err) {
+      if (err instanceof MissingCli) return { ok: false, agent, output: '', error: err.message, code: -1, durationMs: now() - started, primerChars }
       // The reason is for the log: a path or a Node error code means nothing on a map.
       ;(deps.log ?? console.warn)(`[exec] isolated ${agent} run not started: ${err instanceof Error ? err.message : String(err)}`)
       return { ok: false, agent, output: '', error: ISOLATION_SETUP_FAILED, code: -1, durationMs: now() - started, primerChars }

@@ -768,6 +768,36 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     expect(calls[0][4]).toEqual({ cwd: '/r', env: { A: '1', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: 10_000 })
   })
 
+  it('a CLI the MCP list check finds missing answers as a run of a missing CLI does, not with the safety sentence', async () => {
+    const log = vi.fn()
+    const check = (bin: string): ExecDeps['isolation'] => async (_agent, _cwd, _env, run) => {
+      await run(bin, ['mcp', 'list'], { cwd: '/r', env: {}, timeoutMs: 10_000 })
+      return launch()
+    }
+    const missing = (stderr: string): ExecDeps['deliver'] => vi.fn(async () => ({ stdout: '', stderr: `${stderr}\n`, code: 1 })) as unknown as ExecDeps['deliver']
+    const codex = missing('spawn codex ENOENT')
+    expect(await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true }, { deliver: codex, log, isolation: check('codex'), isDirectory: anyDir, now: () => 0 }))
+      .toEqual({ ok: false, agent: 'codex', output: '', error: 'spawn codex ENOENT', code: -1, durationMs: 0, primerChars: 0 })
+    expect(codex).toHaveBeenCalledTimes(1)
+    const agy = missing("The term 'agy' is not recognized as the name of a cmdlet")
+    expect((await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { deliver: agy, log, isolation: check('agy'), isDirectory: anyDir })).error)
+      .toBe("The term 'agy' is not recognized as the name of a cmdlet")
+    expect(agy).toHaveBeenCalledTimes(1)
+    expect(log).not.toHaveBeenCalled()
+    // Any other result of the check goes back to the isolation to judge: a failure that isn't a missing
+    // CLI, a missing-CLI word on a check that exited 0, and no stderr at all.
+    const seen: Array<{ stdout: string; code: number }> = []
+    const judged: ExecDeps['isolation'] = async (_agent, _cwd, _env, run) => {
+      seen.push(await run('codex', ['mcp', 'list'], { cwd: '/r', env: {}, timeoutMs: 10_000 }))
+      return launch()
+    }
+    for (const r of [{ stdout: 'x', stderr: 'boom', code: 1 }, { stdout: '[]', stderr: 'ENOENT', code: 0 }, { stdout: '[]', code: 2 }]) {
+      const deliver = vi.fn(async () => r) as unknown as ExecDeps['deliver']
+      await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true }, { deliver, isolation: judged, isDirectory: anyDir })
+    }
+    expect(seen).toEqual([{ stdout: 'x', code: 1 }, { stdout: '[]', code: 0 }, { stdout: '[]', code: 2 }])
+  })
+
   it('gives Claude\'s read-only launch its isolation options ahead of -p', async () => {
     const deliver = okDeliver('ok')
     await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation: async () => launch({ args: ['--setting-sources', 'user'] }), isDirectory: anyDir })

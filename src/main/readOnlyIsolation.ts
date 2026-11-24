@@ -28,7 +28,7 @@
 // the run's own temp folder, and the startup sweep removes only the run homes a crash left behind.
 
 import { createHash } from 'crypto'
-import { constants as fsConstants, promises as fsp } from 'fs'
+import { constants as fsConstants, promises as fsp, type BigIntStats } from 'fs'
 import os from 'os'
 import path from 'path'
 import { codexMcpServerNames, codexTopLevelString, codexTrustedProjects } from './codexConfigEdit'
@@ -110,9 +110,12 @@ export type EntryKind = 'file' | 'link' | 'other' | null
 
 export interface IsolationIO {
   /** A file's text; null when it does not exist. Throws when it exists but can't be read. With
-   *  `noFollow`, a symlink is never opened where the OS can refuse one. */
+   *  `noFollow`, it must be a regular file, not a link, and the file opened must be the one checked. */
   readText: (p: string, opts?: { noFollow?: boolean }) => Promise<string | null>
   entryKind: (p: string) => Promise<EntryKind>
+  /** A path's size and modification time, `absent` when nothing is there, `unreadable:<code>` when it
+   *  can't be looked at. Follows links. Never throws. */
+  stamp: (p: string) => Promise<string>
   realpath: (p: string) => Promise<string>
   /** Makes a new empty folder named from `prefix`, as fs.mkdtemp does. */
   mkdtemp: (prefix: string) => Promise<string>
@@ -129,22 +132,38 @@ export interface IsolationIO {
   now: () => number
 }
 
-/** Reads at most MAX_CODEX_CONFIG_BYTES; a missing file is null, anything else unreadable throws. */
+const isMissing = (e: unknown): boolean => (e as NodeJS.ErrnoException).code === 'ENOENT'
+
+/** Reads at most MAX_CODEX_CONFIG_BYTES; a missing file is null, anything else unreadable throws. With
+ *  `noFollow` the path must be a regular file when looked at (lstat) and the opened handle must be that
+ *  same file (dev and ino), so a swap for a link between the look and the open fails. O_NOFOLLOW is
+ *  also asked for where the OS has it (Linux and macOS; elsewhere it is undefined, which `|` reads as 0). */
 async function readTextCapped(p: string, opts: { noFollow?: boolean } = {}): Promise<string | null> {
+  let checked: { dev: bigint; ino: bigint } | null = null
+  if (opts.noFollow) {
+    let l: BigIntStats
+    try {
+      l = await fsp.lstat(p, { bigint: true })
+    } catch (e) {
+      if (isMissing(e)) return null
+      throw e
+    }
+    if (!l.isFile()) throw new Error(`${p} is not a regular file`)
+    checked = { dev: l.dev, ino: l.ino }
+  }
   let handle: fsp.FileHandle
   try {
-    // O_NOFOLLOW exists on Linux and macOS only. Elsewhere it is undefined, which `|` reads as 0, and the
-    // caller's lstat is the check.
     handle = await fsp.open(p, opts.noFollow ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW : 'r')
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+    if (isMissing(e)) return null
     throw e
   }
   try {
-    const st = await handle.stat()
+    const st = await handle.stat({ bigint: true })
     if (!st.isFile()) throw new Error(`${p} is not a file`)
-    if (st.size > MAX_CODEX_CONFIG_BYTES) throw new Error(`${p} is too big to read`)
-    const buf = Buffer.alloc(st.size + 1)
+    if (checked && (st.dev !== checked.dev || st.ino !== checked.ino)) throw new Error(`${p} changed while it was opened`)
+    if (st.size > BigInt(MAX_CODEX_CONFIG_BYTES)) throw new Error(`${p} is too big to read`)
+    const buf = Buffer.alloc(Number(st.size) + 1)
     let filled = 0
     for (;;) {
       const { bytesRead } = await handle.read(buf, filled, buf.length - filled, filled)
@@ -163,8 +182,18 @@ async function entryKindOf(p: string): Promise<EntryKind> {
     const st = await fsp.lstat(p)
     return st.isSymbolicLink() ? 'link' : st.isFile() ? 'file' : 'other'
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+    if (isMissing(e)) return null
     throw e
+  }
+}
+
+async function stampOf(p: string): Promise<string> {
+  try {
+    const st = await fsp.stat(p)
+    return `${st.size}:${st.mtimeMs}`
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : `unreadable:${code}`
   }
 }
 
@@ -174,6 +203,7 @@ export const removeDirRetrying = (p: string): Promise<void> => fsp.rm(p, { recur
 export const defaultIsolationIO: IsolationIO = {
   readText: readTextCapped,
   entryKind: entryKindOf,
+  stamp: stampOf,
   realpath: (p) => fsp.realpath(p),
   mkdtemp: (prefix) => fsp.mkdtemp(prefix),
   mkdir: async (p) => {
@@ -214,6 +244,8 @@ interface CodexServers {
   url: string[]
   /** Every file read and its text, for the check's cache key. */
   read: Array<[string, string]>
+  /** The stamp of each layer the parser doesn't read (codexLayerPaths), for the same key. */
+  layers: Array<[string, string]>
 }
 
 /** Adds one config's servers. Throws when it can't be listed or names a server that can't be switched
@@ -259,13 +291,33 @@ async function projectConfigs(cwd: string, trusted: string[], io: IsolationIO): 
   return files
 }
 
+/** The config layers Codex can load that the parser doesn't read: the machine-wide config, enforced
+ *  requirements and managed config (Codex names %ProgramData%\OpenAI\Codex on Windows, /etc/codex
+ *  elsewhere, and macOS managed preferences), the legacy CODEX_HOME managed config and the installed
+ *  plugins. Only their stamps go in the check's cache key, so a change to one runs the check again
+ *  rather than reusing a pass. Cloud-managed config has no local file and is left to the check itself. */
+export function codexLayerPaths(home: string, io: Pick<IsolationIO, 'platform' | 'env'>): string[] {
+  const system = io.platform === 'win32'
+    ? path.win32.join(io.env.ProgramData ?? io.env.PROGRAMDATA ?? 'C:\\ProgramData', 'OpenAI', 'Codex')
+    : '/etc/codex'
+  const join = io.platform === 'win32' ? path.win32.join : path.posix.join
+  return [
+    ...['config.toml', 'requirements.toml', 'managed_config.toml'].map((f) => join(system, f)),
+    ...(io.platform === 'darwin' ? ['/Library/Managed Preferences/com.openai.codex.plist'] : []),
+    path.join(home, 'managed_config.toml'),
+    path.join(home, 'plugins'),
+    path.join(home, 'plugins', 'cache'),
+  ]
+}
+
 /** The MCP servers Codex would start for a run in `cwd`: the user config.toml (in the run's CODEX_HOME,
  *  else the app's, else ~/.codex), the `<profile>.config.toml` next to it that its top-level `profile`
  *  names, and the project configs of a trusted folder (projectConfigs). Throws when a file can't be read
  *  or listed. */
 async function codexServers(cwd: string, runEnv: Readonly<Record<string, string>>, io: IsolationIO): Promise<CodexServers> {
   const home = runEnv.CODEX_HOME || io.env.CODEX_HOME || path.join(io.homedir(), '.codex')
-  const found: CodexServers = { names: [], url: [], read: [] }
+  const found: CodexServers = { names: [], url: [], read: [], layers: [] }
+  for (const p of codexLayerPaths(home, io)) found.layers.push([p, await io.stamp(p)])
   const userFile = path.join(home, 'config.toml')
   const user = await io.readText(userFile)
   if (user === null) return found
@@ -353,7 +405,7 @@ export async function prepareIsolatedLaunch(
       ...CODEX_NO_CONNECTORS_ARGS,
     ]
     const env = { ...runEnv, ...READ_ONLY_RUN_ENV }
-    await checkMcpList([agent, cwd, args, env, found.read], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env }, codexMcpListAllOff, run, io)
+    await checkMcpList([agent, cwd, args, env, found.read, found.layers], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env }, codexMcpListAllOff, run, io)
     return { args, env: { ...READ_ONLY_RUN_ENV }, dispose: noop }
   }
   if (agent === 'gemini') {

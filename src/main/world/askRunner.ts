@@ -4,7 +4,7 @@ import { parseAnswer } from '../../shared/world/answerProtocol'
 import { itemsForEvidence } from '../../shared/world/evidenceLinks'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { AskNoMemory, AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
-import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
+import { isMissingCli, type ExecAgent, type ExecDeps, type ExecRequest, type ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
@@ -57,8 +57,7 @@ export const DEFAULT_PREP_TIMEOUT_MS = 10_000
 const AGENT_NAMES: Record<ExecAgent, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
 /** Shown when the chosen agent's CLI is not installed. */
 export const agentMissingMessage = (agent: ExecAgent): string => `${AGENT_NAMES[agent]} isn't installed. Choose another agent in Settings › Lumopolis.`
-/** True when a failed run says the agent's program could not be found. */
-export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
+export { isMissingCli }
 
 /** An error a primer throws to say the memory could not be used, and why (WPA: the answer then says so). */
 // 'timeout': one memory call ran out of time inside the primer (WPA fix I2), as the whole step running out is.

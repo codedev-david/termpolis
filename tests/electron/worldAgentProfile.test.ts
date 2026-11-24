@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runHeadless, PROMPT_TOKEN, type ExecAgent, type ExecDeps } from '../../src/main/headlessExec'
 import { clearIsolationChecks, defaultIsolationIO, prepareIsolatedLaunch, type IsolationIO } from '../../src/main/readOnlyIsolation'
 import { LUMOPOLIS_RUN, lumopolisClaudeExec } from '../../src/main/world/agentProfile'
-import { createAskRunner } from '../../src/main/world/askRunner'
+import { agentMissingMessage, createAskRunner } from '../../src/main/world/askRunner'
 import { createDesigner } from '../../src/main/world/designer'
 import { makeWorldLlm } from '../../src/main/world/label'
 import { createSourceRegistry } from '../../src/main/world/sources'
@@ -51,12 +51,18 @@ type DeliverOpts = { env?: Record<string, string>; signal?: AbortSignal }
 
 /** Real runHeadless deps with a recording deliver that answers the MCP list check as an isolated CLI
  *  does; the agy home is checked while the run is live. `run` stands in for the agent's own run. */
-function liveDeps(run: (opts: DeliverOpts) => Promise<{ stdout: string; stderr: string; code: number }> = async () => ({ stdout: 'answer', stderr: '', code: 0 })): {
+type Delivered = { stdout: string; stderr: string; code: number }
+const listedOff = (bin: string): Delivered => ({ stdout: bin === 'agy' ? 'No MCP servers configured.\n' : '[{"name":"docs","enabled":false}]', stderr: '', code: 0 })
+
+function liveDeps(
+  run: (opts: DeliverOpts) => Promise<Delivered> = async () => ({ stdout: 'answer', stderr: '', code: 0 }),
+  mcp: (bin: string) => Delivered = listedOff,
+): {
   deps: ExecDeps; deliver: ReturnType<typeof vi.fn>; homesSeen: string[][]
 } {
   const homesSeen: string[][] = []
   const deliver = vi.fn(async (bin: string, args: string[], _prompt: string, _token: string, opts: DeliverOpts) => {
-    if (args[0] === 'mcp') return { stdout: bin === 'agy' ? 'No MCP servers configured.\n' : '[{"name":"docs","enabled":false}]', stderr: '', code: 0 }
+    if (args[0] === 'mcp') return mcp(bin)
     if (opts.env?.HOME) homesSeen.push(await readdir(join(opts.env.HOME, '.gemini', 'antigravity-cli')))
     return run(opts)
   })
@@ -155,6 +161,22 @@ describe('the Lumopolis launch profile', () => {
       // The reply is not a design; the launch is what is checked here.
       await designer.draft('A shop that takes orders').catch(() => undefined)
       await checkLaunch(agent, join(base, 'designs', 'id1'), 90, deliver, homesSeen)
+    })
+  }
+
+  for (const agent of ['codex', 'gemini'] as const) {
+    it(`an Ask on ${agent} when its CLI isn't installed says so, starts nothing more and leaves no home behind`, async () => {
+      const { deps, deliver } = liveDeps(undefined, (bin) => ({ stdout: '', stderr: `spawn ${bin} ENOENT`, code: 1 }))
+      const runner = createAskRunner({
+        exec: runHeadless, execDeps: deps,
+        client: { get: async () => DOC, read: async () => ({ items: [], evidence: [] }) } as never,
+        agent: () => agent, runEnv, primer: async () => null, log: () => undefined,
+      })
+      expect(await runner.ask({ askId: 'a1', root, question: 'What is this?', selection: [], cameraRegion: [], summary: '' }))
+        .toEqual({ askId: 'a1', ok: false, error: agentMissingMessage(agent) })
+      expect(deliver).toHaveBeenCalledTimes(1)
+      expect(deliver.mock.calls[0][1].slice(0, 2)).toEqual(['mcp', 'list'])
+      expect(await readdir(tmp)).toEqual([])
     })
   }
 

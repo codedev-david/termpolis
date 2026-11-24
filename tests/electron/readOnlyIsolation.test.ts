@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AGY_NO_MCP_SERVERS, AGY_READ_ONLY_SETTINGS, CLAUDE_ISOLATE_ARGS, CODEX_MCP_OFF_COMMAND, CODEX_MCP_OFF_URL, CODEX_MCP_SERVER_OFF,
   CODEX_NO_CONNECTORS_ARGS, ISOLATION_SETUP_FAILED, MAX_CODEX_CONFIG_BYTES, MCP_LIST_PASS_MS, MCP_LIST_TIMEOUT_MS, READ_ONLY_RUN_ENV,
-  agyMcpListEmpty, clearIsolationChecks, codexMcpListAllOff, defaultIsolationIO, prepareIsolatedLaunch, removeDirRetrying,
+  agyMcpListEmpty, clearIsolationChecks, codexLayerPaths, codexMcpListAllOff, defaultIsolationIO, prepareIsolatedLaunch, removeDirRetrying,
   sweepStaleAgyHomes, type IsolationIO, type McpListRun, type SweepIO,
 } from '../../src/main/readOnlyIsolation'
 import { CODEX_ISOLATE_MCP_ARGS } from '../../src/main/secondOpinion'
@@ -291,6 +291,37 @@ describe('prepareIsolatedLaunch for Codex', () => {
   })
 })
 
+describe('codexLayerPaths', () => {
+  it('names the machine-wide, managed and plugin layers for each OS', () => {
+    const tail = (h: string): string[] => [join(h, 'managed_config.toml'), join(h, 'plugins'), join(h, 'plugins', 'cache')]
+    const win = (dir: string): string[] => ['config.toml', 'requirements.toml', 'managed_config.toml'].map((f) => `${dir}\\${f}`)
+    expect(codexLayerPaths('h', { platform: 'win32', env: { ProgramData: 'D:\\PD' } })).toEqual([...win('D:\\PD\\OpenAI\\Codex'), ...tail('h')])
+    expect(codexLayerPaths('h', { platform: 'win32', env: { PROGRAMDATA: 'E:\\PD' } })).toEqual([...win('E:\\PD\\OpenAI\\Codex'), ...tail('h')])
+    expect(codexLayerPaths('h', { platform: 'win32', env: {} })).toEqual([...win('C:\\ProgramData\\OpenAI\\Codex'), ...tail('h')])
+    const etc = ['/etc/codex/config.toml', '/etc/codex/requirements.toml', '/etc/codex/managed_config.toml']
+    expect(codexLayerPaths('h', { platform: 'linux', env: {} })).toEqual([...etc, ...tail('h')])
+    expect(codexLayerPaths('h', { platform: 'darwin', env: {} })).toEqual([...etc, '/Library/Managed Preferences/com.openai.codex.plist', ...tail('h')])
+  })
+
+  it('a change to a layer the parser doesn\'t read runs the check again inside the 60 s', async () => {
+    await userConfig('[mcp_servers.docs]\ncommand = "d"\n')
+    const stamps: Record<string, string> = {}
+    const stamp = vi.fn(async (p: string) => stamps[p] ?? 'absent')
+    const io = { ...realIO(), stamp }
+    const run = passing()
+    await prepareIsolatedLaunch('codex', project, {}, run, io)
+    const layers = codexLayerPaths(join(home, '.codex'), io)
+    expect(stamp.mock.calls.map((c) => c[0])).toEqual(layers)
+    await prepareIsolatedLaunch('codex', project, {}, run, io)
+    expect(run).toHaveBeenCalledTimes(1)
+    for (const [i, p] of layers.entries()) {
+      stamps[p] = `1:${i}`
+      await prepareIsolatedLaunch('codex', project, {}, run, io)
+      expect(run).toHaveBeenCalledTimes(i + 2)
+    }
+  })
+})
+
 describe('prepareIsolatedLaunch for agy', () => {
   it('gives the run a home of its own holding only the deny rules, checks it lists no server, removes it after, and never touches the real one', async () => {
     await mkdir(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
@@ -379,6 +410,43 @@ describe('defaultIsolationIO', () => {
     expect(await defaultIsolationIO.readText(p, { noFollow: true })).toBe('model = "x"\n')
     expect(await defaultIsolationIO.readText(join(base, 'missing.toml'))).toBeNull()
     await expect(defaultIsolationIO.readText(join(base, 'bad\0name'))).rejects.toThrow()
+  })
+
+  it('readText with noFollow refuses a link or a folder without opening it, and a missing file is null', async () => {
+    const open = vi.spyOn(fsp, 'open')
+    await symlink(tmp, join(base, 'l'), 'junction')
+    await expect(defaultIsolationIO.readText(join(base, 'l'), { noFollow: true })).rejects.toThrow('is not a regular file')
+    await expect(defaultIsolationIO.readText(tmp, { noFollow: true })).rejects.toThrow('is not a regular file')
+    expect(await defaultIsolationIO.readText(join(base, 'none'), { noFollow: true })).toBeNull()
+    expect(open).not.toHaveBeenCalled()
+    vi.spyOn(fsp, 'lstat').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    await expect(defaultIsolationIO.readText(join(base, 'x'), { noFollow: true })).rejects.toThrow('denied')
+  })
+
+  it('readText with noFollow refuses a file swapped after it was checked: the opened file must be the one looked at', async () => {
+    const p = join(base, 'c.toml')
+    await writeFile(p, 'model = "x"\n')
+    const real = await fsp.lstat(p, { bigint: true })
+    const swapped = { isFile: () => true, dev: real.dev, ino: real.ino + 1n }
+    vi.spyOn(fsp, 'lstat').mockResolvedValueOnce(swapped as never)
+    await expect(defaultIsolationIO.readText(p, { noFollow: true })).rejects.toThrow(`${p} changed while it was opened`)
+    vi.spyOn(fsp, 'lstat').mockResolvedValueOnce({ ...swapped, ino: real.ino, dev: real.dev + 1n } as never)
+    await expect(defaultIsolationIO.readText(p, { noFollow: true })).rejects.toThrow('changed while it was opened')
+    // Gone between the look and the open: null, as a missing file is.
+    vi.spyOn(fsp, 'lstat').mockResolvedValueOnce(swapped as never)
+    expect(await defaultIsolationIO.readText(join(base, 'gone.toml'), { noFollow: true })).toBeNull()
+  })
+
+  it('stamp gives size and time, absent for nothing there, and never throws', async () => {
+    const f = join(base, 'f')
+    await writeFile(f, 'abc')
+    const st = await stat(f)
+    expect(await defaultIsolationIO.stamp(f)).toBe(`3:${st.mtimeMs}`)
+    expect(await defaultIsolationIO.stamp(tmp)).toMatch(/^\d+:[\d.]+$/)
+    expect(await defaultIsolationIO.stamp(join(base, 'none'))).toBe('absent')
+    expect(await defaultIsolationIO.stamp(join(f, 'under-a-file'))).toBe('absent')
+    vi.spyOn(fsp, 'stat').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    expect(await defaultIsolationIO.stamp(f)).toBe('unreadable:EACCES')
   })
 
   it('readText refuses a file over the cap without reading it', async () => {
