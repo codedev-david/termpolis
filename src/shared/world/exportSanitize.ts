@@ -346,6 +346,19 @@ function decodeUrls(s: string, ctx: SanitizeContext): string {
   return s.replace(re, (m: string, base: string, rest: string) => (base.includes('%') || /^%(?:2F|5C)/i.test(rest) ? redact(unescapeUrl(m)) : m))
 }
 
+/**
+ * What follows a shell prompt's `account@host`: a colon and a path (bash, `ann@laptop:~/repo$`), Git Bash's MSYS
+ * system name (`ann@LAPTOP MINGW64 ~`), or a folder and the prompt's sign (zsh, `ann@laptop repo %`; bracketed,
+ * `[ann@laptop repo]$`).
+ */
+const PROMPT_AFTER = `(?=:(?:[~/]|[a-z]:)|\\s+(?:MINGW|MSYS|UCRT|CLANG|CYGWIN)\\w*(?![^\\s])|\\s+[^\\s\\]]+(?:\\]|\\s+)[$#%>](?![^\\s]))`
+
+/** A shell prompt's `account@host` naming the account of the home folder of `ctx`; null when home names none. */
+function promptPattern(ctx: SanitizeContext): RegExp | null {
+  const account = baseName(norm(ctx.home).split('/'))
+  return account ? new RegExp(`(?<![\\w.+-])${escapeRe(account)}@[\\w-]+(?:\\.[\\w-]+)*${PROMPT_AFTER}`, 'gi') : null
+}
+
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */
 const redact = (text: string): string => redactSecrets(text).replace(/<redacted(?:-[a-z]+)?>/g, '[redacted]')
 
@@ -392,8 +405,11 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
     const end = (a[a.length - 2] as number) + m.length
     return gluedBase(base, a.slice(1, -2) as string[], t.slice(end)) ?? m
   }), text)
+  // A shell prompt naming this machine's account shows neither the account nor the host.
+  const prompt = promptPattern(ctx)
+  const unprompt = (text: string): string => (prompt ? text.replace(prompt, OUTSIDE) : text)
   // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
-  return (text) => unglue(decodeUrls(redact(text), ctx)).replace(known, knownHit).replace(revealing, revealingHit)
+  return (text) => unglue(decodeUrls(unprompt(redact(text)), ctx)).replace(known, knownHit).replace(revealing, revealingHit)
 }
 
 /**

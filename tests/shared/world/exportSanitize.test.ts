@@ -1001,4 +1001,33 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(relativePath('src/a%2Fb.ts', posix)).toBe('src/a%2Fb.ts')
     expect(relativePath('%2F:%2FUsers%2Fdev%2Fx', win)).toBe(`${OUTSIDE}/x`)
   })
+
+  it("writes a shell prompt's account@host as outside the project when the account is this machine's", () => {
+    const mac: SanitizeContext = { root: '/Users/dev/repo', home: '/Users/dev', userData: '/Users/dev/Library/Application Support/Termpolis' }
+    const text: Array<[SanitizeContext, string, string]> = [
+      [posix, 'dev@laptop:~/repo npm test', `${OUTSIDE}:. npm test`],
+      [posix, 'dev@laptop:~$ ls', `${OUTSIDE}:~$ ls`],
+      [posix, '(venv) dev@laptop:/home/dev/repo$ ls', `(venv) ${OUTSIDE}:.$ ls`],
+      [posix, 'DEV@Laptop.local:~/repo', `${OUTSIDE}:.`],
+      [posix, '[dev@laptop repo]$ ls', `[${OUTSIDE} repo]$ ls`],
+      [posix, 'dev@laptop ~/repo % ls', `${OUTSIDE} . % ls`],
+      [mac, 'dev@MacBook-Pro repo % ls', `${OUTSIDE} repo % ls`],
+      [mac, 'dev@MacBook-Pro ~ %', `${OUTSIDE} ~ %`],
+      [win, 'dev@LAPTOP MINGW64 ~/repo (main)', `${OUTSIDE} MINGW64 . (main)`],
+      [win, 'dev@LAPTOP MINGW64 /c/Users/dev/repo', `${OUTSIDE} MINGW64 .`],
+      [win, 'PS C:\\Users\\dev\\repo> npm test', 'PS .> npm test'],
+      [win, 'PS C:\\Users\\dev> dir', `PS ${OUTSIDE}> dir`],
+    ]
+    for (const [ctx, input, want] of text) {
+      const out = sanitizeText(input, ctx)
+      expect(out).toBe(want)
+      expect(out.toLowerCase()).not.toContain('dev')
+    }
+    // Another account's prompt, an e-mail address and a git remote keep their words.
+    for (const kept of ['ann@laptop:~$ ls', 'devon@laptop:~$ ls', 'xdev@laptop:~$ ls', 'mail dev@example.com now', 'git clone git@github.com:dev/repo.git', 'scp dev@host:dev/x .']) {
+      expect(sanitizeText(kept, posix)).toBe(kept)
+    }
+    // With no account name in the home folder there is nothing to take.
+    expect(sanitizeText('root@box:~$ ls', { root: null, home: '/', userData: '/x/Termpolis' })).toBe('root@box:~$ ls')
+  })
 })
