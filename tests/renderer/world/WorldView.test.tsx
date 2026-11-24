@@ -1724,7 +1724,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(viewer().setCamera).toHaveBeenLastCalledWith(cam, false)
   })
 
-  it('a drag, a click, the wheel, Esc or another selection during the flight leaves the camera where it is', async () => {
+  it('a drag, a click, the wheel, Esc, another selection or the 2D map during the flight leaves the camera where it is', async () => {
     localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Open b1', camera: cam, selection: ['b1'] }]))
     bridge()
     await mount()
@@ -1734,6 +1734,8 @@ describe('WorldView 2D map switch and bookmarks', () => {
       ['wheel', () => fireEvent.wheel(host)],
       ['Esc', () => esc()],
       ['another pick', () => viewer().getSelection.mockReturnValue(['b2'])],
+      // Last: the 2D map has no camera to restore into.
+      ['the 2D map', () => fireEvent.click(screen.getByTestId('world-map2d'))],
     ]
     for (const [, interrupt] of cut) {
       viewer().getSelection.mockReturnValue(['b1'])

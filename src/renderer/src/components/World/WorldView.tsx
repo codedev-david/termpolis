@@ -593,6 +593,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     armedRef.current = false
     fallbackIdRef.current = null
     setCard(null)
+    // A bookmark restore in flight is dropped too: the 2D map has no camera for its saved pose (T3).
+    cancelBookmark()
     // A tour or a flight under way stops here: paused, it would otherwise caption over the 2D map (T3).
     viewer?.cancelActions()
     setMap2d(on)
