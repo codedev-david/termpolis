@@ -902,4 +902,26 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     ]
     for (const [ctx, text] of beside) expect(sanitizeText(text, ctx)).toBe(`see ${OUTSIDE}/x now`)
   })
+
+  it("reads a known folder deeper inside a UNC path as that host's, so neither the host nor the share name shows", () => {
+    const cases: Array<[SanitizeContext, string]> = [
+      [posix, 'see \\\\host\\share\\home\\dev\\x now'],
+      [posix, 'see \\\\?\\UNC\\host\\home\\dev\\x now'],
+      [posix, 'see \\\\?\\UNC\\host\\share\\home\\dev\\x now'],
+      [posix, 'see \\\\host\\share/home/dev/x now'],
+      [win, 'see \\\\host\\share$\\Users\\dev\\x now'],
+      [win, 'see \\\\host\\share\\Users\\dev\\x now'],
+      [win, 'see \\\\?\\UNC\\host\\share$\\Users\\dev\\x now'],
+    ]
+    for (const [ctx, text] of cases) {
+      expect(sanitizeText(text, ctx)).toBe(`see ${OUTSIDE}/x now`)
+      // The same path JSON-escaped (the UNC pass keeps the escape's first backslash, as before).
+      const json = sanitizeText(`{"cwd":"${text.slice(4, -4).replace(/\\/g, '\\\\')}"}`, ctx)
+      expect(json).toBe(`{"cwd":"\\\\${OUTSIDE}/x"}`)
+    }
+    // A known folder right after the long-form prefix is still this machine's, and a URL is no UNC path.
+    expect(sanitizeText('see \\\\?\\home\\dev\\repo\\src\\a.ts now', posix)).toBe('see src/a.ts now')
+    expect(sanitizeText('see \\\\.\\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
+    expect(sanitizeText('see https://example.com/home/dev/x now', posix)).toBe(`see https://example.com${OUTSIDE}/x now`)
+  })
 })

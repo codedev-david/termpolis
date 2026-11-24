@@ -217,6 +217,12 @@ function onDrive(n: string, ctx: SanitizeContext): string {
 
 const SEP = '[\\\\/]+'
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+/**
+ * Somewhere inside a UNC path (`\\host\share\...`, `\\?\UNC\host\...`, either JSON-escaped): its double backslash
+ * starts the token, after the text's start or a character no path runs on with. A known folder found there is a
+ * folder on that host, left whole to the revealing pass, so neither the host nor the share name shows.
+ */
+const IN_UNC = `(?:^|[^\\w.:\\\\/$~%-])\\\\{2,}[^\\s\\\\/"'<>|][^\\s"'<>|]*`
 
 /**
  * A RegExp source (for the `i` flag) matching folder `base` however a text writes it: either slash, doubled
@@ -233,16 +239,16 @@ function baseSource(base: string): string {
     const bash = rest ? `|[\\\\/]+(?:cygdrive${SEP})?${drive[1]}` : ''
     // Rooted on the current drive, the drive left out (`\Users\ann`): not right after a drive letter, a share's `$`, a
     // name character or another slash, so `D:\Users\ann`, `\\host\D$\Users\ann` and `x\Users\ann` are not taken for
-    // it, while `..\Users\ann`, `a.ts:12:\Users\ann`, `cwd:\Users\ann`, `-\Users\ann` and `$\Users\ann` are. Only
-    // below the drive itself too.
-    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])|(?<![\\w\\\\/]|(?<!\\w)[a-z]:|[\\\\/]{2}[^\\s\\\\/"'<>|]+[\\\\/][a-z]\\$)` : ''
+    // it, while `..\Users\ann`, `a.ts:12:\Users\ann`, `cwd:\Users\ann`, `-\Users\ann` and `$\Users\ann` are. Nor
+    // anywhere inside a UNC path (`\\host\share$\Users\ann`). Only below the drive itself too.
+    const bare = rest ? `|[\\\\/]{2}[?.](?=[\\\\/])|(?<![\\w\\\\/]|(?<!\\w)[a-z]:|[\\\\/]{2}[^\\s\\\\/"'<>|]+[\\\\/][a-z]\\$|${IN_UNC})` : ''
     return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash}${bare})${rest}`
   }
   if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
   // A POSIX folder, also in the long form with no drive after the prefix (`\\?\home\ann`), and written with a
-  // backslash after anything (`..\home\ann`, `cwd:\home\ann`) but a host's name: in `\\host\home\ann` it is a
-  // folder on that host.
-  return `(?:[\\\\/]{2}[?.]|(?=/)|(?<![\\\\/]{2}[^\\s\\\\/"'<>|]+))` + parts.map(escapeRe).join(SEP)
+  // backslash after anything (`..\home\ann`, `cwd:\home\ann`) but a host's name: in `\\host\home\ann`, and anywhere
+  // else inside a UNC path (`\\host\share\home\ann`), it is a folder on that host.
+  return `(?:[\\\\/]{2}[?.]|(?<!${IN_UNC})(?=/)|(?<![\\\\/]{2}[^\\s\\\\/"'<>|]+|${IN_UNC}))` + parts.map(escapeRe).join(SEP)
 }
 
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */
