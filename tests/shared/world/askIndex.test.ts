@@ -480,6 +480,13 @@ describe('names in every script', () => {
     expect(rankAsk(world, { smart, keyword: bm25Scores(ix, q), named: nameFit(world, q) })[0].id).toBe(id)
   })
 
+  it.each([
+    ['what does 数据库 keep?', 'zh'], ['who answers Привет?', 'ru'], ['how is the ПРИВЕТ part tested', 'ru'],
+    ['what is on the café menu', 'cafe'], [`open ${NFD_CAFE.toUpperCase()} please`, 'cafe']
+  ])('finds a CJK, Cyrillic or accented name asked inside an English question: %j', (q, id) => {
+    expect(rankAsk(world, { keyword: bm25Scores(ix, q), named: nameFit(world, q) })[0].id).toBe(id)
+  })
+
   it('finds a non-Latin word inside a part text by keyword', () => {
     expect(rankAsk(world, { keyword: bm25Scores(ix, 'הבקשות'), named: nameFit(world, 'הבקשות') }).map((h) => h.id)).toEqual(['he'])
     expect(rankAsk(world, { keyword: bm25Scores(ix, 'клиенту'), named: nameFit(world, 'клиенту') }).map((h) => h.id)).toEqual(['ru'])
