@@ -2843,6 +2843,7 @@ const worldClient = createWorldClient(undefined, {
     const key = graphKeyForRoot(root)
     // graphSnapshot reads the in-memory graph only: no file or database access on this path.
     const snap = graphSnapshot(key, root, { structureOnly: true })
+    probe(`world snapshot graph files=${snap.files.length} root=${root.slice(-40)}`)
     if (snap.files.length > 0) return snap
     const built = await worldClient.snapshotFromFiles(root)
     void worldClient.whenCompiled(root).then(() => indexInBackground(root))
