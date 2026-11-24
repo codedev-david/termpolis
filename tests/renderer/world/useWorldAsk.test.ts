@@ -453,6 +453,42 @@ describe('useWorldAsk reveal', () => {
     expect(v.play).toHaveBeenCalledTimes(1)
   })
 
+  it('the viewer going mid-reveal (lost graphics, the 2D map) stops its steps and shows the rest of the text (M2)', async () => {
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ on }) => useWorldAsk(on as never, 'r'), { initialProps: { on: v as unknown } })
+    await act(async () => { result.current.ask('q') })
+    expect(v.play).toHaveBeenCalledTimes(1)
+    expect(result.current.playing).toBe(true)
+    rerender({ on: null })
+    expect(result.current.playing).toBe(false)
+    expect(result.current.revealed).toBe(3)
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+    // back again: nothing restarts by itself, and the same viewer is no change
+    rerender({ on: v })
+    rerender({ on: v })
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+    expect(result.current.revealed).toBe(3)
+  })
+
+  it('an answer that comes back after its viewer went shows whole and plays nothing on it (M2)', async () => {
+    const v = makeViewer()
+    let answer: (r: Res) => void = () => undefined
+    ask.mockImplementationOnce(() => new Promise<Res>((res) => { answer = res }))
+    const { result, rerender } = renderHook(({ on }) => useWorldAsk(on as never, 'r'), { initialProps: { on: v as unknown } })
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.state).toBe('thinking')
+    rerender({ on: null })
+    await act(async () => { answer(revealing((ask.mock.calls[ask.mock.calls.length - 1][0] as AskRequest).askId)) })
+    expect(result.current.state).toBe('answered')
+    expect(result.current.revealed).toBe(3)
+    expect(result.current.playing).toBe(false)
+    await tick(5000)
+    expect(v.play).not.toHaveBeenCalled()
+    expect(v.apply).not.toHaveBeenCalled()
+  })
+
   it('unmounting and dismissing clear the reveal', async () => {
     const v = makeViewer()
     const a = renderHook(() => useWorldAsk(v as never, 'r'))

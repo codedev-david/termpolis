@@ -212,9 +212,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         setCited(r.cited)
         setNoMemory(r.noMemory ?? null)
         setState('answered')
-        // The viewer as it is now: none (the 2D view) shows the answer whole, with no tour (U6).
-        const now = viewerRef.current
-        if (now) reveal(now, r.answer)
+        // The viewer as it is now: an answer plays only on the viewer it was asked from; none (the 2D view), or a
+        // viewer that went while the question was out, shows the answer whole with nothing played (U6, M2).
+        if (viewerRef.current === v) reveal(v, r.answer)
         else setRevealed(r.answer.sentences.length)
       } catch {
         fail(ASK_UNREACHABLE)

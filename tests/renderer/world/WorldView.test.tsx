@@ -2461,6 +2461,40 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     expect(h.viewers).toHaveLength(1)
   })
 
+  it('a loss stops what plays and takes the 3D card; a 2D card opened meanwhile goes on the restore (M2)', async () => {
+    bridge()
+    await mount()
+    const v = viewer()
+    act(() => v.opts.renderCard('<p class="tour-caption">The app talks</p>'))
+    expect(screen.getByTestId('world-card')).toHaveTextContent('The app talks')
+    act(() => { v.opts.onGraphics('lost') })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    act(() => { v.opts.onGraphics('restored') })
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(localStorage.getItem('termpolis.world.map2d')).toBeNull() // the switch's own setting is untouched
+  })
+
+  it('with the 2D switch on, a loss and restore keep the 2D card (no 3D map was on show)', async () => {
+    bridge()
+    await mount()
+    const v = viewer()
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    v.cancelActions.mockClear() // the switch to 2D cancelled once already (T3); the loss's own cancel is counted alone
+    act(() => { v.opts.onGraphics('lost') })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    expect(screen.getByTestId('world-map2d')).toHaveAttribute('aria-checked', 'true')
+    act(() => { v.opts.onGraphics('restored') })
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    expect(screen.getByTestId('world-map2d')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('world-map2d')).not.toBeDisabled()
+  })
+
   it('WebGL missing at the start is looked for again when the window comes back, and the 3D map then loads the world', async () => {
     h.webgl = false
     bridge()

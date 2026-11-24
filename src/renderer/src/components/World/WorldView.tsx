@@ -158,6 +158,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [shown, setShown] = useState(true)
   useEffect(() => window.windowControls?.onShown?.(setShown), [])
   const [map2d, setMap2d] = useState(readMap2d)
+  const map2dRef = useRef(map2d)
+  map2dRef.current = map2d
   /**
    * The 3D map's graphics stopped and have not come back yet (the first loss): the 2D map shows meanwhile, so a context
    * that never comes back never leaves a blank map, and the 3D map returns by itself when they do.
@@ -539,8 +541,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       },
       // A lost WebGL context: the first is waited out on the 2D map, the second leaves the 2D map for good.
       onGraphics: (g) => {
-        if (g === 'lost') { setNotice(GRAPHICS_LOST); setGlPaused(true) }
-        else if (g === 'restored') { setNotice((n) => (n === GRAPHICS_LOST ? null : n)); setGlPaused(false) }
+        if (g === 'lost') {
+          // What plays on the 3D map stops (a tour, an answer's steps); with the 3D map on show its card goes too, as
+          // a switch to the 2D map takes it.
+          v.cancelActions()
+          if (!map2dRef.current) { armedRef.current = false; fallbackIdRef.current = null; setCard(null) }
+          setNotice(GRAPHICS_LOST)
+          setGlPaused(true)
+        } else if (g === 'restored') {
+          // A card opened on the 2D map meanwhile has no 3D selection under it: it goes, as a switch back to 3D takes it.
+          if (!map2dRef.current) { fallbackIdRef.current = null; setCard(null) }
+          setNotice((n) => (n === GRAPHICS_LOST ? null : n))
+          setGlPaused(false)
+        }
         else { setNotice(GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
       },
     })
