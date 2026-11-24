@@ -15,6 +15,7 @@ vi.mock('electron', () => ({
 
 import {
   handleMessage, handleCancel, argsWithSignal, CANCELLABLE_READS, LANE_FREE_CALLS, HOST_HANDLERS, _resetHostForTests, _setHostLoweredForTests, _hostLaneForTests,
+  embedsOffThread,
   type HostRequest, type HostResponse,
 } from '../../src/main/memoryHost'
 import {
@@ -26,6 +27,7 @@ import {
 } from '../../src/main/swarmMemory'
 import { __setHostPriorityDepsForTests } from '../../src/main/hostPriority'
 import { LANE_LINGER_MS, BACKGROUND_MAX_WAIT_MS } from '../../src/main/hostLane'
+import { inBackgroundEmbeds } from '../../src/main/localEmbedder'
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
 
@@ -181,6 +183,38 @@ describe('memory host: the interactive lane', () => {
       g.open()
       await fast
     } finally { vi.useRealTimers() }
+  })
+
+  it('a background call embeds off the host thread (the embedding worker); an interactive call, a single write and an agent read embed on it (world-responsive t3)', async () => {
+    await initHost()
+    const seen: Array<[string, boolean]> = []
+    let tag = ''
+    _setEmbedFnForTests(async () => { seen.push([tag, inBackgroundEmbeds()]); await tick(); seen.push([tag + ' after an await', inBackgroundEmbeds()]); return null })
+    tag = 'ingest write'
+    expect((await call(1, 'memoryWrite', [{ agentId: 'a', kind: 'fact', content: 'ingest passage one' }], 'background'))?.kind).toBe('result')
+    tag = 'single write'
+    expect((await call(2, 'memoryWrite', [{ agentId: 'a', kind: 'fact', content: 'a note an agent saves' }]))?.kind).toBe('result')
+    tag = 'ask search'
+    expect((await call(3, 'memorySearch', [{ query: 'passage', limit: 5 }], 'interactive'))?.kind).toBe('result')
+    tag = 'agent search'
+    expect((await call(4, 'memorySearch', [{ query: 'note', limit: 5 }]))?.kind).toBe('result')
+    expect(seen).toEqual([
+      ['ingest write', true], ['ingest write after an await', true],
+      ['single write', false], ['single write after an await', false],
+      ['ask search', false], ['ask search after an await', false],
+      ['agent search', false], ['agent search after an await', false],
+    ])
+    expect(inBackgroundEmbeds()).toBe(false)
+  })
+
+  it('embedsOffThread: the background lane always, a bulk call with no lane, never a read with no lane, a lane-free call or an interactive one', () => {
+    expect(embedsOffThread({ fn: 'memoryWrite', lane: 'background' })).toBe(true)
+    expect(embedsOffThread({ fn: 'memorySearch', lane: 'background' })).toBe(true)
+    expect(embedsOffThread({ fn: 'weaveCandidates' })).toBe(true)
+    expect(embedsOffThread({ fn: 'memorySearch' })).toBe(false)
+    expect(embedsOffThread({ fn: 'memoryWrite' })).toBe(false)
+    expect(embedsOffThread({ fn: 'memoryWrite', lane: 'interactive' })).toBe(false)
+    expect(embedsOffThread({ fn: 'weaveCandidates', lane: 'interactive' })).toBe(false)
   })
 
   it("a background write is not let in between the Ask's reads: it waits through the linger after the search, so the listing runs first (world-responsive t3)", async () => {
