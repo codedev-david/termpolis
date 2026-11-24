@@ -28,7 +28,7 @@ import { BUILDINGS_PER_BATCH, codeLabels, labelWorld, type BuildingLabel, type E
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
-import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
+import { readTestSources, RUNS_GRACE_MS, RUNS_WAIT_MS, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache, type StageFile } from './stageCache'
 import { cappedReads, eachLimit, READ_CONCURRENCY } from './readCap'
 
@@ -44,9 +44,10 @@ export interface CompileDeps {
   glob: (root: string, patterns: string[], opts: { signal: AbortSignal }) => Promise<string[]>
   label: LabelDeps
   now: () => number
-  transcriptRuns?: () => Promise<TestRun[]>
-  /** The newest CI conclusion as runs; each run's file is a file the commit changed (compile links it to the tests of that file). Absent: none. */
-  ciRuns?: () => Promise<TestRun[]>
+  /** Test runs from the agents' transcripts; null: main did not answer in time, so not known. Absent: none. */
+  transcriptRuns?: () => Promise<TestRun[] | null>
+  /** The newest CI conclusion as runs; each run's file is a file the commit changed (compile links it to the tests of that file); null: not known in time. Absent: none. */
+  ciRuns?: () => Promise<TestRun[] | null>
   /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
   annotations?: () => Promise<Record<string, Claim[]>>
   /** Copies the saved annotations of renamed parts (old id → new id) to their new ids, the old ids keeping theirs (idMigration.ts,
@@ -86,19 +87,22 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
   Watcher: 'Watches files and reacts when they change'
 }
 
-/** While a stage waits (test results, the label pass, the manifests), progress moves one point this often, so the
+/** While a stage waits (test results, the label pass, the manifests), progress moves this often, so the
  *  pane never sits at one value while it waits. */
 export const STATUS_BEAT_MS = 2000
 /**
- * How long a compile waits, from its start, for its searches of the tree (test reports, manifests) and for main's
- * transcript and CI runs. Past it the compile goes on without what has not come (no test status from it), and the
- * walks are told to stop. A beat every STATUS_BEAT_MS then moves the status stage at most 8 points (55 to 63), so
- * it never sits at a ceiling while it waits (fix round 2, R2).
+ * How long a compile waits, from its start, for its searches of the tree (test reports, manifests). Past it the
+ * compile goes on with what they found by then, and the walks are told to stop. Main's transcript and CI runs keep
+ * their own, longer clock (testStatus.ts RUNS_WAIT_MS + RUNS_GRACE_MS), so a slow `gh` costs only its own answer and
+ * never the reports already read (fix round 3, N2).
  */
 export const SEARCH_TIME_MS = 16_000
 /** A stage that takes this long is named, with every stage's time, in one log line as the compile ends. */
 export const SLOW_STAGE_MS = 5000
 const STATUS_BEAT_TOP = 63
+/** What one status beat adds: the 8 points from 55 to 63 spread over the longest the status stage can wait (main's
+ *  asks, which start with the compile), so the bar keeps moving to the end of that wait and never sits at 63. */
+const STATUS_BEAT_STEP = ((STATUS_BEAT_TOP - 55) * STATUS_BEAT_MS) / (RUNS_WAIT_MS + RUNS_GRACE_MS)
 const LABEL_BEAT_TOP = 84
 const MANIFEST_BEAT_TOP = 94
 /** Places one "Seen in code" claim cites at most. */
@@ -717,7 +721,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
 function logSlow(projectKey: string, stages: Array<[CompileStage, number]>, end: number, ranOut: boolean): void {
   const spent = stages.map(([stage, at], i): [CompileStage, number] => [stage, (i + 1 < stages.length ? stages[i + 1][1] : end) - at])
   if (!ranOut && !spent.some(([, ms]) => ms >= SLOW_STAGE_MS)) return
-  const why = ranOut ? `; the searches ran out of time after ${SEARCH_TIME_MS} ms` : ''
+  const why = ranOut ? `; a search or a source of test results ran out of time (searches ${SEARCH_TIME_MS} ms, main's runs ${RUNS_WAIT_MS} ms)` : ''
   console.warn(`[world compile] ${projectKey}: ${spent.map(([stage, ms]) => `${stage} ${ms} ms`).join(', ')}${why}`)
 }
 
@@ -743,7 +747,8 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   // Slow reads of the whole tree start now, so they overlap the file reads rather than wait behind them.
   const manifestsFound = within(Promise.resolve().then(() => deps.glob(root, MANIFEST_PATTERNS, { signal })).catch((): string[] => []))
-  const runsFound = within(readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }, signal))
+  // Not raced with the window: each source keeps its own clock and what it found by then (testStatus.ts, N2).
+  const runsFound = readTestSources(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }, signal)
   // More files than a map reads: all are parts of the world, only the capped set is read (readCap.ts).
   const traced = cappedReads(files)
   const reads = (f: string): boolean => traced === null || traced.has(f)
@@ -807,24 +812,33 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
 
   progress('status', 55)
   const [listed, found] = await beating(Promise.all([manifestsFound, runsFound]),
-    (n) => progress('status', Math.min(STATUS_BEAT_TOP, 55 + n)))
-  if (found === null) ranOut = true
+    (n) => progress('status', Math.min(STATUS_BEAT_TOP, round2(55 + n * STATUS_BEAT_STEP))))
+  if (!found.complete) ranOut = true
   const manifests = listed ?? []
   const testsByMember = linkTests(snap, g, manifests)
-  const runs = expandCi(found ?? [], testsByMember)
-  const tests = contentHash(JSON.stringify([
+  const runs = expandCi(found.runs, testsByMember)
+  // A partial set of results is never taken for the whole one: no hash, so the next compile judges every building.
+  const tests = found.complete ? contentHash(JSON.stringify([
     Object.entries(testsByMember).sort(([a], [b]) => cmp(a, b)),
     runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort()
-  ]))
+  ])) : ''
   const cache: StageCache = { version: STAGE_CACHE_VERSION, files: Object.fromEntries(entries), structureHash, grouping: g, tests }
   // An untouched building keeps its status and claims when grouping, test links and results are reused.
-  const statusScoped = reused && previous !== null && changed !== undefined && (prior as StageCache).tests === tests
+  const statusScoped = found.complete && reused && previous !== null && changed !== undefined && (prior as StageCache).tests === tests
   const restatus = statusScoped ? new Set(touchedBuildings(g, previous as WorldDoc, changed as string[]).map((b) => b.id)) : null
   const prevStatus = new Map((previous?.buildings ?? []).map((b) => [b.id, b]))
+  const statusKept = (p: Building): Pick<Building, 'status' | 'claims'> => ({ status: p.status, claims: p.claims.filter((c) => !c.evidence.some((e) => e.kind === 'person')) })
   const statusOf = (b: GroupBuilding): Pick<Building, 'status' | 'claims'> => {
     const p = restatus && !restatus.has(b.id) ? prevStatus.get(b.id) : undefined
-    if (p) return { status: p.status, claims: p.claims.filter((c) => !c.evidence.some((e) => e.kind === 'person')) }
-    return { status: statusFor(b.members, runs, testsByMember), claims: testClaims(b.members, runs, testsByMember) }
+    if (p) return statusKept(p)
+    const claims = testClaims(b.members, runs, testsByMember)
+    // No result for it, and a source did not answer in time: what it showed before stands, and a building with no
+    // past reads as not yet checked ('built'), never as untested ('gap'), which nothing read can say (fix round 3, N2).
+    if (claims.length === 0 && !found.complete) {
+      const was = prevStatus.get(b.id)
+      return was ? statusKept(was) : { status: 'built', claims: [] }
+    }
+    return { status: statusFor(b.members, runs, testsByMember), claims }
   }
 
   progress('status', 64)

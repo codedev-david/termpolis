@@ -6,7 +6,7 @@ import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { compileWorldStaged, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
-import type { TestRun } from '../../src/main/world/testStatus'
+import { RUNS_GRACE_MS, RUNS_WAIT_MS, type TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
 
@@ -255,7 +255,8 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(d.pcts.filter(([s]) => s === 'boundaries').map(([, p]) => p)).toEqual([5, 13, 22, 31, 40])
     expect(d.pcts[d.pcts.length - 1]).toEqual(['status', 55])
     await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
-    expect(d.pcts.slice(-3)).toEqual([['status', 56], ['status', 57], ['status', 58]])
+    // A fraction of a point a beat: the 8 points to 63 last as long as the longest wait for main's runs.
+    expect(d.pcts.slice(-3)).toEqual([['status', 55.73], ['status', 56.45], ['status', 57.18]])
     release([])
     await vi.advanceTimersByTimeAsync(10)
     await running
@@ -270,7 +271,7 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(d.pcts).toHaveLength(n)
   })
 
-  it('the test-results search is bounded: at SEARCH_TIME_MS its walks are told to stop and the compile goes on without what it lacks (fix round 2, R2)', async () => {
+  it('the test-results search is bounded: at SEARCH_TIME_MS its walks are told to stop, main\'s asks keep their own clock, and a building with no result reads as not yet checked (fix round 3, N2)', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const signals: AbortSignal[] = []
@@ -295,10 +296,17 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(signals.some((s) => s.aborted)).toBe(false)
     await vi.advanceTimersByTimeAsync(20)
     expect(signals.every((s) => s.aborted)).toBe(true)
+    // Main's asks have their own clock, longer than the host's own wait for main (RUNS_WAIT_MS): still waited for.
+    expect(out).toBeNull()
+    await vi.advanceTimersByTimeAsync(RUNS_WAIT_MS + RUNS_GRACE_MS - SEARCH_TIME_MS - 40)
+    expect(out).toBeNull()
+    await vi.advanceTimersByTimeAsync(40)
     const done = out as unknown as Awaited<ReturnType<typeof compile>>
     expect(done).not.toBeNull()
-    // No test results: every building is a gap, and the world is complete.
-    expect(done.doc.buildings.every((b) => b.status === 'gap')).toBe(true)
+    // No result read and no source complete: no building is called untested (gap); each reads as not yet checked,
+    // and the partial results leave no hash a later compile could take for the whole set.
+    expect(done.doc.buildings.every((b) => b.status === 'built' && b.claims.length === 0)).toBe(true)
+    expect(done.cache.tests).toBe('')
     expect(d.pcts[d.pcts.length - 1]).toEqual(['layout', 100])
     // While it waited, the bar moved at least every STATUS_BEAT_MS, and never past the status stage's 64.
     for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeLessThanOrEqual(STATUS_BEAT_MS)
@@ -306,10 +314,54 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(status[0]).toBe(55)
     expect(status[status.length - 1]).toBe(64)
     expect(Math.max(...status.slice(0, -1))).toBeLessThan(64)
-    // The log names the stage that waited, and says the search ran out of time.
+    // It never sat still: every beat of the wait is above the one before.
+    for (let i = 1; i < status.length; i++) expect(status[i]).toBeGreaterThan(status[i - 1])
+    // The log names the stage that waited, and says a source ran out of time.
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; the searches ran out of time after 16000 ms$/)
+    expect(String(warn.mock.calls[0][0])).toMatch(/^\[world compile\] k: .*status \d+ ms.*; a search or a source of test results ran out of time \(searches 16000 ms, main's runs 20000 ms\)$/)
     warn.mockRestore()
+  })
+
+  it('a late source keeps the reports already read; a building they say nothing of keeps its last status, or reads as not yet checked (fix round 3, N2)', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const files = [...Object.keys(TEXTS), 'src/lib/util.test.ts'].sort()
+    const report = JSON.stringify({ testResults: [{ name: `${ROOT}/src/lib/util.test.ts`, status: 'passed', endTime: 7 }] })
+    const reports = (): Partial<CompileDeps> => ({
+      glob: async (_root, patterns) => (patterns.some((p) => p.includes('vitest-report')) ? [`${ROOT}/vitest-report.json`] : []),
+      readFile: async (p) => (p.endsWith('vitest-report.json') ? report : null)
+    })
+    const never = () => new Promise<TestRun[]>(() => undefined)
+    const run = async (d: CompileDeps, extra: Record<string, unknown> = {}) => {
+      let out: Awaited<ReturnType<typeof compile>> | null = null
+      void compile(d, extra, snapOf(files)).then((o) => (out = o))
+      for (let i = 0; i < 40 && out === null; i++) await vi.advanceTimersByTimeAsync(1000)
+      return out as unknown as Awaited<ReturnType<typeof compile>>
+    }
+    const ownerOf = (doc: { buildings: { id: string; members: string[] }[] }, f: string) => doc.buildings.find((b) => b.members.includes(f)) as { id: string }
+    // Complete: the report decides the tested building, and one with no linked test is untested (gap).
+    const whole = await run(deps({ ...reports(), ciRuns: async () => [] }))
+    const tested = ownerOf(whole.doc, 'src/lib/util.ts').id
+    const other = ownerOf(whole.doc, 'src/app/main.ts').id
+    expect(tested).not.toBe(other)
+    const statusIn = (doc: typeof whole.doc, id: string) => doc.buildings.find((b) => b.id === id) as (typeof whole.doc.buildings)[number]
+    expect(statusIn(whole.doc, tested).status).toBe('verified')
+    expect(statusIn(whole.doc, other).status).toBe('gap')
+    // CI never answers: the report read is kept, and the building it says nothing of reads as not yet checked.
+    const late = await run(deps({ ...reports(), ciRuns: never }))
+    expect(statusIn(late.doc, tested)).toMatchObject({ status: 'verified', claims: statusIn(whole.doc, tested).claims })
+    expect(statusIn(late.doc, other)).toMatchObject({ status: 'built', claims: [] })
+    // With a previous world, that building keeps what it showed (its test claims, not a person's).
+    const seen = { text: 'Its 1 linked tests passed', state: 'verified' as const, evidence: [{ kind: 'test' as const, ref: 'src/app/main.test.ts', excerpt: 'from a test report' }] }
+    const person = { text: 'Checked by hand', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'me', excerpt: '' }] }
+    const previous = { ...whole.doc, buildings: whole.doc.buildings.map((b) => (b.id === other ? { ...b, status: 'verified' as const, claims: [seen, person] } : b)) }
+    const kept = await run(deps({ ...reports(), ciRuns: never }), { previous })
+    expect(statusIn(kept.doc, other)).toMatchObject({ status: 'verified', claims: [seen] })
+    expect(statusIn(kept.doc, tested).status).toBe('verified')
+    // A watcher compile on partial results judges every building again (no scoped status from a partial hash).
+    const scoped = await run(deps({ ...reports(), ciRuns: never }), { previous: kept.doc, cache: kept.cache, changed: [] })
+    expect(kept.cache.tests).toBe('')
+    expect(statusIn(scoped.doc, other)).toMatchObject({ status: 'verified', claims: [seen] })
   })
 
   it('every stage reports progress, and a slow label cache or manifest search keeps the bar moving; a slow stage is logged (fix round 2, R2)', async () => {

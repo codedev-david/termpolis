@@ -4,6 +4,9 @@ import {
   PATTERNS,
   parseTranscriptTestRuns,
   readTestResults,
+  readTestSources,
+  RUNS_GRACE_MS,
+  RUNS_WAIT_MS,
   statusFor,
   testClaims,
   testSourceExcerpt,
@@ -33,6 +36,64 @@ function deps(files: Record<string, string | null>, extra: Partial<Deps> = {}): 
     }
   }
 }
+
+describe('readTestSources: every source on its own clock (fix round 3, N2)', () => {
+  const report = JSON.stringify({ testResults: [{ name: '/repo/a.test.ts', status: 'passed' }] })
+  const run = (file: string, source: TestRun['source']): TestRun => ({ file, passed: true, at: 5, source })
+
+  it('every source answering is complete; one answer of null (main did not answer in time) is not, and costs only itself', async () => {
+    const all = deps({ '/repo/vitest-report.json': report }, { transcriptRuns: async () => [run('t.test.ts', 'transcript')], ciRuns: async () => [run('c.test.ts', 'ci')] })
+    expect(await readTestSources(ROOT, all.d)).toEqual({
+      runs: [{ file: 'a.test.ts', passed: true, at: 0, source: 'vitest' }, run('t.test.ts', 'transcript'), run('c.test.ts', 'ci')],
+      complete: true
+    })
+    const late = deps({ '/repo/vitest-report.json': report }, { transcriptRuns: async () => [run('t.test.ts', 'transcript')], ciRuns: async () => null })
+    expect(await readTestSources(ROOT, late.d)).toEqual({ runs: [{ file: 'a.test.ts', passed: true, at: 0, source: 'vitest' }, run('t.test.ts', 'transcript')], complete: false })
+    const quiet = deps({}, { transcriptRuns: async () => null })
+    expect(await readTestSources(ROOT, quiet.d)).toEqual({ runs: [], complete: false })
+    // No ask at all (a cloned repository) and an ask that fails are answers: none.
+    expect(await readTestSources(ROOT, deps({}).d)).toEqual({ runs: [], complete: true })
+    expect(await readTestSources(ROOT, deps({}, { ciRuns: () => Promise.reject(new Error('gh')) }).d)).toEqual({ runs: [], complete: true })
+  })
+
+  it('an ask that never answers stops counting at its own bound, which outlasts the host\'s wait for main', async () => {
+    expect(RUNS_WAIT_MS).toBe(20_000)
+    expect(RUNS_GRACE_MS).toBeGreaterThan(0)
+    const never = () => new Promise<TestRun[]>(() => undefined)
+    const t0 = Date.now()
+    const got = await readTestSources(ROOT, deps({ '/repo/vitest-report.json': report }, { ciRuns: never, transcriptRuns: async () => [run('t.test.ts', 'transcript')] }).d, undefined, 30)
+    expect(Date.now() - t0).toBeLessThan(5000)
+    expect(got).toEqual({ runs: [{ file: 'a.test.ts', passed: true, at: 0, source: 'vitest' }, run('t.test.ts', 'transcript')], complete: false })
+  })
+
+  it('a report read still going when the window ends keeps the reports read before it; an aborted window reads none', async () => {
+    const stop = new AbortController()
+    const d: Deps = {
+      readFile: (p: string) => {
+        if (p.endsWith('1.json')) return Promise.resolve(report)
+        stop.abort()
+        return new Promise<string | null>(() => undefined)
+      },
+      glob: async () => ['/repo/vitest-report-1.json', '/repo/vitest-report-2.json'],
+      ciRuns: async () => [run('c.test.ts', 'ci')]
+    }
+    expect(await readTestSources(ROOT, d, stop.signal)).toEqual({ runs: [{ file: 'a.test.ts', passed: true, at: 0, source: 'vitest' }, run('c.test.ts', 'ci')], complete: false })
+    const reads: string[] = []
+    const gone = deps({ '/repo/vitest-report.json': report }, {
+      readFile: async (p: string) => {
+        reads.push(p)
+        return report
+      }
+    })
+    expect(await readTestSources(ROOT, gone.d, AbortSignal.abort())).toEqual({ runs: [], complete: false })
+    expect(reads).toEqual([])
+    // A window that ends only after every report was read leaves them complete.
+    const after = new AbortController()
+    const done = await readTestSources(ROOT, deps({ '/repo/vitest-report.json': report }).d, after.signal)
+    after.abort()
+    expect(done.complete).toBe(true)
+  })
+})
 
 describe('readTestResults', () => {
   it('hands the report search its signal and reads no report once it is aborted (fix round 2, R2)', async () => {

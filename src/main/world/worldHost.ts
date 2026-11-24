@@ -24,7 +24,7 @@ import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotati
 import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
 import type { StageCache, StageFile } from './stageCache'
-import type { TestRun } from './testStatus'
+import { RUNS_WAIT_MS, type TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
@@ -190,8 +190,8 @@ export const LLM_TIMEOUT_MS = LABEL_ANSWER_LIMIT_MS
 export const LLM_QUEUE_TIMEOUT_MS = 30 * 60_000
 /** How long a compile waits for main's commit, docs and memory evidence for one building. */
 export const CONTEXT_WAIT_MS = 10_000
-/** How long a compile waits for main's test runs (CI asks `gh` for up to 5 s, then git). */
-export const RUNS_WAIT_MS = 20_000
+/** How long a compile waits for main's test runs: one figure with the compile's own wait for them (testStatus.ts). */
+export { RUNS_WAIT_MS }
 /**
  * The watcher recompile's debounce. Its input is already paced: main tells the host only after the code
  * watcher's window (CODE_WATCH_MS) and its re-index, and no more often than every 2 s. So this wait only gathers what
@@ -677,13 +677,13 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'context', id, projectKey, members })
       })
 
-  /** Asks main about test runs from `source`; no answer in time is an empty answer. */
-  const askRunsMain = (projectKey: string, source: 'transcript' | 'ci'): Promise<{ runs?: unknown; files?: unknown }> =>
+  /** Asks main about test runs from `source`; null: no answer in time, so the runs are not known (fix round 3, N2). */
+  const askRunsMain = (projectKey: string, source: 'transcript' | 'ci'): Promise<{ runs?: unknown; files?: unknown } | null> =>
     new Promise((resolve) => {
       const id = ++llmSeq
       const timer = setTimeout(() => {
         runsWaiting.delete(id)
-        resolve({})
+        resolve(null)
       }, runsTimeoutMs)
       runsWaiting.set(id, (msg) => {
         clearTimeout(timer)
@@ -692,13 +692,19 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
       post({ kind: 'runs', id, projectKey, source })
     })
-  const askCi = (projectKey: string) => async (): Promise<TestRun[]> => cleanRuns((await askRunsMain(projectKey, 'ci')).runs, 'ci')
+  const askCi = (projectKey: string) => async (): Promise<TestRun[] | null> => {
+    const answer = await askRunsMain(projectKey, 'ci')
+    return answer === null ? null : cleanRuns(answer.runs, 'ci')
+  }
   /** Main names the transcript files; this host reads the tail of each, parses it and yields between files. */
   const transcriptCache = new Map<string, { at: number; runs: TestRun[] }>()
-  const askTranscripts = (projectKey: string, root: string) => async (): Promise<TestRun[]> => {
+  const askTranscripts = (projectKey: string, root: string) => async (): Promise<TestRun[] | null> => {
     const hit = transcriptCache.get(projectKey)
     if (hit && now() - hit.at < TRANSCRIPT_CACHE_MS) return hit.runs
-    const files = cleanTranscriptFiles((await askRunsMain(projectKey, 'transcript')).files)
+    const answer = await askRunsMain(projectKey, 'transcript')
+    // No answer is not kept: the next compile asks again.
+    if (answer === null) return null
+    const files = cleanTranscriptFiles(answer.files)
     const runs = await readTranscriptRuns(files, root, { now })
     transcriptCache.set(projectKey, { at: now(), runs })
     return runs

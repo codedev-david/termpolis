@@ -725,7 +725,7 @@ describe('createWorldHost', () => {
     expect(cleanRuns(Array.from({ length: 6000 }, () => good), 'transcript')).toHaveLength(5000)
   })
 
-  it('a compile asks main for transcript FILES and reads them itself, and for CI runs; no answer in time is none', async () => {
+  it('a compile asks main for transcript FILES and reads them itself, and for CI runs; no answer in time is not known (null), and is not kept', async () => {
     const file = join(dir, 'session.jsonl')
     await writeFile(
       file,
@@ -748,10 +748,27 @@ describe('createWorldHost', () => {
     await h.send({ kind: 'runs-result', id: 999, runs: [] }) // unknown id: ignored
     // main sends file names (and a hostile non-jsonl path, which the host drops); the host reads and parses them
     await h.send({ kind: 'runs-result', id: ask.id, runs: [], files: [file, '/etc/hosts'] })
-    // the CI request is never answered: it times out as no runs
+    // the CI request is never answered: it times out as not known, which is not the same as no runs (fix round 3, N2)
     await call
-    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: Date.parse('2026-11-02T10:00:00.000Z'), source: 'transcript' }], []])
+    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: Date.parse('2026-11-02T10:00:00.000Z'), source: 'transcript' }], null])
     expect(h.out.filter((m) => m.kind === 'runs').map((m) => (m as { source: string }).source)).toEqual(['transcript', 'ci'])
+    // The next compile takes the transcript runs from the cache (no new ask), and a CI answer that comes is cleaned.
+    got.length = 0
+    const again = h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'runs')).toHaveLength(3))
+    const ci = h.out.filter((m) => m.kind === 'runs')[2] as Extract<WorldHostResponse, { kind: 'runs' }>
+    expect(ci.source).toBe('ci')
+    await h.send({ kind: 'runs-result', id: ci.id, runs: [{ file: 'c.test.ts', passed: true, at: 3 }, { file: 7 }] })
+    await again
+    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: Date.parse('2026-11-02T10:00:00.000Z'), source: 'transcript' }], [{ file: 'c.test.ts', passed: true, at: 3, source: 'ci' }]])
+    // A transcript ask main does not answer in time is not known either, and is not cached: the next compile asks again.
+    const quiet = harness({ compile, runsTimeoutMs: 20 })
+    await quiet.init(false)
+    got.length = 0
+    await quiet.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await quiet.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(got).toEqual([null, null, null, null])
+    expect(quiet.out.filter((m) => m.kind === 'runs' && (m as { source: string }).source === 'transcript')).toHaveLength(2)
   })
 
   it('a cloned repository gets no runs from main', async () => {

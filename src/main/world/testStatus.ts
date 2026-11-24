@@ -17,9 +17,23 @@ export interface TestResultDeps {
   readFile(p: string): Promise<string | null>
   /** `signal` aborts when the compile's search window ends (compile.ts SEARCH_TIME_MS): the walk should stop then. */
   glob(root: string, patterns: string[], opts: { signal: AbortSignal }): Promise<string[]>
-  transcriptRuns?: () => Promise<TestRun[]>
-  /** The newest CI conclusion as runs (source 'ci'). The caller decides whether CI is read at all. */
-  ciRuns?: () => Promise<TestRun[]>
+  /** null: main gave no answer in time (RUNS_WAIT_MS), so the runs are not known, which is not the same as none. */
+  transcriptRuns?: () => Promise<TestRun[] | null>
+  /** The newest CI conclusion as runs (source 'ci'); null as for transcriptRuns. The caller decides whether CI is read at all. */
+  ciRuns?: () => Promise<TestRun[] | null>
+}
+
+/** How long a compile waits for main's test runs (CI asks `gh` for up to 5 s, then git). */
+export const RUNS_WAIT_MS = 20_000
+/** How long past RUNS_WAIT_MS the compile still waits for one of main's answers, so the host's own wait for main
+ *  always ends first and says whether main answered (fix round 3, N2). */
+export const RUNS_GRACE_MS = 2_000
+
+/** What the test-result sources gave, and whether every one of them gave all it had (a report search cut short by the
+ *  compile's window, or an ask main did not answer in time, leaves `complete` false). */
+export interface TestSources {
+  runs: TestRun[]
+  complete: boolean
 }
 
 export const PATTERNS: string[] = [
@@ -274,9 +288,9 @@ export function parseTranscriptTestRuns(jsonl: string, root: string, now: number
 
 // ---- reading --------------------------------------------------------------
 
-/** The reports under `root`, then main's transcript and CI runs. Once `signal` aborts no further report is read (the
- *  compile has stopped waiting: compile.ts SEARCH_TIME_MS), and the glob is handed the same signal. */
-export async function readTestResults(root: string, deps: TestResultDeps, signal: AbortSignal = new AbortController().signal): Promise<TestRun[]> {
+/** The reports under `root` into `into`, as each is read; true when the search and every read finished before
+ *  `signal` aborted (compile.ts SEARCH_TIME_MS). The glob is handed the same signal, and no report is read after it. */
+async function readReports(root: string, deps: TestResultDeps, signal: AbortSignal, into: TestRun[]): Promise<boolean> {
   let found: string[]
   try {
     found = await deps.glob(root, PATTERNS, { signal })
@@ -284,27 +298,58 @@ export async function readTestResults(root: string, deps: TestResultDeps, signal
     found = []
   }
   const paths = found.filter((p) => !slashes(p).split('/').includes('node_modules'))
-  const runs: TestRun[] = []
   for (const p of paths) {
     if (signal.aborted) break
     try {
       const text = await deps.readFile(p)
       if (text === null || text.length > MAX_CHARS) continue
       const base = baseName(slashes(p))
-      if (/^vitest-report.*\.json$/.test(base)) runs.push(...parseJsonReport(text, root, 'vitest'))
-      else if (/^test-results.*\.json$/.test(base)) runs.push(...parseJsonReport(text, root, 'jest'))
-      else if (base.endsWith('.xml')) runs.push(...parseJunit(text, root))
+      if (/^vitest-report.*\.json$/.test(base)) into.push(...parseJsonReport(text, root, 'vitest'))
+      else if (/^test-results.*\.json$/.test(base)) into.push(...parseJsonReport(text, root, 'jest'))
+      else if (base.endsWith('.xml')) into.push(...parseJunit(text, root))
     } catch {
       // unreadable or malformed: skipped silently
     }
   }
-  // Both ask main, so they are asked together: a slow answer costs its own wait, not the sum.
-  const [transcript, ci] = await Promise.all([
-    Promise.resolve().then(() => deps.transcriptRuns?.() ?? []).catch((): TestRun[] => []),
-    Promise.resolve().then(() => deps.ciRuns?.() ?? []).catch((): TestRun[] => [])
+  return !signal.aborted
+}
+
+/** One of main's answers within `ms`: null when none came (or main said it had none in time); a failure is no runs. */
+function askWithin(ask: (() => Promise<TestRun[] | null>) | undefined, ms: number): Promise<TestRun[] | null> {
+  if (!ask) return Promise.resolve([])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))
+  const answer = Promise.resolve().then(ask).catch((): TestRun[] => [])
+  return Promise.race([answer, late]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * Every source of test results, each on its own clock (fix round 3, N2): the reports on disk until `signal` aborts
+ * (what was read by then is kept), and main's transcript and CI runs each for up to `askMs`, asked together so a
+ * slow answer costs its own wait, not the sum. A source cut short leaves `complete` false and costs only itself.
+ */
+export async function readTestSources(
+  root: string,
+  deps: TestResultDeps,
+  signal: AbortSignal = new AbortController().signal,
+  askMs: number = RUNS_WAIT_MS + RUNS_GRACE_MS
+): Promise<TestSources> {
+  const reports: TestRun[] = []
+  // A read that never returns stops counting once the window ends: the reports read before it are kept.
+  const stopped = signal.aborted
+    ? Promise.resolve(false)
+    : new Promise<boolean>((resolve) => signal.addEventListener('abort', () => resolve(false), { once: true }))
+  const [read, transcript, ci] = await Promise.all([
+    Promise.race([readReports(root, deps, signal, reports), stopped]),
+    askWithin(deps.transcriptRuns, askMs),
+    askWithin(deps.ciRuns, askMs)
   ])
-  runs.push(...transcript, ...ci)
-  return runs
+  return { runs: [...reports, ...(transcript ?? []), ...(ci ?? [])], complete: read && transcript !== null && ci !== null }
+}
+
+/** The runs readTestSources finds, whether or not every source answered. */
+export async function readTestResults(root: string, deps: TestResultDeps, signal?: AbortSignal): Promise<TestRun[]> {
+  return (await readTestSources(root, deps, signal)).runs
 }
 
 // ---- status ---------------------------------------------------------------
