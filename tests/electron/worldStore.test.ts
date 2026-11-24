@@ -296,6 +296,95 @@ describe('worldStore', () => {
     await expect(store.save(doc(''))).rejects.toThrow(/project key/)
   })
 
+  describe('a save while a load is still backing up or moving aside the same world (WP3 round 3, M1)', () => {
+    const realRename = async (from: string, to: string): Promise<void> => rename(from, to)
+    /** A store whose move-aside rename of the world file waits until `release` settles it; any other rename goes through. */
+    function gated(): { store: ReturnType<typeof createWorldStore>; order: string[]; release: (fail?: boolean) => void } {
+      const order: string[] = []
+      let open: (fail: boolean) => void = () => undefined
+      const gate = new Promise<boolean>((r) => { open = r })
+      let moveFails = false
+      const store = createWorldStore(dir, {
+        sleep: async () => undefined,
+        log: () => undefined,
+        rename: async (from, to) => {
+          if (from.endsWith('.tmp')) { order.push('save written'); return realRename(from, to) }
+          order.push('move aside started')
+          if (await gate || moveFails) throw Object.assign(new Error('refused'), { code: 'EIO' })
+          await realRename(from, to)
+          order.push('moved aside')
+        }
+      })
+      return { store, order, release: (fail = false) => { moveFails = fail; open(fail) } }
+    }
+    const tick = async (): Promise<void> => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)) }
+
+    it('the save waits for the move-aside, then writes; the broken file is in a backup, never written over', async () => {
+      await mkdir(join(dir, 'world'), { recursive: true })
+      await writeFile(join(dir, 'world', 'demo.json'), 'garbage')
+      const { store, order, release } = gated()
+      const loaded = store.load('demo')
+      await vi.waitFor(() => expect(order).toEqual(['move aside started']))
+      const saved = store.save(doc())
+      await tick()
+      expect(order).toEqual(['move aside started']) // the save has written nothing yet
+      expect(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).toBe('garbage')
+      release()
+      expect(await loaded).toBeNull()
+      await saved
+      expect(order).toEqual(['move aside started', 'moved aside', 'save written'])
+      expect(JSON.parse(await readFile(join(dir, 'world', 'demo.json'), 'utf8'))).toEqual(doc())
+      const backups = (await readdir(join(dir, 'world'))).filter((f) => f !== 'demo.json')
+      expect(backups).toHaveLength(1)
+      expect(await readFile(join(dir, 'world', backups[0]), 'utf8')).toBe('garbage')
+    })
+
+    it('a move-aside that fails refuses the waiting save too, and the bytes stay as they were', async () => {
+      await mkdir(join(dir, 'world'), { recursive: true })
+      await writeFile(join(dir, 'world', 'demo.json'), 'garbage')
+      const { store, order, release } = gated()
+      const loaded = store.load('demo').catch((e: unknown) => e)
+      await vi.waitFor(() => expect(order).toEqual(['move aside started']))
+      const saved = store.save(doc()).catch((e: unknown) => e)
+      await tick()
+      release(true)
+      expect(await loaded).toBeInstanceOf(WorldReadError)
+      expect(await saved).toBeInstanceOf(WorldReadError) // its own load tried the move again, and was refused
+      expect(order).toEqual(['move aside started', 'move aside started'])
+      expect(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).toBe('garbage')
+      expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+    })
+
+    it('two loads of one broken file at once: the second waits and finds it moved aside, neither is refused', async () => {
+      await mkdir(join(dir, 'world'), { recursive: true })
+      await writeFile(join(dir, 'world', 'demo.json'), 'garbage')
+      const { store, order, release } = gated()
+      const first = store.load('demo')
+      const second = store.load('demo')
+      await vi.waitFor(() => expect(order).toEqual(['move aside started']))
+      await tick()
+      expect(order).toEqual(['move aside started']) // the second load waits: it never starts a rename of its own
+      release()
+      expect(await first).toBeNull()
+      expect(await second).toBeNull()
+      expect(order).toEqual(['move aside started', 'moved aside'])
+      expect((await readdir(join(dir, 'world'))).filter((f) => f !== 'demo.json')).toHaveLength(1)
+    })
+
+    it('a world with items left out is handed out only after its backup, so a save at once still finds the original backed up', async () => {
+      await mkdir(join(dir, 'world'), { recursive: true })
+      const stored = { ...doc(), tours: [7] }
+      await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(stored))
+      const store = createWorldStore(dir, { log: () => undefined })
+      const [loaded] = await Promise.all([store.load('demo'), store.save({ ...doc(), generatedAt: 9 })])
+      expect(loaded?.tours).toEqual([])
+      expect(JSON.parse(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).generatedAt).toBe(9)
+      const backups = (await readdir(join(dir, 'world'))).filter((f) => f !== 'demo.json')
+      expect(backups).toHaveLength(1)
+      expect(JSON.parse(await readFile(join(dir, 'world', backups[0]), 'utf8'))).toEqual(stored)
+    })
+  })
+
   it('a failed rename removes the temp file and rethrows', async () => {
     const refused = Object.assign(new Error('refused'), { code: 'EINVAL' })
     const store = createWorldStore(dir, { sleep: async () => undefined, rename: async () => { throw refused } })

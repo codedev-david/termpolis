@@ -157,9 +157,15 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   const cacheFile = (hash: string): string => join(cacheDir, `${createHash('sha256').update(hash).digest('hex')}.txt`)
   const stagesFile = (projectKey: string): string => join(folder, `${worldFileName(projectKey)}.stages.json`)
   /** Per world file name: true when the disk holds a newer version's world, false when it holds one of ours or none.
-   *  A name is here only after a load that ended well; a save of a name not here loads it first, so no save writes
-   *  over a file this store could not read, could not back up, or could not move aside. */
+   *  A name is here only after a load that ended well, set once its backup or move-aside is done; a save of a name not
+   *  here loads it first, so no save writes over a file this store could not read, could not back up, or could not move
+   *  aside. */
   const newerOnDisk = new Map<string, boolean>()
+  /** WP3 round 3 (M1): per world file name, the load running now. Loads of one name run one after another (a second
+   *  load of a broken file finds it moved aside, never races the first one's rename), and a save waits for the running
+   *  load's outcome before it looks at newerOnDisk. */
+  const loading = new Map<string, Promise<unknown>>()
+  const ignore = (): void => undefined
   /** Per world file name of a newer version's world: what this version compiled or saved for it, kept in memory only. */
   const shadow = new Map<string, WorldDoc>()
   let pruning: Promise<unknown> | null = null
@@ -196,6 +202,20 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
 
   async function load(projectKey: string, beforeSave = false): Promise<WorldDoc | null> {
     const name = worldFileName(projectKey)
+    const before = loading.get(name)
+    const run = (async () => {
+      if (before) await before.catch(ignore)
+      return loadNow(name, beforeSave)
+    })()
+    loading.set(name, run)
+    try {
+      return await run
+    } finally {
+      if (loading.get(name) === run) loading.delete(name)
+    }
+  }
+
+  async function loadNow(name: string, beforeSave: boolean): Promise<WorldDoc | null> {
     const file = join(folder, name)
     let text: string
     try {
@@ -216,18 +236,20 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       const view = checked({ ...(parsed as Record<string, unknown>), version: WORLD_VERSION })
       return view ? { ...view.doc, savedByNewer: true } : null
     }
-    newerOnDisk.set(name, false)
-    shadow.delete(name)
+    // Safe to save over only once the backup or the move-aside below is done (M1).
+    const ours = (): void => { newerOnDisk.set(name, false); shadow.delete(name) }
     const view = checked(migrateWorld(parsed))
     if (view) {
       // A later save writes the doc without the items left out, so the file as it is goes into the backups first,
       // untouched (once per distinct content). Without that backup the world is not handed out to be saved over.
       if (view.dropped && !(await copyAside(file, { now, sleep }))) refuse(name, 'left items out and could not be backed up first')
+      ours()
       return view.doc
     }
     // Kept for inspection. A broken file that cannot be moved aside is not read as absent: a compile would then save
     // over it. Until it can be moved aside (each load and save tries again) or reads, loads and saves are refused.
     if (!(await moveAside(file, { now, rename, sleep }))) refuse(name, 'does not read and could not be moved aside, so nothing is saved over it')
+    ours()
     return null
   }
 
@@ -237,6 +259,8 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     async save(doc) {
       const name = worldFileName(doc.projectKey)
       const clean = forDisk(doc)
+      // A load running now decides first (M1): its outcome is what this save goes by, or, refused, this save's own load.
+      await loading.get(name)?.catch(ignore)
       if (!newerOnDisk.has(name)) await load(doc.projectKey, true)
       if (newerOnDisk.get(name) === true) {
         shadow.set(name, structuredClone(clean))
