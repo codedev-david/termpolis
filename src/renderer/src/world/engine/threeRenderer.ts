@@ -423,7 +423,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const renderer = new THREE.WebGLRenderer({ antialias: high })
   /**
    * The largest drawing buffer the GPU takes, [across, down]: the smaller of its biggest render buffer and its biggest
-   * viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) draws nothing, a white map.
+   * viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
+   * clamps the canvas's buffer to what the GPU holds while the viewport is still set to the full size, so the picture
+   * over-runs the buffer and shows cropped or at the wrong scale.
    */
   const bufferCap = ((): [number, number] => {
     const gl = renderer.getContext()
