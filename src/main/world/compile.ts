@@ -743,7 +743,8 @@ export function scanFile(f: string, text: string | null): StageFile | null {
     ...(packages.length > 0 ? { packages } : {}),
     ...(found.length > 0 ? { names: found } : {}),
     ...(lang && lang.refs.length > 0 ? { refs: lang.refs } : {}),
-    ...(lang?.pkg !== undefined ? { pkg: lang.pkg } : {})
+    ...(lang?.pkg !== undefined ? { pkg: lang.pkg } : {}),
+    ...(lang?.decls !== undefined ? { decls: lang.decls } : {})
   }
 }
 

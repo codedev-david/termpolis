@@ -222,12 +222,14 @@ describe('stage cache', () => {
     expect(again.doc.edges.length).toBeGreaterThan(0)
   })
 
-  it('rejects a cached file whose references or package are not strings', () => {
+  it('rejects a cached file whose references, package or declarations are not strings', () => {
     const file = { hash: 'h', boundaries: [], imports: [] }
     const cache = (f: object): unknown => ({ version: STAGE_CACHE_VERSION, files: { 'a.py': f }, structureHash: 's' })
     expect(isStageCache(cache({ ...file, refs: ['py:i:x'], pkg: 'a' }))).toBe(true)
     expect(isStageCache(cache({ ...file, refs: [1] }))).toBe(false)
     expect(isStageCache(cache({ ...file, pkg: 2 }))).toBe(false)
+    expect(isStageCache(cache({ ...file, decls: ['helper'] }))).toBe(true)
+    expect(isStageCache(cache({ ...file, decls: [3] }))).toBe(false)
   })
 
   it('scanFile records references and a package only when the file has them', () => {
@@ -235,5 +237,23 @@ describe('stage cache', () => {
     expect(scanFile('A.java', 'package p;\nclass A {}\n')).toMatchObject({ pkg: 'p' })
     expect(scanFile('A.java', 'package p;\nclass A {}\n')).not.toHaveProperty('refs')
     expect(scanFile('a.py', 'import os\n')).toMatchObject({ refs: ['py:i:os'] })
+    expect(scanFile('U.kt', 'package k\nfun helper() = 1\n')).toMatchObject({ pkg: 'k', decls: ['helper'] })
+    expect(scanFile('A.java', 'package p;\nclass A {}\n')).not.toHaveProperty('decls')
+  })
+
+  it("draws a Kotlin top-level import to the file that declares it, from the cache too, and nothing for a name no file declares", async () => {
+    const files = {
+      'k/Utils.kt': '﻿package k\r\nfun helper() = 1\r\n',
+      'k/Other.kt': 'package k\nfun other() = 2\n',
+      'app/App.kt': 'package app\nimport k.helper\nimport k.Nope\nfun main() {}\n',
+      'app/Main.java': 'package app;\nimport com.missing.Gone;\nimport k.Missing;\nclass Main {}\n'
+    }
+    const input = { snap: snapOf(files), projectKey: 'mem', head: HEAD, previous: null }
+    const first = await compileWorldStaged(input, memDeps(files))
+    const from = (doc: WorldDoc, f: string): string => home(doc, f) as string
+    expect(pairs(first.doc)).toEqual([`${from(first.doc, 'app/App.kt')} -> ${from(first.doc, 'k/Utils.kt')}`])
+    expect(first.cache.files['k/Utils.kt']).toMatchObject({ pkg: 'k', decls: ['helper'] })
+    const again = await compileWorldStaged({ ...input, cache: first.cache, changed: [] }, memDeps(files))
+    expect(pairs(again.doc)).toEqual(pairs(first.doc))
   })
 })

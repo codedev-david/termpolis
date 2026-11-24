@@ -161,6 +161,38 @@ describe('codeGraphExtract', () => {
       expect(byName(ex.symbols, 'only')!.endLine).toBe(3)
     })
 
+    it('reads each symbol its line from the line index, first line, last line and CRLF alike', () => {
+      const ex = extractFile('m.ts', 'function a() {}\r\n\r\nfunction b() {}\r\n\nfunction c() {}')!
+      expect(ex.symbols.map((s) => [s.name, s.startLine])).toEqual([['a', 1], ['b', 3], ['c', 5]])
+    })
+
+    it('extracts a large or hostile Kotlin file in time linear in its size', () => {
+      const within = (ms: number, f: () => unknown): void => {
+        const t = performance.now()
+        f()
+        expect(performance.now() - t).toBeLessThan(ms)
+      }
+      const big: string[] = ['package a']
+      for (let n = 0; big.join('\n').length < 200 * 1024; n++) {
+        big.push(`data class User${n}(val name: String)`, `fun helper${n}(x: Int): Int = x`, `class Service${n} {`, '  @JvmStatic fun op(id: String): Int {', '    return 1', '  }', '}')
+      }
+      within(3000, () => expect(extractFile('Big.kt', big.join('\n'))!.symbols.length).toBeGreaterThan(1000))
+      within(3000, () => expect(byName(extractFile('Blank.kt', '\n'.repeat(8000) + 'class A')!.symbols, 'A')!.startLine).toBe(8001))
+      within(3000, () => expect(extractFile('Ann.kt', '@a\n'.repeat(64000))!.symbols).toEqual([]))
+      within(3000, () => expect(extractFile('Mods.kt', 'public\n'.repeat(30000))!.symbols).toEqual([]))
+      within(3000, () => expect(extractFile('Long.kt', 'fun ' + 'a'.repeat(100000))!.symbols).toEqual([]))
+      // A modifier on the line above no longer joins a declaration; an annotation above still does.
+      expect(names(extractFile('Split.kt', 'public\nclass A\n@Inject\nfun b() {}')!.symbols)).toEqual(['A', 'b'])
+    })
+
+    it('finds the same call names as a name-then-paren regex, a long word run included', () => {
+      const ex = extractFile('m.ts', 'function f() {\n  a1 (x); 9b(y); $c\n(z); if (q) {}; obj.d(); 1e2(); 42(w); f()\n}')!
+      expect(ex.references).toEqual(['f', 'a1', 'b', '$c', 'd', 'e2'])
+      const t = performance.now()
+      extractFile('m.ts', 'x'.repeat(200000) + '(')
+      expect(performance.now() - t).toBeLessThan(3000)
+    })
+
     it('inline object types in param/return annotations do NOT truncate the block (real-repo bug)', () => {
       // Before the fix, the return-type `{ ok: boolean }` closed the block on line 1, so the symbol
       // spanned only its signature — and since the store attributes calls by scanning a symbol's

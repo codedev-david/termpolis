@@ -21,6 +21,8 @@ export interface StageFile {
   refs?: string[]
   /** The package a Java or Kotlin file declares, when it declares one. */
   pkg?: string
+  /** A Kotlin file's top-level declarations, when it has any. */
+  decls?: string[]
 }
 
 /**
@@ -73,7 +75,8 @@ function isStageFile(v: unknown): v is StageFile {
     (v.packages === undefined || strings(v.packages)) &&
     (v.names === undefined || strings(v.names)) &&
     (v.refs === undefined || strings(v.refs)) &&
-    (v.pkg === undefined || isStr(v.pkg))
+    (v.pkg === undefined || isStr(v.pkg)) &&
+    (v.decls === undefined || strings(v.decls))
   )
 }
 

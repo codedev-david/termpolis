@@ -129,15 +129,17 @@ const JAVA: LangRules = {
 }
 
 // Kotlin. `fun` covers free functions, methods and extension functions (`fun Foo.bar()`); objects
-// (and companion objects with a name) are classes too.
-const KOTLIN_MOD = '(?:companion|public|private|protected|internal|open|final|abstract|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun|\\s)*'
+// (and companion objects with a name) are classes too. Modifiers and names are separated by spaces or tabs, never a
+// newline, and annotations and the receiver are bounded, so a line is matched in time linear in its length: a `\s` in
+// the modifier loop, or an unbounded receiver, made a run of blank or modifier-only lines, or one long line, quadratic.
+const KOTLIN_MOD = '(?:(?:companion|public|private|protected|internal|open|final|abstract|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun)[ \\t]+)*'
 const KOTLIN: LangRules = {
   lang: 'kotlin',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^[ \t]*(?:@[\w.]+(?:\([^)\n]*\))?\s+)*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|operator|infix|inline|tailrec|external|expect|actual)\s+)*fun\s+(?:<[^>\n]*>\s*)?(?:[A-Za-z_][\w.<>?, ]*\.)?([A-Za-z_]\w*)\s*\(/gm },
-    { kind: 'class', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}(?:class|object)\\s+([A-Za-z_]\\w*)`, 'gm') },
-    { kind: 'interface', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}interface\\s+([A-Za-z_]\\w*)`, 'gm') },
+    { kind: 'function', re: /^[ \t]*(?:@[\w.]+(?:\([^)\n]*\))?\s+){0,8}(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|operator|infix|inline|tailrec|external|expect|actual)[ \t]+)*fun[ \t]+(?:<[^>\n]*>[ \t]*)?(?:[A-Za-z_][\w.<>?, ]{0,200}\.)?([A-Za-z_]\w*)[ \t]*\(/gm },
+    { kind: 'class', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}(?:class|object)[ \\t]+([A-Za-z_]\\w*)`, 'gm') },
+    { kind: 'interface', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}interface[ \\t]+([A-Za-z_]\\w*)`, 'gm') },
   ],
   imports: [/^[ \t]*import\s+([\w.]+)/gm],
 }
@@ -253,10 +255,23 @@ const CALL_KEYWORDS = new Set([
   'output', 'module', 'data', 'provider', 'param', 'protocol', 'extension', 'init', 'deinit', 'subscript', 'get', 'set',
 ])
 
-function lineOfIndex(content: string, index: number): number {
-  let line = 1
-  for (let i = 0; i < index && i < content.length; i++) if (content[i] === '\n') line++
-  return line
+/** Where each line of `content` starts, so a match's line is a binary search, not a count from the top per symbol. */
+function lineStarts(content: string): number[] {
+  const starts = [0]
+  for (let i = content.indexOf('\n'); i >= 0; i = content.indexOf('\n', i + 1)) starts.push(i + 1)
+  return starts
+}
+
+/** The 1-based line holding `index`: how many lines start at or before it. */
+function lineOfIndex(starts: readonly number[], index: number): number {
+  let lo = 0
+  let hi = starts.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (starts[mid] <= index) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }
 
 // Best-effort last line (1-based) of the block a symbol on `startLine` opens.
@@ -308,6 +323,7 @@ export function extractFile(file: string, content: string): FileExtract | null {
   const rules = rulesForFile(file)
   if (!rules || !content) return null
   const lines = content.split('\n')
+  const starts = lineStarts(content)
 
   const symbols: CodeSymbol[] = []
   const seenDef = new Set<string>()
@@ -317,7 +333,7 @@ export function extractFile(file: string, content: string): FileExtract | null {
     while ((m = rule.re.exec(content)) !== null) {
       const name = m[1]
       if (!name) continue
-      const startLine = lineOfIndex(content, m.index)
+      const startLine = lineOfIndex(starts, m.index)
       const key = `${name}@${startLine}`
       if (seenDef.has(key)) continue // a name matched by two rules on the same line → keep the first
       seenDef.add(key)
@@ -349,10 +365,16 @@ export function extractFile(file: string, content: string): FileExtract | null {
 export function extractReferences(text: string): string[] {
   const out: string[] = []
   const seen = new Set<string>()
-  const callRe = /([A-Za-z_$][\w$]*)\s*\(/g
-  let m: RegExpExecArray | null
-  while ((m = callRe.exec(text)) !== null) {
-    const name = m[1]
+  // Each run of word characters is read once, and the name is its part from the first non-digit: what
+  // /([A-Za-z_$][\w$]*)\s*\(/g finds, without that regex retrying a long run from every one of its characters.
+  const runs = /[\w$]+/g
+  for (let m = runs.exec(text); m !== null; m = runs.exec(text)) {
+    let j = runs.lastIndex
+    while (j < text.length && /\s/.test(text[j])) j++
+    if (text[j] !== '(') continue
+    const from = m[0].search(/[A-Za-z_$]/)
+    if (from < 0) continue
+    const name = m[0].slice(from)
     if (CALL_KEYWORDS.has(name) || seen.has(name)) continue
     seen.add(name)
     out.push(name)

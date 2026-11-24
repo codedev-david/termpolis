@@ -18,6 +18,8 @@ export interface LangScan {
   /** `py:f:<dots><module>:<names>`, `py:i:<module>`, `go:<path>`, `rs:m:<name>`, `rs:u:<a::b>` or `jv:<a.b.C>`. */
   refs: string[]
   pkg?: string
+  /** A Kotlin file's top-level names (functions, properties, classes, objects), so `import a.b.helper` finds its file. */
+  decls?: string[]
 }
 
 /** A Go module: the folder its go.mod is in (repository-relative, '' for the root) and the module path it declares. */
@@ -30,6 +32,10 @@ export interface GoModule {
 export const PACKAGE_LINKS = 8
 /** Use trees expand to at most this many paths (`use a::{b, c::{d, e}}`), so a pathological one stays bounded. */
 const MAX_USE_PATHS = 64
+/** A parenthesised Python import list closes within this many characters, or only its first line is read. */
+const MAX_PY_LIST = 4000
+/** A Kotlin file records at most this many top-level names. */
+const MAX_KT_NAMES = 256
 
 const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/')))
 const lastSeg = (p: string): string => p.slice(p.lastIndexOf('/') + 1)
@@ -136,7 +142,10 @@ export function blankRust(text: string): string {
   return out.join('')
 }
 
-const PY_FROM = /(?:^|;)[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]*(\([^)]{0,4000}\)|[^\n;]*)/gm
+// The list after `import` is read by hand, never by a bounded `\([^)]{0,n}\)`, which backtracks n characters on every
+// `(` that does not close.
+const PY_FROM = /(?:^|;)[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]*(\(?)/gm
+const PY_LINE_REST = /[^\n;]*/y
 const PY_IMPORT = /(?:^|;)[ \t]*import[ \t]+([^\n;]+)/gm
 
 /** The names a `from ... import` brings in: identifiers before any `as`, never `*`. */
@@ -151,10 +160,26 @@ function importedNames(list: string): string[] {
 function scanPython(text: string): string[] {
   const t = blankPython(text)
   const refs: string[] = []
-  for (const m of t.matchAll(PY_FROM)) {
+  // The next `)` at or after the scan, found once and reused while the scan is before it, so the search stays linear.
+  let close = -1
+  PY_FROM.lastIndex = 0
+  for (let m = PY_FROM.exec(t); m !== null; m = PY_FROM.exec(t)) {
+    const at = PY_FROM.lastIndex
+    if (close !== Infinity && close < at) {
+      const next = t.indexOf(')', at)
+      close = next < 0 ? Infinity : next
+    }
+    let list: string
+    if (m[3] === '(' && close - at <= MAX_PY_LIST) {
+      list = t.slice(at, close)
+      PY_FROM.lastIndex = close + 1
+    } else {
+      PY_LINE_REST.lastIndex = at
+      list = (PY_LINE_REST.exec(t) as RegExpExecArray)[0]
+    }
     const mod = m[2] ?? ''
     if ((m[1] === '' && mod === '') || (mod !== '' && !DOTTED.test(mod))) continue
-    refs.push(`py:f:${m[1]}${mod}:${importedNames(m[3]).join(',')}`)
+    refs.push(`py:f:${m[1]}${mod}:${importedNames(list).join(',')}`)
   }
   for (const m of t.matchAll(PY_IMPORT)) {
     for (const part of m[1].split(',')) {
@@ -191,7 +216,10 @@ function scanGo(text: string): string[] {
 }
 
 const RS_MOD = /^[ \t]*((?:#!?\[[^\]\n]*\][ \t]*)*)(?:pub(?:\([^)\n]*\))?[ \t]+)?mod[ \t]+([A-Za-z_]\w*)[ \t]*;/gm
-const RS_USE = /^[ \t]*(?:#!?\[[^\]\n]*\][ \t]*)*(?:pub(?:\([^)\n]*\))?[ \t]+)?use[ \t]+([^;]{0,2000});/gm
+// The tree after `use` is read by hand up to its `;`, as Python's import list is (scanRust).
+const RS_USE = /^[ \t]*(?:#!?\[[^\]\n]*\][ \t]*)*(?:pub(?:\([^)\n]*\))?[ \t]+)?use[ \t]+/gm
+/** A use tree ends with `;` within this many characters, or it is not read. */
+const MAX_USE_CHARS = 2000
 const RS_TOKEN = /::|[{},*]|[A-Za-z_]\w*|\S/g
 /** Crates that are never project files. */
 const RS_EXTERN = new Set(['std', 'core', 'alloc'])
@@ -246,13 +274,50 @@ export function expandUse(tree: string): string[][] {
   return out
 }
 
+/** At most this many attributes are read above an item, each within this many characters. */
+const RS_ATTRS_ABOVE = 16
+const RS_ATTR_SPAN = 1000
+
+/**
+ * The attributes on the lines above `at` (`#[path = "x"]` on a line of its own, as rustfmt writes it), across blank
+ * lines, comments and other attributes. Bounded: at most RS_ATTRS_ABOVE of them, each within RS_ATTR_SPAN.
+ */
+function attrsAbove(t: string, at: number): string {
+  let out = ''
+  let k = at
+  for (let n = 0; n < RS_ATTRS_ABOVE; n++) {
+    let j = k - 1
+    while (j >= 0 && k - j <= RS_ATTR_SPAN && /\s/.test(t[j])) j--
+    if (j < 0 || t[j] !== ']') break
+    let open = j - 1
+    // An attribute holds no `;`, `{` or `}`: reaching one means the `]` closed something else.
+    while (open > 0 && j - open <= RS_ATTR_SPAN && t[open] !== '[' && !';{}'.includes(t[open])) open--
+    const hash = t[open] !== '[' ? -1 : t[open - 1] === '#' ? open - 1 : t[open - 1] === '!' && t[open - 2] === '#' ? open - 2 : -1
+    if (hash < 0) break
+    out += t.slice(hash, j + 1)
+    k = hash
+  }
+  return out
+}
+
 function scanRust(text: string): string[] {
   const t = blankRust(text)
   const refs: string[] = []
-  // `#[path = "..."]` points the module somewhere else; that is not followed.
-  for (const m of t.matchAll(RS_MOD)) if (!/\bpath\b/.test(m[1])) refs.push(`rs:m:${m[2]}`)
-  for (const m of t.matchAll(RS_USE)) {
-    for (const path of expandUse(m[1])) if (!RS_EXTERN.has(path[0])) refs.push(`rs:u:${path.join('::')}`)
+  // `#[path = "..."]` points the module somewhere else; that is not followed, on the `mod` line or on the lines above.
+  for (const m of t.matchAll(RS_MOD)) if (!/\bpath\b/.test(m[1] + attrsAbove(t, m.index))) refs.push(`rs:m:${m[2]}`)
+  // The next `;` at or after the scan, found once and reused while the scan is before it (as Python's `)`), so a `use`
+  // that never ends costs its own line, not MAX_USE_CHARS of backtracking.
+  let semi = -1
+  RS_USE.lastIndex = 0
+  for (let m = RS_USE.exec(t); m !== null; m = RS_USE.exec(t)) {
+    const at = RS_USE.lastIndex
+    if (semi !== Infinity && semi < at) {
+      const next = t.indexOf(';', at)
+      semi = next < 0 ? Infinity : next
+    }
+    if (semi - at > MAX_USE_CHARS) continue
+    RS_USE.lastIndex = semi + 1
+    for (const path of expandUse(t.slice(at, semi))) if (!RS_EXTERN.has(path[0])) refs.push(`rs:u:${path.join('::')}`)
   }
   return refs
 }
@@ -260,11 +325,32 @@ function scanRust(text: string): string[] {
 const JV_PACKAGE = /^package\s+([A-Za-z_][\w.]*)$/
 const JV_IMPORT = /^import\s+(?:static\s+)?([A-Za-z_][\w.]*?(?:\.\*)?)(?:\s+as\s+\w+)?$/
 
-/** A Java or Kotlin file's package and imports: the statements before its first declaration. */
-function scanJvm(text: string): LangScan {
+// A Kotlin top-level declaration starts a line; members are indented. The head (up to `(`, `:`, `=` or `{`) holds the
+// name, after any type parameters (bounds and one level of nesting included) and receiver: `fun <T : Any> List<T>.second(`
+// names `second`. A head longer than 200 characters is no declaration anyone imports, and is not read.
+const KT_TOP =
+  /^(?:(?:public|internal|private|protected|open|final|abstract|sealed|data|enum|annotation|value|inline|suspend|operator|infix|tailrec|external|const|lateinit|expect|actual|fun)[ \t]+)*(?:fun|val|var|class|interface|object|typealias)[ \t]+((?:<(?:[^\n<>]|<[^\n<>]*>){0,200}>[ \t]*)?[^\n(:={]{1,200})(?=[\n(:={]|$)/gm
+
+/** A Kotlin file's top-level names, at most MAX_KT_NAMES. */
+function kotlinNames(t: string): string[] {
+  const names = new Set<string>()
+  for (const m of t.matchAll(KT_TOP)) {
+    let head = m[1]
+    for (let n = 0; n < 4 && head.includes('<'); n++) head = head.replace(/<[^<>]*>/g, '')
+    const token = head.trim().split(/\s+/)[0]
+    const name = token.slice(token.lastIndexOf('.') + 1)
+    if (IDENT.test(name)) names.add(name)
+    if (names.size >= MAX_KT_NAMES) break
+  }
+  return [...names]
+}
+
+/** A Java or Kotlin file's package and imports (the statements before its first declaration), and Kotlin's top-level names. */
+function scanJvm(text: string, kotlin: boolean): LangScan {
   const refs: string[] = []
   let pkg: string | undefined
-  for (const raw of stripComments(text).split(/[;\n]/)) {
+  const t = stripComments(text)
+  for (const raw of t.split(/[;\n]/)) {
     const s = raw.trim()
     if (s === '' || s.startsWith('@')) continue
     const p = JV_PACKAGE.exec(s)
@@ -273,21 +359,26 @@ function scanJvm(text: string): LangScan {
     else if (m) refs.push(`jv:${m[1]}`)
     else break
   }
-  return pkg === undefined ? { refs } : { refs, pkg }
+  const names = kotlin ? kotlinNames(t) : []
+  return { refs, ...(pkg === undefined ? {} : { pkg }), ...(names.length > 0 ? { decls: names } : {}) }
 }
 
+/** `text` without a leading byte-order mark, which Windows editors write and `^` does not skip. */
+const noBom = (text: string): string => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
+
 /** The tagged imports (and a Java or Kotlin package) of a Python, Go, Rust, Java or Kotlin file; null for any other. */
-export function scanLangImports(file: string, text: string): LangScan | null {
+export function scanLangImports(file: string, source: string): LangScan | null {
   const ext = LANG_FILE.exec(file)?.[0]
   if (ext === undefined) return null
-  if (ext === '.java' || ext === '.kt') return scanJvm(text)
+  const text = noBom(source)
+  if (ext === '.java' || ext === '.kt') return scanJvm(text, ext === '.kt')
   const refs = ext === '.py' ? scanPython(text) : ext === '.go' ? scanGo(text) : scanRust(text)
   return { refs: [...new Set(refs)] }
 }
 
 /** The module path a go.mod declares, or null when it declares none. */
 export function goModulePath(text: string): string | null {
-  const m = /^[ \t]*module[ \t]+(?:"([^"\n]+)"|`([^`\n]+)`|([^\s"`/][^\s]*))/m.exec(stripComments(text))
+  const m = /^[ \t]*module[ \t]+(?:"([^"\n]+)"|`([^`\n]+)`|([^\s"`/][^\s]*))/m.exec(stripComments(noBom(text)))
   return m ? (m[1] ?? m[2] ?? m[3]).trim() : null
 }
 
@@ -311,7 +402,7 @@ const RS_CRATE_FILE = new Set(['lib.rs', 'main.rs', 'build.rs'])
  */
 export function resolveLangImports(
   files: readonly string[],
-  scans: ReadonlyMap<string, { refs?: readonly string[]; pkg?: string }>,
+  scans: ReadonlyMap<string, { refs?: readonly string[]; pkg?: string; decls?: readonly string[] }>,
   goModules: readonly GoModule[]
 ): Map<string, string[]> {
   const has = new Set(files)
@@ -450,20 +541,25 @@ export function resolveLangImports(
     return found ? [found] : []
   }
 
-  // Java and Kotlin: packages as the files declare them. `a.b.C` is C.java/C.kt in package a.b (a nested class or a
-  // static member reads the same way, shorter); otherwise a name in package a.b reaches that package as a whole.
+  // Java and Kotlin: packages as the files declare them. `a.b.C` is C.java/C.kt in package a.b, or the Kotlin file of
+  // a.b that declares C at top level (a nested class or a static member reads the same way, shorter). A name no file
+  // declares draws nothing, never the whole package; only a wildcard `a.b.*` reaches a package as a whole.
+  const declared = new Map<string, Set<string>>()
+  for (const f of files) {
+    const names = scans.get(f)?.decls
+    if (names !== undefined) declared.set(f, new Set(names))
+  }
   const jvm = (ref: string): string[] => {
     const name = ref.slice(3)
     const wild = name.endsWith('.*')
     const segs = (wild ? name.slice(0, -2) : name).split('.')
-    if (wild && byPackage.has(segs.join('.'))) return pick(byPackage.get(segs.join('.')) as string[], segs[segs.length - 1])
+    if (wild) return byPackage.has(segs.join('.')) ? pick(byPackage.get(segs.join('.')) as string[], segs[segs.length - 1]) : []
     for (let k = segs.length - 1; k > 0; k--) {
-      const hit = (byPackage.get(segs.slice(0, k).join('.')) ?? []).find((f) => stem(f) === segs[k])
+      const members = byPackage.get(segs.slice(0, k).join('.')) ?? []
+      const hit = members.find((f) => stem(f) === segs[k]) ?? members.find((f) => declared.get(f)?.has(segs[k]))
       if (hit) return [hit]
     }
-    const pkg = segs.slice(0, -1)
-    const members = wild ? undefined : byPackage.get(pkg.join('.'))
-    return members ? pick(members, pkg[pkg.length - 1]) : []
+    return []
   }
 
   // A Go or JVM import reads the same from every file, a Python import from every file in one folder: each is resolved once.

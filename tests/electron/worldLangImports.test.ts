@@ -219,7 +219,38 @@ describe('Java and Kotlin scan', () => {
     ].join('\n')
     expect(scanLangImports('App.java', java)).toEqual({ pkg: 'com.acme.app', refs: ['jv:java.util.List', 'jv:com.acme.util.Strings.trim', 'jv:com.acme.store.*'] })
     const kt = ['@file:JvmName("Main")', 'package com.acme.app', 'import com.acme.store.Repo as R', 'import com.acme.util.format', 'fun main() {}'].join('\n')
-    expect(scanLangImports('Main.kt', kt)).toEqual({ pkg: 'com.acme.app', refs: ['jv:com.acme.store.Repo', 'jv:com.acme.util.format'] })
+    expect(scanLangImports('Main.kt', kt)).toEqual({ pkg: 'com.acme.app', refs: ['jv:com.acme.store.Repo', 'jv:com.acme.util.format'], decls: ['main'] })
+  })
+
+  it("records a Kotlin file's top-level names, past modifiers, type parameters and receivers, and not its members", () => {
+    const kt = [
+      'package k',
+      'fun helper(x: Int) = x',
+      'private suspend fun load(): Int = 1',
+      'fun <T> List<T>.second(): T = this[1]',
+      'fun <K, V : Comparable<V>> Map<K, V>.top(): V? = null',
+      'const val LIMIT = 3',
+      'var counter: Int = 0',
+      'data class User(val name: String)',
+      'sealed interface Shape',
+      'object Registry {',
+      '  fun member() {}',
+      '  val inner = 1',
+      '}',
+      'typealias Id = String',
+      'fun interface Handler { fun handle() }',
+      'fun `odd name`() {}'
+    ].join('\n')
+    expect(scanLangImports('U.kt', kt)?.decls).toEqual(['helper', 'load', 'second', 'top', 'LIMIT', 'counter', 'User', 'Shape', 'Registry', 'Id', 'Handler'])
+    expect(scanLangImports('A.java', 'package k;\npublic class A {}')).toEqual({ pkg: 'k', refs: [] })
+    expect(scanLangImports('E.kt', 'package k\nimport a.B\n')).toEqual({ pkg: 'k', refs: ['jv:a.B'] })
+  })
+
+  it('records at most 256 Kotlin top-level names', () => {
+    const kt = Array.from({ length: 300 }, (_, i) => `fun f${i}() {}`).join('\n')
+    const decls = scanLangImports('Many.kt', kt)?.decls ?? []
+    expect(decls).toHaveLength(256)
+    expect(decls[255]).toBe('f255')
   })
 
   it('reads a file without a package', () => {
@@ -395,7 +426,7 @@ describe('Rust resolution', () => {
 })
 
 describe('Java and Kotlin resolution', () => {
-  it('links classes, nested classes, static members, wildcards and Kotlin top-level functions through declared packages', () => {
+  it('links classes, nested classes, static members, wildcards and Kotlin top-level functions through declared packages, and nothing for names no file declares', () => {
     const project = {
       // Folders that do not match the packages: only the declarations count.
       'src/x/App.java': 'package com.acme.app;\nimport com.acme.store.Repo;\nimport com.acme.store.Repo.Entry;\nimport static com.acme.util.Strings.trim;\nimport com.acme.model.*;\nimport java.util.List;\nimport com.acme.app.App;\nclass App {}',
@@ -410,7 +441,35 @@ describe('Java and Kotlin resolution', () => {
     expect(lines(project)).toEqual({
       'src/x/App.java': ['src/y/Repo.java', 'src/z/Strings.java', 'src/m/Model.java', 'src/m/User.java'],
       'src/y/Repo.java': ['kt/Util.kt', 'src/z/Other.java', 'src/z/Strings.java'],
-      'kt/Main.kt': ['kt/Util.kt', 'src/z/Other.java', 'src/z/Strings.java', 'src/y/Repo.java']
+      // format is declared by Util.kt; Missing and ghost.Thing are declared nowhere, so they draw nothing.
+      'kt/Main.kt': ['kt/Util.kt']
+    })
+  })
+
+  it('draws nothing for a class no project file declares, never the whole package', () => {
+    const pkg = { 'a/One.java': 'package com.a;\nclass One {}', 'a/Two.java': 'package com.a;\nclass Two {}' }
+    expect(lines({ ...pkg, 'App.java': 'import com.a.Missing;\nclass App {}' })).toEqual({})
+    expect(lines({ ...pkg, 'App.java': 'import static com.a.Missing.call;\nclass App {}' })).toEqual({})
+    expect(lines({ ...pkg, 'App.kt': 'import com.a.Missing\nfun app() {}' })).toEqual({})
+    // A wildcard still reaches the package as a whole.
+    expect(lines({ ...pkg, 'App.java': 'import com.a.*;\nclass App {}' })).toEqual({ 'App.java': ['a/One.java', 'a/Two.java'] })
+  })
+
+  it('links a Kotlin top-level name to the file that declares it, and only that file', () => {
+    const project = {
+      'k/Utils.kt': 'package k\nfun helper() = 1\nval shared = 2',
+      'k/Other.kt': 'package k\nfun other() = 3',
+      'k/Named.kt': 'package k\nclass Named\nfun helper2() = 4',
+      'k/Helper2.kt': 'package k\nclass Helper2',
+      'App.kt': 'import k.helper\nimport k.shared\nimport k.Nope\nfun app() {}',
+      'Two.kt': 'import k.helper2\nimport k.Helper2\nfun two() {}',
+      'Main.java': 'import static k.UtilsKt.helper;\nimport k.helper;\nclass Main {}'
+    }
+    expect(lines(project)).toEqual({
+      'App.kt': ['k/Utils.kt'],
+      // The file named after the class wins over a top-level name; helper2 is Named.kt's.
+      'Two.kt': ['k/Named.kt', 'k/Helper2.kt'],
+      'Main.java': ['k/Utils.kt']
     })
   })
 })
@@ -425,5 +484,80 @@ describe('resolveLangImports', () => {
 
   it('ignores an unknown tag and files without a scan', () => {
     expect(resolveLangImports(['a.py', 'b.py'], new Map([['a.py', { refs: ['zz:b'] }]]), [])).toEqual(new Map())
+  })
+})
+
+describe('Rust attributes on the lines above a mod', () => {
+  it('skips a mod whose #[path] sits on its own line above it, as rustfmt writes it', () => {
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\nmod moved;\nmod kept;\n')).toEqual(['rs:m:kept'])
+    expect(refs('src/lib.rs', '  #[path = "x.rs"]\n  pub mod moved;\n')).toEqual([])
+  })
+
+  it('looks past blank lines, comments, doc comments and other attributes, inner ones included', () => {
+    const text = ['#[path = "a.rs"]', '#[cfg(test)]', '', '// a note', '/// docs', '/* block */', '#[allow(dead_code)] mod moved;', '#![allow(unused)]', '#[cfg(unix)]', 'mod kept;'].join('\n')
+    expect(refs('src/lib.rs', text)).toEqual(['rs:m:kept'])
+    expect(refs('src/lib.rs', '#![path = "x.rs"]\nmod moved;')).toEqual([])
+  })
+
+  it('stops at the item above, a bracket that is no attribute, and its bounds', () => {
+    expect(refs('src/lib.rs', '#[derive(Debug)]\nstruct S;\nmod after;')).toEqual(['rs:m:after'])
+    expect(refs('src/lib.rs', 'const A: [u8; 1] = [1];\nmod after;')).toEqual(['rs:m:after'])
+    expect(refs('src/lib.rs', 'fn f() { let a = [1]; }\nmod after;')).toEqual(['rs:m:after'])
+    expect(refs('src/lib.rs', '#[path = x([1])]\nmod nested;')).toEqual(['rs:m:nested'])
+    expect(refs('src/lib.rs', ']\nmod a;')).toEqual(['rs:m:a'])
+    expect(refs('src/lib.rs', '[a]\nmod b;')).toEqual(['rs:m:b'])
+    // Seventeen attributes up, past the bound of sixteen; more than a thousand characters of blank lines or of one
+    // attribute away.
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\n' + '#[a]\n'.repeat(16) + 'mod far;')).toEqual(['rs:m:far'])
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\n' + '\n'.repeat(1001) + 'mod far;')).toEqual(['rs:m:far'])
+    expect(refs('src/lib.rs', '#[path = "' + 'x'.repeat(1001) + '"]\nmod far;')).toEqual(['rs:m:far'])
+  })
+})
+
+describe('byte-order marks and CRLF line endings', () => {
+  it('reads past a leading byte-order mark in every language and in go.mod', () => {
+    expect(refs('a.py', '﻿import b\nfrom . import c')).toEqual(['py:f:.:c', 'py:i:b'])
+    expect(refs('a.go', '﻿package a\nimport "m/b"')).toEqual(['go:m/b'])
+    expect(refs('src/lib.rs', '﻿mod a;\nuse crate::b;')).toEqual(['rs:m:a', 'rs:u:crate::b'])
+    expect(scanLangImports('A.java', '﻿package a;\nimport b.C;\nclass A {}')).toEqual({ pkg: 'a', refs: ['jv:b.C'] })
+    expect(scanLangImports('A.kt', '﻿package a\nimport b.C\nfun f() {}')).toEqual({ pkg: 'a', refs: ['jv:b.C'], decls: ['f'] })
+    expect(goModulePath('﻿module example.com/m\n')).toBe('example.com/m')
+  })
+
+  it('reads CRLF files as it reads LF ones', () => {
+    const crlf = (lines: string[]): string => lines.join('\r\n') + '\r\n'
+    expect(refs('a.py', crlf(['from . import (b,', '    c)', 'from .d import e', 'import f, g']))).toEqual(refs('a.py', crlf(['from . import (b,', '    c)', 'from .d import e', 'import f, g']).replace(/\r/g, '')))
+    expect(refs('a.py', crlf(['from .d import e', 'import f']))).toEqual(['py:f:.d:e', 'py:i:f'])
+    expect(refs('a.go', crlf(['package a', 'import (', '\t"m/b"', '\tx "m/c"', ')']))).toEqual(['go:m/b', 'go:m/c'])
+    expect(refs('src/lib.rs', crlf(['#[path = "x.rs"]', 'mod moved;', 'mod a;', 'use crate::{b, c};']))).toEqual(['rs:m:a', 'rs:u:crate::b', 'rs:u:crate::c'])
+    expect(scanLangImports('A.java', crlf(['package a;', 'import b.C;', 'class A {}']))).toEqual({ pkg: 'a', refs: ['jv:b.C'] })
+    expect(scanLangImports('A.kt', crlf(['package a', 'import b.C', 'fun f() {}']))).toEqual({ pkg: 'a', refs: ['jv:b.C'], decls: ['f'] })
+    expect(goModulePath('module example.com/m\r\n\r\ngo 1.22\r\n')).toBe('example.com/m')
+  })
+})
+
+describe('hostile input stays linear', () => {
+  const within = (ms: number, f: () => unknown): void => {
+    const t = performance.now()
+    f()
+    expect(performance.now() - t).toBeLessThan(ms)
+  }
+
+  it('reads an unclosed parenthesised Python list as its first line, without searching ahead from every one', () => {
+    // 32,000 unclosed lists: the old bounded `\([^)]{0,4000}\)` searched 4,000 characters ahead from each one.
+    within(1500, () => expect(refs('a.py', 'from a import (\n'.repeat(32000))).toEqual(['py:f:a:']))
+    expect(refs('a.py', 'from a import (x,\n' + 'y = 1\n'.repeat(1000) + 'from b import (c,\n  d)\n')).toEqual(['py:f:a:x', 'py:f:b:c,d'])
+  })
+
+  it('reads a Rust use with no `;` in reach as nothing, and the next one', () => {
+    within(1500, () => expect(refs('src/lib.rs', 'use a\n'.repeat(40000))).toEqual([]))
+    expect(refs('src/lib.rs', 'use crate::a::b\n' + 'x'.repeat(2001) + ';\nuse crate::c;')).toEqual(['rs:u:crate::c'])
+    within(1500, () => expect(refs('src/lib.rs', ']\nmod x;\n'.repeat(30000))).toEqual(['rs:m:x']))
+    within(1500, () => expect(refs('src/lib.rs', '#[a]\n'.repeat(30000) + 'mod x;')).toEqual(['rs:m:x']))
+  })
+
+  it("bounds a Kotlin file's declaration scan on one long line", () => {
+    within(1500, () => expect(scanLangImports('a.kt', 'fun ' + 'a'.repeat(200000))).toEqual({ refs: [] }))
+    within(1500, () => expect(scanLangImports('a.kt', 'fun <' + '<'.repeat(200000))).toEqual({ refs: [] }))
   })
 })
