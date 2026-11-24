@@ -24,6 +24,7 @@ const DOC = {
 
 let dir = ''
 let agentScript = ''
+let wrapperScript = ''
 let live: SecondOpinionDeliver | undefined
 const unverified = new Set<number>()
 let seq = 0
@@ -38,6 +39,18 @@ beforeAll(() => {
     "writeFileSync(process.env.TP_PIDS + '.tmp', JSON.stringify({ agent: process.pid, grandchild: grandchild.pid }))",
     "renameSync(process.env.TP_PIDS + '.tmp', process.env.TP_PIDS)",
     'setTimeout(() => {}, 120000)',
+  ].join('\n'))
+  // WPA2 I3: a wrapper that starts the agent and exits at once, leaving the agent holding the output pipes, as a
+  // PowerShell or cmd wrapper can. On Windows the agent is spawned detached, out of this node's own libuv job (which would
+  // end it with this process, as no non-libuv wrapper's would); on POSIX it stays in the wrapper's process group.
+  wrapperScript = join(dir, 'wrapper.cjs')
+  writeFileSync(wrapperScript, [
+    "const { spawn } = require('child_process')",
+    "const { renameSync, writeFileSync } = require('fs')",
+    "const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit', windowsHide: true, detached: process.platform === 'win32' })",
+    "writeFileSync(process.env.TP_PIDS + '.tmp', JSON.stringify({ agent: process.pid, grandchild: grandchild.pid }))",
+    "renameSync(process.env.TP_PIDS + '.tmp', process.env.TP_PIDS)",
+    'process.exit(0)',
   ].join('\n'))
 })
 
@@ -82,12 +95,12 @@ async function readPids(file: string, run: Promise<unknown>): Promise<{ agent: n
 }
 
 /** The real runner over the real runHeadless and deliver; the agent command is swapped for the stand-in. */
-function setup(primer: (cwd: string, signal?: AbortSignal) => Promise<string | null>) {
+function setup(primer: (cwd: string, signal?: AbortSignal) => Promise<string | null>, script = agentScript) {
   const pidFile = join(dir, `pids-${++seq}.json`)
   live = createSecondOpinionDeliver({ tempDir: () => dir, env: () => ({ ...process.env, TP_PIDS: pidFile }) })
   const real = live
   const execDeps: ExecDeps = {
-    deliver: (_bin, _args, prompt, _token, opts) => real.deliver(process.execPath, [agentScript, PROMPT_TOKEN], prompt, PROMPT_TOKEN, opts),
+    deliver: (_bin, _args, prompt, _token, opts) => real.deliver(process.execPath, [script, PROMPT_TOKEN], prompt, PROMPT_TOKEN, opts),
   }
   const runner = createAskRunner({
     exec: runHeadless,
@@ -150,5 +163,37 @@ describe('cancelling a Lumopolis ask with real processes', () => {
     // Give a wrongly started agent time to write its pids.
     await new Promise((r) => setTimeout(r, 1_500))
     expect(existsSync(pidFile)).toBe(false)
+  }, 60_000)
+
+  // WPA2 I3, a cancel after the wrapper exited while the agent it started still holds the pipes. POSIX: the wrapper led its
+  // own process group, which outlives it while a member lives, so the cancel's group kill still ends the agent. Windows:
+  // taskkill /T walks parent ids down from a LIVE root, and the root is gone (probed 2026-11-23: `taskkill /T /F /PID
+  // <exited wrapper>` answers "not found" and the grandchild runs on), so nothing that kills by the pid the app spawned can
+  // reach it, and a taskkill on a dead pid could hit a reused one. The ask still settles as cancelled, at once; ending the
+  // orphan needs a Job Object around the agent (a native helper), a concern in the WPA2 report. This case pins both halves,
+  // so the Windows half flips when that helper lands.
+  it('a cancel after the wrapper exited still settles the ask; POSIX ends the agent it left behind, Windows cannot (WPA2 I3)', async () => {
+    const { runner, req, pidFile } = setup(async () => 'notes', wrapperScript)
+    const run: Promise<AskResult> = runner.ask(req)
+    const pids = await readPids(pidFile, run)
+    expect(await waitDead(pids.agent)).toBe(true)
+    // The wrapper's exit reaches the deliver before the cancel.
+    await new Promise((r) => setTimeout(r, 300))
+    expect(isAlive(pids.grandchild)).toBe(true)
+    let settled = false
+    void run.then(() => { settled = true })
+    await new Promise((r) => setTimeout(r, 500))
+    expect(settled).toBe(false) // the agent it left holds the pipes: no close, so the ask still waits
+
+    const cancelledAt = Date.now()
+    runner.cancel(req.askId)
+    expect(await run).toMatchObject({ ok: false, cancelled: true })
+    expect(Date.now() - cancelledAt).toBeLessThan(10_000)
+    if (process.platform === 'win32') {
+      await new Promise((r) => setTimeout(r, 1_000))
+      expect(isAlive(pids.grandchild)).toBe(true) // the known limitation; afterEach ends it by the pid it wrote itself
+    } else {
+      expect(await waitDead(pids.grandchild)).toBe(true)
+    }
   }, 60_000)
 })
