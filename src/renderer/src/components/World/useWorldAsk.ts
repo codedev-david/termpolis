@@ -7,8 +7,13 @@
 // An answer arrives whole, so it is revealed one sentence at a time at reading pace and each
 // sentence's steps play as it appears (REVEAL_MS_PER_WORD). Reduced motion reveals it at once; a new
 // question, a replay, a dismissal and unmount all clear the pending reveal first. A design needs no viewer: it can be changed from the 2D view.
+// A cancel, a newer question or a different project that lands while a request waits on its model lookup
+// stops it there: it never reaches main (U3). Closing the answer, or the viewer going (2D) or changing,
+// while its tour flies stops the tour in the viewer and lets the pane go at once; the rest of the answer
+// is then shown whole (U5, U6).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
+import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
 import type { AskNoMemory, CitedEvidence, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import { lumopolisModel } from './worldAgentModel'
@@ -16,7 +21,8 @@ import { lumopolisModel } from './worldAgentModel'
 export type AskState = 'idle' | 'thinking' | 'answered' | 'error'
 
 export interface UseWorldAsk {
-  ask(q: string): void
+  /** Sends the question; false when it was not taken (blank once cleaned, over the limit, or nothing to ask about). */
+  ask(q: string): boolean
   cancel(): void
   retry(): void
   /** Plays the answer's actions again ("Show me again"). */
@@ -82,12 +88,24 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const playGen = useRef(0)
   /** The pending reveal steps of the answer on show. */
   const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  /** `playing` as it is now, for the handlers that stop a tour only when one is flying. */
+  const playingRef = useRef(false)
+  const setPlay = (on: boolean): void => {
+    playingRef.current = on
+    setPlaying(on)
+  }
+  /** The viewer as of the latest render: an answer that lands after a switch to 2D has none to tour. */
+  const viewerRef = useRef(viewer)
+  viewerRef.current = viewer
+  /** The answer on show, for showing it whole when its tour is cut short. */
+  const answerRef = useRef(answer)
+  answerRef.current = answer
   /** Stops the pending reveal: its timers, and the `playing` it would have cleared when it finished. */
   const clearTimers = useCallback((): void => {
     for (const t of timers.current) clearTimeout(t)
     timers.current = []
     playGen.current++
-    setPlaying(false)
+    setPlay(false)
   }, [])
   /** Adds one finished answer's tokens to the session (a failed or cancelled ask adds nothing). */
   const spend = (tokens: number): void => {
@@ -108,7 +126,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     const reduced = reducedMotion()
     const plays: Promise<void>[] = []
     setRevealed(0)
-    setPlaying(true)
+    setPlay(true)
     // Lifts the fog an earlier answer left; 'reset' would also close the card and move the camera.
     void Promise.resolve(v.apply({ type: 'fog', ids: [] })).catch(noop)
     const step = (i: number): void => {
@@ -119,16 +137,16 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         timers.current.push(setTimeout(() => step(i + 1), revealMs(a.sentences[i].text, reduced)))
         return
       }
-      void Promise.all(plays).then(() => { if (playGen.current === gen) setPlaying(false) })
+      void Promise.all(plays).then(() => { if (playGen.current === gen) setPlay(false) })
     }
-    if (a.sentences.length === 0) setPlaying(false)
+    if (a.sentences.length === 0) setPlay(false)
     else step(0)
   }, [clearTimers])
 
-  const ask = useCallback((raw: string): void => {
-    const q = raw.trim()
+  const ask = useCallback((raw: string): boolean => {
+    const q = cleanQuestion(raw)
     const design = isDesignKey(root)
-    if (q === '' || (!viewer && !design) || !root) return
+    if (!questionFits(q) || (!viewer && !design) || !root) return false
     cancelCurrent()
     clearTimers()
     viewer?.cancelActions()
@@ -147,9 +165,10 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     }
     if (design) {
       const said = summary.current
-      lumopolisModel().then((model) => window.termpolis.worldDesignRefine(root, q, said, model)).then(
+      // Checked again once the model is known: a change cancelled or replaced meanwhile is never sent (U3).
+      lumopolisModel().then((model) => (current.current === askId ? window.termpolis.worldDesignRefine(root, q, said, model) : null)).then(
         (res) => {
-          if (current.current !== askId) return
+          if (current.current !== askId || res === null) return
           if (!res.success) return fail(res.error)
           current.current = null
           summary.current = res.data.summary
@@ -162,12 +181,14 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         },
         () => fail(REFINE_UNREACHABLE),
       )
-      return
+      return true
     }
     const v = viewer as WorldViewer
     void (async () => {
       try {
         const model = await lumopolisModel()
+        // A question cancelled or replaced while its model was looked up never reaches main (U3).
+        if (current.current !== askId) return
         const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current, ...(model === undefined ? {} : { model }), ...(proposalRef.current === undefined ? {} : { proposalId: proposalRef.current }) })
         if (current.current !== askId) return
         if (!res.success) return fail(res.error)
@@ -183,11 +204,15 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         setCited(r.cited)
         setNoMemory(r.noMemory ?? null)
         setState('answered')
-        reveal(v, r.answer)
+        // The viewer as it is now: none (the 2D view) shows the answer whole, with no tour (U6).
+        const now = viewerRef.current
+        if (now) reveal(now, r.answer)
+        else setRevealed(r.answer.sentences.length)
       } catch {
         fail(ASK_UNREACHABLE)
       }
     })()
+    return true
   }, [viewer, root, cancelCurrent, clearTimers, reveal])
 
   const cancel = useCallback((): void => {
@@ -207,6 +232,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   }, [viewer, answer, reveal])
 
   const dismiss = useCallback((): void => {
+    // A tour still flying is stopped in the viewer, not left to land after the answer is gone (U5).
+    if (playingRef.current) (viewerRef.current as WorldViewer).cancelActions()
     clearTimers()
     setAnswer(null)
     setCited({})
@@ -214,6 +241,17 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     setNoMemory(null)
     setState('idle')
   }, [clearTimers])
+
+  // The viewer went (2D) or changed mid-tour: stop the tour in the old one and show the answer whole (U6).
+  const lastViewer = useRef(viewer)
+  useEffect(() => {
+    const prev = lastViewer.current
+    lastViewer.current = viewer
+    if (prev === viewer || !playingRef.current) return
+    ;(prev as WorldViewer).cancelActions()
+    clearTimers()
+    setRevealed((answerRef.current as WorldAnswer).sentences.length)
+  }, [viewer, clearTimers])
 
   useEffect(() => cancelCurrent, [cancelCurrent])
   useEffect(() => clearTimers, [clearTimers])

@@ -520,3 +520,177 @@ describe('useWorldAsk reveal', () => {
     expect(result.current.revealed).toBe(0)
   })
 })
+
+describe('useWorldAsk: cancels, closes and view switches that land mid-flight (U3, U5, U6, U9)', () => {
+  const sentences = [{ text: 'One two.', actions: [0], sep: '' }, { text: 'Three four.', actions: [1], sep: ' ' }, { text: 'Last.', actions: [], sep: ' ' }]
+  const actions = [{ type: 'focus', ids: ['b1'] }, { type: 'flow', edgeIds: ['e1'] }]
+  const touring = (askId: string): Res => ({
+    success: true,
+    data: { askId, ok: true, answer: { text: 'One two. Three four. Last.', sentences, actions, evidence: [], dropped: 0, unsupported: [], uncited: false }, summary: 's', cited: {} } as AskResult
+  })
+  /** A Lumopolis settings read that waits until the test lets it go (the model lookup before every request). */
+  const slowSettings = () => {
+    const gates: Array<() => void> = []
+    ;(window as any).termpolis.worldSettingsGet = vi.fn(() => new Promise((r) => { gates.push(() => r({ success: true, data: { worldAgent: 'claude' } })) }))
+    return { release: async (i: number) => { await act(async () => { gates[i]() }) } }
+  }
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('a question cancelled while its model is looked up never reaches main (U3)', async () => {
+    const s = slowSettings()
+    const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'C:/repo'))
+    act(() => { result.current.ask('first') })
+    act(() => { result.current.cancel() })
+    await s.release(0)
+    expect(ask).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('idle')
+  })
+
+  it('a question replaced while its model is looked up never reaches main; only the newer one does (U3)', async () => {
+    const s = slowSettings()
+    const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'C:/repo'))
+    act(() => { result.current.ask('first') })
+    act(() => { result.current.ask('second') })
+    await s.release(0)
+    expect(ask).not.toHaveBeenCalled()
+    await s.release(1)
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0][0]).toMatchObject({ question: 'second' })
+  })
+
+  it('an older lookup that finishes after a newer question was sent sends nothing, so main never cancels the newer one (A1)', async () => {
+    const s = slowSettings()
+    const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'C:/repo'))
+    act(() => { result.current.ask('first') })
+    act(() => { result.current.ask('second') })
+    await s.release(1)
+    expect(ask).toHaveBeenCalledTimes(1)
+    const newer = ask.mock.calls[0][0].askId
+    await s.release(0)
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0][0]).toMatchObject({ question: 'second' })
+    expect(cancel).not.toHaveBeenCalledWith(newer)
+  })
+
+  it('a question whose pane closed while its model was looked up never reaches main (A1)', async () => {
+    const s = slowSettings()
+    const { result, unmount } = renderHook(() => useWorldAsk(makeViewer() as never, 'C:/repo'))
+    act(() => { result.current.ask('first') })
+    unmount()
+    await s.release(0)
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('a question whose project changed while its model was looked up never reaches main (U3)', async () => {
+    const s = slowSettings()
+    const { result, rerender } = renderHook(({ root }) => useWorldAsk(makeViewer() as never, root), { initialProps: { root: 'C:/a' } })
+    act(() => { result.current.ask('first') })
+    rerender({ root: 'C:/b' })
+    await s.release(0)
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('a design change cancelled while its model is looked up is never sent (U3)', async () => {
+    const refine = vi.fn()
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn(async () => true) }
+    const s = slowSettings()
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1'))
+    act(() => { result.current.ask('add Payments') })
+    act(() => { result.current.cancel() })
+    await s.release(0)
+    expect(refine).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('idle')
+  })
+
+  it('closing an answer whose tour is still flying stops the viewer and lets the pane go at once (U5)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    ask.mockImplementation(async (req: AskRequest) => touring(req.askId))
+    const v = makeViewer()
+    v.play.mockImplementation(() => new Promise(() => undefined)) // a flight that never lands on its own
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.playing).toBe(true)
+    v.cancelActions.mockClear()
+    act(() => { result.current.dismiss() })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(result.current.playing).toBe(false)
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+  })
+
+  it('closing an answer whose tour is over leaves the viewer alone (a tour the user started since is not stopped)', async () => {
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.playing).toBe(false)
+    v.cancelActions.mockClear()
+    act(() => { result.current.dismiss() })
+    expect(v.cancelActions).not.toHaveBeenCalled()
+  })
+
+  it('switching to 2D mid-tour stops the old viewer, shows the whole answer and lets the pane go (U6)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    ask.mockImplementation(async (req: AskRequest) => touring(req.askId))
+    const v = makeViewer()
+    v.play.mockImplementation(() => new Promise(() => undefined))
+    const { result, rerender } = renderHook(({ viewer }) => useWorldAsk(viewer as never, 'r'), { initialProps: { viewer: v as ReturnType<typeof makeViewer> | null } })
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.revealed).toBe(1)
+    v.cancelActions.mockClear()
+    rerender({ viewer: null })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(result.current.playing).toBe(false)
+    expect(result.current.revealed).toBe(3)
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+  })
+
+  it('a different viewer mid-tour stops the old one the same way; a viewer change with no tour running changes nothing (U6)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    ask.mockImplementation(async (req: AskRequest) => touring(req.askId))
+    const v = makeViewer()
+    const w = makeViewer()
+    v.play.mockImplementation(() => new Promise(() => undefined))
+    const { result, rerender } = renderHook(({ viewer }) => useWorldAsk(viewer as never, 'r'), { initialProps: { viewer: v as ReturnType<typeof makeViewer> | null } })
+    await act(async () => { result.current.ask('q') })
+    v.cancelActions.mockClear()
+    rerender({ viewer: w })
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+    expect(result.current.revealed).toBe(3)
+    expect(result.current.playing).toBe(false)
+    rerender({ viewer: null })
+    rerender({ viewer: v })
+    expect(w.cancelActions).not.toHaveBeenCalled()
+    expect(v.cancelActions).toHaveBeenCalledTimes(1)
+  })
+
+  it('an answer that lands after the switch to 2D is shown whole, with no tour on the viewer that was (U6)', async () => {
+    const d = deferred<Res>()
+    ask.mockImplementationOnce(() => d.promise)
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ viewer }) => useWorldAsk(viewer as never, 'r'), { initialProps: { viewer: v as ReturnType<typeof makeViewer> | null } })
+    await act(async () => { result.current.ask('q') })
+    rerender({ viewer: null })
+    await act(async () => { d.resolve(touring(ask.mock.calls[0][0].askId)) })
+    expect(result.current.state).toBe('answered')
+    expect(result.current.revealed).toBe(3)
+    expect(result.current.playing).toBe(false)
+    expect(v.play).not.toHaveBeenCalled()
+    expect(v.apply).not.toHaveBeenCalled()
+  })
+
+  it('ask says whether the question was taken: blank, too long or no viewer is refused and sends nothing (U9)', async () => {
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'C:/repo'))
+    let took: boolean[] = []
+    await act(async () => { took = [result.current.ask(' \u0000 '), result.current.ask('x'.repeat(4001))] })
+    expect(took).toEqual([false, false])
+    expect(ask).not.toHaveBeenCalled()
+    const none = renderHook(() => useWorldAsk(null, 'C:/repo'))
+    expect(none.result.current.ask('q')).toBe(false)
+    await act(async () => { took = [result.current.ask(' Why\u0007 is\tit slow? ' + '\u0000'.repeat(10))] })
+    expect(took).toEqual([true])
+    expect(ask.mock.calls[0][0]).toMatchObject({ question: 'Why is\tit slow?' })
+  })
+})
