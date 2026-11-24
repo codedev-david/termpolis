@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import type { WorldDoc } from '../../shared/world/types'
 import { isNewerWorld, migrateWorld, validateWorld, WORLD_VERSION, type DroppedItem } from '../../shared/world/validate'
 import { isStageCache, type StageCache } from './stageCache'
-import { moveAside, retryLocked, sleepMs, type Sleep } from './storeFiles'
+import { copyAside, moveAside, retryLocked, sleepMs, type Sleep } from './storeFiles'
 
 /** `<key>.json` with every character outside `[A-Za-z0-9._-]` replaced by `_`. */
 export function worldFileName(projectKey: string): string {
@@ -53,12 +53,29 @@ export interface WorldStoreDeps {
 /** What a stored world that cannot be read says: the raw error (its code and full path) goes to the log only. */
 export const WORLD_READ_FAILED = "Lumopolis couldn't read this world's saved map. Try again in a moment."
 
-/** A stored world that exists but cannot be read. Its message is fixed and carries no path. */
+/** Which stored file could not be read: a world, its annotations, or the list of worlds. */
+export type WorldReadCode = 'WORLD_READ_FAILED' | 'ANNOTATIONS_READ_FAILED' | 'SOURCES_READ_FAILED'
+
+/** A stored file that exists but cannot be read. Its message is fixed and carries no path; its code says which file. */
 export class WorldReadError extends Error {
-  readonly code = 'WORLD_READ_FAILED'
-  constructor() {
+  readonly code: WorldReadCode
+  constructor(code: WorldReadCode = 'WORLD_READ_FAILED') {
     super(WORLD_READ_FAILED)
     this.name = 'WorldReadError'
+    this.code = code
+  }
+}
+
+/** PENDING SIGN-OFF by David (the M8 line, the same text as the pane's SAVED_BY_NEWER note): what refusing to change a
+ *  world a newer Termpolis saved answers. */
+export const WORLD_SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
+
+/** A change this version will not make to a world a newer version saved (annotating it would rewrite its notes file). */
+export class WorldSavedByNewerError extends Error {
+  readonly code = 'WORLD_SAVED_BY_NEWER'
+  constructor() {
+    super(WORLD_SAVED_BY_NEWER)
+    this.name = 'WorldSavedByNewerError'
   }
 }
 
@@ -153,7 +170,8 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   }
 
   /** Whether the disk holds a newer version's world for `name`: remembered from the last load, else read once.
-   *  A read that fails for any reason but a missing file is not remembered and counts as no. */
+   *  A read that fails for any reason but a missing file is not remembered and throws, so a save never writes over a
+   *  world it could not look at (the caller gets the fixed, path-free WorldReadError; the log gets the raw error). */
   async function isNewerOnDisk(name: string): Promise<boolean> {
     const known = newerOnDisk.get(name)
     if (known !== undefined) return known
@@ -161,7 +179,11 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     try {
       text = await readText(join(folder, name))
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') newerOnDisk.set(name, false)
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log(`[world store] the stored world ${name} could not be read before a save: ${String(err)}`)
+        throw new WorldReadError()
+      }
+      newerOnDisk.set(name, false)
       return false
     }
     const newer = isNewerWorld(parseOrUndefined(text))
@@ -169,11 +191,12 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     return newer
   }
 
-  const checked = (doc: unknown): WorldDoc | null => {
+  /** The lenient view of a stored world, and whether it left items out; null when it is broken past that. */
+  const checked = (doc: unknown): { doc: WorldDoc; dropped: boolean } | null => {
     const result = validateWorld(doc, { dropBadItems: true })
     if (!result.ok) return null
     if (result.dropped) log(`[world store] a stored world loaded without its bad items: ${droppedText(result.dropped)}`)
-    return result.doc
+    return { doc: result.doc, dropped: result.dropped !== undefined }
   }
 
   return {
@@ -198,15 +221,24 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
         newerOnDisk.set(name, true)
         const own = shadow.get(name)
         if (own) return { ...structuredClone(own), savedByNewer: true }
-        const doc = checked({ ...(parsed as Record<string, unknown>), version: WORLD_VERSION })
-        return doc ? { ...doc, savedByNewer: true } : null
+        // No backup is needed for what this view leaves out: a newer version's file is never written by this one.
+        const view = checked({ ...(parsed as Record<string, unknown>), version: WORLD_VERSION })
+        return view ? { ...view.doc, savedByNewer: true } : null
       }
       newerOnDisk.set(name, false)
       shadow.delete(name)
-      const doc = checked(migrateWorld(parsed))
-      if (doc) return doc
+      const view = checked(migrateWorld(parsed))
+      if (view) {
+        // A later save writes the doc without the items left out, so the file as it is goes into the backups first,
+        // untouched (once per distinct content). Without that backup the world is not handed out to be saved over.
+        if (view.dropped && !(await copyAside(file, { now, sleep }))) {
+          log(`[world store] the stored world ${name} left items out and could not be backed up first`)
+          throw new WorldReadError()
+        }
+        return view.doc
+      }
       // Keep the broken file for inspection; a failed backup still reads as absent.
-      await moveAside(file, { now, rename })
+      await moveAside(file, { now, rename, sleep })
       return null
     },
 

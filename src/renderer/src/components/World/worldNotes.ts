@@ -11,10 +11,9 @@ const NESTED_START = 'The repositories inside this folder hold more than '
 const UNREADABLE = /^[\d,]+ files? (?:was|were) skipped because (?:its|their) names? can't be read\./
 const READ_CAPPED = /^All [\d,]+ files are shown, but only [\d,]+ were read for the lines between them\./
 const PROVISIONAL = 'Still reading the files: '
-// PLACEHOLDER until David signs off the wording (WP3 report): Lumopolis's existing read-failure line (READ_FAILED in
-// main/world/exportIpc.ts). Proposed: "This world was saved by a newer Termpolis, so this version shows a copy and
-// leaves the saved one as it is."
-const SAVED_BY_NEWER = "Lumopolis couldn't read that world. Try again."
+// PENDING SIGN-OFF by David (WP3 report): the line he proposed for a world a newer Termpolis saved. main's
+// WORLD_SAVED_BY_NEWER (world/worldStore.ts) says the same when an annotate over such a world is refused.
+const SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
 
 const count = (n: number): string => n.toLocaleString('en-US')
 

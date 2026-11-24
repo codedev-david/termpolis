@@ -25,7 +25,9 @@ describe('worldNotes: what the pane says about the files a world maps', () => {
 
   it('WP3: a world saved by a newer Termpolis says so first, and the note is told apart as a files note', () => {
     // Placeholder wording until David signs off the proposed line (see the WP3 report).
-    expect(savedByNewerNotice()).toBe("Lumopolis couldn't read that world. Try again.")
+    expect(savedByNewerNotice()).toBe('This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.')
+    // export's read-failure line is not a files note
+    expect(isFilesNotice("Lumopolis couldn't read that world. Try again.")).toBe(false)
     expect(filesNotice({ savedByNewer: true })).toBe(savedByNewerNotice())
     expect(filesNotice({ savedByNewer: true, filesUnreadable: 1 })).toBe(`${savedByNewerNotice()} ${unreadableNotice(1)}`)
     expect(filesNotice({ savedByNewer: false } as never)).toBeNull()

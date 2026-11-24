@@ -45,7 +45,7 @@ import {
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
-import { createWorldStore, type WorldStore } from './worldStore'
+import { createWorldStore, WorldSavedByNewerError, type WorldStore } from './worldStore'
 import { validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
@@ -53,6 +53,8 @@ import { validateWorld } from '../../shared/world/validate'
 export interface SerializedError {
   message: string
   name: string
+  /** The error's code (WORLD_READ_FAILED, ENOENT) when it is a short constant; anything else is left out. */
+  code?: string
 }
 
 export interface WorldHead {
@@ -147,8 +149,13 @@ export type WorldHostResponse =
   | WorldRunsMsg
 
 /** Errors do not survive structured clone (an Error posts as `{}`), so flatten them. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/
+
 export function serializeError(err: unknown): SerializedError {
-  if (err instanceof Error) return { message: err.message || String(err), name: err.name || 'Error' }
+  if (err instanceof Error) {
+    const code = (err as { code?: unknown }).code
+    return { message: err.message || String(err), name: err.name || 'Error', ...(typeof code === 'string' && ERROR_CODE.test(code) ? { code } : {}) }
+  }
   return { message: typeof err === 'string' ? err : String(err), name: 'Error' }
 }
 
@@ -949,6 +956,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       return serial(key, async () => {
         const doc = await st.store.load(key)
         if (!doc || !isStr(itemId) || !hasPart(doc, itemId)) throw new Error(NO_PART)
+        // A newer version's world is shown, not changed: an add would rewrite its notes file in this version's shape.
+        if (doc.savedByNewer) throw new WorldSavedByNewerError()
         await st.annotations.add(key, itemId, claim as Claim)
         // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
         const merged = { ...mergeAnnotations(doc, await st.annotations.list(key)), generatedAt: Math.max(now(), doc.generatedAt + 1) }

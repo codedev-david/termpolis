@@ -63,7 +63,7 @@ describe('worldStore', () => {
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
-  it('corrupt file → load null + a timestamped .bad backup; earlier backups are kept (F21)', async () => {
+  it('corrupt file → load null + a timestamped, numbered .bad backup; earlier backups are kept (F21)', async () => {
     let clock = Date.UTC(2026, 10, 23, 9, 30, 0, 5)
     const store = createWorldStore(dir, { now: () => clock })
     const world = join(dir, 'world')
@@ -71,9 +71,9 @@ describe('worldStore', () => {
     await writeFile(join(world, 'demo.json'), '{ not json')
     await writeFile(join(world, 'demo.json.bad'), 'older bad copy')
     expect(await store.load('demo')).toBeNull()
-    expect((await readdir(world)).sort()).toEqual(['demo.json.2026-11-23T09-30-00-005Z.bad', 'demo.json.bad'])
+    expect((await readdir(world)).sort()).toEqual(['demo.json.2026-11-23T09-30-00-005Z-1.bad', 'demo.json.bad'])
     expect(await readFile(join(world, 'demo.json.bad'), 'utf8')).toBe('older bad copy')
-    expect(await readFile(join(world, 'demo.json.2026-11-23T09-30-00-005Z.bad'), 'utf8')).toBe('{ not json')
+    expect(await readFile(join(world, 'demo.json.2026-11-23T09-30-00-005Z-1.bad'), 'utf8')).toBe('{ not json')
 
     // Valid JSON that fails validateWorld is treated the same way, and a second corruption never overwrites the first.
     await writeFile(join(world, 'demo.json'), JSON.stringify({ ...doc(), layout: 'x' }))
@@ -82,18 +82,18 @@ describe('worldStore', () => {
     clock += 1000
     expect(await store.load('demo')).toBeNull()
     expect((await readdir(world)).sort()).toEqual([
-      'demo.json.2026-11-23T09-30-00-005Z-1.bad', 'demo.json.2026-11-23T09-30-00-005Z.bad', 'demo.json.2026-11-23T09-30-01-005Z.bad', 'demo.json.bad'
+      'demo.json.2026-11-23T09-30-00-005Z-1.bad', 'demo.json.2026-11-23T09-30-00-005Z-2.bad', 'demo.json.2026-11-23T09-30-01-005Z-3.bad', 'demo.json.bad'
     ])
-    expect(JSON.parse(await readFile(join(world, 'demo.json.2026-11-23T09-30-00-005Z-1.bad'), 'utf8')).layout).toBe('x')
+    expect(JSON.parse(await readFile(join(world, 'demo.json.2026-11-23T09-30-00-005Z-2.bad'), 'utf8')).layout).toBe('x')
   })
 
-  it('keeps only the five newest backups of a file; an old fixed-name .bad counts as the oldest, other files are never touched', async () => {
+  it('keeps only the five newest numbered backups of a file; the old fixed-name .bad and other files are never touched', async () => {
     let clock = Date.UTC(2026, 0, 1)
     const store = createWorldStore(dir, { now: () => clock })
     const world = join(dir, 'world')
     await mkdir(world, { recursive: true })
-    const others = ['demo.json.bad.txt', 'demo.json.notastamp.bad', 'other.json.bad', 'demo.json.stages.json', 'demox.json.2026-01-01T00-00-00-000Z.bad']
-    for (const name of ['demo.json.bad', ...others]) await writeFile(join(world, name), name)
+    const others = ['demo.json.bad.txt', 'demo.json.notastamp.bad', 'other.json.bad', 'demo.json.stages.json', 'demox.json.2026-01-01T00-00-00-000Z-1.bad', 'demo.json.bad']
+    for (const name of others) await writeFile(join(world, name), name)
     for (let i = 0; i < 6; i++) {
       await writeFile(join(world, 'demo.json'), `broken ${i}`)
       expect(await store.load('demo')).toBeNull()
@@ -101,11 +101,11 @@ describe('worldStore', () => {
     }
     const left = (await readdir(world)).sort()
     expect(left.filter((n) => !others.includes(n))).toEqual([
-      'demo.json.2026-01-01T00-01-00-000Z.bad', 'demo.json.2026-01-01T00-02-00-000Z.bad', 'demo.json.2026-01-01T00-03-00-000Z.bad',
-      'demo.json.2026-01-01T00-04-00-000Z.bad', 'demo.json.2026-01-01T00-05-00-000Z.bad'
+      'demo.json.2026-01-01T00-01-00-000Z-2.bad', 'demo.json.2026-01-01T00-02-00-000Z-3.bad', 'demo.json.2026-01-01T00-03-00-000Z-4.bad',
+      'demo.json.2026-01-01T00-04-00-000Z-5.bad', 'demo.json.2026-01-01T00-05-00-000Z-6.bad'
     ])
-    for (const name of others) expect(left).toContain(name)
-    expect(await readFile(join(world, 'demo.json.2026-01-01T00-05-00-000Z.bad'), 'utf8')).toBe('broken 5')
+    for (const name of others) expect(await readFile(join(world, name), 'utf8')).toBe(name)
+    expect(await readFile(join(world, 'demo.json.2026-01-01T00-05-00-000Z-6.bad'), 'utf8')).toBe('broken 5')
   })
 
   it('a corrupt file whose backup cannot be written still loads as null and stays where it was', async () => {
@@ -179,9 +179,46 @@ describe('worldStore', () => {
     })
     expect(lines).toEqual(['[world store] a stored world loaded without its bad items: claim #0, tour step #1, tour step #0, tour #1'])
     expect(lines[0]).not.toMatch(/PRIVATE|secret|demo|Walk/)
-    // the file is left as it was, not moved aside
-    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
-    expect(JSON.parse(await readFile(join(dir, 'world', 'demo.json'), 'utf8'))).toEqual(stored)
+    // the file is left as it was, not moved aside, and an untouched copy of it is in the backups
+    const text = JSON.stringify(stored)
+    const names = (await readdir(join(dir, 'world'))).sort()
+    expect(names).toHaveLength(2)
+    expect(names[1]).toMatch(/^demo\.json\.\d{4}-.*Z-1\.bad$/)
+    expect(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).toBe(text)
+    expect(await readFile(join(dir, 'world', names[1]), 'utf8')).toBe(text)
+  })
+
+  it('a load that leaves items out backs the file up once per content, so a later save never loses them (I1)', async () => {
+    const at = Date.UTC(2026, 10, 23, 1, 2, 3, 4)
+    const store = createWorldStore(dir, { now: () => at, log: () => undefined })
+    const bad = { text: 'kept in the backup', state: 'nonsense', evidence: [] }
+    const stored = { ...doc(), buildings: [{ ...doc().buildings[0], why: [bad] }] }
+    const text = JSON.stringify(stored)
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'demo.json'), text)
+    const loaded = await store.load('demo')
+    expect(loaded?.buildings[0].why).toEqual([])
+    // loading the same file again, in this store or another, makes no second backup
+    await store.load('demo')
+    await createWorldStore(dir, { now: () => at + 1, log: () => undefined }).load('demo')
+    await store.save(loaded as WorldDoc)
+    const backup = join(dir, 'world', 'demo.json.2026-11-23T01-02-03-004Z-1.bad')
+    expect((await readdir(join(dir, 'world'))).sort()).toEqual(['demo.json', 'demo.json.2026-11-23T01-02-03-004Z-1.bad'])
+    expect(await readFile(backup, 'utf8')).toBe(text)
+    expect(await readFile(backup, 'utf8')).toContain('kept in the backup')
+    expect(JSON.parse(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).buildings[0].why).toEqual([])
+  })
+
+  it('a load that leaves items out but cannot back the file up fails closed with the fixed error, and nothing is written', async () => {
+    const lines: string[] = []
+    const text = JSON.stringify({ ...doc(), tours: [7] })
+    // the store's read sees the world; the file itself is gone by the time the backup copies it
+    const store = createWorldStore(dir, { log: (m) => lines.push(m), readFile: (async () => text) as never })
+    const err = await store.load('demo').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorldReadError)
+    expect((err as WorldReadError).message).toBe(WORLD_READ_FAILED)
+    expect(lines[1]).toBe('[world store] the stored world demo.json left items out and could not be backed up first')
+    await expect(readdir(join(dir, 'world'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('logs dropped items to the console when no log is given', async () => {
@@ -220,12 +257,10 @@ describe('worldStore', () => {
   })
 
   it('a failed rename removes the temp file and rethrows', async () => {
-    const store = createWorldStore(dir, { sleep: async () => undefined })
-    // The target is a non-empty directory, so the rename onto it fails on every platform.
-    await mkdir(join(dir, 'world', 'demo.json'), { recursive: true })
-    await writeFile(join(dir, 'world', 'demo.json', 'keep'), 'x')
-    await expect(store.save(doc())).rejects.toThrow()
-    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+    const refused = Object.assign(new Error('refused'), { code: 'EINVAL' })
+    const store = createWorldStore(dir, { sleep: async () => undefined, rename: async () => { throw refused } })
+    await expect(store.save(doc())).rejects.toBe(refused)
+    expect(await readdir(join(dir, 'world'))).toEqual([])
   })
 
   it('a read error other than a missing file is not swallowed: the caller gets a fixed, path-free error and the log the raw one (F-R11)', async () => {
@@ -414,14 +449,30 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     expect(JSON.parse(await readFile(join(dir, 'world', 'y.json'), 'utf8')).generatedAt).toBe(3)
   })
 
-  it('a save whose look at the file fails for another reason is not remembered and writes as before', async () => {
-    const store = createWorldStore(dir, { sleep: async () => undefined })
+  it('a save whose look at the file fails for another reason refuses with the fixed error, writes nothing, and is not remembered (M1)', async () => {
+    const lines: string[] = []
+    const store = createWorldStore(dir, { sleep: async () => undefined, log: (m) => lines.push(m) })
     await mkdir(file(), { recursive: true })
     await writeFile(join(file(), 'keep'), 'x')
-    await expect(store.save(doc())).rejects.toThrow()
+    const err = await store.save(doc()).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorldReadError)
+    expect((err as WorldReadError).message).toBe(WORLD_READ_FAILED)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\[world store\] the stored world demo\.json could not be read before a save: Error: EISDIR/)
+    expect(await readdir(file())).toEqual(['keep'])
     await rm(file(), { recursive: true })
     await store.save(doc())
     expect(JSON.parse(await readFile(file(), 'utf8'))).toEqual(doc())
+  })
+
+  it('a newer world held by another program through every retry is never saved over (M1)', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const text = JSON.stringify(newer())
+    await writeFile(file(), text)
+    const held = Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' })
+    const store = createWorldStore(dir, { sleep: async () => undefined, log: () => undefined, readFile: (async () => { throw held }) as never })
+    await expect(store.save(doc())).rejects.toBeInstanceOf(WorldReadError)
+    expect(await readFile(file(), 'utf8')).toBe(text)
   })
 
   it('once the newer file is gone or replaced by one of ours, the copy in memory goes and the disk is used again', async () => {

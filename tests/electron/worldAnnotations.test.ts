@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cardText } from '../../src/main/world/cardText'
 import { filterWorld } from '../../src/main/world/worldHost'
 import { minimal } from '../renderer/world/helpers'
@@ -14,8 +15,11 @@ import {
   MAX_EVIDENCE_EXCERPT,
   MAX_EVIDENCE_REF,
   MAX_ANNOTATIONS_PER_ITEM,
-  mergeAnnotations
+  mergeAnnotations,
+  withAnnotations
 } from '../../src/main/world/annotations'
+import { CLAIM_TRIES } from '../../src/main/world/storeFiles'
+import { createWorldStore, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import type { Claim, WorldDoc } from '../../src/shared/world/types'
 
 const person = (text: string): Claim => ({
@@ -126,13 +130,85 @@ describe('annotation store', () => {
     expect(await store.list('k')).toEqual({})
   })
 
-  it('a corrupt file reads as empty and the next add overwrites it', async () => {
-    const store = createAnnotationStore(dir)
+  it('a corrupt file reads as empty; the next add moves it aside to a numbered backup first, then starts fresh (X1)', async () => {
+    const at = Date.UTC(2026, 10, 23, 1, 2, 3, 4)
+    const store = createAnnotationStore(dir, { now: () => at })
     await mkdir(folder(), { recursive: true })
-    await writeFile(fileFor('k'), '{not json', 'utf8')
+    await writeFile(fileFor('k'), '{"b1":[{"text":"made by a person"', 'utf8')
     expect(await store.list('k')).toEqual({})
     await store.add('k', 'b1', person('fresh'))
     expect(await store.list('k')).toEqual({ b1: [person('fresh')] })
+    expect(await readFile(`${fileFor('k')}.2026-11-23T01-02-03-004Z-1.bad`, 'utf8')).toBe('{"b1":[{"text":"made by a person"')
+  })
+
+  it('a corrupt file that cannot be moved aside refuses the add and stays as it was (X1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const at = Date.UTC(2026, 10, 23, 1, 2, 3, 4)
+      const file = fileFor('k')
+      // every backup name is taken by the time the store claims one
+      const crowded = (): number => {
+        for (let n = 1; n <= CLAIM_TRIES; n++) writeFileSync(`${file}.2026-11-23T01-02-03-004Z-${n}.bad`, 'taken')
+        return at
+      }
+      const store = createAnnotationStore(dir, { now: crowded })
+      await mkdir(folder(), { recursive: true })
+      await writeFile(file, '{broken', 'utf8')
+      const err = await store.add('k', 'b1', person('fresh')).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(WorldReadError)
+      expect(err).toMatchObject({ code: 'ANNOTATIONS_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(await readFile(file, 'utf8')).toBe('{broken')
+      expect(warn).toHaveBeenCalledWith("[world annotations] a world's annotations do not parse and could not be moved aside, so nothing was added")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a file another program holds is read again; held through every try, the add is refused and nothing is wiped (X1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await createAnnotationStore(dir).add('k', 'b1', person('first'))
+      const before = await readFile(fileFor('k'), 'utf8')
+      const held = (): Error => Object.assign(new Error(`EBUSY: resource busy, open '${fileFor('k')}'`), { code: 'EBUSY' })
+      // held for a moment: read again, and the add lands beside the first
+      let refusals = 2
+      const waits: number[] = []
+      const brief = createAnnotationStore(dir, {
+        sleep: async (ms) => { waits.push(ms) },
+        readFile: async (file, enc) => { if (refusals-- > 0) throw held(); return readFile(file, enc) }
+      })
+      await brief.add('k', 'b1', person('second'))
+      expect(waits).toEqual([100, 200])
+      expect((await brief.list('k')).b1.map((c) => c.text)).toEqual(['first', 'second'])
+      const kept = await readFile(fileFor('k'), 'utf8')
+      // held through every try: refused with the fixed, path-free error, the raw one only in the log
+      const stuck = createAnnotationStore(dir, { sleep: async () => undefined, readFile: async () => { throw held() } })
+      const err = await stuck.add('k', 'b1', person('third')).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(WorldReadError)
+      expect(err).toMatchObject({ code: 'ANNOTATIONS_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(String((err as Error).message)).not.toContain(dir)
+      expect(warn.mock.calls[0][0]).toMatch(/^\[world annotations\] a world's annotations could not be read, so nothing was added: Error: EBUSY/)
+      expect(await readFile(fileFor('k'), 'utf8')).toBe(kept)
+      expect(kept).not.toBe(before)
+      // a display read of the held file shows nothing, and writes nothing
+      expect(await stuck.list('k')).toEqual({})
+      expect(await readFile(fileFor('k'), 'utf8')).toBe(kept)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('any other read error (a folder in the file\'s place) refuses the add at once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const store = createAnnotationStore(dir, { sleep: async () => { throw new Error('no wait expected') } })
+      await mkdir(fileFor('k'), { recursive: true })
+      await writeFile(join(fileFor('k'), 'keep'), 'x', 'utf8')
+      await expect(store.add('k', 'b1', person('x'))).rejects.toBeInstanceOf(WorldReadError)
+      expect(await readFile(join(fileFor('k'), 'keep'), 'utf8')).toBe('x')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('drops what is malformed inside a readable file', async () => {
@@ -145,7 +221,8 @@ describe('annotation store', () => {
   })
 
   it('a failed write leaves no temp file and reports the error', async () => {
-    const store = createAnnotationStore(dir)
+    // the read finds the file empty; the final rename onto the folder in its place then fails
+    const store = createAnnotationStore(dir, { readFile: async () => '{}' })
     // A non-empty folder where the file should go makes the final rename fail.
     await mkdir(fileFor('k'), { recursive: true })
     await writeFile(join(fileFor('k'), 'keep'), 'x', 'utf8')
@@ -273,5 +350,24 @@ describe('annotation store copyRenamed (WP5)', () => {
     const [a, b] = [createAnnotationStore(dir), createAnnotationStore(dir)]
     await Promise.all([a.copyRenamed('k', { old: 'new' }), b.copyRenamed('k', { old: 'new' })])
     expect(await a.list('k')).toEqual({ old: [person('n')], new: [person('n')] })
+  })
+})
+
+describe('withAnnotations', () => {
+  it('a design save over a newer world marks the caller\'s doc, not only the merged copy (M7)', async () => {
+    const inner = createWorldStore(dir)
+    const store = withAnnotations(inner, createAnnotationStore(dir))
+    const design = { ...minimal(), projectKey: 'design:x' } as WorldDoc
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const newer = JSON.stringify({ ...design, version: 99 })
+    await writeFile(join(dir, 'world', worldFileName('design:x')), newer)
+    const out = { ...design }
+    await store.save(out)
+    expect(out.savedByNewer).toBe(true)
+    expect(await readFile(join(dir, 'world', worldFileName('design:x')), 'utf8')).toBe(newer)
+    // a design save over one of ours leaves the caller's doc unmarked
+    const own = { ...minimal(), projectKey: 'design:y' } as WorldDoc
+    await store.save(own)
+    expect(own.savedByNewer).toBeUndefined()
   })
 })

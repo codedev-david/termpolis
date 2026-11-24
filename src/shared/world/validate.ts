@@ -435,7 +435,10 @@ export function validateWorld(
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
   // filesCapped, nestedCapped, filesUnreadable, filesRead and filesListed (the files note's counts) are kept only as
   // whole numbers of at least 0; provisional and savedByNewer only as true. A cargo or process colour that is not a
-  // plain hex colour is made grey rather than failing the world. The caller's doc is never changed: a copy is returned.
+  // plain hex colour is made grey rather than failing the world. The caller's doc IS changed in place: a missing claims
+  // list or name state is filled in, and in lenient mode (dropBadItems) bad claims, tour steps and tours are spliced out
+  // of its arrays. So pass a doc you own (the store passes one it just parsed). The doc returned is that doc, or a shallow
+  // copy of it when one of the fields above had to be fixed or left out.
   const cargo = safeColors(doc.cargo as Rec)
   const processes = safeColors(doc.processes as Rec)
   const badHand = doc.runtimeHandSet !== undefined && !(Array.isArray(doc.runtimeHandSet) && doc.runtimeHandSet.every((x) => typeof x === 'string'))

@@ -19,7 +19,7 @@ import { createLlmGate, GATE_SETTLE_GRACE_MS, WORLD_LLM_HOST_LIMIT } from '../..
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS } from '../../src/main/world/label'
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
-import { worldFileName } from '../../src/main/world/worldStore'
+import { WORLD_READ_FAILED, worldFileName } from '../../src/main/world/worldStore'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
 import type { WorldDoc } from '../../src/shared/world/types'
 
@@ -170,6 +170,15 @@ describe('createWorldClient', () => {
     expect(await a).toBe('A')
     expect(await b).toBe('B')
     await expect(c).rejects.toMatchObject({ name: 'TypeError', message: 'bad query' })
+  })
+
+  it('a host error keeps its code, so main sees a WorldReadError as one (I2)', async () => {
+    const { client } = setup({}, (t) => {
+      t.reply = (m) => ({ kind: 'result', id: m.id, ok: false, error: { name: 'WorldReadError', message: WORLD_READ_FAILED, code: 'WORLD_READ_FAILED' } })
+    })
+    const err = await client.get(ROOT).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).toMatchObject({ name: 'WorldReadError', message: WORLD_READ_FAILED, code: 'WORLD_READ_FAILED' })
   })
 
   it('a host error without detail still rejects with a message', async () => {

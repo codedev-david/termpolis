@@ -101,8 +101,9 @@ interface Waiter {
 }
 
 const toError = (e: SerializedError | undefined): Error => {
-  const err = new Error(e?.message || 'Lumopolis host call failed')
+  const err: Error & { code?: string } = new Error(e?.message || 'Lumopolis host call failed')
   err.name = e?.name || 'Error'
+  if (e?.code) err.code = e.code
   return err
 }
 

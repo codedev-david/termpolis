@@ -48,7 +48,7 @@ import {
 import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, NO_GIT_MESSAGE, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
-import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
+import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { emptyDesignDoc } from '../../src/shared/world/designPatch'
@@ -153,6 +153,23 @@ afterEach(async () => {
 })
 
 describe('serializeError', () => {
+  it('keeps a short constant code, and leaves out any other code (F-R11, I2)', () => {
+    expect(serializeError(new WorldReadError())).toEqual({ message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' })
+    expect(serializeError(Object.assign(new Error('x'), { code: 'ENOENT' }))).toEqual({ message: 'x', name: 'Error', code: 'ENOENT' })
+    for (const code of ['C:\\Users\\me\\world.json', 'lower', '', 'A'.repeat(65), 7]) {
+      expect(serializeError(Object.assign(new Error('x'), { code }))).toEqual({ message: 'x', name: 'Error' })
+    }
+  })
+
+  it('a WorldReadError thrown in the host reaches the caller with its name, message and code, and no path (I2)', async () => {
+    const store = memStore()
+    store.load = async () => { throw new WorldReadError() }
+    const h = harness({}, store)
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'read', args: ['k1', {}] })
+    expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
+  })
+
   it('flattens errors, strings and anything else', () => {
     const e = new TypeError('bad')
     expect(serializeError(e)).toEqual({ message: 'bad', name: 'TypeError' })
@@ -2102,6 +2119,16 @@ describe('annotate', () => {
     expect(again.edges[0].claims).toEqual([person('Reads rows')])
     expect(again.buildings[0].claims.map((c) => c.text)).toEqual(['Front door', 'Second'])
     expect(ann.added).toHaveLength(3)
+  })
+
+  it('refuses to annotate a world a newer Termpolis saved, adding and saving nothing (M6)', async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann }, memStore({ k1: { ...doc(), savedByNewer: true } }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['k1', 'b-api', person('x')] })
+    expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
+    expect(ann.added).toEqual([])
+    expect(h.store.saves).toEqual([])
   })
 
   it('rejects an unknown part, an unknown world and a non-string id with "No part with that id."', async () => {

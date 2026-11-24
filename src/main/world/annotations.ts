@@ -1,7 +1,9 @@
 // Lumopolis annotations: what a person confirmed in the pane, kept apart from the compiled world so a
 // recompile never loses it. One JSON file per world under `<dir>/world/annotations/`, named by the
 // sha256 of the world key (any key is safe as a file name), written atomically with async fs under a lock file
-// that holds across processes. A file that does not parse reads as empty and the next add overwrites it.
+// that holds across processes. A display read shows nothing when the file cannot be read; a writer never writes after a
+// failed read: a held file is read again, any other read error refuses the add (a fixed, path-free WorldReadError), and a
+// file that does not parse is moved aside to a numbered .bad backup before the add starts it fresh.
 import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,7 +11,8 @@ import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
 import { copyClaims } from './idMigration'
-import type { WorldStore } from './worldStore'
+import { moveAside, retryLocked, type Sleep } from './storeFiles'
+import { WorldReadError, type WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
 export const MAX_ANNOTATION_EVIDENCE = 8
@@ -24,7 +27,8 @@ export const NO_PART = 'No part with that id.'
 export interface AnnotationStore {
   /** Item id → its annotations, oldest first. Empty when none were stored or the file is unreadable. */
   list(key: string): Promise<Record<string, Claim[]>>
-  /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM. */
+  /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM.
+   *  Rejects with WorldReadError (code ANNOTATIONS_READ_FAILED) when the stored annotations cannot be read, writing nothing. */
   add(key: string, itemId: string, claim: Claim): Promise<void>
   /**
    * Copies each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
@@ -231,23 +235,51 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
   }
 }
 
-export function createAnnotationStore(dir: string): AnnotationStore {
+/** Seams for tests: the file read, the wait between reads of a held file, and the clock that stamps a backup. */
+export interface AnnotationStoreDeps {
+  readFile?: (file: string, encoding: 'utf8') => Promise<string>
+  sleep?: Sleep
+  now?: () => number
+}
+
+export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {}): AnnotationStore {
   const folder = annotationsFolder(dir)
   const lock = createKeyedLock()
   const fileOf = (key: string): string => annotationsFileOf(dir, key)
+  const readText = deps.readFile ?? readFile
+  const sleep = deps.sleep ?? pause
+  const now = deps.now ?? Date.now
 
+  /** For display: what can be read, nothing when the file is missing, unreadable or broken. */
   const read = async (key: string): Promise<Record<string, Claim[]>> => {
+    try {
+      return cleanFile(JSON.parse(await retryLocked(() => readText(fileOf(key), 'utf8'), sleep)))
+    } catch {
+      return cleanFile(undefined)
+    }
+  }
+
+  /** For a writer: the stored annotations, empty only for a missing file or one just moved aside; otherwise it throws. */
+  const readForWrite = async (key: string): Promise<Record<string, Claim[]>> => {
+    const file = fileOf(key)
     let text: string
     try {
-      text = await readFile(fileOf(key), 'utf8')
-    } catch {
-      return cleanFile(undefined)
+      text = await retryLocked(() => readText(file, 'utf8'), sleep)
+    } catch (err) {
+      if (codeOf(err) === 'ENOENT') return cleanFile(undefined)
+      console.warn(`[world annotations] a world's annotations could not be read, so nothing was added: ${String(err)}`)
+      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
     }
+    let parsed: unknown
     try {
-      return cleanFile(JSON.parse(text))
+      parsed = JSON.parse(text)
     } catch {
-      return cleanFile(undefined)
+      // Kept for inspection, never written over: without the backup the add is refused.
+      if (await moveAside(file, { now, sleep })) return cleanFile(undefined)
+      console.warn("[world annotations] a world's annotations do not parse and could not be moved aside, so nothing was added")
+      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
     }
+    return cleanFile(parsed)
   }
 
   return {
@@ -259,7 +291,7 @@ export function createAnnotationStore(dir: string): AnnotationStore {
         await mkdir(folder, { recursive: true })
         // The file lock as well as the keyed one: an adoption in main writes this file too (adoptAnnotationAliases).
         await withAnnotationFileLock(fileOf(key), async () => {
-          const all = await read(key)
+          const all = await readForWrite(key)
           all[itemId] = capClaims([...(all[itemId] ?? []), clean])
           await writeAtomic(fileOf(key), JSON.stringify(all))
         })
@@ -329,6 +361,11 @@ export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationS
       const doc = await store.load(key)
       return doc ? merged(doc) : null
     },
-    save: async (doc) => store.save(await merged(doc))
+    save: async (doc) => {
+      const out = await merged(doc)
+      await store.save(out)
+      // A design key saves a merged copy: the newer-world mark the store puts on it belongs to the caller's doc too.
+      if (out.savedByNewer) doc.savedByNewer = true
+    }
   }
 }

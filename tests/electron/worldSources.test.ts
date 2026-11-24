@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { createSourceRegistry, keyForSource, type WorldSource } from '../../src/main/world/sources'
-import { worldFileName } from '../../src/main/world/worldStore'
+import { WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import * as fsp from 'node:fs/promises'
 
 vi.mock('node:fs/promises', async (orig) => {
@@ -128,12 +128,12 @@ describe('source registry', () => {
     await writeFile(sourcesFile(), '{not json')
     const r = createSourceRegistry(dir, { ...deps(), now: () => Date.UTC(2026, 10, 23, 9, 30, 0, 5) })
     expect(await r.list()).toEqual([])
-    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z.bad'])
+    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z-1.bad'])
     await writeFile(sourcesFile(), '"str"')
     expect(await r.list()).toEqual([])
     // the same millisecond still gets its own name
-    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z-1.bad', 'sources.json.2026-11-23T09-30-00-005Z.bad'])
-    expect(await readFile(join(dir, 'world', 'sources.json.2026-11-23T09-30-00-005Z.bad'), 'utf8')).toBe('{not json')
+    expect(await backups()).toEqual(['sources.json.2026-11-23T09-30-00-005Z-1.bad', 'sources.json.2026-11-23T09-30-00-005Z-2.bad'])
+    expect(await readFile(join(dir, 'world', 'sources.json.2026-11-23T09-30-00-005Z-1.bad'), 'utf8')).toBe('{not json')
     // a list whose entries are all unreadable is a list: nothing is moved aside
     await writeFile(sourcesFile(), JSON.stringify([{ key: 1 }]))
     expect(await r.list()).toEqual([])
@@ -286,16 +286,30 @@ describe('source registry', () => {
     expect(await r.list()).toEqual(list)
   })
 
-  it('a bad backup rename still reads as empty; other read errors throw', async () => {
-    await mkdir(join(dir, 'world'), { recursive: true })
-    await writeFile(sourcesFile(), 'x')
-    vi.mocked(fsp.rename).mockRejectedValueOnce(new Error('refused'))
-    expect(await reg().list()).toEqual([])
-    expect(await readFile(sourcesFile(), 'utf8')).toBe('x')
-    expect(await backups()).toEqual([])
-    await rm(sourcesFile(), { force: true })
-    await mkdir(sourcesFile())
-    await expect(reg().list()).rejects.toThrow()
+  it('a broken list that cannot be moved aside is refused, not read as empty, so no save writes over it; other read errors throw path-free (M9)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await mkdir(join(dir, 'world'), { recursive: true })
+      await writeFile(sourcesFile(), 'x')
+      vi.mocked(fsp.rename).mockRejectedValueOnce(new Error('refused'))
+      const r = reg()
+      await expect(r.list()).rejects.toMatchObject({ name: 'WorldReadError', code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(warn).toHaveBeenCalledWith('[world sources] the list of worlds does not parse and could not be moved aside')
+      expect(await readFile(sourcesFile(), 'utf8')).toBe('x')
+      expect(await backups()).toEqual([])
+      // the next look moves it aside and the list starts empty
+      expect(await r.list()).toEqual([])
+      expect(await backups()).toHaveLength(1)
+      await rm(sourcesFile(), { force: true })
+      await mkdir(sourcesFile())
+      const err = await reg().list().catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(WorldReadError)
+      expect(err).toMatchObject({ code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(JSON.stringify(err) + String((err as Error).message)).not.toContain(dir)
+      expect(warn.mock.calls[1][0]).toMatch(/^\[world sources\] the list of worlds could not be read: Error: EISDIR/)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('keeps linkedDesign when upserted without one, replaces it when given one', async () => {
@@ -387,9 +401,12 @@ describe('source registry', () => {
     const r = createSourceRegistry(dir, { ...deps(), sleep: async (ms: number) => { waits.push(ms) } })
     await r.upsert({ kind: 'project', root: '/a' })
     vi.mocked(fsp.readFile).mockRejectedValue(busy('EBUSY'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
-      await expect(r.list()).rejects.toThrow('EBUSY')
+      await expect(r.list()).rejects.toMatchObject({ code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(warn.mock.calls[0][0]).toMatch(/could not be read: .*EBUSY/)
     } finally {
+      warn.mockRestore()
       vi.mocked(fsp.readFile).mockReset()
       vi.mocked(fsp.readFile).mockImplementation((await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).readFile)
     }
