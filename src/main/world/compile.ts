@@ -207,7 +207,10 @@ function expandCi(runs: TestRun[], testsByMember: Record<string, string[]>): Tes
   return runs.flatMap((r) => (r.source !== 'ci' || TEST_FILE.test(r.file) ? [r] : (testsByMember[r.file] ?? []).map((file) => ({ ...r, file }))))
 }
 
-/** Tests link to their resolved imports, falling back to a unique stem match in their folder or package. */
+/**
+ * Tests link to their resolved imports and, when none of those has the test's own stem (only relative imports
+ * resolve, so a subject behind an alias leaves just helpers), to the one file of that stem in their folder or package.
+ */
 function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Record<string, string[]> {
   const prefix = `${snap.root.replace(/\\/g, '/').replace(/\/+$/, '')}/`
   const packages = new Set(manifests.map((p) => p.replace(/\\/g, '/'))
@@ -215,17 +218,17 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
     .map((p) => p.slice(prefix.length)))
   const folder = (file: string): string => file.slice(0, file.lastIndexOf('/') + 1)
   const nearestPackage = (dir: string): string | undefined => {
-    while (true) {
-      if (packages.has(`${dir}package.json`)) return dir
-      if (dir === '') return undefined
-      dir = folder(dir.slice(0, -1))
+    for (let d = dir; ; d = folder(d.slice(0, -1))) {
+      if (packages.has(`${d}package.json`)) return d
+      if (d === '') return undefined
     }
   }
   const fileSet = new Set(g.buildings.flatMap((b) => b.members))
   const tests = [...new Set(snap.files.filter((f) => TEST_FILE.test(f)))].sort()
   const byStem = new Map<string, string[]>()
   const add = (m: Map<string, string[]>, k: string, t: string): void => void m.set(k, [...(m.get(k) ?? []), t])
-  for (const m of fileSet) add(byStem, baseName(m).replace(/\.[^.]*$/, ''), m)
+  const stemOf = (file: string): string => baseName(file).replace(/\.[^.]*$/, '')
+  for (const m of fileSet) add(byStem, stemOf(m), m)
   const byTarget = new Map<string, string[]>()
   for (const t of tests) {
     const targets = new Set<string>()
@@ -233,10 +236,11 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
       const r = resolveImport(t, spec, fileSet)
       if (r !== null) targets.add(r)
     }
-    if (targets.size === 0) {
+    const stem = baseName(t).replace(TEST_FILE, '')
+    if (![...targets].some((r) => stemOf(r) === stem)) {
       const dir = folder(t)
       const pkg = nearestPackage(dir)
-      const candidates = (byStem.get(baseName(t).replace(TEST_FILE, '')) ?? []).filter((m) => {
+      const candidates = (byStem.get(stem) ?? []).filter((m) => {
         const targetDir = folder(m)
         return targetDir === dir || (pkg !== undefined && nearestPackage(targetDir) === pkg)
       })
@@ -256,14 +260,6 @@ function edgeFromPrevious(e: WorldEdge): EdgeLabel {
 }
 
 /**
- * Full labelling, or (with a previous doc and `changed`) a re-label of only the touched buildings
- * (a member changed, the member set differs from the previous doc's, or the building is new), each
- * in its own district so it costs one model batch, plus the edges touching them (an incoming edge
- * rides with its to building). Everything else reuses the previous doc's labels by id, falling back
- * to code-derived labels. Touched districts use code-derived labels because the synthetic
- * batches only describe individual buildings.
- */
-/**
  * The buildings a change touches: a member changed, the member set differs from the previous doc's (a
  * file was deleted or moved), or the building is new. Every other building has a previous twin with
  * the same members.
@@ -279,18 +275,27 @@ function touchedBuildings(g: Grouping, previous: WorldDoc, changed: string[]): G
   return g.buildings.filter((b) => b.members.some((m) => touched.has(m)) || !sameMembers(b))
 }
 
+/**
+ * Full labelling, or (with a previous doc and `changed`) a re-label of only the touched buildings, batched
+ * under their own district so its first batch names it again, plus the edges touching them (an incoming
+ * edge rides with its to building). A district whose buildings changed (one touched, gone or new) takes
+ * that answer, or the code-derived label when it has no touched building left to ask with. Everything
+ * else reuses the previous doc's labels by id, falling back to code-derived labels.
+ */
 async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[] | undefined, deps: LabelDeps): Promise<Labels> {
   if (!previous || !changed) return labelWorld(g, deps)
   const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
   const subB = touchedBuildings(g, previous, changed)
   const ids = new Set(subB.map((b) => b.id))
-  const touchedDistricts = new Set(subB.map((b) => b.districtId))
-  const dName = new Map(g.districts.map((d) => [d.id, d.name]))
-  const own = (b: GroupBuilding): string => `${b.districtId}/${b.id}`
+  const asked = new Set(subB.map((b) => b.districtId))
+  const prevMembers = new Map<string, string[]>()
+  for (const b of previous.buildings) prevMembers.set(b.districtId, [...(prevMembers.get(b.districtId) ?? []), b.id])
+  const idsKey = (list: string[]): string => JSON.stringify([...list].sort())
+  const reset = new Set(g.districts.filter((d) => idsKey(d.members) !== idsKey(prevMembers.get(d.id) ?? [])).map((d) => d.id))
   const touches = (e: { from: string; to: string }): boolean => ids.has(e.from) || ids.has(e.to)
   const sub: Grouping = {
-    districts: subB.map((b) => ({ id: own(b), name: dName.get(b.districtId) as string, members: [b.id] })),
-    buildings: subB.map((b) => ({ ...b, districtId: own(b) })),
+    districts: g.districts.filter((d) => asked.has(d.id)).map((d) => ({ ...d, members: d.members.filter((id) => ids.has(id)) })),
+    buildings: subB,
     edges: g.edges.filter(touches)
   }
   const fresh = await labelWorld(sub, { ...deps, part: (id) => g.buildings.find((b) => b.id === id) })
@@ -299,7 +304,8 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   const prevE = new Map(previous.edges.map((e) => [e.id, e]))
   for (const d of g.districts) {
     const p = prevD.get(d.id)
-    if (p && !touchedDistricts.has(d.id)) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
+    if (asked.has(d.id)) labels.districts[d.id] = fresh.districts[d.id]
+    else if (p && !reset.has(d.id)) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
   }
   // Every untouched building has a previous twin with the same members (a new one is touched).
   for (const b of g.buildings) {

@@ -392,7 +392,7 @@ describe('compileWorld', () => {
     expect(doc.edges.find((e) => e.id === importEdge)?.label).toBe('Hands the view its data')
   })
 
-  it('a scoped compile resets the touched district name and subtitle to the code defaults', async () => {
+  it('a scoped compile resets the touched district name and subtitle to the code defaults when the model names it no more', async () => {
     const defaults = await compileFixture()
     const previous = await compileFixture({
       label: labelDeps({
@@ -409,6 +409,38 @@ describe('compileWorld', () => {
     const doc = await compileFixture({}, previous, ['src/renderer/view.ts'])
     expect(district(doc)).toEqual(district(defaults))
     expect(doc.districts.filter((d) => d.id !== districtId)).toEqual(previous.districts.filter((d) => d.id !== districtId))
+  })
+
+  // Review 1 (I4): the touched buildings are batched under their real district, so its first batch names it again.
+  it('a scoped compile asks a touched district its name again, in the batch of its touched buildings', async () => {
+    const previous = await compileFixture()
+    const districtId = previous.buildings.find((b) => b.id === VIEW)?.districtId as string
+    const llm = vi.fn(async (prompt: string) =>
+      prompt.includes(`DISTRICT "${districtId}"`)
+        ? JSON.stringify({ district: { name: F('View District'), subtitle: F('Draws the window.') }, buildings: { [VIEW]: { name: F('View Layer') } } })
+        : '{}'
+    )
+    const doc = await compileFixture({ label: labelDeps({ llm }) }, previous, ['src/renderer/view.ts'])
+    expectValid(doc)
+    expect(llm.mock.calls.filter(([p]) => p.includes(`DISTRICT "${districtId}"`)).length).toBeGreaterThan(0)
+    expect(llm.mock.calls.every(([p]) => !p.includes(`DISTRICT "${districtId}/`))).toBe(true)
+    expect(doc.districts.find((d) => d.id === districtId)).toMatchObject({ name: 'View District', subtitle: 'Draws the window.', nameState: 'inferred' })
+    expect(doc.buildings.find((b) => b.id === VIEW)?.name).toBe('View Layer')
+    expect(doc.districts.filter((d) => d.id !== districtId)).toEqual(previous.districts.filter((d) => d.id !== districtId))
+  })
+
+  it('a scoped compile resets a district that only lost a building to its code-derived label, asking nothing', async () => {
+    const fresh = await compileFixture()
+    const prev: WorldDoc = JSON.parse(JSON.stringify(fresh))
+    const main = prev.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]
+    prev.buildings.push({ ...main, id: 'b-gone', name: 'Gone', members: ['src/main/gone.ts'], floors: [] })
+    for (const d of prev.districts) Object.assign(d, { name: `old ${d.id}`, subtitle: 'old' })
+    const llm = vi.fn(async () => '{}')
+    const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['src/main/gone.ts'])
+    expect(llm).not.toHaveBeenCalled()
+    const district = (d: WorldDoc, id: string) => d.districts.find((x) => x.id === id)
+    expect(district(doc, 'd-src-main')).toEqual(district(fresh, 'd-src-main'))
+    expect(district(doc, 'd-src-renderer')).toMatchObject({ name: 'old d-src-renderer', subtitle: 'old' })
   })
 
   it('changed: a district or edge the previous doc lacks gets the code-derived label', async () => {
@@ -467,11 +499,17 @@ describe('compileWorld', () => {
     { name: 'nearest package', test: 'src/search/tests/parser.test.ts', imports: [], manifests: ['package.json', 'src/search/package.json'], search: 'verified' },
     { name: 'ambiguous package', test: 'src/search/parser.test.ts', imports: [], manifests: ['package.json'], search: 'gap' },
     { name: 'no shared package', test: 'tests/parser.test.ts', imports: [], manifests: [], search: 'gap' },
-    { name: 'no basename match', test: 'src/search/other.test.ts', imports: [], manifests: ['package.json'], search: 'gap' }
+    { name: 'no basename match', test: 'src/search/other.test.ts', imports: [], manifests: ['package.json'], search: 'gap' },
+    // Review 1 (I3, M4): a test whose own folder holds its subject needs no manifest, and one that resolves only a helper
+    // (its subject imported through an alias the scan cannot read) still links to the subject.
+    { name: 'same folder without manifests', test: 'src/search/parser.test.ts', imports: [], manifests: [], search: 'verified' },
+    { name: 'a resolved helper only', test: 'src/search/tests/parser.test.ts', imports: ['../../testing/helper'], manifests: ['package.json', 'src/search/package.json'], search: 'verified' },
+    { name: 'a resolved helper, ambiguous package', test: 'src/search/tests/parser.test.ts', imports: ['../../testing/helper'], manifests: ['package.json'], search: 'gap' }
   ])('scopes a basename test link by $name', async ({ test, imports, manifests, search }) => {
     const files = {
       'src/search/parser.ts': 'export const search = 1',
       'src/billing/parser.ts': 'export const billing = 1',
+      'src/testing/helper.ts': 'export const helper = 1',
       [test]: ''
     }
     const report = JSON.stringify({ testResults: [{ name: test, status: 'passed', endTime: 1 }] })
@@ -483,6 +521,7 @@ describe('compileWorld', () => {
     const status = (file: string) => doc.buildings.find((b) => b.members.includes(file))?.status
     expect(status('src/search/parser.ts')).toBe(search)
     expect(status('src/billing/parser.ts')).toBe('gap')
+    expect(status('src/testing/helper.ts')).toBe(imports.some((i) => i.endsWith('/helper')) ? 'verified' : 'gap')
   })
 
   it('a deleted file relabels its building and leaves no floor listing it; a building new since previous is labelled', async () => {

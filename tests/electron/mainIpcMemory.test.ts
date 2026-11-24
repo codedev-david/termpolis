@@ -4209,9 +4209,10 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: true })
   })
 
-  it('keeps the revision when git status fails', async () => {
+  // Review 1 (M1): with the status unknown, a revision would read as a clean commit, so the revision is unknown too.
+  it('stamps no revision when git status fails, rather than a clean one', async () => {
     gitMock.safeGitAsync.mockResolvedValueOnce('abc123\n').mockRejectedValueOnce(new Error('status failed'))
-    expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: false })
+    expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: false })
   })
 
   it('asks git for the head and the status at once, so a live change waits for one git call, not two (round 3 D)', async () => {

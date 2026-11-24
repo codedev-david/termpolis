@@ -2804,11 +2804,13 @@ const worldClient = createWorldClient(undefined, {
   context: worldLabelContext,
   head: async (root) => {
     // Both reads run concurrently with every live change. safeGitAsync supplies the read-only prefix
-    // and disables filter drivers for status. An unborn HEAD can still have staged changes.
+    // and disables filter drivers for status. An unborn HEAD can still have staged changes. A status that
+    // fails leaves the revision unknown too: a revision without it would read as a clean commit.
     const [rev, status] = await Promise.all([
       safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 }).catch(() => ''),
-      safeGitAsync(['status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }).catch(() => ''),
+      safeGitAsync(['status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }).catch(() => null),
     ])
+    if (status === null) return { head: '', dirty: false }
     return { head: rev.trim(), dirty: status.trim() !== '' }
   },
   // A project the code graph has not indexed yet compiles from a snapshot the world process makes (it
