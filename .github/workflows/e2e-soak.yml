@@ -113,6 +113,15 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+      # As in Tests' macOS jobs: a fresh macOS runner spends the whole job indexing its own checkout for Spotlight,
+      # and mds_stores and the mdworkers then hold most of a core of the 3. Without this step the typing e2e
+      # (world-view test 5) missed its 50 ms p95 in every macOS soak copy, on main as on a branch (p95 52 to 76 ms),
+      # while Tests passes it. It changes the runner only, not what the app does.
+      - name: Turn off Spotlight indexing (macOS runner)
+        if: runner.os == 'macOS'
+        run: |
+          sudo -n mdutil -a -i off || true
+          mdutil -a -s || true
       - name: Allow the Chromium sandbox
         if: runner.os == 'Linux'
         run: |
@@ -137,6 +146,9 @@ jobs:
         shell: bash
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
+          # world-responsive's reduced form on macOS, as Tests' e2e-lumopolis-macos runs it (its full form runs on
+          # Linux and Windows). Empty elsewhere, which the spec reads as off.
+          RESPONSIVE_REDUCED: ${{ inputs.os == 'macos-latest' && '1' || '' }}
         run: |
           run=(npx playwright test ${{ inputs.specs }} --shard=${{ matrix.shard }}/4 --reporter=list)
           if [ "$RUNNER_OS" = Linux ] && [ "${{ inputs.display }}" = wayland ]; then
