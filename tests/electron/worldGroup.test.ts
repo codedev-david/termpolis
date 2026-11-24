@@ -166,6 +166,11 @@ describe('nameStem', () => {
     expect(nameStem('IPC_bus.ts')).toBe('ipc')
     expect(nameStem('swarm.test.ts')).toBe('swarm')
     expect(nameStem('http2Server.ts')).toBe('http2')
+    // Read by character codes since WP4a fix round 4: a name that is all capitals, and capitals running into a word.
+    expect(nameStem('README')).toBe('readme')
+    expect(nameStem('XMLHttpRequest.ts')).toBe('xml')
+    expect(nameStem('ABcd.ts')).toBe('')
+    expect(nameStem('')).toBe('')
   })
   it('says nothing for short words, entry names and names with no leading letter', () => {
     expect(nameStem('ui.ts')).toBe('')

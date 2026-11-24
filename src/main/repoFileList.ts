@@ -33,11 +33,19 @@ export const MAP_FILE_CAP = 20_000
 export const NESTED_DEPTH = 3
 
 const parentDirs = (rel: string): string[] => rel.split('/').slice(0, -1)
-const hasIgnoredSuffix = (rel: string): boolean => IGNORED_SUFFIXES.some((end) => rel.endsWith(end))
+const hasIgnoredSuffix = (rel: string): boolean => {
+  for (let k = 0; k < IGNORED_SUFFIXES.length; k++) if (rel.endsWith(IGNORED_SUFFIXES[k])) return true
+  return false
+}
 
-/** A path no world shows: an ignored suffix, or under an ignored folder at any depth. */
+/**
+ * A path no world shows: an ignored suffix, or under an ignored folder at any depth. Every listed path passes through
+ * here, so each folder name is looked at in place, with no array of them (WP4a fix round 4).
+ */
 export function isIgnoredPath(rel: string): boolean {
-  return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg) => IGNORED_DIRS.has(seg))
+  if (hasIgnoredSuffix(rel)) return true
+  for (let at = 0, end = rel.indexOf('/'); end >= 0; at = end + 1, end = rel.indexOf('/', at)) if (IGNORED_DIRS.has(rel.slice(at, end))) return true
+  return false
 }
 
 /**

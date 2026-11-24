@@ -146,6 +146,44 @@ const bump = (m: Map<number, number>, k: number, w: number): void => {
   m.set(k, (m.get(k) ?? 0) + w)
 }
 
+const NO_LINKS: ReadonlyMap<number, number> = new Map()
+/** No import edges: shared by every file that has none, since nothing writes into a file's edge list once built. */
+const NO_IMPORTS: readonly number[] = []
+const NO_SPECS: readonly string[] = []
+
+/**
+ * Weighted, two-way links between clusters, with a map only for a cluster that has a link. A big project has tens of
+ * thousands of files and buildings that link to nothing in their district, and an empty map apiece cost several
+ * megabytes per grouping that lived until the grouping ended (WP4a fix round 4, I1 and N7).
+ */
+class Links {
+  private readonly at: (Map<number, number> | undefined)[]
+  constructor(n: number) {
+    this.at = new Array<Map<number, number> | undefined>(n)
+  }
+  of(a: number): ReadonlyMap<number, number> {
+    return this.at[a] ?? NO_LINKS
+  }
+  add(a: number, b: number, w: number): void {
+    const m = this.at[a]
+    if (m) bump(m, b, w)
+    else this.at[a] = new Map([[b, w]])
+  }
+  /** Fold o's links into r; o has none after. */
+  fold(o: number, r: number): void {
+    const links = this.at[o]
+    if (!links) return
+    links.forEach((w, k) => {
+      ;(this.at[k] as Map<number, number>).delete(o)
+      if (k !== r) {
+        this.add(r, k, w)
+        this.add(k, r, w)
+      }
+    })
+    this.at[o] = undefined
+  }
+}
+
 function cmpBoundary(a: Boundary, b: Boundary): number {
   return cmp(a.file, b.file) || a.line - b.line || cmp(a.kind, b.kind) || cmp(a.key, b.key) || cmp(a.side, b.side)
 }
@@ -154,7 +192,7 @@ function cmpBoundary(a: Boundary, b: Boundary): number {
  * Resolve a raw import specifier to a file in `files`. Only relative specifiers count. Tries the
  * exact path, `.js`-style specifiers mapped to TypeScript, then each extension, then `/index.*`.
  */
-export function resolveImport(importer: string, spec: string, files: ReadonlySet<string>): string | null {
+export function resolveImport(importer: string, spec: string, files: { has(path: string): boolean }): string | null {
   if (!RELATIVE.test(spec)) return null
   const out = dirOf(importer).split('/').filter(Boolean)
   for (const seg of spec.split('/')) {
@@ -174,17 +212,38 @@ export function resolveImport(importer: string, spec: string, files: ReadonlySet
   return candidates.find((c) => files.has(c)) ?? null
 }
 
+const isUpper = (c: number): boolean => c >= 65 && c <= 90
+const isLower = (c: number): boolean => c >= 97 && c <= 122
+const isDigit = (c: number): boolean => c >= 48 && c <= 57
+
 /**
  * The leading word of a file name, lower-cased: `memoryHost.ts` -> 'memory', `remote-bridge.ts` ->
  * 'remote', `AccountChip.tsx` -> 'account', `MCPServer.ts` -> 'mcp'. '' for words under three
  * letters and for entry names (index, main), which say nothing about what a file does.
  */
 export function nameStem(name: string): string {
-  const base = name.replace(/\..*$/, '')
-  const m = /^[A-Z]{2,}(?=[A-Z][a-z]|[^A-Za-z]|$)|^[A-Za-z][a-z0-9]*/.exec(base)
-  const w = (m ? m[0] : '').toLowerCase()
-  return w.length < 3 || ENTRY_NAMES.has(w) ? '' : w
+  // The leading word is a run of two or more capitals that ends where a capitalised word or a non-letter starts
+  // (MCPServer, MCP_x, MCP), or else a letter and the lower-case letters and digits after it. Read by character
+  // codes: a regular expression's match array and a cut copy of the name cost megabytes over a big project
+  // (WP4a fix round 4). A dot ends the word like any other non-letter, so the extension needs no cutting off.
+  const len = name.length
+  let caps = 0
+  while (caps < len && isUpper(name.charCodeAt(caps))) caps++
+  let end = 0
+  if (caps >= 2) {
+    const c = caps < len ? name.charCodeAt(caps) : 0
+    if (!isLower(c)) end = caps
+    else if (caps >= 3) end = caps - 1
+  }
+  if (end === 0 && len > 0 && (caps > 0 || isLower(name.charCodeAt(0)))) {
+    end = 1
+    while (end < len && (isLower(name.charCodeAt(end)) || isDigit(name.charCodeAt(end)))) end++
+  }
+  if (end < 3) return ''
+  const w = name.slice(0, end).toLowerCase()
+  return ENTRY_NAMES.has(w) ? '' : w
 }
+
 
 /** What a member is called: its base name, or its folder's name for an entry file (index.ts). */
 function memberKey(file: string): string {
@@ -323,12 +382,12 @@ function capDistricts(seedOf: Int32Array, count: number, imports: number[][], ma
   const n = seedOf.length
   const K = n + 1
   const size = new Array<number>(count).fill(0)
-  for (const s of seedOf) size[s]++
+  for (let i = 0; i < n; i++) size[seedOf[i]]++
   const adj = Array.from({ length: count }, () => new Map<number, number>())
   imports.forEach((targets, i) => {
-    for (const g of targets) {
+    for (let j = 0; j < targets.length; j++) {
       const a = seedOf[i]
-      const b = seedOf[g]
+      const b = seedOf[targets[j]]
       if (a !== b) {
         bump(adj[a], b, 1)
         bump(adj[b], a, 1)
@@ -378,7 +437,7 @@ function capDistricts(seedOf: Int32Array, count: number, imports: number[][], ma
       }
     }
   }
-  return Int32Array.from(seedOf, (s) => uf.find(s))
+  return seedOf.map((s) => uf.find(s))
 }
 
 /** Cluster files not owned by a building yet; returns the union-find over file indices. */
@@ -388,7 +447,7 @@ function clusterFree(imports: number[][], district: Int32Array, owner: Int32Arra
   const size = new Int32Array(n)
   const minIdx = Int32Array.from({ length: n }, (_, i) => i)
   const stamp = new Int32Array(n)
-  const adj = Array.from({ length: n }, () => new Map<number, number>())
+  const adj = new Links(n)
   // Families start as one cluster each, rooted at their first file.
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
@@ -399,43 +458,42 @@ function clusterFree(imports: number[][], district: Int32Array, owner: Int32Arra
   }
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
-    for (const g of imports[i]) {
+    const targets = imports[i]
+    for (let j = 0; j < targets.length; j++) {
+      const g = targets[j]
       const a = family[i]
       const b = family[g]
       if (owner[g] < 0 && district[g] === district[i] && a !== b) {
-        bump(adj[a], b, 1)
-        bump(adj[b], a, 1)
+        adj.add(a, b, 1)
+        adj.add(b, a, 1)
       }
     }
   }
   interface Pair { d: number; a: number; b: number; sa: number; sb: number; lo: number; hi: number }
   const heap = new Heap<Pair>((x, y) => (x.d !== y.d ? x.d > y.d : x.lo !== y.lo ? x.lo < y.lo : x.hi < y.hi))
   const push = (a: number, b: number): void => {
-    const d = (adj[a].get(b) as number) / (2 * size[a] * size[b])
+    const d = (adj.of(a).get(b) as number) / (2 * size[a] * size[b])
     const lo = Math.min(minIdx[a], minIdx[b])
     const hi = Math.max(minIdx[a], minIdx[b])
     heap.push({ d, a, b, sa: stamp[a], sb: stamp[b], lo, hi })
   }
-  for (let a = 0; a < n; a++) for (const b of adj[a].keys()) if (a < b) push(a, b)
+  for (let a = 0; a < n; a++)
+    adj.of(a).forEach((_, b) => {
+      if (a < b) push(a, b)
+    })
   while (heap.size) {
     const p = heap.pop()
     if (p.sa !== stamp[p.a] || p.sb !== stamp[p.b]) continue
     if (p.d <= MERGE_DENSITY) break
-    const [r, o] = size[p.a] >= size[p.b] ? [p.a, p.b] : [p.b, p.a]
+    const r = size[p.a] >= size[p.b] ? p.a : p.b
+    const o = r === p.a ? p.b : p.a
     stamp[r]++
     stamp[o]++
     uf.attach(o, r)
     size[r] += size[o]
     minIdx[r] = Math.min(minIdx[r], minIdx[o])
-    for (const [k, w] of adj[o]) {
-      adj[k].delete(o)
-      if (k !== r) {
-        bump(adj[r], k, w)
-        bump(adj[k], r, w)
-      }
-    }
-    adj[o].clear()
-    for (const k of adj[r].keys()) push(r, k)
+    adj.fold(o, r)
+    adj.of(r).forEach((_, k) => push(r, k))
   }
   return uf
 }
@@ -486,22 +544,35 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const maxDistricts = Math.max(1, Math.min(opts.maxDistricts ?? DEFAULT_MAX_DISTRICTS, maxBuildings))
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   const n = files.length
-  const index = new Map(files.map((f, i) => [f, i]))
-  const fileSet = new Set(files)
+  // The index answers "is this a file" too: a second set of every path cost megabytes on a big project (fix round 4).
+  const index = new Map<string, number>()
+  for (let i = 0; i < n; i++) index.set(files[i], i)
+  const fileSet = index
 
   // Resolved, de-duplicated import edges (sorted target indices) and their reverse.
+  // grouping runs uncompiled on a big project (one long call), where each for-of step and each destructuring makes
+  // an iterator result: the per-file and per-building loops below count by index (WP4a fix round 4, N7).
   const imports: number[][] = []
-  const importers: number[][] = files.map(() => [])
+  const importers: number[][] = new Array<number[]>(n).fill(NO_IMPORTS as number[])
   files.forEach((f) => {
-    const specs = Object.prototype.hasOwnProperty.call(snap.fileImports, f) ? snap.fileImports[f] : []
+    const specs = Object.prototype.hasOwnProperty.call(snap.fileImports, f) ? snap.fileImports[f] : NO_SPECS
+    if (specs.length === 0) {
+      imports.push(NO_IMPORTS as number[])
+      return
+    }
     const targets = new Set<number>()
     for (const spec of specs) {
       const r = resolveImport(f, spec, fileSet)
       if (r !== null && r !== f) targets.add(index.get(r) as number)
     }
-    imports.push([...targets].sort((a, b) => a - b))
+    imports.push(targets.size === 0 ? (NO_IMPORTS as number[]) : [...targets].sort((a, b) => a - b))
   })
-  imports.forEach((targets, i) => targets.forEach((g) => importers[g].push(i)))
+  imports.forEach((targets, i) =>
+    targets.forEach((g) => {
+      if (importers[g] === NO_IMPORTS) importers[g] = [i]
+      else importers[g].push(i)
+    })
+  )
   // A page read of a bridge name nothing exposes (window.location, window.localStorage) is no boundary.
   const exposed = new Set(bounds.filter((b) => b.kind === 'ipc' && b.side === 'provide').map((b) => b.key))
   const kept = bounds
@@ -518,16 +589,19 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const proc = new Map<number, string>()
   const entryOf = new Map<number, number>()
   const byKey = new Map<string, number>()
+  // Only a fork or worker key is looked up by name: no map of every file's name without one (fix round 4).
+  const forks = kept.filter((b) => b.kind === 'fork' || b.kind === 'worker')
   files.forEach((f, i) => {
     const k = baseKey(f)
-    const cur = byKey.get(k)
-    if (cur === undefined || f.length < files[cur].length) byKey.set(k, i)
+    if (forks.length) {
+      const cur = byKey.get(k)
+      if (cur === undefined || f.length < files[cur].length) byKey.set(k, i)
+    }
     if (!ENTRY_NAMES.has(k) || !ENTRY_PROCESSES.has(lastSeg(dirs[seedOf[i]])) || importers[i].some((j) => !TEST_NAME.test(files[j]))) return
     const e = entryOf.get(seedOf[i])
     if (e === undefined || f.length < files[e].length) entryOf.set(seedOf[i], i)
   })
-  for (const [s, i] of entryOf) proc.set(i, lastSeg(dirs[s]))
-  const forks = kept.filter((b) => b.kind === 'fork' || b.kind === 'worker')
+  entryOf.forEach((i, s) => proc.set(i, lastSeg(dirs[s])))
   // A key no file is named after can name a folder, as a bundler entry named after its folder does
   // (`headroomProxy.js` built from headroomProxy/proxyMain.ts). The target is that folder's root:
   // a non-test file nothing but tests imports, the one importing most, then the shortest path.
@@ -661,54 +735,70 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const firstOf = new Map<string, number>()
   /** A family's root file -> its stem ('/' for a whole small folder); a file in no family has none. */
   const stemOf = new Map<number, string>()
+  // Each file's folder and name stem, worked out once for the families and the stem counts below (fix round 4).
+  const fileDir = files.map(dirOf)
+  const fileStem = files.map((f) => nameStem(lastSeg(f)))
   const inDir = new Map<string, number>()
-  for (const f of files) inDir.set(dirOf(f), (inDir.get(dirOf(f)) ?? 0) + 1)
-  files.forEach((f, i) => {
-    if (owner[i] >= 0) return
-    const small = (inDir.get(dirOf(f)) as number) <= FAMILY_FOLDER_MAX && dirOf(f) !== dirs[seedOf[i]]
-    const stem = small ? '/' : nameStem(lastSeg(f))
-    if (stem === '') return
-    const k = `${district[i]}\0${dirOf(f)}\0${stem}`
+  for (let i = 0; i < n; i++) inDir.set(fileDir[i], (inDir.get(fileDir[i]) ?? 0) + 1)
+  for (let i = 0; i < n; i++) {
+    if (owner[i] >= 0) continue
+    const dir = fileDir[i]
+    const small = (inDir.get(dir) as number) <= FAMILY_FOLDER_MAX && dir !== dirs[seedOf[i]]
+    const stem = small ? '/' : fileStem[i]
+    if (stem === '') continue
+    const k = `${district[i]}\0${dir}\0${stem}`
     const r = firstOf.get(k)
     if (r === undefined) {
       firstOf.set(k, i)
       stemOf.set(i, stem)
     } else family[i] = r
-  })
+  }
   const fileUf = clusterFree(imports, district, owner, family)
-  // Files in each family (keyed by its root): a family of one file is just that file.
-  const famSize = new Map<number, number>()
-  for (let i = 0; i < n; i++) if (owner[i] < 0) famSize.set(family[i], (famSize.get(family[i]) ?? 0) + 1)
-  const rootB = new Map<number, number>()
+  // Files in each family (counted at its root): a family of one file is just that file.
+  const famSize = new Int32Array(n)
+  for (let i = 0; i < n; i++) if (owner[i] < 0) famSize[family[i]]++
+  // Each plain building's cluster root, by building from the first plain one; and the building of each root.
+  const firstPlain = bFiles.length
+  const bRoot: number[] = []
+  const rootB = new Int32Array(n).fill(-1)
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
     const r = fileUf.find(i)
-    let b = rootB.get(r)
-    if (b === undefined) {
+    let b = rootB[r]
+    if (b < 0) {
       b = bFiles.length
-      rootB.set(r, b)
-      bFiles.push([])
+      rootB[r] = b
+      bRoot.push(r)
+      bFiles.push([i])
       bProc.push('')
       bEntry.push(-1)
       // The cluster is named for its root's family: the family it grew from (the larger side of every merge).
       // A family of one file (a one-file folder too) started as that file.
-      const stem = (famSize.get(r) as number) > 1 ? stemOf.get(r) : undefined
-      const dir = dirOf(files[r])
-      const none = { merged: 0, mergedFiles: 0 }
-      bStart.push(stem === undefined ? { start: 'file', seed: files[r], ...none } : stem === '/' ? { start: 'folder', seed: dir, ...none } : { start: 'family', seed: stem, folder: dir, ...none })
-    }
+      const stem = famSize[r] > 1 ? stemOf.get(r) : undefined
+      bStart.push(
+        stem === undefined
+          ? { start: 'file', seed: files[r], merged: 0, mergedFiles: 0 }
+          : stem === '/'
+            ? { start: 'folder', seed: fileDir[r], merged: 0, mergedFiles: 0 }
+            : { start: 'family', seed: stem, folder: fileDir[r], merged: 0, mergedFiles: 0 }
+      )
+    } else bFiles[b].push(i)
     owner[i] = b
-    bFiles[b].push(i)
   }
   // Merged for density: the families in a building less the one it started as, told apart into name families of
   // two or more files and single files.
-  const familiesIn = new Map<number, Set<number>>()
-  for (const b of rootB.values()) familiesIn.set(b, new Set())
-  for (let i = 0; i < n; i++) familiesIn.get(owner[i])?.add(family[i])
-  for (const [r, b] of rootB) {
-    for (const f of familiesIn.get(b) as Set<number>) {
-      if (f === family[r]) continue
-      if ((famSize.get(f) as number) > 1) bStart[b].merged++
+  // A building's members are the files it owns, and lastIn marks the building a family was last counted for: a set
+  // per building cost megabytes on a big project (WP4a fix round 4).
+  const lastIn = new Int32Array(n).fill(-1)
+  for (let b = firstPlain; b < bFiles.length; b++) {
+    const m = bFiles[b]
+    const own = family[bRoot[b - firstPlain]]
+    for (let j = 0; j < m.length; j++) {
+      const f = family[m[j]]
+      if (lastIn[f] === b) continue
+      lastIn[f] = b
+      if (f === own) continue
+      if (famSize[f] > 1) bStart[b].merged++
       else bStart[b].mergedFiles++
     }
   }
@@ -722,27 +812,31 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const bDist = bFiles.map((m) => district[m[0]])
   const bStamp = new Int32Array(nb)
   // Per building: how many members share each folder + name stem, and the largest such count.
-  const bStems = bFiles.map((m) => {
-    const c = new Map<string, number>()
-    for (const i of m) {
-      const stem = nameStem(lastSeg(files[i]))
+  // No map for a building with no named member, as most of a big project's one-file buildings are (fix round 4).
+  const bTop = new Array<number>(nb).fill(0)
+  const bStems = bFiles.map((m, b) => {
+    let c: Map<string, number> | undefined
+    for (let j = 0; j < m.length; j++) {
+      const i = m[j]
+      const stem = fileStem[i]
       if (stem !== '') {
-        const k = `${dirOf(files[i])}\u0000${stem}`
-        c.set(k, (c.get(k) ?? 0) + 1)
+        const k = `${fileDir[i]}\u0000${stem}`
+        c ??= new Map<string, number>()
+        const v = (c.get(k) ?? 0) + 1
+        c.set(k, v)
+        if (v > bTop[b]) bTop[b] = v
       }
     }
     return c
   })
-  const topOf = (c: Map<string, number>): number => [...c.values()].reduce((a, x) => Math.max(a, x), 0)
-  const bTop = bStems.map(topOf)
-  const bAdj = Array.from({ length: nb }, () => new Map<number, number>())
+  const bAdj = new Links(nb)
   imports.forEach((targets, i) => {
-    for (const g of targets) {
+    for (let j = 0; j < targets.length; j++) {
       const a = owner[i]
-      const b = owner[g]
+      const b = owner[targets[j]]
       if (a !== b && bDist[a] === bDist[b]) {
-        bump(bAdj[a], b, 1)
-        bump(bAdj[b], a, 1)
+        bAdj.add(a, b, 1)
+        bAdj.add(b, a, 1)
       }
     }
   })
@@ -750,9 +844,14 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const next = new Int32Array(nb).fill(-1)
   const tail = new Map<number, number>()
   const perDistrict = new Map<number, number>()
-  for (const b of [...bMin.keys()].sort((x, y) => bMin[x] - bMin[y])) {
+  const byFirst = Int32Array.from({ length: nb }, (_, b) => b).sort((x, y) => bMin[x] - bMin[y])
+  for (let k = 0; k < nb; k++) {
+    const b = byFirst[k]
     const t = tail.get(bDist[b])
-    if (t !== undefined) [prev[b], next[t]] = [t, b]
+    if (t !== undefined) {
+      prev[b] = t
+      next[t] = b
+    }
     tail.set(bDist[b], b)
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) ?? 0) + 1)
   }
@@ -765,30 +864,35 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
   for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
   const bUf = new UnionFind(nb)
+  const step = (from: number, dir: Int32Array): number => {
+    let x = from
+    while (x >= 0 && fixed(x)) x = dir[x]
+    return x
+  }
   for (let live = nb; live > maxBuildings; ) {
-    const [, b, s] = heap.pop()
-    if (s !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
+    const item = heap.pop()
+    const b = item[1]
+    if (item[2] !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
     // The densest link (weight over the neighbour's size, so a hub that imports everything never
     // wins by bulk), ties in path order. A fixed building never takes in a plain one by a link:
     // its name says what runs or answers there, and unrelated helpers would blur that.
     let t = -1
-    for (const [o, w] of bAdj[b]) {
-      if (fixed(o)) continue
-      const d = t < 0 ? 1 : w * bSize[t] - (bAdj[b].get(t) as number) * bSize[o]
+    const near = bAdj.of(b)
+    near.forEach((w, o) => {
+      if (fixed(o)) return
+      const d = t < 0 ? 1 : w * bSize[t] - (near.get(t) as number) * bSize[o]
       if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
-    }
+    })
     if (t < 0) {
       // Nearest in path order, skipping fixed buildings while a plain one is left.
       const at = files[bMin[b]]
-      const step = (from: number, dir: Int32Array): number => {
-        let x = from
-        while (x >= 0 && fixed(x)) x = dir[x]
-        return x
-      }
       let p = step(prev[b], prev)
       let q = step(next[b], next)
       // A plain building on either side wins; only with none left does a fixed neighbour take it.
-      if (p < 0 && q < 0) [p, q] = [prev[b], next[b]]
+      if (p < 0 && q < 0) {
+        p = prev[b]
+        q = next[b]
+      }
       const lp = p < 0 ? -1 : prefixLen(at, files[bMin[p]])
       const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
       t = lp >= lq ? p : q
@@ -804,30 +908,29 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     bMin[t] = Math.min(bMin[t], bMin[b])
     // Counts in t only grow, so its largest is the old one or a count this merge raised: no pass over all of t's
     // stems per merge, which made a big flat folder's grouping quadratic in garbage (WP4a fix round 1, I5).
+    // With no stems of its own, t takes b's map as it is (b is gone after the merge).
     const into = bStems[t]
-    let top = bTop[t]
-    bStems[b].forEach((c, k) => {
-      const v = (into.get(k) ?? 0) + c
-      into.set(k, v)
-      if (v > top) top = v
-    })
+    const from = bStems[b]
+    let top = Math.max(bTop[t], bTop[b])
+    if (!into) bStems[t] = from
+    else
+      from?.forEach((c, k) => {
+        const v = (into.get(k) ?? 0) + c
+        into.set(k, v)
+        if (v > top) top = v
+      })
     bTop[t] = top
-    bAdj[b].forEach((w, k) => {
-      bAdj[k].delete(b)
-      if (k !== t) {
-        bump(bAdj[t], k, w)
-        bump(bAdj[k], t, w)
-      }
-    })
-    bAdj[b].clear()
+    bAdj.fold(b, t)
     heap.push([key(t), t, bStamp[t]])
   }
 
   // 5. Ids and names.
   const finalOf = (i: number): number => bUf.find(owner[i])
   const members = new Map<number, string[]>()
+  const fin = new Int32Array(n)
   for (let i = 0; i < n; i++) {
     const b = finalOf(i)
+    fin[i] = b
     const m = members.get(b)
     if (m) m.push(files[i])
     else members.set(b, [files[i]])
@@ -848,36 +951,54 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // A plain building is named after its front door: the non-test member whose imports reach most
   // of the building, then the one most imported from outside it, then most imported overall, then
   // path order; names that would pass for the district or a main/renderer/preload entry are skipped.
+  // One slot per file rather than a set and a key array per member (fix round 4): the walk that last reached a file,
+  // the imports each member gets from inside its building, and each member's sort keys.
+  const mark = new Int32Array(n)
+  const inner = new Int32Array(n)
+  const plain = new Uint8Array(n)
+  const reach = new Int32Array(n)
+  const outside = new Int32Array(n)
+  let walk = 0
+  const stack: number[] = []
   const frontDoor = (b: number, dName: string): number => {
-    const own = new Set((members.get(b) as string[]).map((f) => index.get(f) as number))
-    const key = new Map<number, number[]>()
-    const inside = new Map([...own].map((i) => [i, importers[i].filter((j) => own.has(j)).length]))
+    const own = (members.get(b) as string[]).map((f) => index.get(f) as number)
+    for (let k = 0; k < own.length; k++) {
+      const i = own[k]
+      const from = importers[i]
+      let c = 0
+      for (let j = 0; j < from.length; j++) if (fin[from[j]] === b) c++
+      inner[i] = c
+    }
+    // The members fewest others import walk first, and every walk shares one budget of imports looked at.
+    const order = own.slice().sort((x, y) => inner[x] - inner[y] || x - y)
     let budget = FRONT_DOOR_BUDGET
-    for (const i of [...own].sort((x, y) => (inside.get(x) as number) - (inside.get(y) as number) || x - y)) {
-      const seen = new Set([i])
-      const stack = budget > 0 ? [i] : []
+    for (let k = 0; k < order.length; k++) {
+      const i = order[k]
+      mark[i] = ++walk
+      let seen = 1
+      if (budget > 0) stack.push(i)
       while (stack.length && budget > 0) {
-        const out = imports[stack.pop() as number]
-        const n = Math.min(out.length, budget) // the imports looked at, in order, up to what the budget has left
-        budget -= n
-        for (let j = 0; j < n; j++) {
-          const g = out[j]
-          if (own.has(g) && !seen.has(g)) {
-            seen.add(g)
+        const targets = imports[stack.pop() as number]
+        const m = Math.min(targets.length, budget) // the imports looked at, in order, up to what the budget has left
+        budget -= m
+        for (let j = 0; j < m; j++) {
+          const g = targets[j]
+          if (fin[g] === b && mark[g] !== walk) {
+            mark[g] = walk
+            seen++
             stack.push(g)
           }
         }
       }
-      const outside = importers[i].length - (inside.get(i) as number)
-      key.set(i, [TEST_NAME.test(files[i]) ? 0 : 1, seen.size, outside, importers[i].length])
+      // A walk the budget cut short leaves nothing on the shared stack for the next one.
+      stack.length = 0
+      plain[i] = TEST_NAME.test(files[i]) ? 0 : 1
+      reach[i] = seen
+      outside[i] = importers[i].length - inner[i]
     }
-    const rank = (x: number, y: number): number => {
-      const kx = key.get(x) as number[]
-      const ky = key.get(y) as number[]
-      for (let k = 0; k < kx.length; k++) if (kx[k] !== ky[k]) return ky[k] - kx[k]
-      return x - y
-    }
-    const pick = [...own].sort(rank).find((i) => {
+    const rank = (x: number, y: number): number =>
+      plain[y] - plain[x] || reach[y] - reach[x] || outside[y] - outside[x] || importers[y].length - importers[x].length || x - y
+    const pick = own.sort(rank).find((i) => {
       const k = memberKey(files[i])
       return k !== dName && !ENTRY_PROCESSES.has(k)
     })
