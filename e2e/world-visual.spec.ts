@@ -1085,7 +1085,8 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       const res = await api.worldGet(top.success && top.data ? top.data : r)
       return JSON.stringify(res.data?.buildings.map((b) => [b.id, b.status, b.members]))
     }, fixtures.find((f) => f.label === 'motion')!.dir)
-    expect((await visual()).ringAngle, `no ring turns: ${statuses}`).toBeGreaterThan(a)
+    // Drawn in software the looping motions are drawn up to SOFTWARE_LOOP_MAX_MS (500 ms) apart: wait for the next one.
+    await expect.poll(async () => (await visual()).ringAngle, { timeout: 5000, message: `no ring turns: ${statuses}` }).toBeGreaterThan(a)
   })
 
   test('bloom, starfield and dust are on', async () => {
