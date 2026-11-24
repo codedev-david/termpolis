@@ -20,6 +20,7 @@ import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS }
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { WORLD_READ_FAILED, worldFileName } from '../../src/main/world/worldStore'
+import { WORLD_CALL_FAILED, windowMessage } from '../../src/main/world/windowError'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
 import type { WorldDoc } from '../../src/shared/world/types'
 
@@ -179,6 +180,24 @@ describe('createWorldClient', () => {
     const err = await client.get(ROOT).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err).toMatchObject({ name: 'WorldReadError', message: WORLD_READ_FAILED, code: 'WORLD_READ_FAILED' })
+  })
+
+  it("the window may show a host error and the client's own fixed text as they are, never a failure of main's git or snapshot (WP3 round 3)", async () => {
+    const { client } = setup({}, (t) => {
+      t.reply = (m) => ({ kind: 'result', id: m.id, ok: false, error: { name: 'WorldReadError', message: WORLD_READ_FAILED, code: 'WORLD_READ_FAILED' } })
+    })
+    expect(windowMessage(await client.get(ROOT).catch((e: unknown) => e))).toBe(WORLD_READ_FAILED)
+    expect(windowMessage(await client.compile('').catch((e: unknown) => e))).toBe('Lumopolis needs a project folder')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const head = setup({ head: async () => { throw new Error('Command failed: git -C C:\\private\\repo rev-parse HEAD') } })
+      expect(windowMessage(await head.client.compile(ROOT).catch((e: unknown) => e))).toBe(WORLD_CALL_FAILED)
+      const snap = setup({ snapshot: async () => { throw new Error('ENOENT: C:\\private\\repo') } })
+      expect(windowMessage(await snap.client.relayout(ROOT).catch((e: unknown) => e))).toBe(WORLD_CALL_FAILED)
+      expect(warn).toHaveBeenCalledTimes(2)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('a host error without detail still rejects with a message', async () => {

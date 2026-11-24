@@ -18,6 +18,7 @@ import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldRe
 import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
 import type { TestRun } from './testStatus'
+import { shownAsIs, shownError } from './windowError'
 import { worldFileName } from './worldStore'
 import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS } from './label'
@@ -104,7 +105,7 @@ const toError = (e: SerializedError | undefined): Error => {
   const err: Error & { code?: string } = new Error(e?.message || 'Lumopolis host call failed')
   err.name = e?.name || 'Error'
   if (e?.code) err.code = e.code
-  return err
+  return shownAsIs(err) // outwardError mapped it in the host: the window may show it as it is
 }
 
 /** Call arguments without the trailing ones left out (the host reads a missing one as undefined). */
@@ -356,7 +357,7 @@ export function createWorldClient(
       // A host that neither answers init nor exits would otherwise hang every call forever (the
       // per-call timer only starts once init is done). Give up, kill it, and let the next call respawn.
       const initTimer = setTimeout(() => {
-        reset(tr, new Error('Lumopolis host did not start in time'))
+        reset(tr, shownError('Lumopolis host did not start in time'))
         try {
           tr.kill()
         } catch {
@@ -374,7 +375,7 @@ export function createWorldClient(
         }
       }
       tr.onMessage((m) => onMessage(tr, m))
-      tr.onExit((code) => reset(tr, new Error(`Lumopolis host exited (code ${code})`)))
+      tr.onExit((code) => reset(tr, shownError(`Lumopolis host exited (code ${code})`)))
       const askpassPath = askpassOf()
       tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...(askpassPath ? { askpassPath } : {}) })
       // A host started after a world was removed (a restart, or a first start by a call for another world) is told at
@@ -394,7 +395,7 @@ export function createWorldClient(
    *  quick in-memory work there, so the call is let go of: never posted if it was not yet, or its waiter dropped, so the
    *  answer, if it comes, is ignored. It rejects with an AbortError. */
   const call = async <T>(fn: string, args: unknown[], key?: string, signal?: AbortSignal): Promise<T> => {
-    if (disposed) throw new Error('Lumopolis host is shut down')
+    if (disposed) throw shownError('Lumopolis host is shut down')
     if (signal?.aborted) throw abortError()
     const tr = await start()
     if (signal?.aborted) throw abortError()
@@ -410,7 +411,7 @@ export function createWorldClient(
       const expire = (): ReturnType<typeof setTimeout> =>
         setTimeout(() => {
           pending.delete(id)
-          reject(new Error(`Lumopolis host call "${fn}" timed out`))
+          reject(shownError(`Lumopolis host call "${fn}" timed out`))
         }, callTimeoutMs)
       const waiter: Waiter = { resolve: resolve as (v: unknown) => void, reject, timer: expire() }
       if (key !== undefined) {
@@ -436,7 +437,7 @@ export function createWorldClient(
    *  which takes a removed world back so it labels again. A read (an agent's world tool, Ask) never does. */
   const keyOf = (root: string, opened = false): string => {
     const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
-    if (!key) throw new Error('Lumopolis needs a project folder')
+    if (!key) throw shownError('Lumopolis needs a project folder')
     roots.set(key, root)
     if (opened && removed.delete(key)) tellRemoved()
     return key
@@ -684,7 +685,7 @@ export function createWorldClient(
       disposed = true
       const tr = current
       if (!tr) return
-      reset(tr, new Error('Lumopolis host is shut down'))
+      reset(tr, shownError('Lumopolis host is shut down'))
       try {
         tr.kill()
       } catch {
@@ -719,7 +720,7 @@ export function createWorldHostTransport(hostPath: string = resolveWorldHostPath
       try {
         child.postMessage(msg)
       } catch {
-        throw new Error('Lumopolis host could not take that request')
+        throw shownError('Lumopolis host could not take that request')
       }
     },
     onMessage: (cb) => {

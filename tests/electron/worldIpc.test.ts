@@ -3,6 +3,7 @@ import { DESIGN_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, t
 import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
+import { shownAsIs, shownError, WORLD_CALL_FAILED } from '../../src/main/world/windowError'
 
 const DOC = { projectKey: 'k', version: 1 } as unknown as WorldDoc
 
@@ -225,8 +226,52 @@ describe('registerWorldIpc', () => {
       expect(await invoke('world:get', args)).toEqual({ success: false, error: 'root required' })
     }
     expect(client.get).not.toHaveBeenCalled()
-    expect(await invoke('world:compile', { root: 'C:/bad' })).toEqual({ success: false, error: 'graph missing' })
-    expect(await invoke('world:compile', { root: 'C:/odd' })).toEqual({ success: false, error: 'odd failure' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await invoke('world:compile', { root: 'C:/bad' })).toEqual({ success: false, error: WORLD_CALL_FAILED })
+      expect(await invoke('world:compile', { root: 'C:/odd' })).toEqual({ success: false, error: WORLD_CALL_FAILED })
+      expect(warn.mock.calls.map((c) => c[1])).toEqual([new Error('graph missing'), 'odd failure'])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  describe('a failure main meets before the host call is logged and shown as fixed text (WP3 round 3)', () => {
+    // As git's own failure in headOf reads: the command line names the project folder.
+    const gitFailed = (): Error => Object.assign(new Error('Command failed: git -C C:\\Users\\someone\\private-repo rev-parse HEAD'), { code: 128, cmd: 'git' })
+    for (const channel of ['world:get', 'world:compile', 'world:relayout'] as const) {
+      const fn = channel === 'world:get' ? 'get' : channel === 'world:compile' ? 'compile' : 'relayout'
+
+      it(`${channel}: an unmarked error goes out as WORLD_CALL_FAILED, with no path, and the log gets it as it was`, async () => {
+        const { invoke, client } = setup()
+        const raw = gitFailed()
+        vi.mocked(client[fn]).mockRejectedValueOnce(raw)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          const res = (await invoke(channel, { root: 'C:/repo' })) as { success: boolean; error: string }
+          expect(res).toEqual({ success: false, error: WORLD_CALL_FAILED })
+          expect(res.error).not.toContain('someone')
+          expect(warn).toHaveBeenCalledTimes(1)
+          expect(warn.mock.calls[0][1]).toBe(raw)
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it(`${channel}: a host failure and main's own fixed text go out as they are, with nothing logged`, async () => {
+        const { invoke, client } = setup()
+        const host = shownAsIs(Object.assign(new Error("Lumopolis couldn't save this world's map. Try again in a moment."), { name: 'WorldSaveError', code: 'WORLD_SAVE_FAILED' }))
+        vi.mocked(client[fn]).mockRejectedValueOnce(host).mockRejectedValueOnce(shownError('Lumopolis host is shut down'))
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          expect(await invoke(channel, { root: 'C:/repo' })).toEqual({ success: false, error: host.message })
+          expect(await invoke(channel, { root: 'C:/repo' })).toEqual({ success: false, error: 'Lumopolis host is shut down' })
+          expect(warn).not.toHaveBeenCalled()
+        } finally {
+          warn.mockRestore()
+        }
+      })
+    }
   })
 
   it('forwards progress and updated to the window, survives no window or a dead one, and stops on off()', () => {

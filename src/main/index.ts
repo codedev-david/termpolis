@@ -332,6 +332,7 @@ import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYT
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
+import { shownError } from './world/windowError'
 import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
 import { registerWorldIpc } from './world/ipc'
 import { registerWorldExportIpc } from './world/exportIpc'
@@ -2831,7 +2832,7 @@ const worldClient = createWorldClient(undefined, {
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
     if (built.files.length === 0) {
       const source = (await worldSources.get(key))?.source
-      if (!source || source.kind === 'design' || !source.linkedDesign) throw new Error('no source files found')
+      if (!source || source.kind === 'design' || !source.linkedDesign) throw shownError('no source files found')
     }
     return built
   },

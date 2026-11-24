@@ -54,6 +54,7 @@ import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
+import { windowMessage } from './windowError'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
 
 export interface WorldIpcMain {
@@ -264,7 +265,8 @@ export function registerWorldIpc(
       try {
         return ok(await run(root))
       } catch (e) {
-        return err(e instanceof Error ? e.message : String(e))
+        // WP3 round 3: a failure main met itself before the host call (headOf, snapshotOf) is logged, never shown as it is.
+        return err(windowMessage(e))
       }
     }
 
