@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fill, linear } from './_linearTime'
+import { fill, linear, TIMED } from './_linearTime'
 import { blankPython, blankRust, expandUse, goModulePath, relativeSpec, resolveLangImports, scanLangImports, type GoModule } from '../../src/main/world/langImports'
 import { resolveImport } from '../../src/main/world/group'
 
@@ -537,7 +537,7 @@ describe('byte-order marks and CRLF line endings', () => {
   })
 })
 
-describe('hostile input stays linear', () => {
+describe('hostile input stays linear', TIMED, () => {
   // Each input is read at n and 8n characters, and the larger must take under 24 times as long: a quadratic rule takes
   // about 64 (see _linearTime). Each rule guarded here took seconds at these sizes before its fix.
   const N = 64 * 1024

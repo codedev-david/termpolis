@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractFile, languageForFile, type CodeSymbol } from '../../src/main/codeGraphExtract'
-import { fill, linear } from './_linearTime'
+import { fill, linear, TIMED } from './_linearTime'
 
 const names = (syms: CodeSymbol[]) => syms.map((s) => s.name)
 const byName = (syms: CodeSymbol[], n: string) => syms.find((s) => s.name === n)
@@ -152,7 +152,7 @@ describe('codeGraphExtract', () => {
     })
   })
 
-  describe('robustness', () => {
+  describe('robustness', TIMED, () => {
     it('an unterminated brace block ends at EOF, not a crash', () => {
       const ex = extractFile('m.ts', 'function open() {\n  return 1\n')!
       expect(byName(ex.symbols, 'open')!.endLine).toBe(3)
@@ -291,7 +291,7 @@ describe('codeGraphExtract', () => {
 
   // Every rule reads a file in time linear in its size. Each pin below is what the rule found before it was rewritten,
   // so a rewrite that drifts on ordinary code shows here; each timing input took seconds (or never finished) before.
-  describe('linear-time rules', () => {
+  describe('linear-time rules', TIMED, () => {
     const J = (...l: string[]): string => l.join('\n')
     const show = (file: string, src: string): { s: (string | number)[][]; i: string[] } => {
       const ex = extractFile(file, src)!

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { fill, linear } from './_linearTime'
+import { fill, linear, TIMED } from './_linearTime'
 import { MAX_GRAPH_FILE_CHARS } from '../../src/main/codeGraph'
 import {
   DEFAULT_DETECTORS,
@@ -103,7 +103,7 @@ ${url('host.js')}`)).toEqual([b('spawn', 'host', 'consume'), b('fork', 'host', '
   })
 })
 
-describe('message ports and child_process', () => {
+describe('message ports and child_process', TIMED, () => {
   it('detectProcesses finds MessageChannel ports, exec, execSync and child_process.fork', () => {
     expect(run(`const ch = new MessageChannel()
 const { port1 } = ch

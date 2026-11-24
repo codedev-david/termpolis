@@ -18,17 +18,20 @@
 // - A read of n counts as no less than FLOOR_MS, so a read of a millisecond or two does not turn a collection into
 //   a ratio. Every rule these tests guard took far longer than that at n before its fix.
 // - A ratio under half the limit in two rounds in a row, from the second round on, passes at once (so at round 3 at
-//   the earliest). Otherwise the check runs 5 rounds and compares, and while the ratio is at or over the limit it runs
-//   5 more, keeping the fastest times so far, up to 3 attempts. A ratio of twice the limit after an attempt fails at
-//   once, as no linear rule comes near it.
+//   the earliest). Otherwise the check runs 5 rounds and compares. While the ratio is then at or over the limit, it
+//   runs 5 rounds more at a time, keeping the fastest times so far, until the ratio is under the limit or RETRY_MS
+//   (12 s) of re-measuring has gone by, which outlasts a load episode that slows every read of 8n for a few seconds.
+//   A ratio of twice the limit fails at once, on any round from the fifth, as no linear rule comes near it; one still
+//   at or over the limit when the time is up fails too. Timing tests run under TIMED, a 120 s timeout, so the
+//   re-measuring never ends as a timeout.
 //
 // What can still let a superlinear rule through is that early pass: it decides on the fastest of 2 or 3 reads of n,
 // and when load slowed every one of them, the ratio reads low. A quadratic rule measures 38 to 66 here, so it passes
 // early only if its ratio reads at least 3.2 times too low in two rounds in a row. Replaying the per-round times of 4300
 // linear checks on two loaded cores with coverage on, scaled to a ratio of 38: one round let 1 check in 58 pass early,
 // two in a row 1 in 250; at a ratio of 64, 1 in 390 and 1 in 4300. On the 800 checks whose n takes 10 ms or more, as a
-// quadratic rule's does, two in a row let none through (one round: 3). Past the early pass, a superlinear rule fails every attempt, since its
-// fastest time at 8n never comes down to 24 times its time at n.
+// quadratic rule's does, two in a row let none through (one round: 3). Past the early pass, a superlinear rule fails
+// however long it re-measures, since its fastest time at 8n never comes down to 24 times its time at n.
 //
 // TERMPOLIS_LINEAR_LOG names a file that each check appends one JSON line to (times, ratio, margin = limit / ratio,
 // rounds, `first`, the ratio after the first 5 rounds when the check ran that far, and `trace`, the time of n and of
@@ -39,7 +42,7 @@ import { expect } from 'vitest'
 const GROWTH = 8
 const LIMIT = 24
 const ROUNDS = 5
-const ATTEMPTS = 3
+const RETRY_MS = 12_000
 const CLEAR_AFTER = 2
 const FLOOR_MS = 4
 const MAX_REPS = GROWTH * GROWTH
@@ -73,7 +76,8 @@ export function linear<T, R>(make: (n: number) => T, read: (input: T) => R, n: n
   let reps = GROWTH
   let clear = 0
   const trace: number[][] = []
-  while (rounds < ROUNDS * ATTEMPTS) {
+  let retryFrom = 0
+  for (;;) {
     const a = time(read, small, reps) / reps
     const b = time(read, large, 1)
     trace.push([a, b])
@@ -82,16 +86,23 @@ export function linear<T, R>(make: (n: number) => T, read: (input: T) => R, n: n
     rounds++
     ratio = t8 / Math.max(t1, FLOOR_MS)
     reps = Math.min(MAX_REPS, Math.max(GROWTH, Math.round(t8 / t1)))
-    if (rounds === ROUNDS) first = ratio
+    if (rounds === ROUNDS) {
+      first = ratio
+      retryFrom = performance.now()
+    }
     clear = rounds >= CLEAR_AFTER && ratio < LIMIT / 2 ? clear + 1 : 0
     if (clear === 2) break
-    if (rounds % ROUNDS === 0 && (ratio < LIMIT || ratio >= 2 * LIMIT)) break
+    if (rounds >= ROUNDS && ratio >= 2 * LIMIT) break
+    if (rounds % ROUNDS === 0 && (ratio < LIMIT || performance.now() - retryFrom >= RETRY_MS)) break
   }
   const log = process.env.TERMPOLIS_LINEAR_LOG
   if (log) appendFileSync(log, JSON.stringify({ test: expect.getState().currentTestName, label, n, t1, t8, ratio, margin: LIMIT / ratio, rounds, first, reps, trace }) + '\n')
   sink = undefined
   expect(ratio, `${label} n=${n}: ${t1.toFixed(1)} ms, 8n: ${t8.toFixed(1)} ms, ${rounds} rounds`).toBeLessThan(LIMIT)
 }
+
+/** The options of a describe holding timing tests: re-measuring can add RETRY_MS to a test's own time. */
+export const TIMED = { timeout: 120_000 }
 
 /** `unit` repeated to about n characters (at least once). */
 export const fill = (unit: string, n: number): string => unit.repeat(Math.max(1, Math.floor(n / unit.length)))

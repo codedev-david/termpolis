@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fill, linear } from './_linearTime'
+import { fill, linear, TIMED } from './_linearTime'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
@@ -1159,7 +1159,7 @@ describe('manifestServiceNames', () => {
     expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name:', '  name: second'))).toEqual(['second'])
   })
 
-  describe('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
+  describe('reads a metadata block with no name in time linear in its size (exponential on main)', TIMED, () => {
     // Reading 8 times the block takes under 24 times as long (see _linearTime); the regex before took seconds at 50k.
     // One test per input, so each stays well inside the test timeout on a loaded runner with coverage on.
     const N = 64 * 1024
