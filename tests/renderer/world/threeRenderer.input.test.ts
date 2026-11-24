@@ -296,6 +296,42 @@ describe('threeRenderer resize', () => {
     r.dispose()
   })
 
+  it("draws a 5K view at most a 1440p screen's pixels in software, and the screen's full ratio on a GPU or a smaller view", () => {
+    // At 5120 x 2880 in software one frame inside a district of thousands of parts took the GPU process past
+    // Chromium's watchdog, which ended it (exit code 2, twice: the map then stays in 2D for good).
+    const ro = withObserver()
+    vi.stubGlobal('devicePixelRatio', 1)
+    gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
+    gpu.gpuName = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+    resizeHost(h.host, 5120, 2880)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    const last = (): number => rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]
+    expect(last()).toBeCloseTo(0.5) // 5120 x 2880 x 0.5 x 0.5 = 2560 x 1440
+    resizeHost(h.host, 2560, 1440)
+    ro.fire() // a 1440p view fits: the screen's ratio
+    expect(last()).toBe(1)
+    resizeHost(h.host, 5120, 2880)
+    ro.fire()
+    expect(last()).toBeCloseTo(0.5)
+    expect(gpu.composers[0].pixelRatios[gpu.composers[0].pixelRatios.length - 1]).toBeCloseTo(0.5)
+    // Back on a GPU (a driver came back): the screen's full ratio at 5K.
+    r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    gpu.gpuName = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(last()).toBe(1)
+    r.dispose()
+  })
+
+  it("keeps the low quality tier's half ratio at 5K in software: its buffer is a 1440p one already", () => {
+    vi.stubGlobal('devicePixelRatio', 1)
+    gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
+    gpu.gpuName = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+    resizeHost(h.host, 5120, 2880)
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: false })
+    expect(rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]).toBe(0.5)
+    r.dispose()
+  })
+
   it('never takes the drawing buffer past the cap between its calls: a ratio coming down is set before the size, one going up after (M3)', () => {
     const ro = withObserver()
     vi.stubGlobal('devicePixelRatio', 2)

@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, CONTROLS_DAMPING_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, CONTROLS_DAMPING_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3, SOFTWARE_MAX_PIXELS, pixelBudgetRatio } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -995,5 +995,18 @@ describe('readableOpacity', () => {
     expect(readableOpacity(LABEL_HIDE_BELOW - 0.01)).toBeNull()
     expect(readableOpacity(0.2)).toBeNull()
     expect(readableOpacity(0)).toBeNull()
+  })
+})
+
+describe('pixelBudgetRatio', () => {
+  it('keeps the wanted ratio while the buffer fits the budget, and lowers it to hold exactly the budget past it', () => {
+    expect(SOFTWARE_MAX_PIXELS).toBe(2560 * 1440)
+    expect(pixelBudgetRatio(1, 2560, 1440, SOFTWARE_MAX_PIXELS)).toBe(1) // exactly the budget
+    expect(pixelBudgetRatio(2, 1280, 720, SOFTWARE_MAX_PIXELS)).toBe(2) // a 2x screen whose buffer is 2560 x 1440
+    expect(pixelBudgetRatio(1, 5120, 2880, SOFTWARE_MAX_PIXELS)).toBeCloseTo(0.5)
+    expect(pixelBudgetRatio(0.5, 5120, 2880, SOFTWARE_MAX_PIXELS)).toBe(0.5) // the low tier's buffer is 1440p already
+    const r = pixelBudgetRatio(2, 3840, 2160, SOFTWARE_MAX_PIXELS)
+    expect(3840 * r * 2160 * r).toBeCloseTo(SOFTWARE_MAX_PIXELS, 0)
+    expect(pixelBudgetRatio(1.5, 0, 0, SOFTWARE_MAX_PIXELS)).toBe(1.5) // no area: the ratio as wanted
   })
 })
