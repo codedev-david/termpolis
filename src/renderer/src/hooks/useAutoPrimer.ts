@@ -272,19 +272,22 @@ export function isClaudeAgent(a: { name?: string } | null | undefined): boolean 
  * input box once it is up, unsent. That is the pointer David found sitting on new terminals' input
  * lines in 1.63.0.
  *
- * Without the bridge (an older preload, a test) nothing is known about the hook and the pointer is
- * still typed, as before. A read that fails says nothing about the hook either; the safe side then
- * is to type nothing, since a prime lost is a nuisance and a pointer left on the line is the bug.
+ * Only a read that says so counts. Without the bridge (an older preload, a test), or when the read
+ * fails or comes back empty, nothing is known about the hook and the pointer is typed, as before
+ * 1.63.1. A Claude without the hook has no other way to its memory: typing nothing would drop it
+ * silently, at launch and after every compaction. A pointer typed into a Claude that had the hook
+ * after all is a duplicate the user can see. Main answers a ledger it cannot read with "not
+ * connected" for the same reason (getAgentIntegrationStatus).
  */
 export async function claudeHookLoadsMemory(): Promise<boolean> {
   const status = window.termpolis?.agentIntegrationStatus
   if (!status) return false
   try {
     const res = await status()
-    if (!res?.success || !res.data) return true
+    if (!res?.success || !res.data) return false
     return res.data.connected === true && res.data.primerHook === true
   } catch {
-    return true
+    return false
   }
 }
 
