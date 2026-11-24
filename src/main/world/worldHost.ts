@@ -45,7 +45,7 @@ import {
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
-import { createWorldStore, WorldSavedByNewerError, type WorldStore } from './worldStore'
+import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, type WorldStore } from './worldStore'
 import { validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
@@ -157,6 +157,15 @@ export function serializeError(err: unknown): SerializedError {
     return { message: err.message || String(err), name: err.name || 'Error', ...(typeof code === 'string' && ERROR_CODE.test(code) ? { code } : {}) }
   }
   return { message: typeof err === 'string' ? err : String(err), name: 'Error' }
+}
+
+/** What leaves the host for the window (WP3 round 2). A file-system error (one naming its syscall) carries paths on this
+ *  computer, and main shows a failure's message as it is, so it goes out as the fixed, coded WORLD_SAVE_FAILED and only the
+ *  log gets the raw error. Anything else is serializeError's. */
+export function outwardError(err: unknown): SerializedError {
+  if (!(err instanceof Error) || typeof (err as NodeJS.ErrnoException).syscall !== 'string') return serializeError(err)
+  console.warn('[world host] a file operation failed:', err)
+  return { message: WORLD_SAVE_FAILED, name: 'WorldSaveError', code: 'WORLD_SAVE_FAILED' }
 }
 
 // ── File-system deps ─────────────────────────────────────────────────────────────────────────────
@@ -1174,7 +1183,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
-          post({ kind: 'init-error', error: serializeError(err) })
+          post({ kind: 'init-error', error: outwardError(err) })
         }
         return
       }
@@ -1213,7 +1222,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const result = await (handler as (...a: unknown[]) => Promise<unknown>)(...args)
         post({ kind: 'result', id: msg.id, ok: true, result })
       } catch (err) {
-        post({ kind: 'result', id: msg.id, ok: false, error: serializeError(err) })
+        post({ kind: 'result', id: msg.id, ok: false, error: outwardError(err) })
       }
     }
   }

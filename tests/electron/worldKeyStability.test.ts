@@ -8,9 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Faults the adoption must survive: a rename that fails; lock files that cannot be made (`lock`: the codes, one per try;
 // `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
-// that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once).
+// that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once); a file
+// another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times).
 const faults = vi.hoisted(() => ({
   rename: false, renameOnce: null as string[] | null, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
+  busy: '', busyReads: 0,
 }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
@@ -18,6 +20,13 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const isLock = (p: unknown): boolean => String(p).endsWith('.lock')
   return {
     ...real,
+    readFile: async (...a: Parameters<typeof real.readFile>) => {
+      if (faults.busy && String(a[0]).endsWith(faults.busy) && faults.busyReads > 0) {
+        faults.busyReads--
+        throw fail('EBUSY')
+      }
+      return real.readFile(...a)
+    },
     rename: async (from: string, to: string) => {
       const once = faults.renameOnce?.shift()
       if (once || faults.rename) throw fail(once ?? 'EBUSY')
@@ -44,8 +53,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 import {
   adoptAnnotationAliases, createAnnotationStore, withAnnotationFileLock, ANNOTATION_LOCK_DEADLINE_MS, ANNOTATION_LOCK_RETRY_MS,
   ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
-  ANNOTATION_RENAME_RETRY_TOTAL_MS,
+  ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX,
 } from '../../src/main/world/annotations'
+import { LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { entityDedupHash } from '../../src/main/swarmMemory'
 import { legacyProjectKeyOf, projectKeyAliases, projectKeyOf } from '../../src/main/projectKey'
@@ -87,8 +97,8 @@ describe('keys that must not move for a normal Windows root', () => {
 
 describe('adoptAnnotationAliases', () => {
   let dir = ''
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null })
-  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; await rm(dir, { recursive: true, force: true }) })
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0 })
+  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; faults.busy = ''; faults.busyReads = 0; await rm(dir, { recursive: true, force: true }) })
   const folder = (): string => join(dir, 'world', 'annotations')
   const fileFor = (key: string): string => join(folder(), `${sha256(key)}.json`)
   const ms = (n: number): Promise<void> => new Promise((r) => { setTimeout(r, n) })
@@ -136,6 +146,73 @@ describe('adoptAnnotationAliases', () => {
     expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
     await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
   })
+  describe('an older file another program holds through every retry (WP3 round 2)', () => {
+    const quick = { sleep: async () => undefined }
+    const pending = (): string => `${fileFor('new-key')}${ADOPT_PENDING_SUFFIX}`
+    const holdOld = (opens = 1): void => { faults.busy = `${sha256('old-key')}.json`; faults.busyReads = LOCKED_ATTEMPTS * opens }
+
+    it('is not given up on: the next open adopts it, and the record of it goes', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('the billing door'))
+      holdOld()
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      // the next open: the file reads now
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual(['old-key'])
+      expect((await createAnnotationStore(dir).list('new-key')).b1[0].text).toBe('the billing door')
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      // and every open after that is the common case again
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+    })
+
+    it('an add to the new key meanwhile is kept: the older claims go in before it on a later open, which may be held again first', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('old-key', 'b1', claim('older'))
+      await store.add('old-key', 'b2', claim('shared'))
+      holdOld()
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual([])
+      await store.add('new-key', 'b2', claim('shared'))
+      await store.add('new-key', 'b2', claim('added since'))
+      holdOld() // still held on the next open: nothing is written, the record stays
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual([])
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'other'], quick)).toEqual(['old-key'])
+      const got = await store.list('new-key')
+      expect(got.b1.map((c) => c.text)).toEqual(['older'])
+      expect(got.b2.map((c) => c.text)).toEqual(['shared', 'added since'])
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it('a new key file that does not read keeps the record and is left as it was; a record that is not a list is dropped', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      await writeFile(fileFor('new-key'), '{"b1": [', 'utf8')
+      await writeFile(pending(), JSON.stringify(['old-key']), 'utf8')
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+      expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{"b1": [')
+      expect(JSON.parse(await readFile(pending(), 'utf8'))).toEqual(['old-key'])
+      await writeFile(fileFor('new-key'), '{}', 'utf8')
+      await writeFile(pending(), '{"not":"a list"}', 'utf8')
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+      expect(await readFile(fileFor('new-key'), 'utf8')).toBe('{}')
+      await expect(readFile(pending(), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it('a record that cannot be written costs only the retry, and never throws', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      holdOld()
+      faults.rename = true
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], quick)).toEqual([])
+      expect((await readdir(folder())).sort()).toEqual([`${sha256('old-key')}.json`])
+    })
+
+    it('waits between the reads of a held file with the real pause when no sleep is given', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      faults.busy = `${sha256('old-key')}.json`
+      faults.busyReads = 1
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
+    })
+  })
+
   it('a copy that cannot be written leaves no temp file and no new file behind, and never throws', async () => {
     await createAnnotationStore(dir).add('old-key', 'b1', claim('kept'))
     faults.rename = true

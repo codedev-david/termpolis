@@ -108,12 +108,49 @@ describe('worldStore', () => {
     expect(await readFile(join(world, 'demo.json.2026-01-01T00-05-00-000Z-6.bad'), 'utf8')).toBe('broken 5')
   })
 
-  it('a corrupt file whose backup cannot be written still loads as null and stays where it was', async () => {
-    const store = createWorldStore(dir, { rename: async () => { throw Object.assign(new Error('refused'), { code: 'EINVAL' }) } })
+  it('a corrupt file that cannot be moved aside is refused by load and save alike, and its bytes stay as they were (round 2)', async () => {
+    const lines: string[] = []
+    let refuse = true
+    const realRename = (await import('node:fs/promises')).rename
+    const store = createWorldStore(dir, {
+      sleep: async () => undefined,
+      log: (m) => lines.push(m),
+      now: () => Date.UTC(2026, 10, 23, 1, 2, 3, 4),
+      rename: async (from, to) => {
+        if (refuse) throw Object.assign(new Error('refused'), { code: 'EPERM' })
+        return realRename(from, to)
+      }
+    })
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(join(dir, 'world', 'demo.json'), 'garbage')
-    expect(await store.load('demo')).toBeNull()
+    const err = await store.load('demo').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorldReadError)
+    expect(err).toMatchObject({ code: 'WORLD_READ_FAILED', message: WORLD_READ_FAILED })
+    expect(lines).toEqual(['[world store] the stored world demo.json does not read and could not be moved aside, so nothing is saved over it'])
+    // a compile's save after the failed load is refused too, and nothing is written
+    await expect(store.save(doc())).rejects.toMatchObject({ code: 'WORLD_READ_FAILED' })
+    // as is a save from a store that never loaded it
+    await expect(createWorldStore(dir, { sleep: async () => undefined, log: () => undefined, rename: async () => { throw new Error('refused') } }).save(doc()))
+      .rejects.toBeInstanceOf(WorldReadError)
+    expect(await readFile(join(dir, 'world', 'demo.json'), 'utf8')).toBe('garbage')
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+    // once the file can be moved aside, the next save moves it and writes the world
+    refuse = false
+    await store.save(doc())
+    expect(JSON.parse(await readFile(join(dir, 'world', 'demo.json'), 'utf8'))).toEqual(doc())
+    expect(await readFile(join(dir, 'world', 'demo.json.2026-11-23T01-02-03-004Z-1.bad'), 'utf8')).toBe('garbage')
+  })
+
+  it('a save after a load that refused looks at the file again rather than trusting what an earlier load saw', async () => {
+    const store = createWorldStore(dir, { sleep: async () => undefined, log: () => undefined })
+    await store.save(doc())
+    expect(await store.load('demo')).toEqual(doc())
+    // the file turns into a folder: the load refuses, and so does the save after it
+    await rm(join(dir, 'world', 'demo.json'))
+    await mkdir(join(dir, 'world', 'demo.json'))
+    await expect(store.load('demo')).rejects.toBeInstanceOf(WorldReadError)
+    await expect(store.save(doc())).rejects.toBeInstanceOf(WorldReadError)
+    expect(await readdir(join(dir, 'world', 'demo.json'))).toEqual([])
   })
 
   it('a world that a locked file refuses for a moment (EBUSY, EACCES, EPERM) is read again and loads (F18)', async () => {
@@ -218,6 +255,9 @@ describe('worldStore', () => {
     expect(err).toBeInstanceOf(WorldReadError)
     expect((err as WorldReadError).message).toBe(WORLD_READ_FAILED)
     expect(lines[1]).toBe('[world store] the stored world demo.json left items out and could not be backed up first')
+    await expect(readdir(join(dir, 'world'))).rejects.toMatchObject({ code: 'ENOENT' })
+    // a save loads first, and is refused the same way
+    await expect(store.save(doc())).rejects.toBeInstanceOf(WorldReadError)
     await expect(readdir(join(dir, 'world'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 

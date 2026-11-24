@@ -184,12 +184,52 @@ async function writeAtomic(target: string, text: string): Promise<void> {
   }
 }
 
-/** One file's claims, or null when it is missing or does not parse. */
-async function readClaims(file: string): Promise<Record<string, Claim[]> | null> {
+/** Beside a new key's file: the older keys whose files could not be read when it was adopted, to be tried on a later open. */
+export const ADOPT_PENDING_SUFFIX = '.adopt-pending'
+
+/** An older key's claims; 'none' when its file is missing, empty or does not parse (nothing to take, now or later);
+ *  'unread' when it exists but could not be read even after the retries (held by another program, say): tried again later. */
+async function readAlias(file: string, sleep: Sleep): Promise<Record<string, Claim[]> | 'none' | 'unread'> {
+  let text: string
   try {
-    return cleanFile(JSON.parse(await readFile(file, 'utf8')))
+    text = await retryLocked(() => readFile(file, 'utf8'), sleep)
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'none' : 'unread'
+  }
+  try {
+    const claims = cleanFile(JSON.parse(text))
+    return Object.keys(claims).length > 0 ? claims : 'none'
+  } catch {
+    return 'none'
+  }
+}
+
+/** The new key's own claims, or null when its file cannot be read or does not parse (then nothing is written over it). */
+async function readOwn(file: string, sleep: Sleep): Promise<Record<string, Claim[]> | null> {
+  try {
+    return cleanFile(JSON.parse(await retryLocked(() => readFile(file, 'utf8'), sleep)))
   } catch {
     return null
+  }
+}
+
+/** The older keys still to adopt, or null when nothing is pending (no marker, or one that cannot be read now). */
+async function readPending(file: string): Promise<string[] | null> {
+  try {
+    const keys: unknown = JSON.parse(await readFile(file, 'utf8'))
+    return Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+  } catch {
+    return null
+  }
+}
+
+/** Records the older keys still to adopt, or removes the record when there are none. Best effort. */
+async function keepPending(file: string, keys: string[]): Promise<void> {
+  try {
+    if (keys.length > 0) await writeAtomic(file, JSON.stringify(keys))
+    else await rm(file, { force: true })
+  } catch {
+    // a record that cannot be written loses only the retry of a file that could not be read
   }
 }
 
@@ -202,32 +242,59 @@ async function readClaims(file: string): Promise<Record<string, Claim[]> | null>
  * given, a claim found under two keys kept once, each item capped as an add caps it; the file is written whole (a temp file,
  * then a rename). It never overwrites a file the new key already has (that file is the newer one), never deletes an older
  * one, and never throws. Resolves with the older keys it merged, or an empty list.
+ * WP3 round 2: an older file that exists but cannot be read (held by another program through the retries) is not given up
+ * on. Its key is recorded beside the new key's file (ADOPT_PENDING_SUFFIX), and every later open tries it again, even once
+ * the new key has a file of its own: its claims then go in before the new key's own (which are newer), nothing of the new
+ * key's file is lost, and the record goes once nothing is left to try. A new key's file that cannot be read keeps the record.
  */
-export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[]): Promise<string[]> {
+export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys: readonly string[], deps: { sleep?: Sleep } = {}): Promise<string[]> {
   const others = aliasKeys.filter((k, i) => k && k !== key && aliasKeys.indexOf(k) === i)
   if (!key || others.length === 0) return []
+  const sleep = deps.sleep ?? pause
   const target = annotationsFileOf(dir, key)
+  const pendingFile = `${target}${ADOPT_PENDING_SUFFIX}`
   const exists = (f: string): Promise<boolean> => access(f).then(() => true, () => false)
-  if (await exists(target)) return [] // the common case, every open after the first: no lock taken
-  const found: Array<[string, Record<string, Claim[]>]> = []
-  for (const old of others) {
-    const claims = await readClaims(annotationsFileOf(dir, old))
-    if (claims && Object.keys(claims).length > 0) found.push([old, claims])
+  const had = await exists(target)
+  let wanted = others
+  if (had) {
+    // The common case, every open after the first: one look for a record, no lock taken.
+    const pending = await readPending(pendingFile)
+    if (!pending) return []
+    wanted = others.filter((k) => pending.includes(k))
   }
-  if (found.length === 0) return []
+  const found: Array<[string, Record<string, Claim[]>]> = []
+  const unread: string[] = []
+  for (const old of wanted) {
+    const claims = await readAlias(annotationsFileOf(dir, old), sleep)
+    if (claims === 'unread') unread.push(old)
+    else if (claims !== 'none') found.push([old, claims])
+  }
+  if (!had && found.length === 0 && unread.length === 0) return []
   try {
     return await withAnnotationFileLock(target, async () => {
-      if (await exists(target)) return [] // the world host saved the new key's own file while we read
-      const merged: Record<string, Claim[]> = Object.create(null)
-      for (const [, claims] of found) {
-        for (const [id, list] of Object.entries(claims)) {
-          const have = merged[id] ?? []
-          const seen = new Set(have.map((c) => JSON.stringify(c)))
-          merged[id] = [...have, ...list.filter((c) => !seen.has(JSON.stringify(c)))]
+      let own: Record<string, Claim[]> | null = null
+      if (await exists(target)) {
+        if (!had) {
+          // the world host saved the new key's own file while we read: it is the newer one, left as it is
+          await keepPending(pendingFile, unread)
+          return []
         }
+        own = await readOwn(target, sleep)
+        if (!own) return [] // the record stays, so a later open tries again
       }
-      for (const id of Object.keys(merged)) merged[id] = capClaims(merged[id])
-      await writeAtomic(target, JSON.stringify(merged))
+      if (found.length > 0) {
+        const merged: Record<string, Claim[]> = Object.create(null)
+        for (const claims of [...found.map(([, c]) => c), ...(own ? [own] : [])]) {
+          for (const [id, list] of Object.entries(claims)) {
+            const have = merged[id] ?? []
+            const seen = new Set(have.map((c) => JSON.stringify(c)))
+            merged[id] = [...have, ...list.filter((c) => !seen.has(JSON.stringify(c)))]
+          }
+        }
+        for (const id of Object.keys(merged)) merged[id] = capClaims(merged[id])
+        await writeAtomic(target, JSON.stringify(merged))
+      }
+      await keepPending(pendingFile, unread)
       return found.map(([old]) => old)
     })
   } catch {

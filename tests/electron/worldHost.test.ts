@@ -37,6 +37,7 @@ import {
   MAX_SOURCE_READ_BYTES,
   type ReadHandle,
   serializeError,
+  outwardError,
   startWorldHost,
   WATCH_RECOMPILE_MS,
   type GlobFn,
@@ -48,7 +49,7 @@ import {
 import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, NO_GIT_MESSAGE, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
-import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
+import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { emptyDesignDoc } from '../../src/shared/world/designPatch'
@@ -407,6 +408,48 @@ describe('createWorldHost', () => {
     })
     await h2.init()
     expect(h2.out[0]).toEqual({ kind: 'init-error', error: { name: 'Error', message: 'disk' } })
+  })
+
+  describe('a file-system error never leaves the host with its paths (WP3 round 2)', () => {
+    const fsError = (): NodeJS.ErrnoException =>
+      Object.assign(new Error("EPERM: operation not permitted, rename 'C:\\Users\\someone\\world\\k1.json.tmp' -> 'C:\\Users\\someone\\world\\k1.json'"), {
+        code: 'EPERM', errno: -4048, syscall: 'rename', path: 'C:\\Users\\someone\\world\\k1.json.tmp'
+      })
+    const fixed = { message: WORLD_SAVE_FAILED, name: 'WorldSaveError', code: 'WORLD_SAVE_FAILED' }
+
+    it('a save the disk refuses answers the fixed, coded error; the raw one goes to the log only', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const raw = fsError()
+        const store = { ...memStore(), save: async () => { throw raw } }
+        const h = harness({ compile: async (input: CompileInput) => doc(input.projectKey) }, store)
+        await h.init()
+        await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+        const res = h.out.find((m) => m.kind === 'result')
+        expect(res).toEqual({ kind: 'result', id: 1, ok: false, error: fixed })
+        expect(JSON.stringify(h.out)).not.toContain('someone')
+        expect(warn).toHaveBeenCalledWith('[world host] a file operation failed:', raw)
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('so does an init whose store cannot be made', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const h = harness({ createStore: () => { throw fsError() } })
+        await h.init()
+        expect(h.out[0]).toEqual({ kind: 'init-error', error: fixed })
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('anything that is not a file-system error goes out as serializeError writes it', () => {
+      expect(outwardError(new WorldReadError())).toEqual(serializeError(new WorldReadError()))
+      expect(outwardError(Object.assign(new Error('x'), { code: 'ENOENT' }))).toEqual({ message: 'x', name: 'Error', code: 'ENOENT' })
+      expect(outwardError('plain')).toEqual({ message: 'plain', name: 'Error' })
+    })
   })
 
   it('a call before init, or to an unknown fn, gives ok:false', async () => {
@@ -1349,6 +1392,30 @@ describe('createWorldHost', () => {
     expect(world.projectKey).toBe('real')
     expect(out.some((m) => m.kind === 'progress')).toBe(true)
     expect(await createWorldStore(join(dir, 'ud')).load('real')).toEqual(world)
+  })
+
+  it('a corrupt stored world that cannot be moved aside refuses the compile with WORLD_READ_FAILED and keeps its bytes (round 2)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const ud = join(dir, 'ud')
+      await mkdir(join(ud, 'world'), { recursive: true })
+      const stored = join(ud, 'world', 'k1.json')
+      await writeFile(stored, '{"version":1,"districts":[')
+      const compile = vi.fn(async (input: CompileInput) => doc(input.projectKey))
+      const out: WorldHostResponse[] = []
+      const host = createWorldHost((m) => out.push(m), {
+        compile,
+        runsTimeoutMs: 5,
+        createStore: (d) => createWorldStore(d, { sleep: async () => undefined, rename: async () => { throw Object.assign(new Error('refused'), { code: 'EPERM' }) } })
+      })
+      await host.handle({ kind: 'init', userDataPath: ud, labelling: false })
+      await host.handle({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      expect(out.find((m) => m.kind === 'result')).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
+      expect(await readFile(stored, 'utf8')).toBe('{"version":1,"districts":[')
+      expect(out.some((m) => m.kind === 'updated')).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 
