@@ -672,8 +672,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setConfirmRelayout(false)
     setBuilding(false)
     setNotice(null)
-    // The root resolved for the world shown before must not load for this one meanwhile.
-    setResolvedRoot(null)
+    // The root resolved for the world shown before must not load for this one meanwhile. The world already
+    // open keeps its root: its folder and how it opens are unchanged, so the resolver would not run again.
+    if (t.kind !== 'root' || t.root !== target || (t.follow === true) !== asProject) setResolvedRoot(null)
     if (planned) onLayers({ planned: true })
     open(t)
   }

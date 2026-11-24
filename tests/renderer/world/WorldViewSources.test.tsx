@@ -126,6 +126,37 @@ describe('WorldView sources', () => {
     expect(screen.queryByTestId('world-home')).toBeNull()
   })
 
+  // F-R3: choosing the world already open must not leave "Opening Lumopolis…" up for good.
+  it('choosing the world already open in the switcher still draws it', async () => {
+    const api = bridge()
+    await mount('/repo')
+    switchTo('kf')
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    const loads = viewer().load.mock.calls.length
+    switchTo('kf')
+    await settle()
+    expect(screen.queryByTestId('world-loading')).toBeNull()
+    expect(screen.queryByTestId('world-empty')).toBeNull()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    expect(viewer().load.mock.calls.length).toBeGreaterThanOrEqual(loads)
+    expect(api.worldGet).toHaveBeenLastCalledWith('C:/work/shop')
+  })
+
+  it('choosing the terminal folder itself from the switcher opens it as chosen, without following the terminal', async () => {
+    const HERE: WorldEntry = { key: 'kr', source: { kind: 'folder', root: '/repo' }, title: 'repo', lastOpened: 3 }
+    const api = bridge({ worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([HERE, FOLDER])) })
+    const m = await mount('/repo')
+    expect(api.gitFindRoot).toHaveBeenCalledTimes(1)
+    switchTo('kr')
+    await settle()
+    expect(api.gitFindRoot).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('world-loading')).toBeNull()
+    expect(api.worldGet).toHaveBeenLastCalledWith('/repo')
+    await m.rerender('/elsewhere')
+    expect(api.worldGet).toHaveBeenLastCalledWith('/repo')
+  })
+
   it('switcher opens chosen world', async () => {
     const api = bridge()
     await mount('/repo')
