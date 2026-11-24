@@ -20,6 +20,10 @@ import { psQuote } from '../../../shared/shellQuote'
 //             system prompt is re-sent on every request, it SURVIVES compaction — so the seed
 //             also tells Claude to re-call memory_primer itself if its context gets compacted.
 //             It re-primes behind the scenes. We never write to its input. Not once.
+//             A Claude that was not seeded (its launch recall was slow, or it was launched
+//             another way) gets nothing typed either while Termpolis's SessionStart memory hook
+//             is in its profile: the hook loads the digest at start and after a compaction
+//             (claudeHookLoadsMemory).
 //
 //   Others  → Codex/Gemini have no system-prompt file to append to, so the one-line pointer
 //             is pasted into their input at launch, while the line is still empty.
@@ -226,6 +230,42 @@ function pointerUnwanted(terminalId: string): boolean {
   return t?.launchPrimed === true || t?.agentLaunchFailed === true
 }
 
+/** Whether an agent identity (a launch command's, or the badge's) is Claude Code. */
+export function isClaudeAgent(a: { name?: string } | null | undefined): boolean {
+  return /claude/i.test(a?.name ?? '')
+}
+
+/**
+ * Whether Claude Code gets its memory with nothing typed: Termpolis's SessionStart memory hook is
+ * in its profile (Agent Integration connected, the memory hook on). Claude Code runs that hook at
+ * every session start, a resume and a compaction included, so the digest is in before the session
+ * takes its first prompt, and a typed pointer would only be noise on its input line.
+ *
+ * The typed pointer was the fallback for a Claude that Termpolis did not seed at launch. That is
+ * every Claude whose launch recall took longer than PRIMER_WAIT_MS (aiProfiles.ts) or came back
+ * empty, every Claude that launchAgents types (the Welcome screen, the command palette, a restored
+ * workspace, an account switch) and every Claude typed by hand. And typed into a Claude Code that
+ * is still starting it never goes in: Claude Code reads keys typed before its input box is up into
+ * a buffer of its own, turns the Enter into a line break there, and hands the trimmed text to the
+ * input box once it is up, unsent. That is the pointer David found sitting on new terminals' input
+ * lines in 1.63.0.
+ *
+ * Without the bridge (an older preload, a test) nothing is known about the hook and the pointer is
+ * still typed, as before. A read that fails says nothing about the hook either; the safe side then
+ * is to type nothing, since a prime lost is a nuisance and a pointer left on the line is the bug.
+ */
+export async function claudeHookLoadsMemory(): Promise<boolean> {
+  const status = window.termpolis?.agentIntegrationStatus
+  if (!status) return false
+  try {
+    const res = await status()
+    if (!res?.success || !res.data) return true
+    return res.data.connected === true && res.data.primerHook === true
+  } catch {
+    return true
+  }
+}
+
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
@@ -360,12 +400,16 @@ export async function reprimeAfterCompaction(
     /** A prompt is on screen (promptShowing). Waited out like a draft. */
     awaiting?: (id: string) => Promise<boolean>
     inject?: (id: string, cwd: string) => Promise<boolean>
+    /** The agent loads its memory again by itself after a compaction (Claude Code with Termpolis's
+     *  SessionStart hook, claudeHookLoadsMemory): nothing is typed, as for a seeded terminal. */
+    loadsMemoryItself?: () => Promise<boolean>
     sleep?: (ms: number) => Promise<void>
     pollMs?: number
     maxWaitMs?: number
   },
 ): Promise<boolean> {
   if (opts.isLaunchPrimed()) return false // rule 1 — it re-primes itself, silently
+  if (opts.loadsMemoryItself && (await opts.loadsMemoryItself())) return false // so does the hook
   const pending = opts.pending ?? inputPending
   const awaiting = opts.awaiting ?? promptShowing
   const draft = opts.draft
@@ -445,12 +489,16 @@ export async function primeOnLaunch(
     /** Called right before the inject, once nothing can stop the attempt short of the inject's
      *  own checks: until then a stopped attempt types nothing, whatever it was waiting on. */
     onAttempt?: () => void
+    /** Claude Code gets its memory with nothing typed (claudeHookLoadsMemory). Asked once the
+     *  gate has said which agent was launched, and only for Claude Code. */
+    claudeLoadsMemory?: () => Promise<boolean>
     pollMs?: number
     maxWaitMs?: number
     delayMs?: number
   } = {},
 ): Promise<boolean> {
   const awaiting = opts.awaiting ?? promptShowing
+  const claudeLoadsMemory = opts.claudeLoadsMemory ?? claudeHookLoadsMemory
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const stopped = opts.stopped ?? (() => false)
   const pollMs = opts.pollMs ?? PRIMER_GATE_POLL_MS
@@ -478,6 +526,8 @@ export async function primeOnLaunch(
     if (stopped()) return false
     waited += pollMs
   }
+  // A Claude Code that loads its own memory gets nothing typed, whichever way it was launched.
+  if (isClaudeAgent(gate.launchedAgent()) && (await claudeLoadsMemory())) return false
   await sleep(delayMs)
   if (stopped()) return false
   // A folder-trust prompt the agent put up while it booted is the user's to answer. Wait for
@@ -638,6 +688,8 @@ export function useCompactionReprimer(
           // which can land after this controller is constructed.
           isLaunchPrimed: () =>
             useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.launchPrimed === true,
+          // Claude Code's SessionStart hook runs after a compaction too.
+          loadsMemoryItself: async () => isClaudeAgent({ name: agentRef.current ?? '' }) && (await claudeHookLoadsMemory()),
         })
       },
     })
