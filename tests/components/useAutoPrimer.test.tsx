@@ -2097,7 +2097,7 @@ describe('the launch pointer when a terminal first opens', () => {
       terminals: [{ id: 't-claude', agentCommand: 'claude', launchPrimed: false, agentLaunchPending: true } as any],
     })
     // Detection fired off the shell's first prompt (a folder under ~/.claude, say).
-    renderHook(() => useAutoPrimer('t-claude', agent, 'C:\Users\me\.claude', openGate()))
+    renderHook(() => useAutoPrimer('t-claude', agent, 'C:\\Users\\me\\.claude', openGate()))
     await vi.advanceTimersByTimeAsync(2500)
     // aiProfiles: the recall is in (launchPrimed), then the command is typed (no longer pending).
     useTerminalStore.getState().updateTerminal('t-claude', { launchPrimed: true })

@@ -44,6 +44,20 @@ const MAX_TIMER_MS = 2 ** 31 - 1
  */
 export function watchLimitEnds(api: Pick<AccountsAPI, 'list'> | undefined = window.accounts): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null
+  // The timer's callback, and the same check when the window wakes: a laptop that slept across a
+  // limit's end fires the timer late, or not before the label is looked at again.
+  const check = (): void => {
+    const store = useTerminalStore.getState()
+    const held = store.accountsView
+    if (!held) return
+    const current = currentAccountsView(held, Date.now())
+    if (current === held) {
+      arm(held) // nothing ended yet (woke early, or a far end waited for in steps): wait on
+      return
+    }
+    store.setAccountsView(current)
+    void refreshAccounts(api)
+  }
   const arm = (view: AccountsView | null): void => {
     if (timer !== null) clearTimeout(timer)
     timer = null
@@ -51,21 +65,17 @@ export function watchLimitEnds(api: Pick<AccountsAPI, 'list'> | undefined = wind
     const now = Date.now()
     const end = nextLimitEnd(view, now)
     if (end === null) return
-    timer = setTimeout(() => {
-      timer = null
-      const store = useTerminalStore.getState()
-      const held = store.accountsView
-      if (!held) return
-      const current = currentAccountsView(held, Date.now())
-      if (current !== held) store.setAccountsView(current)
-      else arm(held) // woke early (a far end waited for in steps): wait on
-      void refreshAccounts(api)
-    }, Math.min(end - now + LIMIT_END_SLACK_MS, MAX_TIMER_MS))
+    timer = setTimeout(() => { timer = null; check() }, Math.min(end - now + LIMIT_END_SLACK_MS, MAX_TIMER_MS))
   }
   arm(useTerminalStore.getState().accountsView)
   const stop = useTerminalStore.subscribe((s, prev) => { if (s.accountsView !== prev.accountsView) arm(s.accountsView) })
+  const onVisible = (): void => { if (document.visibilityState === 'visible') check() }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
+  if (typeof window !== 'undefined') window.addEventListener('focus', check)
   return () => {
     stop()
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
+    if (typeof window !== 'undefined') window.removeEventListener('focus', check)
     if (timer !== null) clearTimeout(timer)
     timer = null
   }

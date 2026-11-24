@@ -416,4 +416,86 @@ describe('the accounts view keeps itself current as limits end', () => {
     stop = null
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  const showing = (state: 'visible' | 'hidden') => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+  afterEach(() => { Reflect.deleteProperty(document, 'visibilityState') })
+
+  it('re-checks at once when the window becomes visible or gains focus after a sleep that outlasted a limit (no poll)', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    const wakes = [
+      () => { showing('visible'); document.dispatchEvent(new Event('visibilitychange')) },
+      () => { window.dispatchEvent(new Event('focus')) },
+    ]
+    for (const wake of wakes) {
+      useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+      api.list.mockClear()
+      stop = watchLimitEnds(api as never)
+      // The laptop slept: the clock is past the end, and no timer ran.
+      vi.setSystemTime(NOW + 2 * H)
+      expect(codedev().limitedOutside).toBe(NOW)
+      await act(async () => { wake() })
+      expect(codedev().limitedOutside).toBeUndefined()
+      expect(api.list).toHaveBeenCalledTimes(1)
+      stop()
+      stop = null
+      vi.setSystemTime(NOW)
+    }
+  })
+
+  it('ignores a hidden window, and a focus with nothing ended makes no list call', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    stop = watchLimitEnds(api as never)
+    vi.setSystemTime(NOW + 2 * H)
+    showing('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(codedev().limitedOutside).toBe(NOW)
+    vi.setSystemTime(NOW + 1000)
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    expect(codedev().limitedOutside).toBe(NOW)
+    expect(api.list).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+    // No view at all: nothing to check.
+    useTerminalStore.setState({ accountsView: null })
+    window.dispatchEvent(new Event('focus'))
+    expect(api.list).not.toHaveBeenCalled()
+  })
+
+  it('starts and stops without a document or a window to listen on', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    vi.stubGlobal('document', undefined)
+    vi.stubGlobal('window', undefined)
+    try {
+      const s = watchLimitEnds(api as never)
+      expect(vi.getTimerCount()).toBe(1)
+      s()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('its stop removes both listeners', async () => {
+    const add = vi.spyOn(document, 'addEventListener')
+    const addWin = vi.spyOn(window, 'addEventListener')
+    const rem = vi.spyOn(document, 'removeEventListener')
+    const remWin = vi.spyOn(window, 'removeEventListener')
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW, limitedOutsideEnds: NOW + H }) })
+    const s = watchLimitEnds(api as never)
+    const onVisible = add.mock.calls.find((c) => c[0] === 'visibilitychange')![1]
+    const onFocus = addWin.mock.calls.find((c) => c[0] === 'focus')![1]
+    s()
+    expect(rem).toHaveBeenCalledWith('visibilitychange', onVisible)
+    expect(remWin).toHaveBeenCalledWith('focus', onFocus)
+    vi.setSystemTime(NOW + 2 * H)
+    showing('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    expect(codedev().limitedOutside).toBe(NOW)
+    expect(api.list).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
 })
