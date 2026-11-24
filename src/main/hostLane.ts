@@ -5,8 +5,8 @@
 // BACKGROUND. The lane works at the call boundary, never by blocking the thread:
 //   - an interactive call starts at once, and while any is waiting or running the host runs at normal priority
 //     (onInteractive(true) on the first, onInteractive(false) when the last ends);
-//   - a background call that arrives while an interactive one is in the lane waits (an await, so the thread stays free)
-//     until the lane is empty, then starts in arrival order, but never longer than BACKGROUND_MAX_WAIT_MS: a stream of
+//   - a background call that arrives while an interactive one is in the lane, or inside the linger after one (below),
+//     waits (an await, so the thread stays free) until the lane is empty and the linger is over, then starts in arrival order, but never longer than BACKGROUND_MAX_WAIT_MS: a stream of
 //     interactive calls (agents searching back to back) must not starve background work for good (WPA fix I4);
 //   - long background loops call idle() between items, so a running Weave lets an interactive call through (bounded the same way);
 //   - a waiting background call whose caller cancels is dropped before it starts (only reads are cancellable: the
@@ -16,7 +16,13 @@
 // The linger (memory host: LANE_LINGER_MS). A host lowered below normal is starved by a busy machine the moment it drops back,
 // and Windows lifts a starved thread only every few seconds: an Ask primer is two reads in a row (search, then the recent
 // listing), and lowering between them held the second one up for seconds (measured). So the host stays at normal until the
-// lane has been empty for the whole linger; a call inside it keeps it there. Background calls do not wait for the linger.
+// lane has been empty for the whole linger; a call inside it keeps it there.
+// Background calls wait through the linger too (still at most BACKGROUND_MAX_WAIT_MS). The Ask sends its reads one after
+// another (the lock and the search, then the recent listing, then the lock again when nothing matched), so the lane is
+// empty for a moment between them. A background write let in at that moment starts its embed, which runs on this thread
+// without a break (several seconds on a machine kept busy by a map drawn in software), and the Ask's next read waited for
+// the whole of it: on a Windows runner two such waits took the primer past the Ask's 10 s budget, and the answer came
+// without project memory (world-responsive t3, measured: a 3.6 s and a 3.9 s embed between the reads).
 
 export type HostLaneName = 'interactive' | 'background'
 
@@ -24,11 +30,12 @@ export interface HostLane {
   /** Enter the lane. Resolves with the release to call when the call ends; rejects with an AbortError when `signal`
    *  aborts while a background call is still waiting. A background call waits at most the max wait. */
   enter(lane: HostLaneName, signal?: AbortSignal): Promise<() => void>
-  /** Resolves at once when no interactive call is in the lane, otherwise when the lane empties, at most after the max wait. */
+  /** Resolves at once when no interactive call is in the lane and no linger runs, otherwise when the lane empties and its
+   *  linger ends, at most after the max wait. */
   idle(): Promise<void>
   /** Interactive calls waiting or running. */
   interactive(): number
-  /** Background calls waiting for the lane to empty. */
+  /** Background calls waiting for the lane to empty (and its linger to end). */
   waiting(): number
 }
 
@@ -57,7 +64,8 @@ export function isMemoryTimeout(e: unknown): boolean {
 export const LANE_LINGER_MS = 2_000
 
 /** The longest a background call (or an idle() between a loop's items) waits on the interactive lane before it goes anyway.
- *  Long enough for an Ask primer's two reads (well under a second, measured), short enough that no background call starves. */
+ *  Long enough for an Ask primer's reads once the thread is free (well under a second, measured), short enough that no
+ *  background call starves. */
 export const BACKGROUND_MAX_WAIT_MS = 1_000
 
 export interface HostLaneOptions {
@@ -81,6 +89,9 @@ export function createHostLane(onInteractive: (on: boolean) => void = () => {}, 
     onInteractive(false)
   }
 
+  /** An interactive call is in the lane, or the lane emptied less than the linger ago: background calls wait. */
+  const busy = (): boolean => active > 0 || lowerTimer !== null
+
   const flush = (): void => {
     // Arrival order; a waiter that enters the interactive lane meanwhile is not possible (enter is the only way in).
     for (const w of waiters.splice(0)) w()
@@ -94,15 +105,18 @@ export function createHostLane(onInteractive: (on: boolean) => void = () => {}, 
       active--
       if (active === 0) {
         if (lingerMs > 0) {
-          lowerTimer = setTimeout(lower, lingerMs)
+          // The waiting background calls go when the linger ends (or their max wait runs out), not now: see the header.
+          lowerTimer = setTimeout(() => { lower(); flush() }, lingerMs)
           lowerTimer.unref?.()
-        } else lower()
-        flush()
+        } else {
+          lower()
+          flush()
+        }
       }
     }
   }
 
-  /** Wait until the lane empties, `ms` runs out, or `signal` fires (rejects AbortError), whichever is first. */
+  /** Wait until the lane empties (and its linger ends), `ms` runs out, or `signal` fires (rejects AbortError), whichever is first. */
   const waitFor = (ms: number, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve, reject) => {
     const off = (): void => {
       clearTimeout(timer)
@@ -118,7 +132,7 @@ export function createHostLane(onInteractive: (on: boolean) => void = () => {}, 
     signal?.addEventListener('abort', drop, { once: true })
   })
 
-  const idle = (): Promise<void> => (active === 0 ? Promise.resolve() : waitFor(maxWaitMs))
+  const idle = (): Promise<void> => (busy() ? waitFor(maxWaitMs) : Promise.resolve())
 
   return {
     async enter(lane, signal) {
@@ -129,9 +143,9 @@ export function createHostLane(onInteractive: (on: boolean) => void = () => {}, 
         return release()
       }
       if (signal?.aborted) throw abortError()
-      // One wait: until the lane empties or the max wait runs out. An interactive call that comes in after that runs beside
+      // One wait: until the lane empties and its linger ends, or the max wait runs out. An interactive call that comes in after that runs beside
       // it (the single thread interleaves them at their await points), as one that came in after it started always did.
-      if (active > 0) await waitFor(maxWaitMs, signal)
+      if (busy()) await waitFor(maxWaitMs, signal)
       return () => {}
     },
     idle,
