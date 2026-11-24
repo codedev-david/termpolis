@@ -44,34 +44,319 @@ export interface FileExtract {
   references: string[] // callable names referenced (name followed by '('), de-duplicated
 }
 
+/** What extractFile asks of a rule: a global RegExp, or a hand-written matcher that keeps the same exec/lastIndex
+ *  contract (a match's index, capture group 1, lastIndex past the match, and lastIndex 0 with null at the end). */
+interface Matcher {
+  lastIndex: number
+  exec(text: string): RegExpExecArray | null
+}
 interface DefRule {
   kind: SymbolKind
-  re: RegExp // global + multiline; capture group 1 = the symbol name
+  re: Matcher // global + multiline; capture group 1 = the symbol name
 }
 interface LangRules {
   lang: string
   block: 'brace' | 'indent'
   defs: DefRule[]
-  imports: RegExp[] // global; capture group 1 = the imported specifier
+  imports: Matcher[] // global; capture group 1 = the imported specifier
 }
+
+// Every rule is read in time linear in the file. A rule whose loop or run can stretch over blank lines, a long line or
+// an unclosed bracket is either written so each line start is matched one way only, or is a hand-written matcher below.
+// tests/electron/codeGraphExtract.test.ts times each language on 50k-character worst cases.
+
+/** A match result shaped like RegExp.exec's: the matched text, group 1, and where it starts. */
+function execResult(text: string, index: number, end: number, group: string): RegExpExecArray {
+  const m = [text.slice(index, end), group] as unknown as RegExpExecArray
+  m.index = index
+  m.input = text
+  return m
+}
+
+const WS = /\s/
+const QUOTE = /['"]/g
+
+/** The first ' or " at or after `from`, or -1. */
+function nextQuote(text: string, from: number): number {
+  QUOTE.lastIndex = from
+  return QUOTE.exec(text)?.index ?? -1
+}
+
+/**
+ * `import\s+(?:[^'"]*\s+from\s+)?['"]([^'"]+)['"]` (global), matched in linear time. The regex retried every split of
+ * the whitespace and of the run up to the first quote, so `import` followed by a long run of spaces took seconds. The
+ * match it finds is fixed by the first quote Q after `import` and its whitespace: the text before Q is whitespace only
+ * (`import 'x'`), or ends in whitespace, `from` and whitespace with at least two characters between `import` and
+ * `from` (`import x from 'y'`, `import {\n…\n} from 'y'`, however long); the specifier runs to the next quote.
+ */
+class JsImportMatcher implements Matcher {
+  lastIndex = 0
+  private q = -2 // the first quote after the last `import` looked at (-1: none left)
+  private qWs = 0 // where the whitespace run ending at q starts
+  private q2 = 0 // the quote after q
+
+  exec(text: string): RegExpExecArray | null {
+    if (this.lastIndex === 0) this.q = -2
+    for (let i = text.indexOf('import', this.lastIndex); i >= 0; i = text.indexOf('import', i + 1)) {
+      const w = i + 6
+      if (!WS.test(text.charAt(w))) continue
+      if (this.q !== -1 && w >= this.q) this.findQuote(text, w)
+      const q = this.q
+      if (q < 0) break
+      const direct = this.qWs <= w
+      const f = this.qWs - 4
+      const viaFrom = this.qWs < q && f >= w + 2 && text.startsWith('from', f) && WS.test(text[f - 1])
+      if ((direct || viaFrom) && this.q2 > q + 1) {
+        this.lastIndex = this.q2 + 1
+        return execResult(text, i, this.q2 + 1, text.slice(q + 1, this.q2))
+      }
+    }
+    this.lastIndex = 0
+    return null
+  }
+
+  private findQuote(text: string, from: number): void {
+    const q = nextQuote(text, from)
+    this.q = q
+    if (q < 0) return
+    let s = q
+    while (s > from && WS.test(text[s - 1])) s--
+    this.qWs = s
+    this.q2 = nextQuote(text, q + 1)
+  }
+}
+
+/**
+ * A method rule `HEAD\([^{}]*\)\s*(?:CLAUSE)?\{` (global, multiline), where HEAD is a regex ending at the parameter
+ * list's `(` that matches a line start one way only (its modifiers are separated by spaces or tabs, never a newline).
+ * The tail is read here in linear time: as a regex, `[^{}]*` ran from every head to the next brace, so thousands of
+ * `void f(int x);` lines with no brace after them took seconds. For a head ending at e, let B be the first brace at or
+ * after e and C the first `{` at or after B. Without the clause the regex matches iff B is `{` and the last non-space
+ * before it is a `)` at or after e. `clause` reads the stretch from e to B once and returns the last `)` before B that
+ * a clause the regex would accept follows (-1 when none); the rule then also matches when that `)` is at or after e.
+ * Either way the match ends just past C. Heads come in order, so e only grows, and each stretch is read once a pass.
+ */
+class MethodMatcher implements Matcher {
+  lastIndex = 0
+  private b = -1 // the first brace at or after the e the facts below were read from (text.length when none)
+  private c = -1 // the first { at or after b (-1 when none)
+  private solid = -1 // the last non-space before b (-1 when none)
+  private clauseAt = -1 // the last ) before b that an accepted clause follows (-1 when none)
+
+  constructor(
+    private readonly head: RegExp,
+    private readonly clause: (text: string, e: number, b: number, c: number) => number,
+  ) {}
+
+  exec(text: string): RegExpExecArray | null {
+    if (this.lastIndex === 0) this.b = -1
+    this.head.lastIndex = this.lastIndex
+    for (let h = this.head.exec(text); h !== null; h = this.head.exec(text)) {
+      const e = h.index + h[0].length
+      // The facts read for an earlier e hold for this one while e <= b.
+      if (e > this.b) this.read(text, e)
+      const direct = text[this.b] === '{' && this.solid >= e && text[this.solid] === ')'
+      if (this.c >= 0 && (direct || this.clauseAt >= e)) {
+        this.lastIndex = this.c + 1
+        return execResult(text, h.index, this.c + 1, h[1])
+      }
+      this.head.lastIndex = h.index + 1
+    }
+    this.lastIndex = 0
+    return null
+  }
+
+  private read(text: string, e: number): void {
+    this.solid = -1
+    let b = e
+    for (; b < text.length; b++) {
+      const ch = text[b]
+      if (ch === '{' || ch === '}') break
+      if (!WS.test(ch)) this.solid = b
+    }
+    this.b = b
+    this.c = text[b] === '{' ? b : text.indexOf('{', b)
+    this.clauseAt = this.c >= 0 ? this.clause(text, e, b, this.c) : -1
+  }
+}
+
+/** The first non-space at or after `from`, or `to` when there is none before it. */
+function nextSolid(text: string, from: number, to: number): number {
+  let i = from
+  while (i < to && WS.test(text[i])) i++
+  return i
+}
+
+/** Java/C# `where` clause, `\s*where\s[^{]+` before the `{`: the last `)` followed by it, before b. */
+function whereClause(text: string, e: number, b: number, c: number): number {
+  let at = -1
+  for (let p = text.indexOf(')', e); p >= 0 && p < b; p = text.indexOf(')', p + 1)) {
+    const q = nextSolid(text, p + 1, b)
+    if (q + 5 < b && text.startsWith('where', q) && WS.test(text[q + 5]) && c !== q + 6) at = p
+  }
+  return at
+}
+
+/**
+ * TypeScript return type, `\s*:\s*[^={;]{1,120}` before the `{` at c. For a `:` at q that follows a `)` and spaces,
+ * the clause matches iff the text S from q + 1 to c is not empty, holds no `=` or `;` (nor `{`: c is the first one)
+ * and is at most 120 characters past its leading spaces. Each condition only gets easier as q moves right, and only
+ * the last `:` can make S empty, so the last two such `:` decide it.
+ */
+function returnTypeClause(text: string, e: number, b: number, c: number): number {
+  let close = -1 // a ) followed only by spaces so far
+  let last = -1
+  let lastClose = -1
+  let prev = -1
+  let prevClose = -1
+  for (let i = e; i < b; i++) {
+    const ch = text[i]
+    if (ch === ')') close = i
+    else if (ch === ':' && close >= 0) {
+      prev = last
+      prevClose = lastClose
+      last = i
+      lastClose = close
+      close = -1
+    } else if (!WS.test(ch)) close = -1
+  }
+  const q = last === c - 1 ? prev : last
+  if (q < 0) return -1
+  const f = nextSolid(text, q + 1, c)
+  if (c - f > 120) return -1
+  for (let i = f; i < c; i++) if (text[i] === '=' || text[i] === ';') return -1
+  return q === last ? lastClose : prevClose
+}
+
+/** `text.indexOf(ch, from)`, remembered: a later `from` at or before the last answer has the same answer. */
+class NextOf {
+  private from = -1
+  private at = -1
+
+  constructor(private readonly ch: string) {}
+
+  reset(): void {
+    this.from = -1
+  }
+
+  find(text: string, from: number): number {
+    if (this.from < 0 || from < this.from || (this.at >= 0 && from > this.at)) {
+      this.from = from
+      this.at = text.indexOf(this.ch, from)
+    }
+    return this.at
+  }
+}
+
+const CONST_HEAD = /^[ \t]*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*/gm
+const IDENT_AT = /[A-Za-z_$][\w$]*/y
+
+/**
+ * `^[ \t]*(?:export\s+)?(?:const|let)\s+(NAME)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^)]*\)|IDENT)\s*=>` (global,
+ * multiline), matched in linear time. `[^=]+` and `[^)]*` each run to the first `=` or `)` after them, so thousands of
+ * `const a: T` or `const a = (` lines before the next one took seconds. Every run here has one way to match, so the
+ * match is read straight through: the head up to the type or the `=`, then the first `=` after a `:`, then the arrow.
+ * The first `=` or `)` after a point and the arrow read from a given `=` or `)` are remembered, as many heads share them.
+ */
+class ConstArrowMatcher implements Matcher {
+  lastIndex = 0
+  private readonly eq = new NextOf('=')
+  private readonly close = new NextOf(')')
+  private tailAt = -1 // the `=` the arrow was last read from, and where that match ends (-1: none)
+  private tailEnd = -1
+  private closeAt = -1 // the `)` the arrow was last read from, and where that match ends (-1: none)
+  private closeEnd = -1
+
+  exec(text: string): RegExpExecArray | null {
+    if (this.lastIndex === 0) {
+      this.eq.reset()
+      this.close.reset()
+      this.tailAt = -1
+      this.closeAt = -1
+    }
+    CONST_HEAD.lastIndex = this.lastIndex
+    for (let h = CONST_HEAD.exec(text); h !== null; h = CONST_HEAD.exec(text)) {
+      const e = h.index + h[0].length
+      let q = -1
+      if (text[e] === '=') q = e
+      else if (text[e] === ':') {
+        const n = this.eq.find(text, e + 1)
+        if (n > e + 1) q = n
+      }
+      const end = q < 0 ? -1 : this.tail(text, q)
+      if (end >= 0) {
+        this.lastIndex = end
+        return execResult(text, h.index, end, h[1])
+      }
+      CONST_HEAD.lastIndex = h.index + 1
+    }
+    this.lastIndex = 0
+    return null
+  }
+
+  /** Where `=\s*(?:async\s+)?(?:\([^)]*\)|IDENT)\s*=>` read from the `=` at q ends, or -1. */
+  private tail(text: string, q: number): number {
+    if (q !== this.tailAt) {
+      this.tailAt = q
+      const r = nextSolid(text, q + 1, text.length)
+      let end = -1
+      if (text.startsWith('async', r) && WS.test(text.charAt(r + 5))) end = this.arrow(text, nextSolid(text, r + 5, text.length))
+      this.tailEnd = end >= 0 ? end : this.arrow(text, r)
+    }
+    return this.tailEnd
+  }
+
+  /** Where `(?:\([^)]*\)|IDENT)\s*=>` read from r ends, or -1. */
+  private arrow(text: string, r: number): number {
+    if (text[r] === '(') {
+      const p = this.close.find(text, r + 1)
+      if (p < 0) return -1
+      if (p !== this.closeAt) {
+        this.closeAt = p
+        const s = nextSolid(text, p + 1, text.length)
+        this.closeEnd = text.startsWith('=>', s) ? s + 2 : -1
+      }
+      return this.closeEnd
+    }
+    IDENT_AT.lastIndex = r
+    const m = IDENT_AT.exec(text)
+    if (m === null) return -1
+    const s = nextSolid(text, r + m[0].length, text.length)
+    return text.startsWith('=>', s) ? s + 2 : -1
+  }
+}
+
+// `^[ \t]+(?:MOD[ \t]+)*(?!KEYWORD\b)(NAME)\s*(?:<…>)?\([^{}]*\)\s*(?::\s*[^={;]{1,120})?\{`.
+const TS_METHOD = new MethodMatcher(
+  /^[ \t]+(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)[ \t]+)*(?!(?:if|for|while|switch|catch|return|do|else|await|yield|typeof|delete|new|function|constructor|super|in|of|case|throw|try|with)\b)([A-Za-z_$][\w$]*)\s*(?:<[^>{}]{0,80}>)?\(/gm,
+  returnTypeClause,
+)
+
+// `^[ \t]+(?:MOD[ \t]+)*TYPE\s+(NAME)\s*\([^{}]*\)\s*(?:where\s[^{]+)?\{`.
+const CURLY_METHOD = new MethodMatcher(
+  /^[ \t]+(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|async|sealed|unsafe|extern|new|partial|synchronized|default)[ \t]+)*(?:[A-Za-z_][\w.<>[\],?]*)\s+([A-Za-z_]\w*)\s*\(/gm,
+  whereClause,
+)
 
 const JS_TS: LangRules = {
   lang: 'ts',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/gm },
+    // `function`, then a star between optional spaces or at least one space: two optional runs of spaces around an
+    // optional star split a long run of spaces every way before failing.
+    { kind: 'function', re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function(?:\s*\*\s*|\s+)([A-Za-z_$][\w$]*)/gm },
     { kind: 'class', re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/gm },
     { kind: 'interface', re: /^[ \t]*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/gm },
     { kind: 'type', re: /^[ \t]*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*[=<]/gm },
     { kind: 'enum', re: /^[ \t]*(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/gm },
-    { kind: 'const', re: /^[ \t]*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/gm },
+    { kind: 'const', re: new ConstArrowMatcher() },
     // Class/object methods: an INDENTED `name(params) {` (optionally typed) that is not a
     // control-flow keyword — so `render() {}` / `async load(): Promise<void> {` are captured but
     // `if (x) {` / `for (…) {` are not. Indent requirement keeps top-level functions out.
-    { kind: 'method', re: /^[ \t]+(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*(?!(?:if|for|while|switch|catch|return|do|else|await|yield|typeof|delete|new|function|constructor|super|in|of|case|throw|try|with)\b)([A-Za-z_$][\w$]*)\s*(?:<[^>{}]{0,80}>)?\([^{}]*\)\s*(?::\s*[^={;]{1,120})?\{/gm },
+    { kind: 'method', re: TS_METHOD },
   ],
   imports: [
-    /import\s+(?:[^'"]*\s+from\s+)?['"]([^'"]+)['"]/g,
+    new JsImportMatcher(),
     /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g,
     /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
   ],
@@ -95,17 +380,18 @@ const GO: LangRules = {
     { kind: 'struct', re: /^type\s+([A-Za-z_]\w*)\s+struct\b/gm },
     { kind: 'interface', re: /^type\s+([A-Za-z_]\w*)\s+interface\b/gm },
   ],
-  imports: [/^\s*"([^"]+)"/gm],
+  // `[ \t]*`, not `\s*`: from every line start of a run of blank lines, `\s*` ran to its end and back.
+  imports: [/^[ \t]*"([^"]+)"/gm],
 }
 
 const RUST: LangRules = {
   lang: 'rust',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/gm },
-    { kind: 'struct', re: /^[ \t]*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_]\w*)/gm },
-    { kind: 'enum', re: /^[ \t]*(?:pub(?:\([^)]*\))?\s+)?enum\s+([A-Za-z_]\w*)/gm },
-    { kind: 'trait', re: /^[ \t]*(?:pub(?:\([^)]*\))?\s+)?trait\s+([A-Za-z_]\w*)/gm },
+    { kind: 'function', re: /^[ \t]*(?:pub(?:\([^)\n]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/gm },
+    { kind: 'struct', re: /^[ \t]*(?:pub(?:\([^)\n]*\))?\s+)?struct\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:pub(?:\([^)\n]*\))?\s+)?enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'trait', re: /^[ \t]*(?:pub(?:\([^)\n]*\))?\s+)?trait\s+([A-Za-z_]\w*)/gm },
   ],
   imports: [/\buse\s+([A-Za-z_][\w:]*)/g],
 }
@@ -113,16 +399,17 @@ const RUST: LangRules = {
 // Java/C# share `[modifiers] ReturnType name(params) {` methods — the return type + name (two
 // identifiers) requirement keeps calls/fields/control-flow out (constructors, which have no
 // return type, are intentionally not captured).
-const CURLY_METHOD =
-  /^[ \t]+(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|async|sealed|unsafe|extern|new|partial|synchronized|default)\s+)*(?:[A-Za-z_][\w.<>[\],?]*)\s+([A-Za-z_]\w*)\s*\([^{}]*\)\s*(?:where\s[^{]+)?\{/gm
 
 const JAVA: LangRules = {
   lang: 'java',
   block: 'brace',
   defs: [
-    { kind: 'class', re: /^[ \t]*(?:public|private|protected|final|abstract|static|\s)*class\s+([A-Za-z_]\w*)/gm },
-    { kind: 'interface', re: /^[ \t]*(?:public|private|protected|\s)*interface\s+([A-Za-z_]\w*)/gm },
-    { kind: 'enum', re: /^[ \t]*(?:public|private|protected|\s)*enum\s+([A-Za-z_]\w*)/gm },
+    // Modifiers are separated by spaces or tabs, here and in C# and Swift below, as in Kotlin: a `\s` alternative in
+    // the modifier loop crossed newlines, so a run of blank lines was split every way before failing, and a declaration
+    // after a blank line was reported at that blank line.
+    { kind: 'class', re: /^[ \t]*(?:(?:public|private|protected|final|abstract|static)[ \t]+)*class\s+([A-Za-z_]\w*)/gm },
+    { kind: 'interface', re: /^[ \t]*(?:(?:public|private|protected)[ \t]+)*interface\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:(?:public|private|protected)[ \t]+)*enum\s+([A-Za-z_]\w*)/gm },
     { kind: 'method', re: CURLY_METHOD },
   ],
   imports: [/^[ \t]*import\s+(?:static\s+)?([\w.]+)/gm],
@@ -149,11 +436,11 @@ const CSHARP: LangRules = {
   lang: 'csharp',
   block: 'brace',
   defs: [
-    { kind: 'class', re: /^[ \t]*(?:public|private|protected|internal|abstract|sealed|static|partial|\s)*class\s+([A-Za-z_]\w*)/gm },
-    { kind: 'class', re: /^[ \t]*(?:public|private|protected|internal|sealed|\s)*record\s+(?:class\s+|struct\s+)?([A-Za-z_]\w*)/gm },
-    { kind: 'interface', re: /^[ \t]*(?:public|private|protected|internal|partial|\s)*interface\s+([A-Za-z_]\w*)/gm },
-    { kind: 'struct', re: /^[ \t]*(?:public|private|protected|internal|readonly|ref|\s)*struct\s+([A-Za-z_]\w*)/gm },
-    { kind: 'enum', re: /^[ \t]*(?:public|private|protected|internal|\s)*enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'class', re: /^[ \t]*(?:(?:public|private|protected|internal|abstract|sealed|static|partial)[ \t]+)*class\s+([A-Za-z_]\w*)/gm },
+    { kind: 'class', re: /^[ \t]*(?:(?:public|private|protected|internal|sealed)[ \t]+)*record\s+(?:class\s+|struct\s+)?([A-Za-z_]\w*)/gm },
+    { kind: 'interface', re: /^[ \t]*(?:(?:public|private|protected|internal|partial)[ \t]+)*interface\s+([A-Za-z_]\w*)/gm },
+    { kind: 'struct', re: /^[ \t]*(?:(?:public|private|protected|internal|readonly|ref)[ \t]+)*struct\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:(?:public|private|protected|internal)[ \t]+)*enum\s+([A-Za-z_]\w*)/gm },
     { kind: 'method', re: CURLY_METHOD },
   ],
   imports: [/^[ \t]*(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][\w.]*)\s*;/gm],
@@ -165,11 +452,12 @@ const SWIFT: LangRules = {
   lang: 'swift',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^[ \t]*(?:@[\w()]+\s+)*(?:public|private|internal|fileprivate|open|static|final|override|class|mutating|nonmutating|\s)*func\s+([A-Za-z_]\w*)/gm },
-    { kind: 'class', re: /^[ \t]*(?:public|private|internal|fileprivate|open|final|\s)*class\s+(?!func\b)([A-Za-z_]\w*)/gm },
-    { kind: 'struct', re: /^[ \t]*(?:public|private|internal|fileprivate|\s)*struct\s+([A-Za-z_]\w*)/gm },
-    { kind: 'enum', re: /^[ \t]*(?:public|private|internal|indirect|\s)*enum\s+([A-Za-z_]\w*)/gm },
-    { kind: 'interface', re: /^[ \t]*(?:public|private|internal|\s)*protocol\s+([A-Za-z_]\w*)/gm },
+    // Up to eight attributes (each may end its own line), then modifiers separated by spaces or tabs.
+    { kind: 'function', re: /^[ \t]*(?:@[\w()]+\s+){0,8}(?:(?:public|private|internal|fileprivate|open|static|final|override|class|mutating|nonmutating)[ \t]+)*func\s+([A-Za-z_]\w*)/gm },
+    { kind: 'class', re: /^[ \t]*(?:(?:public|private|internal|fileprivate|open|final)[ \t]+)*class\s+(?!func\b)([A-Za-z_]\w*)/gm },
+    { kind: 'struct', re: /^[ \t]*(?:(?:public|private|internal|fileprivate)[ \t]+)*struct\s+([A-Za-z_]\w*)/gm },
+    { kind: 'enum', re: /^[ \t]*(?:(?:public|private|internal|indirect)[ \t]+)*enum\s+([A-Za-z_]\w*)/gm },
+    { kind: 'interface', re: /^[ \t]*(?:(?:public|private|internal)[ \t]+)*protocol\s+([A-Za-z_]\w*)/gm },
   ],
   imports: [/^[ \t]*import\s+([A-Za-z_]\w*)/gm],
 }
@@ -274,14 +562,37 @@ function lineOfIndex(starts: readonly number[], index: number): number {
   return lo
 }
 
+/**
+ * How many characters the block scans of one file may read in all, as a multiple of its length. A scan that reaches a
+ * line start with nothing open goes on as one from that line would, so it takes that line's answer when one is known
+ * and that stretch is read once in all (`BlockScan.from`). What is left is each symbol reading its own body, a few times
+ * the file for ordinary nesting. Thousands of blocks that never close, nest deeper and deeper or sit inside a `(` that
+ * never closes made every scan read to the end of the file (50k characters of `  a() {` lines took 0.7 s, and the
+ * 512 KB a world reads over a minute), so past this budget a scan is taken to reach the end of the file at once.
+ */
+const BLOCK_SCAN_FACTOR = 16
+const BLOCK_SCAN_MIN = 1 << 16
+/** `BlockScan.from` for a line whose scan finds no multi-line block, so the symbol ends on its own line. */
+const NO_BLOCK = -1
+
+/** What the block scans of one file share. */
+interface BlockScan {
+  /** Characters they may still read. */
+  left: number
+  /** Line index → the answer of a brace scan that starts there with nothing open (1-based line, or NO_BLOCK). */
+  from: Map<number, number>
+}
+
 // Best-effort last line (1-based) of the block a symbol on `startLine` opens.
-function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent'): number {
+function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent', scan: BlockScan): number {
   const startIdx = startLine - 1
   if (startIdx < 0 || startIdx >= lines.length) return startLine
   if (block === 'indent') {
     const baseIndent = (lines[startIdx].match(/^[ \t]*/) as RegExpMatchArray)[0].length
     let lastContent = startLine // the def line itself, if the body is empty
     for (let i = startIdx + 1; i < lines.length; i++) {
+      scan.left -= lines[i].length + 1
+      if (scan.left < 0) return lastContent
       if (lines[i].trim() === '') continue
       const indent = (lines[i].match(/^[ \t]*/) as RegExpMatchArray)[0].length
       if (indent <= baseIndent) return lastContent // dedented → block ended at the last content line
@@ -298,8 +609,20 @@ function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent')
   let paren = 0
   let depth = 0
   let openLine = -1
+  const clear: number[] = [] // line starts this scan passed with nothing open: they share its answer
+  const settle = (end: number): number => {
+    for (const i of clear) scan.from.set(i, end)
+    return end === NO_BLOCK ? startLine : end
+  }
   for (let i = startIdx; i < lines.length; i++) {
+    if (paren === 0 && depth === 0) {
+      const known = scan.from.get(i)
+      if (known !== undefined) return settle(known)
+      clear.push(i)
+    }
     const line = lines[i]
+    scan.left -= line.length + 1
+    if (scan.left < 0) return depth > 0 ? lines.length : startLine
     for (let j = 0; j < line.length; j++) {
       const ch = line[j]
       if (ch === '(') paren++
@@ -308,13 +631,13 @@ function blockEnd(lines: string[], startLine: number, block: 'brace' | 'indent')
       else if (paren === 0 && ch === '}' && depth > 0) {
         depth--
         if (depth === 0) {
-          if (i > openLine) return i + 1 // opened on an earlier line → the real (multi-line) body
+          if (i > openLine) return settle(i + 1) // opened on an earlier line → the real (multi-line) body
           openLine = -1 // same-line {} → an annotation; keep scanning for the body
         }
       }
     }
   }
-  return depth > 0 ? lines.length : Math.min(startLine, lines.length) // unterminated body → EOF; no multi-line block → single line
+  return settle(depth > 0 ? lines.length : NO_BLOCK) // unterminated body → EOF; no multi-line block → single line
 }
 
 /** Extract the structure of one source file. Returns null for an unsupported extension or
@@ -324,6 +647,7 @@ export function extractFile(file: string, content: string): FileExtract | null {
   if (!rules || !content) return null
   const lines = content.split('\n')
   const starts = lineStarts(content)
+  const scan: BlockScan = { left: BLOCK_SCAN_FACTOR * content.length + BLOCK_SCAN_MIN, from: new Map() }
 
   const symbols: CodeSymbol[] = []
   const seenDef = new Set<string>()
@@ -337,7 +661,7 @@ export function extractFile(file: string, content: string): FileExtract | null {
       const key = `${name}@${startLine}`
       if (seenDef.has(key)) continue // a name matched by two rules on the same line → keep the first
       seenDef.add(key)
-      symbols.push({ name, kind: rule.kind, file, startLine, endLine: blockEnd(lines, startLine, rules.block), lang: rules.lang })
+      symbols.push({ name, kind: rule.kind, file, startLine, endLine: blockEnd(lines, startLine, rules.block, scan), lang: rules.lang })
     }
   }
   symbols.sort((a, b) => a.startLine - b.startLine || a.name.localeCompare(b.name))

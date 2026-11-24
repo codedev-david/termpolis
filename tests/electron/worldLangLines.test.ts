@@ -256,4 +256,24 @@ describe('stage cache', () => {
     const again = await compileWorldStaged({ ...input, cache: first.cache, changed: [] }, memDeps(files))
     expect(pairs(again.doc)).toEqual(pairs(first.doc))
   })
+
+  it('a cache written before declarations were recorded is ignored, so the Kotlin top-level line still appears', async () => {
+    const files = { 'k/Utils.kt': 'package k\nfun helper() = 1\n', 'app/App.kt': 'package app\nimport k.helper\nfun main() {}\n' }
+    const input = { snap: snapOf(files), projectKey: 'mem', head: HEAD, previous: null }
+    const first = await compileWorldStaged(input, memDeps(files))
+    expect(pairs(first.doc)).toHaveLength(1)
+    // The previous version's layout: the same files with no decls.
+    const stripped = Object.fromEntries(Object.entries(first.cache.files).map(([f, v]) => {
+      const { decls: _gone, ...rest } = v
+      return [f, rest]
+    }))
+    const old = { ...first.cache, version: STAGE_CACHE_VERSION - 1, files: stripped }
+    expect(isStageCache(old)).toBe(false)
+    const deps = memDeps(files)
+    const out = await compileWorldStaged({ ...input, cache: old, changed: [] }, deps)
+    expect(deps.reads.filter((p) => p.endsWith('.kt')).length).toBe(2)
+    expect(out.cache.version).toBe(STAGE_CACHE_VERSION)
+    expect(out.cache.files['k/Utils.kt']).toMatchObject({ decls: ['helper'] })
+    expect(pairs(out.doc)).toEqual(pairs(first.doc))
+  })
 })

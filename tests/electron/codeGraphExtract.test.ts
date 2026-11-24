@@ -279,4 +279,274 @@ describe('codeGraphExtract', () => {
       expect(byName(ex.symbols, 'vpc')!.kind).toBe('module')
     })
   })
+
+  // Every rule reads a file in time linear in its size. Each pin below is what the rule found before it was rewritten,
+  // so a rewrite that drifts on ordinary code shows here; each timing input took seconds (or never finished) before.
+  describe('linear-time rules', () => {
+    const J = (...l: string[]): string => l.join('\n')
+    const show = (file: string, src: string): { s: (string | number)[][]; i: string[] } => {
+      const ex = extractFile(file, src)!
+      return { s: ex.symbols.map((x) => [x.name, x.kind, x.startLine, x.endLine]), i: ex.imports }
+    }
+    // Under 1 s on any CI runner; each input runs in a few ms here and took seconds before.
+    const within = (f: () => unknown): void => {
+      const t = performance.now()
+      f()
+      expect(performance.now() - t).toBeLessThan(1000)
+    }
+    const N = 50000
+    // What a large or odd file can hold with no declaration in it: runs of blank lines, spaces, CRLF and tabs.
+    const empty = [' '.repeat(N), '\n'.repeat(N), '\r\n'.repeat(N / 2), '\n '.repeat(N / 2), '\t'.repeat(N)]
+
+    it('Java: modifiers in any order, generic returns, annotations, multi-line parameters, constructors', () => {
+      const src = J(
+        'package a;',
+        'import java.util.List;',
+        'import static java.lang.Math.max;',
+        '@Service',
+        'public final class Repo<T extends Base> implements Store {',
+        '  @Override',
+        '  public static synchronized <K, V> Map<K, V> index(List<K> keys, Function<K, V> f) throws IOException {',
+        '    return null;',
+        '  }',
+        '  final protected static String name(',
+        '      int a,',
+        '      String b) {',
+        '    return "";',
+        '  }',
+        '  abstract void hook();',
+        '  Repo() {',
+        '  }',
+        '  private List<String>[] grid(int n) { return null; }',
+        '  if (x) {',
+        '  }',
+        '}',
+        'interface Store {}',
+        'enum Mode { A }'
+      )
+      expect(show('Repo.java', src)).toEqual({
+        s: [['Repo', 'class', 5, 21], ['name', 'method', 10, 14], ['hook', 'method', 15, 17], ['grid', 'method', 18, 20], ['Store', 'interface', 22, 22], ['Mode', 'enum', 23, 23]],
+        i: ['java.util.List', 'java.lang.Math.max']
+      })
+    })
+
+    it('Java: 30k `public` or `static ` lines, blank runs, a 5000-method interface and a long where run', () => {
+      for (const src of [...empty, 'public\n'.repeat(30000), 'static \n'.repeat(30000), '  a b(x)\n'.repeat(N / 9), ' a b(' + ') where '.repeat(6249)]) {
+        within(() => expect(extractFile('A.java', src)!.symbols).toEqual([]))
+      }
+      const big = 'public interface Big {\n' + '  void method(int x, String y);\n'.repeat(5000) + '}\n'
+      within(() => expect(names(extractFile('Big.java', big)!.symbols)).toEqual(['Big'])) // a method with no body is no symbol
+      // A declaration after a blank run is found on its own line.
+      within(() => expect(show('B.java', '\n'.repeat(N) + 'public class B {}').s).toEqual([['B', 'class', N + 1, N + 1]]))
+    })
+
+    it('C#: records, constructors with `: base(a)`, where clauses, a brace on the next line', () => {
+      const src = J(
+        'using System;',
+        'using static System.Math;',
+        'namespace Acme {',
+        '  public sealed record Person(string Name);',
+        '  public record class Point(int X, int Y);',
+        '  public readonly record struct Money(decimal Amount);',
+        '  public partial class Repo<T> : Base where T : class {',
+        '    public Repo(int a) : base(a) {',
+        '    }',
+        '    public async Task<List<T>> LoadAsync<TKey>(TKey id) where TKey : notnull {',
+        '      return await Fetch(id);',
+        '    }',
+        '    static void Main(string[] args)',
+        '    {',
+        '    }',
+        '    internal static async Task Run() { }',
+        '  }',
+        '  public interface IStore {}',
+        '}'
+      )
+      expect(show('Repo.cs', src)).toEqual({
+        s: [['Person', 'class', 4, 17], ['Point', 'class', 5, 17], ['Repo', 'class', 7, 17], ['Repo', 'method', 8, 9], ['Main', 'method', 13, 15], ['Run', 'method', 16, 16], ['IStore', 'interface', 18, 18]],
+        i: ['System', 'System.Math']
+      })
+      const where = J('class W {', '  public T Get<T>(int id) where T : new() {', '    return default;', '  }', '  void Put(T x) where T : class, IDisposable', '  {', '  }', '}')
+      expect(names(extractFile('W.cs', where)!.symbols)).toEqual(['W', 'Put'])
+      // CRLF: `^` also matches after a `\r`, and a modifier run that crossed the line break put every declaration on
+      // the line above (the namespace's `{`), so it ended where the namespace ended.
+      const crlf = 'namespace A\r\n{\r\n    public interface IProbe\r\n    {\r\n        Task<bool> PingAsync();\r\n    }\r\n}\r\n'
+      expect(show('P.cs', crlf).s).toEqual([['IProbe', 'interface', 3, 6]])
+      // A primary-constructor class is one symbol, no longer also a method on the line above.
+      expect(show('T.cs', 'class X {\n\n    public sealed class Tests(int a)\n        : Base(a)\n    {\n    }\n}').s).toEqual([['X', 'class', 1, 7], ['Tests', 'class', 3, 6]])
+    })
+
+    it('C#: modifier lines, blank runs and a long where run', () => {
+      for (const src of [...empty, 'public\n'.repeat(30000), 'static \n'.repeat(30000), '  a b(x)\n'.repeat(N / 9), ' a b(' + ') where '.repeat(6249)]) {
+        within(() => expect(extractFile('A.cs', src)!.symbols).toEqual([]))
+      }
+    })
+
+    it('Swift: attributes before func and class, on their own line or the same one', () => {
+      const src = J(
+        'import UIKit',
+        '@objc @MainActor',
+        'public final class View: UIView {',
+        '  @IBAction',
+        '  @objc(tap:) private func tap(_ s: Any) {',
+        '  }',
+        '  @discardableResult public static func make() -> View { View() }',
+        '  override func layout() {',
+        '  }',
+        '}',
+        'struct P {}',
+        'protocol Q {}'
+      )
+      expect(show('View.swift', src)).toEqual({
+        s: [['View', 'class', 3, 10], ['make', 'function', 7, 9], ['layout', 'function', 8, 9], ['P', 'struct', 11, 11], ['Q', 'interface', 12, 12]],
+        i: ['UIKit']
+      })
+      expect(names(extractFile('A.swift', '@available(iOS 13, *)\n@MainActor\nfunc run() {}\n@objc func go() {}')!.symbols)).toEqual(['run', 'go'])
+    })
+
+    it('Swift: attribute lines, modifier lines and blank runs', () => {
+      for (const src of [...empty, '@a\n'.repeat(N / 3), 'public\n'.repeat(30000), 'static \n'.repeat(30000)]) {
+        within(() => expect(extractFile('A.swift', src)!.symbols).toEqual([]))
+      }
+    })
+
+    it('JS imports: default, named, multi-line, side-effect, type-only, namespace, a list over 2000 characters', () => {
+      const long = 'import {' + Array.from({ length: 400 }, (_, i) => ` name${i}`).join(',') + "\n} from './long'"
+      expect(long.length).toBeGreaterThan(2000)
+      const src = J(
+        "import x from './x'",
+        'import {a,b} from "./ab"',
+        'import { c as d,',
+        "  e } from './ce'",
+        "import './side.css'",
+        "import type { T } from './types'",
+        "import * as ns from 'ns'",
+        "import def, { f } from '@scope/pkg'",
+        long,
+        "const r = require('./r')"
+      )
+      expect(extractFile('imports.ts', src)!.imports).toEqual(['./x', './ab', './ce', './side.css', './types', 'ns', '@scope/pkg', './long', './r'])
+    })
+
+    it('JS imports: `import` then 50k spaces, import lines with no source, blank runs', () => {
+      for (const src of [...empty, 'import' + ' '.repeat(N) + '!', 'import x\n'.repeat(N / 9), 'export' + ' '.repeat(N)]) {
+        within(() => expect(extractFile('a.ts', src)!.imports).toEqual([]))
+      }
+    })
+
+    it('JS functions: plain, generator, async, default export, a name on the next line', () => {
+      const src = J('function plain() {}', 'function* gen() {}', 'async function later() {}', 'export default function named() {}', 'export function', '  split() {}', 'functionX() {}')
+      expect(show('f.ts', src).s.filter((x) => x[1] === 'function')).toEqual([
+        ['plain', 'function', 1, 1], ['gen', 'function', 2, 2], ['later', 'function', 3, 3], ['named', 'function', 4, 4], ['split', 'function', 5, 5]
+      ])
+      within(() => expect(extractFile('a.ts', 'function' + ' '.repeat(N))!.symbols).toEqual([]))
+      within(() => extractFile('a.ts', 'function\n'.repeat(N / 9))) // each `function` names the next, as before
+    })
+
+    it('TS methods: return types, getters, generics, multi-line parameters, keywords and long or assigned types', () => {
+      const src = J(
+        'class A {',
+        '  render() {',
+        '  }',
+        '  async load(): Promise<void> {',
+        '  }',
+        '  private get name(): string {',
+        "    return ''",
+        '  }',
+        '  static create<T>(o: { a: T }): A {',
+        '  }',
+        '  m(',
+        '    a: number,',
+        '  ): Map<string, number> {',
+        '  }',
+        '  public static override build(): void {',
+        '  }',
+        '  if (x) {',
+        '  }',
+        '  f(): x = 1 {',
+        '  long(): ' + 'T'.repeat(130) + ' {',
+        '  }',
+        '}'
+      )
+      expect(show('methods.ts', src).s).toEqual([['A', 'class', 1, 22], ['render', 'method', 2, 3], ['load', 'method', 4, 5], ['name', 'method', 6, 8], ['m', 'method', 11, 14], ['build', 'method', 15, 16]])
+    })
+
+    it('TS methods: calls with no body, `public` lines, typed calls, unclosed blocks and blank runs', () => {
+      for (const src of [...empty, '  a(x)\n'.repeat(N / 7), '  public\n'.repeat(N / 9), '  a(x): T\n'.repeat(N / 10), '  a(x)}\n'.repeat(N / 8)]) {
+        within(() => expect(extractFile('a.ts', src)!.symbols).toEqual([]))
+      }
+      // Thousands of blocks that never close: each is found, and the scans for where they end stay linear.
+      within(() => expect(extractFile('a.ts', '  a() {\n'.repeat(N / 8))!.symbols.length).toBe(Math.floor(N / 8)))
+    })
+
+    it('const arrows: async, typed, untyped single parameter, multi-line parameters; values are not arrows', () => {
+      const src = J(
+        'const a = () => 1',
+        'export const b = async (x: number) => x',
+        'let c = x => x',
+        'const d: Handler = async e => e',
+        'const f = (',
+        '  a,',
+        '  b,',
+        ') => a',
+        'const g = 5',
+        'const h: (a: number) => void = () => {}',
+        'const async = async => 1'
+      )
+      expect(show('consts.ts', src).s).toEqual([['a', 'const', 1, 1], ['b', 'const', 2, 2], ['c', 'const', 3, 3], ['d', 'const', 4, 4], ['f', 'const', 5, 5], ['async', 'const', 11, 11]])
+      for (const s of ['const a: x\n'.repeat(N / 11), 'const a = (\n'.repeat(N / 12), 'const a = async\n'.repeat(N / 16)]) {
+        within(() => expect(extractFile('a.ts', s)!.symbols).toEqual([]))
+      }
+    })
+
+    it('Go: an import block reads quoted paths at the start of a line; blank runs stay linear', () => {
+      const src = J('package m', 'import (', '  "fmt"', '  alias "net/http"', '  _ "embed"', '\t"os"', ')', 'import "strings"', 'func Run() {', '}')
+      expect(show('m.go', src)).toEqual({ s: [['Run', 'function', 9, 10]], i: ['fmt', 'os'] })
+      for (const s of empty) within(() => expect(extractFile('m.go', s)!.imports).toEqual([]))
+    })
+
+    it('Rust: `pub(...)` visibility closes on its line; an open `pub(` per line stays linear', () => {
+      const src = J('pub(crate) fn a() {}', 'pub(super) async fn b() {}', 'pub fn c() {}', 'fn d() {}', 'pub(in crate::x) struct S;', 'pub(crate) trait T {}', 'use crate::x::y;')
+      expect(show('m.rs', src)).toEqual({
+        s: [['a', 'function', 1, 1], ['b', 'function', 2, 2], ['c', 'function', 3, 3], ['d', 'function', 4, 4], ['S', 'struct', 5, 5], ['T', 'trait', 6, 6]],
+        i: ['crate::x::y']
+      })
+      within(() => expect(extractFile('m.rs', 'pub(\n'.repeat(N / 5))!.symbols).toEqual([]))
+    })
+
+    it('block ends: a long file of one-line symbols reads each line about once, and ordinary nesting is unchanged', () => {
+      // Each one-line const scans on for a later block; the scans share what they found.
+      const many = 'const a = () => 1\n'.repeat(5000) + 'function last() {\n  x()\n}\n'
+      const ex = extractFile('many.ts', many)!
+      expect(ex.symbols).toHaveLength(5001)
+      expect(ex.symbols[0].endLine).toBe(5003) // as before: an arrow with no braces runs to the next multi-line block
+      expect(byName(ex.symbols, 'last')!.endLine).toBe(5003)
+      within(() => extractFile('many.ts', 'const a = () => 1\n'.repeat(N / 18)))
+      // Python blocks that nest deeper and deeper.
+      const deep = Array.from({ length: 300 }, (_, i) => ' '.repeat(i) + 'def f' + i + '():').join('\n')
+      within(() => expect(extractFile('deep.py', deep)!.symbols).toHaveLength(300))
+      // A class holding methods holding blocks: each symbol still ends at its own closing brace.
+      const nested = J('class A {', '  m() {', '    if (x) {', '    }', '  }', '  n() {', '  }', '}', 'function g() {', '}')
+      expect(show('n.ts', nested).s).toEqual([['A', 'class', 1, 8], ['m', 'method', 2, 5], ['n', 'method', 6, 7], ['g', 'function', 9, 10]])
+    })
+
+    it('the hand-read matchers agree with the old regexes where a remembered fact is reused or a clause is empty', () => {
+      // const heads with no `=` or `:` after them, and two heads sharing one `=` or one `)` that are no arrow.
+      expect(show('a.ts', 'let x\nlet y;\nconst z\n')).toEqual({ s: [], i: [] })
+      expect(show('a.ts', 'const a: T\nconst b = 1\n')).toEqual({ s: [], i: [] })
+      expect(show('a.ts', 'const a = (x\nconst b = (y) + 1\n')).toEqual({ s: [], i: [] })
+      // A `:` right before the `{` is an empty return type; an earlier `):` then decides it.
+      expect(show('a.ts', 'class K {\n  a():{ }\n  b(x): y():{ }\n}\n').s).toEqual([['K', 'class', 1, 4], ['b', 'method', 3, 3]])
+      // import lines with no source before one that has it, and the same source twice.
+      expect(show('a.ts', "import a\nimport b\nimport 'x'\nimport 'x'\n").i).toEqual(['x'])
+      expect(show('a.ts', "import a\nimport b from 'y'\n").i).toEqual(['y'])
+    })
+
+    it('every language reads 50k characters of blank runs, spaces, tabs or CRLF in time linear in its size', () => {
+      const odd = [...empty, 'public\n'.repeat(N / 7), '@a\n'.repeat(N / 3), 'from' + ' '.repeat(N), 'import' + ' '.repeat(N), 'resource "a\n'.repeat(N / 12)]
+      for (const ext of ['ts', 'py', 'go', 'rs', 'java', 'kt', 'cs', 'rb', 'tf', 'swift', 'bicep']) {
+        for (const src of odd) within(() => extractFile(`f.${ext}`, src))
+      }
+    })
+  })
 })

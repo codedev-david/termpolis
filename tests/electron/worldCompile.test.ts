@@ -1116,6 +1116,36 @@ describe('manifestServiceNames', () => {
     expect(manifestServiceNames('package.json', 'not json')).toEqual([])
     expect(manifestServiceNames('notes.yml', 'kind: Deployment\n')).toEqual([])
   })
+
+  it('reads a k8s metadata name after labels, comments, blank lines and CRLF, quoted or bare, and not a generateName', () => {
+    const doc = (kind: string, ...meta: string[]): string => ['apiVersion: v1', `kind: ${kind}`, 'metadata:', ...meta, 'spec:', '  replicas: 1', '  template:', '    metadata:', '      name: inner'].join('\n')
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    app: web', '  # the name', '  name: web'))).toEqual(['web'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', "  name: 'q-svc'", '  namespace: x'))).toEqual(['q-svc'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '  name: "dq.svc"  '))).toEqual(['dq.svc'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Service', '\tname: tabbed'))).toEqual(['tabbed'])
+    // A blank line, or one of only spaces, inside the block no longer ends it before the name.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    app: web', '', '   ', '  name: after-blank'))).toEqual(['after-blank'])
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  labels:', '    app: web', '  name: crlf').replace(/\n/g, '\r\n'))).toEqual(['crlf'])
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\r\nmetadata:  \r\n\r\n  name: s\r\n')).toEqual(['s'])
+    // generateName only: the block ends at spec:, and a name further down belongs to something else.
+    expect(manifestServiceNames('k8s/a.yaml', doc('Deployment', '  generateName: gen-', '  labels:', '    app: web'))).toEqual([])
+    expect(manifestServiceNames('k8s/a.yaml', 'kind: Deployment\nmetadata:\nspec:\n  name: no')).toEqual([])
+  })
+
+  it('reads a metadata block with no name in time linear in its size (exponential on main)', () => {
+    const within = (f: () => unknown): void => {
+      const t = performance.now()
+      f()
+      expect(performance.now() - t).toBeLessThan(1000)
+    }
+    const head = 'kind: Deployment\nmetadata:\n'
+    for (const body of ['\n'.repeat(50000), '\r\n'.repeat(25000), '  \n'.repeat(25000), ' \r\n'.repeat(16000), '  a: b\n'.repeat(7000), '  a\n\n'.repeat(12000), ' '.repeat(50000), '\t'.repeat(50000) + '\n']) {
+      within(() => expect(manifestServiceNames('k8s/a.yaml', head + body)).toEqual([]))
+      within(() => expect(manifestServiceNames('k8s/a.yaml', head + body + '\nx: 1\n  name: late')).toEqual([]))
+    }
+    within(() => expect(manifestServiceNames('k8s/a.yaml', 'kind: Service\n' + 'metadata:\n  labels:\n'.repeat(5000))).toEqual([]))
+    within(() => expect(manifestServiceNames('k8s/a.yaml', head + '  a: b\n\n'.repeat(5000) + '  name: found')).toEqual(['found']))
+  })
 })
 
 describe('compile sources: manifests, hand-edited names, transcript and CI runs', () => {

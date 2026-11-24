@@ -556,6 +556,17 @@ describe('hostile input stays linear', () => {
     within(1500, () => expect(refs('src/lib.rs', '#[a]\n'.repeat(30000) + 'mod x;')).toEqual(['rs:m:x']))
   })
 
+  it('reads `from` followed by a long run of spaces as nothing, in linear time, and keeps relative and spaced forms', () => {
+    // The two `[ \t]+` around an empty module split the run every way: 2.3 s on main for 50k spaces.
+    within(1000, () => expect(refs('a.py', 'from' + ' '.repeat(50000))).toEqual([]))
+    within(1000, () => expect(refs('a.py', 'from' + ' '.repeat(50000) + 'import x')).toEqual([]))
+    within(1000, () => expect(refs('a.py', 'from' + '\t \t'.repeat(17000) + '\n')).toEqual([]))
+    within(1000, () => expect(refs('a.py', 'from \n'.repeat(10000))).toEqual([]))
+    expect(refs('a.py', 'from\t \tos.path   import  join\nfrom . import b\nfrom ..pkg import (c,\n  d)\nfrom\t.x import y\n')).toEqual(['py:f:os.path:join', 'py:f:.:b', 'py:f:..pkg:c,d', 'py:f:.x:y'])
+    // A `from` with no module no longer swallows the lines of its `(` list: the import under it is read.
+    expect(refs('a.py', 'from  import (\nimport os\n)\n')).toEqual(['py:i:os'])
+  })
+
   it("bounds a Kotlin file's declaration scan on one long line", () => {
     within(1500, () => expect(scanLangImports('a.kt', 'fun ' + 'a'.repeat(200000))).toEqual({ refs: [] }))
     within(1500, () => expect(scanLangImports('a.kt', 'fun <' + '<'.repeat(200000))).toEqual({ refs: [] }))

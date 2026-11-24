@@ -197,7 +197,8 @@ export function serviceNames(file: string, text: string): string[] {
 
 const COMPOSE = /^docker-compose.*\.ya?ml$/
 const K8S_DOC = /^kind:\s*(?:Deployment|Service)\s*$/m
-const K8S_NAME = /^metadata:\s*\r?\n(?:[ \t]+[^\n]*\n)*?[ \t]+name:\s*['"]?([\w.-]+)['"]?\s*$/m
+// Each line under metadata: matches one way only (blank, or indent then text), so a block without name: is linear.
+const K8S_NAME = /^metadata:[ \t]*\r?\n(?:[ \t]*\r?\n|[ \t]+(?:[^ \t\r\n]|\r(?!\n))[^\n]*\n)*?[ \t]+name:\s*['"]?([\w.-]+)['"]?\s*$/m
 /** Manifest files compile reads for runtime names: compose files, package.json and Kubernetes YAML in the usual folders. */
 export const MANIFEST_PATTERNS = ['**/docker-compose*.yml', '**/docker-compose*.yaml', '**/package.json', '**/{k8s,kubernetes,deploy,manifests}/**/*.{yml,yaml}', '!**/node_modules/**']
 const MAX_MANIFESTS = 300

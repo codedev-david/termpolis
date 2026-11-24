@@ -143,8 +143,9 @@ export function blankRust(text: string): string {
 }
 
 // The list after `import` is read by hand, never by a bounded `\([^)]{0,n}\)`, which backtracks n characters on every
-// `(` that does not close.
-const PY_FROM = /(?:^|;)[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]*(\(?)/gm
+// `(` that does not close. The lookahead after `from`'s spaces stops a run of spaces with no module after it from being
+// split between the two `[ \t]+` (both groups between them can be empty), which took seconds on `from` and 50k spaces.
+const PY_FROM = /(?:^|;)[ \t]*from[ \t]+(?=[.A-Za-z_])(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]*(\(?)/gm
 const PY_LINE_REST = /[^\n;]*/y
 const PY_IMPORT = /(?:^|;)[ \t]*import[ \t]+([^\n;]+)/gm
 

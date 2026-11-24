@@ -148,6 +148,22 @@ db.exec('x'); re.exec('y'); exec('z'); other.fork('w'); cp.exec('v')`)).toEqual(
     expect(run(`import { exec } from 'child_process'
 exec(cmd); exec()`)).toEqual([])
   })
+  it('reads a destructured require with spaces, tabs or a line break around the name, in time linear in a long run of spaces', () => {
+    expect(run(`const { exec: go } = require(  'child_process'  )
+go('a')`).map((x) => x.key)).toEqual(['a'])
+    expect(run(`const {\n  execSync,\n  fork\n} = require(\n\t"node:child_process")
+execSync('b'); fork('c')`).map((x) => x.key)).toEqual(['b', 'c'])
+    expect(run(`import {\n  exec\n}\nfrom\n  'child_process'
+exec('d')`).map((x) => x.key)).toEqual(['d'])
+    // A require( with no module after a 50k run of spaces: the two `\s*` in a row split the run every way (3 s on main).
+    // The file names child_process in code (a comment is blanked first), so the rule runs.
+    for (const pad of [' ', '\n', '\r\n']) {
+      const t = performance.now()
+      expect(run(`child_process.x = 1\nconst {}=require(${pad.repeat(50000)}`)).toEqual([])
+      expect(run(`child_process.x = 1\nimport {}from${pad.repeat(50000)}`)).toEqual([])
+      expect(performance.now() - t).toBeLessThan(1000)
+    }
+  })
 })
 
 describe('http', () => {

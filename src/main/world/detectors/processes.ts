@@ -24,7 +24,7 @@ const POST = /(?<![\w$.])((?:[\w$]*[a-z0-9_$]Port|port)\d?)\.postMessage\(/
 // one. The file must import it (or call `child_process.x(` directly); names bound from it, renames and a namespace
 // alias (`import * as cp`, `const cp = require(...)`) are followed. Keyed by the first literal argument, as written.
 const CP = /\bchild_process\b/
-const CP_NAMED = /(?:import\s*\{([^}]*)\}\s*from|const\s*\{([^}]*)\}\s*=\s*require\(\s*)\s*['"`](?:node:)?child_process['"`]/g
+const CP_NAMED = /(?:import\s*\{([^}]*)\}\s*from|const\s*\{([^}]*)\}\s*=\s*require\()\s*['"`](?:node:)?child_process['"`]/g
 const CP_ALIAS = /(?:import\s+(?:\*\s+as\s+)?([\w$]+)\s+from\s*|(?:const|let|var)\s+([\w$]+)\s*=\s*require\(\s*)['"`](?:node:)?child_process['"`]/g
 const CP_FN = new Set(['exec', 'execSync', 'fork'])
 const FIRST_LIT = String.raw`\(\s*['"\`]([^'"\`]+)['"\`]`
