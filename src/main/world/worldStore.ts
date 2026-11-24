@@ -50,6 +50,18 @@ export interface WorldStoreDeps {
   log?: (message: string) => void
 }
 
+/** What a stored world that cannot be read says: the raw error (its code and full path) goes to the log only. */
+export const WORLD_READ_FAILED = "Lumopolis couldn't read this world's saved map. Try again in a moment."
+
+/** A stored world that exists but cannot be read. Its message is fixed and carries no path. */
+export class WorldReadError extends Error {
+  readonly code = 'WORLD_READ_FAILED'
+  constructor() {
+    super(WORLD_READ_FAILED)
+    this.name = 'WorldReadError'
+  }
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000
 /** A label cache entry unread for this long is removed. */
 export const LABEL_MAX_AGE_MS = 90 * DAY_MS
@@ -172,7 +184,10 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       try {
         text = await readText(file)
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          log(`[world store] the stored world ${name} could not be read: ${String(err)}`)
+          throw new WorldReadError()
+        }
         newerOnDisk.set(name, false)
         shadow.delete(name)
         return null

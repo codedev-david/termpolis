@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorldDoc } from '../../src/shared/world/types'
-import { createWorldStore, LABEL_MAX_AGE_MS, pruneLabelCache, worldFileName } from '../../src/main/world/worldStore'
+import { createWorldStore, LABEL_MAX_AGE_MS, pruneLabelCache, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import { STAGE_CACHE_VERSION } from '../../src/main/world/stageCache'
 
 function doc(projectKey = 'demo'): WorldDoc {
@@ -131,10 +131,10 @@ describe('worldStore', () => {
     refusals = ['EBUSY', 'EACCES', 'EPERM']
     expect(await store.load('demo')).toEqual(doc())
     expect(waits).toEqual([100, 200, 300])
-    // refused on every try: it gives up after about a second and the error reaches the caller, as before
+    // refused on every try: it gives up after about a second and the caller gets the plain read error (F-R11)
     waits.length = 0
     refusals = ['EBUSY', 'EBUSY', 'EBUSY', 'EBUSY', 'EBUSY']
-    await expect(store.load('demo')).rejects.toThrow('EBUSY')
+    await expect(store.load('demo')).rejects.toThrow(WORLD_READ_FAILED)
     expect(waits).toEqual([100, 200, 300, 400])
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
@@ -228,10 +228,21 @@ describe('worldStore', () => {
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
-  it('a read error other than a missing file is not swallowed', async () => {
-    const store = createWorldStore(dir)
+  it('a read error other than a missing file is not swallowed: the caller gets a fixed, path-free error and the log the raw one (F-R11)', async () => {
+    const lines: string[] = []
+    const store = createWorldStore(dir, { log: (m) => lines.push(m) })
     await mkdir(join(dir, 'world', 'demo.json'), { recursive: true })
-    await expect(store.load('demo')).rejects.toThrow()
+    const err = await store.load('demo').then(() => null, (e: unknown) => e)
+    expect(err).toBeInstanceOf(WorldReadError)
+    expect(err).toMatchObject({ name: 'WorldReadError', code: 'WORLD_READ_FAILED', message: "Lumopolis couldn't read this world's saved map. Try again in a moment." })
+    const shown = `${String(err)} ${(err as Error).message}`
+    expect(shown).not.toContain(dir)
+    expect(shown).not.toContain('demo.json')
+    expect(shown).not.toMatch(/E[A-Z]{3,}/)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\[world store\] the stored world demo\.json could not be read: Error: E[A-Z]+/)
+    // the file is left where it is
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
   it('label cache: miss, round-trip, sha-named files under world/label-cache, overwrite', async () => {
