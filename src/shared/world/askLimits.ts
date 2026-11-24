@@ -6,7 +6,6 @@
 export const MAX_QUESTION_CHARS = 4000
 
 // C0 controls but tab, DEL and the C1 controls. Newlines go too: the field is one line.
-// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g
 
 /** The question with control characters (all but tab) taken out and the ends trimmed. */
