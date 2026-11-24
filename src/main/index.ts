@@ -2845,6 +2845,7 @@ const worldClient = createWorldClient(undefined, {
     // the project is under way the graph holds only the files read so far (a terminal opened in the folder
     // starts one), and a world compiled from that would map part of the project: the world lists it itself.
     const snap = graphSnapshot(key, root, { structureOnly: true })
+    probe(`world snapshot graph files=${snap.files.length} root=${root.slice(-40)}`)
     if (snap.files.length > 0 && !graphSweeping(key)) return snap
     const built = await worldClient.snapshotFromFiles(root)
     void worldClient.whenCompiled(root).then(() => indexInBackground(root))

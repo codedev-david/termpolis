@@ -38,6 +38,8 @@ import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
+// THROWAWAY SOAK SETUP (t24/resp): the macOS CI job sets RESPONSIVE_REDUCED=1; the soak workflow does not.
+if (process.platform === 'darwin' && process.env.RESPONSIVE_REDUCED === undefined) process.env.RESPONSIVE_REDUCED = '1'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
 const PANE = '[data-testid="world-view"]'
@@ -1189,7 +1191,15 @@ test.describe.serial('Lumopolis at every screen size', () => {
       // while its files are read keeps clear of the legend, open or shut, and inside the pane (fix round 2, m6).
       mark('t4 opened the capped folder')
       const reading = page.locator(NOTE, { hasText: 'Still reading the files' })
-      await expect(reading).toBeVisible({ timeout: 300_000 })
+      mark('t4 opened')
+      const watch = setInterval(() => { void page.evaluate(() => {
+        const pane = document.querySelector('[data-testid="world-pane"]') ?? document.body
+        const notes = Array.from(document.querySelectorAll('[data-testid="world-notice"]')).map((n) => (n as HTMLElement).innerText.slice(0, 60))
+        const canvas = !!document.querySelector('[data-testid="world-canvas-host"] canvas')
+        return `notes=${JSON.stringify(notes)} canvas=${canvas} text=${(pane as HTMLElement).innerText.replace(/\s+/g, ' ').slice(0, 160)}`
+      }).then((t) => mark(`t4 poll ${t}`), () => undefined) }, 2000)
+      try { await expect(reading).toBeVisible({ timeout: 300_000 }) } finally { clearInterval(watch) }
+      mark('t4 reading seen')
       const toggle = page.locator('[data-testid="world-legend-toggle"]')
       for (let pass = 0; pass < 2; pass++) {
         if (!(await reading.isVisible())) break

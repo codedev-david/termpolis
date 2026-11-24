@@ -47,6 +47,7 @@ import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
 import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, type WorldStore } from './worldStore'
 import { validateWorld } from '../../shared/world/validate'
+import { probe } from '../probeLog'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 
@@ -868,11 +869,14 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const drawFirst = (st: HostState, key: string, paths: GraphSnapshot, head: WorldHead): void => {
     const run = (async (): Promise<void> => {
       try {
-        if (await st.store.load(key)) return
+        const stored = await st.store.load(key)
+        probe(`world drawFirst stored=${!!stored} runPct=${runPct.has(key)} files=${paths.files.length}`)
+        if (stored) return
         const doc = firstMap(paths, key, head, now())
         // The run ended first (its compile saved a world, or the snapshot failed): nothing to draw.
-        if (!runPct.has(key)) return
+        if (!runPct.has(key)) { probe('world drawFirst run ended'); return }
         provisional.set(key, { doc })
+        probe('world drawFirst posted')
         post({ kind: 'updated', projectKey: key })
       } catch (e) {
         console.warn('[world] first map from the listing failed:', e)
@@ -1081,6 +1085,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
       const scans = new Map<string, StageFile | null>()
+      probe(`world snapshotFromFiles early=${early !== null} root=${root.slice(-40)}`)
       // The reads' progress, with a beat while a read is stuck (fix round 4, M1): for a person's run only. Its timer
       // starts inside the try, so the finally stops it whatever throws first (minor sweep, R4-2).
       let reads: ReturnType<typeof readProgress> | null = null
@@ -1100,6 +1105,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             ? {
                 onListed: (paths: GraphSnapshot) => {
                   // One first map per run: none while one is drawn, shown or its compile runs (M1).
+                  probe(`world onListed files=${paths.files.length} min=${provisionalMin} drawing=${drawing.has(early)} prov=${provisional.has(early)} running=${running.has(early)}`)
                   if (paths.files.length < provisionalMin || drawing.has(early) || provisional.has(early) || running.has(early)) return
                   drawFirst(st, early, paths, head)
                 },
