@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -412,7 +412,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let [width, height] = size()
 
   const renderer = new THREE.WebGLRenderer({ antialias: high })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5))
+  /**
+   * The largest drawing buffer the GPU takes, [across, down]: the smaller of its biggest render buffer and its biggest
+   * viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) draws nothing, a white map.
+   */
+  const bufferCap = ((): [number, number] => {
+    const gl = renderer.getContext()
+    const most = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE))
+    const dims = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as ArrayLike<number> | null
+    const side = (k: number): number => Math.min(most > 0 ? most : Infinity, dims && dims[k] > 0 ? dims[k] : Infinity)
+    return [side(0), side(1)]
+  })()
+  /** The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), lowered to the buffer cap. */
+  const pixelRatio = (): number => bufferRatio(Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5), width, height, bufferCap)
+  renderer.setPixelRatio(pixelRatio())
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
@@ -2004,7 +2017,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     solids = null
     ;[width, height] = size()
     applyView()
+    // A bigger view may need a lower pixel ratio to stay inside the GPU's largest buffer (or allows the full one back).
+    const ratio = pixelRatio()
+    renderer.setPixelRatio(ratio)
     renderer.setSize(width, height)
+    composer?.setPixelRatio(ratio)
     composer?.setSize(width, height)
     labelRenderer.setSize(width, height)
     panelBoxes = null

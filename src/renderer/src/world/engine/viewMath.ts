@@ -94,6 +94,18 @@ export function fitView(points: V3[], dir: V3, fovDeg: number, aspect: number, m
   return { target, dist }
 }
 
+/**
+ * The pixel ratio a view `width` x `height` (CSS pixels) is drawn at: `want`, lowered so the drawing buffer fits the
+ * GPU's largest buffer `cap` ([across, down]: the smaller of its biggest render buffer and its biggest viewport), as
+ * on a 4K or bigger display, where a buffer past it draws nothing. A missing or unusable limit holds nothing back.
+ */
+export function bufferRatio(want: number, width: number, height: number, cap: readonly [number, number]): number {
+  let r = want
+  if (cap[0] > 0 && width * r > cap[0]) r = cap[0] / width
+  if (cap[1] > 0 && height * r > cap[1]) r = cap[1] / height
+  return r
+}
+
 /** A number held between two bounds; the lower bound wins when they cross. */
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))

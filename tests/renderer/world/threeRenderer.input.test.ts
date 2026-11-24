@@ -276,6 +276,39 @@ describe('threeRenderer resize', () => {
     expect(ro.disconnected()).toBeGreaterThanOrEqual(1)
   })
 
+  it("keeps the drawing buffer inside the GPU's largest one: a lower pixel ratio on a 4K view, the screen's back when it shrinks", () => {
+    const ro = withObserver()
+    vi.stubGlobal('devicePixelRatio', 2)
+    gpu.limits = { renderbuffer: 8192, viewport: [16384, 4096] } // the viewport's 4096 down is the tighter limit there
+    resizeHost(h.host, 3840, 2160)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    // 3840 x 2 = 7680 fits 8192 across; 2160 x 2 = 4320 is past 4096 down: 4096 / 2160.
+    expect(rendererOf().pixelRatios).toEqual([4096 / 2160])
+    resizeHost(h.host, 5120, 1440)
+    ro.fire() // 5120 x 2 is past 8192 across: 8192 / 5120
+    expect(rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]).toBe(8192 / 5120)
+    expect(gpu.composers[0].pixelRatios).toEqual([8192 / 5120])
+    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([5120, 1440])
+    resizeHost(h.host, 800, 600)
+    ro.fire() // small again: the screen's full ratio
+    expect(rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]).toBe(2)
+    expect(gpu.composers[0].pixelRatios[gpu.composers[0].pixelRatios.length - 1]).toBe(2)
+    r.dispose()
+  })
+
+  it("a context that answers no buffer limits (lost, or a driver that leaves them out) holds the screen's ratio", () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    gpu.limits = { renderbuffer: null, viewport: null }
+    resizeHost(h.host, 3840, 2160)
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(rendererOf().pixelRatios).toEqual([2])
+    r.dispose()
+    gpu.limits = { renderbuffer: 0, viewport: [0, 0] } // zeros are no limits either
+    const r2 = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(gpu.renderers[1].pixelRatios).toEqual([2])
+    r2.dispose()
+  })
+
   it('without a world only the view changes size; a zero-sized host counts as one pixel', () => {
     const ro = withObserver()
     const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: false })

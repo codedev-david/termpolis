@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -707,6 +707,22 @@ describe("a long line's close-up: both ends beside the card", () => {
     const first = steps.findIndex(at)
     expect(first).toBeGreaterThan(0)
     expect(steps.slice(first).every(at)).toBe(true)
+  })
+})
+
+describe("bufferRatio: the drawing buffer inside the GPU's largest", () => {
+  it('lowers the pixel ratio only as far as the tighter side needs', () => {
+    expect(bufferRatio(2, 1000, 800, [8192, 8192])).toBe(2) // fits: the ratio asked for
+    expect(bufferRatio(2, 5120, 1440, [8192, 8192])).toBe(8192 / 5120) // too wide
+    expect(bufferRatio(2, 1440, 5120, [8192, 8192])).toBe(8192 / 5120) // too tall
+    expect(bufferRatio(2, 3840, 2160, [8192, 4096])).toBe(4096 / 2160) // down is the tighter limit
+    expect(bufferRatio(2, 6000, 3000, [8192, 4096])).toBe(4096 / 3000) // both past: the smaller ratio
+    expect(bufferRatio(1, 4096, 4096, [4096, 4096])).toBe(1) // exactly the limit fits
+  })
+  it('a missing or unusable limit holds nothing back', () => {
+    expect(bufferRatio(2, 5120, 2880, [Infinity, Infinity])).toBe(2)
+    expect(bufferRatio(2, 5120, 2880, [0, 0])).toBe(2)
+    expect(bufferRatio(2, 5120, 2880, [Number.NaN, -1])).toBe(2)
   })
 })
 
