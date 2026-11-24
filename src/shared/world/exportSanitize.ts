@@ -201,12 +201,58 @@ function separatorReading(p: string, ctx: SanitizeContext): string {
   // On Windows `\x` is rooted on the current drive: read on the drive of the project, userData or home folder it is
   // in, or else on home's drive.
   else if (/^\/(?!\/)/.test(n) && /^[A-Za-z]:/.test(ctx.home)) n = onDrive(n, ctx) + n
+  if (/^[A-Za-z]:/.test(n)) n = driveRead(n, ctx)
   if (!isAbsolute(n)) return n ? resolveRelative(n.split('/')) : ''
   const n2 = norm(n)
   const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root))
   if (inRoot) return resolveRelative(inRoot)
   if ([ctx.home, ctx.userData].some((b) => under(n2, norm(b))?.length === 0)) return OUTSIDE
   return outside(n2.split('/'))
+}
+
+/**
+ * Each known drive folder (normalised, `C:/Users/ann`), longest first, with a RegExp source matching it with any of
+ * its separators left out, every gap a group (`C:([\\/]*)Users([\\/]*)ann`). Node's `path.join('C:', 'Users')` leaves
+ * the drive relative (`C:Users\ann`), Git Bash strips an unquoted path's backslashes (`C:Usersannrepo`), and a dropped
+ * separator glues two names (`C:\Users\annrepo`). Only this machine's own folder names are read across a missing
+ * separator.
+ */
+function gluedFolders(ctx: SanitizeContext): Array<[string, string]> {
+  return [ctx.root ?? '', ctx.userData, ctx.home].map((b) => norm(b).split('/'))
+    .filter((p) => /^[A-Za-z]:$/.test(p[0]) && p.length > 1).sort((a, b) => b.join('/').length - a.join('/').length)
+    .map((p) => [p.join('/'), escapeRe(p[0]) + p.slice(1).map((s) => `([\\\\/]*)${escapeRe(s)}`).join('')])
+}
+
+/**
+ * The folder `base` stands for when written with the separators `gaps` (some left out) and followed by `after`, or
+ * null to leave it: written whole (gluedFolders' pattern matched every separator), it is the plain form's, and a name
+ * running on is another folder, except with every separator left out, when the rest is glued on too (`C:Usersannx`).
+ */
+function gluedBase(base: string, gaps: string[], after: string): string | null {
+  if (gaps.every(Boolean)) return null
+  if (/^(?:[\\/]|(?![\w-]|\.[\w.-]))/.test(after)) return base
+  return gaps.some(Boolean) ? null : `${base}/`
+}
+
+/** Per context: gluedFolders, each matched at the start of a plain path. */
+const gluedStarts = new WeakMap<SanitizeContext, Array<[string, RegExp]>>()
+
+/**
+ * A plain path `n` on a drive as the drive path it stands for: a known drive folder written with separators left out
+ * is that folder (gluedBase), and any other drive followed by a name is rooted on it (`C:x` reads `C:/x`).
+ */
+function driveRead(n: string, ctx: SanitizeContext): string {
+  let starts = gluedStarts.get(ctx)
+  if (!starts) {
+    starts = gluedFolders(ctx).map(([base, src]): [string, RegExp] => [base, new RegExp(`^${src}`, 'i')])
+    gluedStarts.set(ctx, starts)
+  }
+  for (const [base, re] of starts) {
+    const m = re.exec(n)
+    const read = m ? gluedBase(base, m.slice(1), n.slice(m[0].length)) : null
+    if (m && read !== null) return read + n.slice(m[0].length)
+  }
+  return n.replace(/^([A-Za-z]:)(?=[^/])/, '$1/')
 }
 
 /** The drive (`C:`) a drive-less rooted path `n` is read on, for a context whose home folder has one. */
@@ -289,8 +335,16 @@ function textCleaner(ctx: SanitizeContext): (text: string) => string {
     return out.toLowerCase().includes(beside.toLowerCase()) ? OUTSIDE + tail : out
   }
   const revealingHit = (m: string): string => rewrite(m, (TRAILING.exec(m) ?? [''])[0])
+  // A known drive folder written with separators left out is first written out whole (gluedBase), after no name
+  // character, so the known pass takes it.
+  const glued = gluedFolders(ctx).map(([base, src]): [string, RegExp] => [base, new RegExp(`(?<!\\w)${src}`, 'gi')])
+  const unglue = (text: string): string => glued.reduce((t, [base, re]) => t.replace(re, (...a: Array<string | number>) => {
+    const m = a[0] as string
+    const end = (a[a.length - 2] as number) + m.length
+    return gluedBase(base, a.slice(1, -2) as string[], t.slice(end)) ?? m
+  }), text)
   // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
-  return (text) => redact(text).replace(known, knownHit).replace(revealing, revealingHit)
+  return (text) => unglue(redact(text)).replace(known, knownHit).replace(revealing, revealingHit)
 }
 
 /**

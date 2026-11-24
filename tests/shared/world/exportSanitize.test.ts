@@ -924,4 +924,48 @@ describe('a backslash in a path, by the platform that mapped the world', () => {
     expect(sanitizeText('see \\\\.\\Users\\dev\\repo\\src\\a.ts now', win)).toBe('see src/a.ts now')
     expect(sanitizeText('see https://example.com/home/dev/x now', posix)).toBe(`see https://example.com${OUTSIDE}/x now`)
   })
+
+  it("reads a drive with no separator after it, or with separators left out between this machine's own folder names, as the drive path", () => {
+    const projD: SanitizeContext = { root: 'D:\\work\\repo', home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' }
+    const text: Array<[SanitizeContext, string, string]> = [
+      // Node's path.join('C:', 'Users', ...) leaves the drive relative.
+      [win, "ENOENT: no such file or directory, open 'C:Users\\dev\\repo\\x.json'", "ENOENT: no such file or directory, open 'x.json'"],
+      [win, 'see C:Users\\dev\\x now', `see ${OUTSIDE}/x now`],
+      [win, 'see C:USERS\\DEV\\x now', `see ${OUTSIDE}/x now`],
+      [win, 'see C:Users/dev/repo/src/a.ts now', 'see src/a.ts now'],
+      [win, 'see C:Users\\DEV~1\\x now', `see ${OUTSIDE}/x now`],
+      [win, '{"p":"C:Users\\\\dev\\\\x"}', `{"p":"${OUTSIDE}/x"}`],
+      [projD, 'see D:work\\repo\\src\\a.ts now', 'see src/a.ts now'],
+      // Git Bash strips the backslashes of an unquoted path.
+      [win, 'bash: cd: C:Usersdevrepo: No such file or directory', 'bash: cd: .: No such file or directory'],
+      [win, 'see C:Usersdevrepox.json now', 'see x.json now'],
+      [win, 'see C:Usersdev now', `see ${OUTSIDE} now`],
+      // A separator dropped between two of this machine's folder names.
+      [win, 'see C:\\Users\\devrepo\\src\\a.ts now', 'see src/a.ts now'],
+      [win, 'see C:\\Usersdev\\repo\\a.ts now', 'see a.ts now'],
+    ]
+    for (const [ctx, input, want] of text) {
+      const out = sanitizeText(input, ctx)
+      expect(out).toBe(want)
+      expect(out.toLowerCase()).not.toContain('dev')
+    }
+    // Text naming no folder of this machine's keeps its words.
+    for (const kept of ['a ratio of 3:1', 'key C:foo stays', 'see C:Users\\ann\\x now', 'see aC:Usersdev now', 'see C:Users\\devon now']) {
+      expect(sanitizeText(kept, win)).toBe(kept)
+    }
+    // As a path field.
+    expect(relativePath('C:Users\\dev\\repo\\src\\a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('C:Usersdevrepo', win)).toBe('.')
+    expect(relativePath('C:Usersdevrepo\\src\\a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('C:Usersdevrepox.json', win)).toBe('x.json')
+    expect(relativePath('C:Users\\dev\\x', win)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('C:Usersdev', win)).toBe(OUTSIDE)
+    expect(relativePath('C:Users\\dev\\repository\\x', win)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('C:\\Users\\dev\\repox', win)).toBe(`${OUTSIDE}/repox`)
+    expect(relativePath('C:foo\\bar.ts', win)).toBe(`${OUTSIDE}/bar.ts`)
+    expect(relativePath('c:notes\\x', posix)).toBe(`${OUTSIDE}/x`)
+    const doc = minimal()
+    doc.buildings[0].members = ['C:Usersdevrepo\\src\\a.ts', 'C:Users\\dev\\x.ts']
+    expect(sanitizeWorld(doc, win).buildings[0].members).toEqual(['src/a.ts', `${OUTSIDE}/x.ts`])
+  })
 })
