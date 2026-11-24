@@ -846,7 +846,9 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     }
     return { status: statusFor(b.members, runs, testsByMember), claims }
   }
-
+  // The status pass runs here, in its own stage, so the bar and the slow-stage log put its time under status and
+  // not under layout (fix round 3, N3).
+  const statusById = new Map(g.buildings.map((b) => [b.id, statusOf(b)]))
   progress('status', 64)
 
   progress('labelling', 65)
@@ -875,7 +877,7 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     }))
   const buildings: Building[] = g.buildings.map((b) => {
     const l = labels.buildings[b.id]
-    const st = statusOf(b)
+    const st = statusById.get(b.id) as Pick<Building, 'status' | 'claims'>
     return {
       id: b.id,
       districtId: b.districtId,
@@ -924,7 +926,6 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     const id = ownerOf.get(f) as string
     runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   }
-  // The status pass (each building's status and claims) is done: the layout stage reports between its steps.
   progress('layout', 86)
   const fromManifests = manifestsFound.then((listed) => {
     if (listed === null) ranOut = true

@@ -6,9 +6,15 @@ import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { compileWorldStaged, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
-import { RUNS_GRACE_MS, RUNS_WAIT_MS, type TestRun } from '../../src/main/world/testStatus'
+import { RUNS_GRACE_MS, RUNS_WAIT_MS, testClaims, type TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
+
+// testClaims as it is, unless a test makes one call slow (the status pass's time in the slow-stage log, N3).
+vi.mock('../../src/main/world/testStatus', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/world/testStatus')>()
+  return { ...real, testClaims: vi.fn(real.testClaims) }
+})
 
 afterEach(() => {
   vi.useRealTimers()
@@ -405,6 +411,42 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     expect(line).toMatch(/labelling \d+ ms/)
     expect(line).toMatch(/layout \d+ ms/)
     expect(line).not.toMatch(/ran out of time/)
+    warn.mockRestore()
+  })
+
+  it('the status pass is timed and reported as the status stage, not as layout (fix round 3, N3)', async () => {
+    const claims = vi.mocked(testClaims)
+    const real = claims.getMockImplementation() as typeof testClaims
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let clock = 1_000_000
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const d = deps()
+    const order: string[] = []
+    const onProgress = d.onProgress as NonNullable<CompileDeps['onProgress']>
+    d.onProgress = (s, p) => {
+      order.push(`${s} ${p}`)
+      onProgress(s, p)
+    }
+    // Each building's status takes 3 s of the clock: a slow status pass.
+    claims.mockImplementation((...a) => {
+      order.push('claims')
+      clock += 3000
+      return real(...a)
+    })
+    try {
+      await compile(d)
+    } finally {
+      claims.mockImplementation(real)
+      now.mockRestore()
+    }
+    // Every building's status is judged after the wait for results and before 64, while the stage is status.
+    expect(order.indexOf('claims')).toBeGreaterThan(order.indexOf('status 55'))
+    expect(order.lastIndexOf('claims')).toBeLessThan(order.indexOf('status 64'))
+    const lines = warn.mock.calls.map(([m]) => String(m)).filter((m) => m.startsWith('[world compile]'))
+    expect(lines).toHaveLength(1)
+    const ms = (stage: string): number => Number((new RegExp(`${stage} (\\d+) ms`).exec(lines[0]) as RegExpExecArray)[1])
+    expect(ms('status')).toBeGreaterThanOrEqual(3000 * order.filter((o) => o === 'claims').length)
+    expect(ms('layout')).toBe(0)
     warn.mockRestore()
   })
 
