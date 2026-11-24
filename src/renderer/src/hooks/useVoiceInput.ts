@@ -9,6 +9,33 @@ export interface VoiceConfirm {
   text: string
 }
 
+/** The longest one recording runs before it stops by itself and is transcribed. */
+export const MAX_RECORDING_MS = 5 * 60 * 1000
+/** Shown when the mic's track ends mid-recording (unplugged). Pending David's sign-off. */
+export const MIC_DISCONNECTED_MESSAGE = 'The microphone was disconnected. Plug it back in, or choose another one in Settings → Voice.'
+/** Shown when a recording reaches MAX_RECORDING_MS. Pending David's sign-off. */
+export const RECORDING_CAP_MESSAGE = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+
+/** What useVoiceInput hands its caller. */
+export interface VoiceInputControls {
+  status: VoiceStatus
+  listening: boolean
+  level: number
+  lastCapture: CaptureAnalysis | null
+  confirm: VoiceConfirm | null
+  errorMsg: string | null
+  toggle: () => void
+  start: () => Promise<void>
+  stop: () => Promise<void>
+  /** Abandons whatever is in flight: a mic still starting, a recording (its audio is dropped, not
+   *  transcribed) and a transcription (its text, or error, never arrives). An error on show stays. */
+  cancel: () => void
+  confirmRun: (submit: boolean) => void
+  cancelConfirm: () => void
+  clearError: () => void
+  dispose: () => void
+}
+
 function describeVoiceError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e ?? '')
   return msg || 'Voice transcription failed.'
@@ -40,7 +67,7 @@ export function useVoiceInput(
   terminalId: string | null,
   agentDetected: boolean,
   opts?: { onTranscript?: (text: string) => void },
-) {
+): VoiceInputControls {
   // Optional sink (Lumopolis Ask bar): the cleaned transcript goes here instead of a terminal.
   const sinkRef = useRef(opts?.onTranscript)
   sinkRef.current = opts?.onTranscript
@@ -81,6 +108,15 @@ export function useVoiceInput(
   // stop no-ops and the mic gets stuck "listening" with no way to end it.
   const startingRef = useRef(false)
   const cancelStartRef = useRef(false)
+  // Generations. A capture's number moves on with every start(), cancel() and dispose(): a start()
+  // that finds it moved after an await was abandoned, and releases what it opened without setting
+  // state. A transcription carries the number it began with and is dropped, with no state update and
+  // no delivery, once that number has moved. cancel() always moves it. A new start() and dispose()
+  // move it only with a sink (the Ask bar), where a late transcript would be asked on its own;
+  // terminal dictation keeps delivering an earlier clip's text, as it always has.
+  const captureGenRef = useRef(0)
+  const transcribeGenRef = useRef(0)
+  const capTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const inject = useCallback((text: string, autoSubmit: boolean) => {
     if (!text || !terminalId) return
     window.termpolis.writeToTerminal(terminalId, text + (autoSubmit ? '\r' : ''))
@@ -91,10 +127,14 @@ export function useVoiceInput(
       clearInterval(levelTimerRef.current)
       levelTimerRef.current = null
     }
+    if (capTimerRef.current != null) {
+      clearTimeout(capTimerRef.current)
+      capTimerRef.current = null
+    }
     try { analyserRef.current?.disconnect() } catch { /* already gone */ }
     try { processorRef.current?.disconnect() } catch { /* already gone */ }
     try { audioCtxRef.current?.close() } catch { /* already closed */ }
-    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current?.getTracks().forEach((t) => { t.onended = null; t.stop() })
     analyserRef.current = null
     processorRef.current = null
     audioCtxRef.current = null
@@ -128,11 +168,13 @@ export function useVoiceInput(
     return engineRef.current
   }, [])
 
-  const transcribe = useCallback(async (pcm16k: Float32Array) => {
+  const transcribe = useCallback(async (pcm16k: Float32Array, gen: number) => {
     setStatus('transcribing')
     try {
       const engine = await ensureEngine()
+      if (transcribeGenRef.current !== gen) return
       const result = await engine.transcribe(pcm16k)
+      if (transcribeGenRef.current !== gen) return
       // Groq/Whisper returns a phantom when the audio held no real speech — e.g.
       // a mic capturing only background noise. That's either a bare "." (no
       // letters) OR a stock caption filler WORD ("the", "you", "thank you"). NEVER
@@ -164,6 +206,7 @@ export function useVoiceInput(
       setStatus('idle')
       focusActiveTerminal()
     } catch (e) {
+      if (transcribeGenRef.current !== gen) return
       setErrorMsg(describeVoiceError(e))
       setStatus('error')
     }
@@ -205,11 +248,30 @@ export function useVoiceInput(
       return
     }
     // Boost quiet (but real) capture toward a consistent level before transcribing.
-    await transcribe(normalizeAudioGain(pcm16k))
+    await transcribe(normalizeAudioGain(pcm16k), transcribeGenRef.current)
   }, [cleanupCapture, transcribe, focusActiveTerminal])
+  // The cap timer outlives the render that set it, so it calls the current stop().
+  const stopRef = useRef(stop)
+  stopRef.current = stop
+
+  // The mic went away mid-recording (unplugged, or the OS took it): end the capture, drop its audio,
+  // and say so, rather than leave "listening" showing over a dead track.
+  const micLost = useCallback(() => {
+    listeningRef.current = false
+    pcmChunksRef.current = []
+    cleanupCapture()
+    setErrorMsg(MIC_DISCONNECTED_MESSAGE)
+    setStatus('error')
+    if (!sinkRef.current) focusActiveTerminal()
+  }, [cleanupCapture, focusActiveTerminal])
 
   const start = useCallback(async () => {
     if (listeningRef.current || startingRef.current) return
+    const gen = ++captureGenRef.current
+    if (sinkRef.current) transcribeGenRef.current++
+    // cancel() or dispose() moved the generation on while this start waited.
+    const superseded = () => captureGenRef.current !== gen
+    const abandoned = () => cancelStartRef.current || superseded()
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined') {
       setErrorMsg('Microphone capture is not available in this environment.')
       setStatus('error')
@@ -238,15 +300,21 @@ export function useVoiceInput(
         // The chosen mic may be unplugged/blocked — fall back to the system default
         // rather than failing outright, so a stale device id can't brick dictation.
         if (!wantId) throw devErr
+        // Abandoned while the chosen mic failed: never open the default one.
+        if (abandoned()) {
+          startingRef.current = false
+          cancelStartRef.current = false
+          return
+        }
         stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudio })
       }
-      // A stop() arrived while the mic was initialising — release it and bail
-      // before we ever enter the listening state.
-      if (cancelStartRef.current) {
+      // A stop(), cancel() or dispose() arrived while the mic was initialising —
+      // release it and bail before an AudioContext exists or listening begins.
+      if (abandoned()) {
         stream.getTracks().forEach((t) => t.stop())
         startingRef.current = false
         cancelStartRef.current = false
-        setStatus('idle')
+        if (!superseded()) setStatus('idle')
         return
       }
       streamRef.current = stream
@@ -262,11 +330,11 @@ export function useVoiceInput(
       // just during getUserMedia. Re-check the cancel flag here or a quick
       // push-to-talk tap (release before the context is up) strands the mic in a
       // stuck "listening" state, which is the very failure this guard prevents.
-      if (cancelStartRef.current) {
-        cleanupCapture()
+      if (abandoned()) {
+        // cancel() and dispose() already released the stream and context held in the refs.
+        if (!superseded()) { cleanupCapture(); setStatus('idle') }
         startingRef.current = false
         cancelStartRef.current = false
-        setStatus('idle')
         return
       }
       const source = ctx.createMediaStreamSource(stream)
@@ -295,8 +363,27 @@ export function useVoiceInput(
       startingRef.current = false
       setLastCapture(null)
       startLevelLoop()
+      const tracks = stream.getTracks()
+      const onEnded = () => {
+        if (listeningRef.current && !superseded()) micLost()
+      }
+      tracks.forEach((t) => { t.onended = onEnded })
+      // A recording cannot run on forever: at the cap it stops, and what was said is transcribed.
+      capTimerRef.current = setTimeout(() => {
+        capTimerRef.current = null
+        setErrorMsg(RECORDING_CAP_MESSAGE)
+        void stopRef.current()
+      }, MAX_RECORDING_MS)
       setStatus('listening')
+      // The track can end before the handler is on it.
+      if (tracks.some((t) => t.readyState === 'ended')) micLost()
     } catch {
+      // Abandoned by cancel() or dispose() while getUserMedia failed: nothing is open, and no state is set.
+      if (superseded()) {
+        startingRef.current = false
+        cancelStartRef.current = false
+        return
+      }
       // Tear down any half-initialised capture so a throw mid-setup can't leave
       // the OS mic indicator on or an AudioContext open (the refs may already be
       // assigned by the time a node constructor throws).
@@ -305,7 +392,7 @@ export function useVoiceInput(
       setErrorMsg('Microphone access was blocked or no mic was found. Check your OS microphone privacy settings.')
       setStatus('error')
     }
-  }, [ensureEngine, cleanupCapture, startLevelLoop])
+  }, [ensureEngine, cleanupCapture, startLevelLoop, micLost])
 
   const toggle = useCallback(() => {
     if (listeningRef.current || startingRef.current) void stop()
@@ -322,7 +409,23 @@ export function useVoiceInput(
 
   const clearError = useCallback(() => setErrorMsg(null), [])
 
+  // Abandon what is in flight, without a message (Esc, a typed question, another project).
+  const cancel = useCallback((): void => {
+    captureGenRef.current++
+    transcribeGenRef.current++
+    if (startingRef.current) cancelStartRef.current = true
+    listeningRef.current = false
+    pcmChunksRef.current = []
+    cleanupCapture()
+    setStatus((s) => (s === 'error' ? s : 'idle'))
+  }, [cleanupCapture])
+
   const dispose = useCallback(() => {
+    captureGenRef.current++
+    if (sinkRef.current) transcribeGenRef.current++
+    if (startingRef.current) cancelStartRef.current = true
+    listeningRef.current = false
+    pcmChunksRef.current = []
     cleanupCapture()
     engineRef.current?.dispose()
     engineRef.current = null
@@ -341,6 +444,7 @@ export function useVoiceInput(
     toggle,
     start,
     stop,
+    cancel,
     confirmRun,
     cancelConfirm,
     clearError,

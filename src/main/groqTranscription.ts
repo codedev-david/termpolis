@@ -7,6 +7,8 @@
 // multipart framing, auth header, and error handling are fully unit-testable
 // without a network or an Electron runtime.
 
+import { GROQ_DEADLINE_MS, GROQ_TIMEOUT_MESSAGE } from '../shared/voiceDeadline'
+
 export const GROQ_TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
 export const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models'
 // whisper-large-v3-turbo: ~$0.04/hr, 216x real-time, far more accurate than the
@@ -90,7 +92,10 @@ export interface GroqTranscribeOptions {
   boundary?: string
 }
 
-/** Transcribe 16kHz mono PCM via Groq. Throws on missing key, non-2xx, or network error. */
+/**
+ * Transcribe 16kHz mono PCM via Groq. Throws on missing key, non-2xx, network error, or when the
+ * whole exchange (headers and body) takes longer than GROQ_DEADLINE_MS.
+ */
 export async function transcribeWithGroq(
   pcm16k: Float32Array,
   opts: GroqTranscribeOptions,
@@ -102,25 +107,47 @@ export async function transcribeWithGroq(
   const model = opts.model || DEFAULT_GROQ_MODEL
   const wav = encodeWav(pcm16k, 16000)
   const { body, contentType } = buildMultipartBody(wav, model, { boundary: opts.boundary })
-  const res = await f(opts.endpoint || GROQ_TRANSCRIBE_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${opts.apiKey}`, 'Content-Type': contentType },
-    // Derived from fetch's own signature rather than named as `BodyInit`: that name is a DOM-lib
-    // global, and main's lib is ES2022 on purpose — pulling in DOM here would let `document` and
-    // `window` typecheck inside the main process.
-    body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>['body'],
+  // One deadline for the request and the body read. The abort stops the socket; the race makes the
+  // deadline hold even when a body stream ignores the signal, so the caller never waits past it.
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error(GROQ_TIMEOUT_MESSAGE))
+    }, GROQ_DEADLINE_MS)
   })
-  if (!res.ok) {
-    let detail = ''
-    try {
-      detail = await res.text()
-    } catch {
-      /* body unreadable */
+  const exchange = async (): Promise<{ text: string }> => {
+    const res = await f(opts.endpoint || GROQ_TRANSCRIBE_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${opts.apiKey}`, 'Content-Type': contentType },
+      // Derived from fetch's own signature rather than named as `BodyInit`: that name is a DOM-lib
+      // global, and main's lib is ES2022 on purpose — pulling in DOM here would let `document` and
+      // `window` typecheck inside the main process.
+      body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>['body'],
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      let detail = ''
+      try {
+        detail = await res.text()
+      } catch {
+        /* body unreadable */
+      }
+      throw new Error(`Groq transcription failed: ${res.status}${detail ? ` ${detail}` : ''}`)
     }
-    throw new Error(`Groq transcription failed: ${res.status}${detail ? ` ${detail}` : ''}`)
+    const data = (await res.json()) as { text?: string }
+    return { text: String(data?.text ?? '').trim() }
   }
-  const data = (await res.json()) as { text?: string }
-  return { text: String(data?.text ?? '').trim() }
+  try {
+    return await Promise.race([exchange(), deadline])
+  } catch (e) {
+    // The fetch's own AbortError can win the race against the deadline's rejection: both mean late.
+    if (controller.signal.aborted) throw new Error(GROQ_TIMEOUT_MESSAGE)
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export interface GroqValidateResult {

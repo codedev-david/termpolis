@@ -31,7 +31,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
     selector({ voiceSettings: h.settings, focusActiveTerminal: h.focusActiveTerminal }),
 }))
 
-import { useVoiceInput } from '../../src/renderer/src/hooks/useVoiceInput'
+import { useVoiceInput, MAX_RECORDING_MS, MIC_DISCONNECTED_MESSAGE, RECORDING_CAP_MESSAGE } from '../../src/renderer/src/hooks/useVoiceInput'
 
 let createdProcessor: { onaudioprocess: ((e: unknown) => void) | null; connect: () => void; disconnect: () => void } | null = null
 // Lets a test hold AudioContext.resume() pending to model a stop() that lands
@@ -407,4 +407,341 @@ describe('useVoiceInput onTranscript sink', () => {
     expect(h.focusActiveTerminal).not.toHaveBeenCalled()
   })
 
+})
+
+// T8/T9: generations, cancel(), the mic's lifetime and the recording cap.
+describe('useVoiceInput cancel, generations and mic lifetime', () => {
+  type FakeTrack = { stop: ReturnType<typeof vi.fn>; onended: (() => void) | null; readyState: string }
+  const makeTrack = (readyState = 'live'): FakeTrack => ({ stop: vi.fn(), onended: null, readyState })
+  const streamOf = (...tracks: FakeTrack[]) => ({ getTracks: () => tracks })
+  const gum = () => navigator.mediaDevices.getUserMedia as unknown as ReturnType<typeof vi.fn>
+  function deferred<T>() {
+    let resolve!: (v: T) => void
+    let reject!: (e: unknown) => void
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+  let contextsMade = 0
+  beforeEach(() => {
+    contextsMade = 0
+    // mockClear keeps queued once-implementations; a test that failed early must not leak them.
+    h.transcribe.mockReset()
+    h.transcribe.mockResolvedValue({ text: 'hello world' })
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      constructor(o?: unknown) { super(o); contextsMade++ }
+    })
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function record(result: { current: ReturnType<typeof useVoiceInput> }) {
+    await act(async () => { await result.current.start() })
+    feedAudio()
+  }
+
+  it('exports cancel() on the hook', () => {
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    expect(typeof result.current.cancel).toBe('function')
+    act(() => { expect(result.current.cancel()).toBeUndefined() })
+    expect(result.current.status).toBe('idle')
+  })
+
+  it('cancel() during a transcription drops its transcript: no delivery and no state change', async () => {
+    const sink = vi.fn()
+    const pending = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => pending.promise)
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(result)
+    let stopCall!: Promise<void>
+    await act(async () => { stopCall = result.current.stop() })
+    expect(result.current.status).toBe('transcribing')
+    act(() => { result.current.cancel() })
+    expect(result.current.status).toBe('idle')
+    await act(async () => { pending.resolve({ text: 'late words' }); await stopCall })
+    expect(sink).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('idle')
+    expect(result.current.errorMsg).toBeNull()
+  })
+
+  it('cancel() during a transcription also drops its error', async () => {
+    const pending = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => pending.promise)
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await record(result)
+    let stopCall!: Promise<void>
+    await act(async () => { stopCall = result.current.stop() })
+    act(() => { result.current.cancel() })
+    await act(async () => { pending.reject(new Error('boom')); await stopCall })
+    expect(result.current.status).toBe('idle')
+    expect(result.current.errorMsg).toBeNull()
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('cancel() right after stop() keeps the audio from ever reaching Groq', async () => {
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(result)
+    await act(async () => {
+      const stopCall = result.current.stop()
+      result.current.cancel()
+      await stopCall
+    })
+    expect(h.transcribe).not.toHaveBeenCalled()
+    expect(sink).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('idle')
+  })
+
+  it('cancel() while listening drops the recording and releases the mic', async () => {
+    const track = makeTrack()
+    gum().mockResolvedValue(streamOf(track))
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(result)
+    expect(result.current.listening).toBe(true)
+    act(() => { result.current.cancel() })
+    expect(result.current.status).toBe('idle')
+    expect(track.stop).toHaveBeenCalled()
+    expect(track.onended).toBeNull()
+    // The released recording's stop is a no-op: nothing is transcribed.
+    await act(async () => { await result.current.stop() })
+    expect(h.transcribe).not.toHaveBeenCalled()
+    expect(sink).not.toHaveBeenCalled()
+  })
+
+  it('cancel() leaves an error on show', async () => {
+    h.transcribe.mockRejectedValueOnce(new Error('boom'))
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    await record(result)
+    await act(async () => { await result.current.stop() })
+    expect(result.current.status).toBe('error')
+    act(() => { result.current.cancel() })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/boom/)
+  })
+
+  it('with a sink, a new recording drops the earlier transcription, so results cannot arrive out of order', async () => {
+    const sink = vi.fn()
+    const first = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => first.promise)
+    h.transcribe.mockImplementationOnce(async () => ({ text: 'second question' }))
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(result)
+    let firstStop!: Promise<void>
+    await act(async () => { firstStop = result.current.stop() })
+    await record(result) // a second recording starts while the first is still with Groq
+    expect(result.current.status).toBe('listening')
+    await act(async () => { first.resolve({ text: 'first question' }); await firstStop })
+    expect(sink).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('listening') // the stale result set no state
+    await act(async () => { await result.current.stop() })
+    expect(sink).toHaveBeenCalledTimes(1)
+    expect(sink).toHaveBeenCalledWith('second question')
+  })
+
+  it('terminal dictation still delivers an earlier clip when a new recording starts (unchanged behaviour)', async () => {
+    const first = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => first.promise)
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await record(result)
+    let firstStop!: Promise<void>
+    await act(async () => { firstStop = result.current.stop() })
+    await record(result)
+    await act(async () => { first.resolve({ text: 'first words' }); await firstStop })
+    expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'first words')
+  })
+
+  it('dispose() during a transcription drops it with a sink, and still delivers it to a terminal', async () => {
+    const sink = vi.fn()
+    const a = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => a.promise)
+    const ask = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(ask.result)
+    let askStop!: Promise<void>
+    await act(async () => { askStop = ask.result.current.stop() })
+    ask.unmount()
+    await act(async () => { a.resolve({ text: 'after close' }); await askStop })
+    expect(sink).not.toHaveBeenCalled()
+
+    const b = deferred<{ text: string }>()
+    h.transcribe.mockImplementationOnce(() => b.promise)
+    const term = renderHook(() => useVoiceInput('term-1', true))
+    await record(term.result)
+    let termStop!: Promise<void>
+    await act(async () => { termStop = term.result.current.stop() })
+    term.unmount()
+    await act(async () => { b.resolve({ text: 'still typed' }); await termStop })
+    expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'still typed')
+  })
+
+  it('dispose() during a pending getUserMedia stops the late stream at once and opens no AudioContext', async () => {
+    const mic = deferred<unknown>()
+    gum().mockReturnValue(mic.promise)
+    const track = makeTrack()
+    const { result, unmount } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    unmount()
+    await act(async () => { mic.resolve(streamOf(track)); await startCall })
+    expect(track.stop).toHaveBeenCalled()
+    expect(track.onended).toBeNull()
+    expect(contextsMade).toBe(0)
+    expect(createdProcessor).toBeNull()
+  })
+
+  it('cancel() during a pending getUserMedia stops the late stream, and the next start works', async () => {
+    const mic = deferred<unknown>()
+    gum().mockReturnValueOnce(mic.promise)
+    const late = makeTrack()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    act(() => { result.current.cancel() })
+    expect(result.current.status).toBe('idle')
+    await act(async () => { mic.resolve(streamOf(late)); await startCall })
+    expect(late.stop).toHaveBeenCalled()
+    expect(contextsMade).toBe(0)
+    expect(result.current.status).toBe('idle')
+    gum().mockResolvedValueOnce(streamOf(makeTrack()))
+    await act(async () => { await result.current.start() })
+    expect(result.current.status).toBe('listening')
+  })
+
+  it('cancel() during AudioContext.resume() releases the mic and the start sets no state afterwards', async () => {
+    const track = makeTrack()
+    gum().mockResolvedValue(streamOf(track))
+    const resume = deferred<void>()
+    resumeGate = { promise: resume.promise, resolve: () => {} }
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    await act(async () => {}) // park inside resume()
+    act(() => { result.current.cancel() })
+    expect(track.stop).toHaveBeenCalled()
+    await act(async () => { resume.resolve(); await startCall })
+    expect(result.current.status).toBe('idle')
+    expect(createdProcessor).toBeNull()
+  })
+
+  it('an abandoned start never falls back to the default mic when the chosen one fails', async () => {
+    h.settings.inputDeviceId = 'mic-42'
+    // Once via dispose (generation moved), once via a stop() during start (the cancel flag).
+    for (const end of ['dispose', 'stop'] as const) {
+      const chosen = deferred<unknown>()
+      gum().mockReset()
+      gum().mockReturnValueOnce(chosen.promise)
+      const { result, unmount } = renderHook(() => useVoiceInput('term-1', true))
+      let startCall!: Promise<void>
+      act(() => { startCall = result.current.start() })
+      if (end === 'dispose') unmount()
+      else await act(async () => { await result.current.stop() })
+      await act(async () => { chosen.reject(new Error('OverconstrainedError')); await startCall })
+      expect(gum()).toHaveBeenCalledTimes(1)
+      if (end === 'stop') {
+        expect(result.current.status).toBe('idle')
+        // The start is over: a new one may begin.
+        gum().mockResolvedValueOnce(streamOf(makeTrack()))
+        await act(async () => { await result.current.start() })
+        expect(result.current.status).toBe('listening')
+        unmount()
+      }
+    }
+  })
+
+  it('a getUserMedia that fails with no cancel still says the mic was blocked', async () => {
+    gum().mockRejectedValueOnce(new Error('NotAllowedError'))
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    await act(async () => { await result.current.start() })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/blocked or no mic/)
+  })
+
+  it('a getUserMedia that fails after cancel() raises no error', async () => {
+    const mic = deferred<unknown>()
+    gum().mockReturnValueOnce(mic.promise)
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    let startCall!: Promise<void>
+    act(() => { startCall = result.current.start() })
+    act(() => { result.current.cancel() })
+    await act(async () => { mic.reject(new Error('NotAllowedError')); await startCall })
+    expect(result.current.status).toBe('idle')
+    expect(result.current.errorMsg).toBeNull()
+  })
+
+  for (const mode of ['terminal', 'sink'] as const) {
+    it('an unplugged mic (track ended) stops capture and says so (' + mode + ')', async () => {
+      const track = makeTrack()
+      gum().mockResolvedValue(streamOf(track))
+      const sink = vi.fn()
+      const { result } = renderHook(() => mode === 'sink'
+        ? useVoiceInput(null, false, { onTranscript: sink })
+        : useVoiceInput('term-1', true))
+      await record(result)
+      expect(track.onended).toBeTypeOf('function')
+      act(() => { track.onended?.() })
+      expect(result.current.status).toBe('error')
+      expect(result.current.errorMsg).toBe(MIC_DISCONNECTED_MESSAGE)
+      expect(track.stop).toHaveBeenCalled()
+      expect(h.focusActiveTerminal).toHaveBeenCalledTimes(mode === 'terminal' ? 1 : 0)
+      await act(async () => { await result.current.stop() })
+      expect(h.transcribe).not.toHaveBeenCalled()
+      expect(sink).not.toHaveBeenCalled()
+    })
+  }
+
+  it('a track that has already ended when listening begins is treated as unplugged', async () => {
+    gum().mockResolvedValue(streamOf(makeTrack('ended')))
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: vi.fn() }))
+    await act(async () => { await result.current.start() })
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toBe(MIC_DISCONNECTED_MESSAGE)
+  })
+
+  it('an ended event after the recording stopped, or from an earlier recording, changes nothing', async () => {
+    const first = makeTrack()
+    const second = makeTrack()
+    gum().mockResolvedValueOnce(streamOf(first)).mockResolvedValueOnce(streamOf(second))
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await record(result)
+    const firstEnded = first.onended!
+    await act(async () => { await result.current.stop() })
+    act(() => { firstEnded() }) // not listening: ignored
+    expect(result.current.status).toBe('idle')
+    await record(result)
+    act(() => { firstEnded() }) // listening, but to the second recording: ignored
+    expect(result.current.status).toBe('listening')
+    expect(result.current.errorMsg).toBeNull()
+  })
+
+  for (const mode of ['terminal', 'sink'] as const) {
+    it('stops a recording at 5 minutes, transcribes what was said and shows the note (' + mode + ')', async () => {
+      vi.useFakeTimers()
+      const sink = vi.fn()
+      const { result } = renderHook(() => mode === 'sink'
+        ? useVoiceInput(null, false, { onTranscript: sink })
+        : useVoiceInput('term-1', true))
+      await record(result)
+      await act(async () => { await vi.advanceTimersByTimeAsync(MAX_RECORDING_MS - 1) })
+      expect(result.current.listening).toBe(true)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+      expect(result.current.listening).toBe(false)
+      expect(h.transcribe).toHaveBeenCalledTimes(1)
+      if (mode === 'sink') expect(sink).toHaveBeenCalledWith('hello world')
+      else expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'hello world')
+      expect(result.current.status).toBe('idle')
+      expect(result.current.errorMsg).toBe(RECORDING_CAP_MESSAGE)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+  }
+
+  it('a recording stopped before the cap leaves no cap timer behind', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useVoiceInput('term-1', true))
+    await record(result)
+    expect(vi.getTimerCount()).toBe(2) // the level meter and the cap
+    await act(async () => { await result.current.stop() })
+    expect(vi.getTimerCount()).toBe(0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(MAX_RECORDING_MS) })
+    expect(h.transcribe).toHaveBeenCalledTimes(1)
+    expect(result.current.errorMsg).toBeNull()
+  })
 })

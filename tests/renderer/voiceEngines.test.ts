@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { GroqWhisperEngine, createVoiceEngine } from '../../src/renderer/src/lib/voice/voiceEngines'
+import { GroqWhisperEngine, createVoiceEngine, IPC_TRANSCRIBE_GRACE_MS } from '../../src/renderer/src/lib/voice/voiceEngines'
+import { GROQ_DEADLINE_MS, GROQ_TIMEOUT_MESSAGE } from '../../src/shared/voiceDeadline'
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../../src/renderer/src/lib/voice/voiceTypes'
 
 function settings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
@@ -75,6 +76,27 @@ describe('default IPC transport', () => {
       voiceTranscribe: vi.fn(async () => ({ success: false })),
     }
     await expect(createVoiceEngine(settings()).transcribe(new Float32Array([0]))).rejects.toThrow(/Groq transcription failed/)
+  })
+
+  it('gives up a grace after the Groq deadline when main never answers, and clears its timer either way', async () => {
+    vi.useFakeTimers()
+    try {
+      ;(window as unknown as { termpolis: unknown }).termpolis = { voiceTranscribe: vi.fn(() => new Promise(() => {})) }
+      const caught = createVoiceEngine(settings()).transcribe(new Float32Array([0])).catch((e: Error) => e)
+      await vi.advanceTimersByTimeAsync(GROQ_DEADLINE_MS + IPC_TRANSCRIBE_GRACE_MS - 1)
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(((await caught) as Error).message).toBe(GROQ_TIMEOUT_MESSAGE)
+      expect(vi.getTimerCount()).toBe(0)
+      // Main's own timeout reply arrives well inside the grace and comes through as the error.
+      ;(window as unknown as { termpolis: unknown }).termpolis = {
+        voiceTranscribe: vi.fn(async () => ({ success: false, error: GROQ_TIMEOUT_MESSAGE })),
+      }
+      await expect(createVoiceEngine(settings()).transcribe(new Float32Array([0]))).rejects.toThrow(GROQ_TIMEOUT_MESSAGE)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('throws when the IPC response is null/undefined', async () => {

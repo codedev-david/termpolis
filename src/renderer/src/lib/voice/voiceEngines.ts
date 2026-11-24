@@ -5,15 +5,28 @@
 // unit-testable without Electron/IPC.
 
 import type { VoiceEngine, VoiceSettings, TranscriptResult } from './voiceTypes'
+import { GROQ_DEADLINE_MS, GROQ_TIMEOUT_MESSAGE } from '../../../../shared/voiceDeadline'
 
 export type TranscribeTransport = (pcm16k: Float32Array, model?: string) => Promise<TranscriptResult>
+
+/** Main aborts Groq at GROQ_DEADLINE_MS and answers with the timeout error. This grace covers the WAV
+ *  encode and the IPC hops, so the renderer gives up on its own only when main never answers at all. */
+export const IPC_TRANSCRIBE_GRACE_MS = 5_000
 
 /** Default transport: round-trips through the `voice:transcribe` IPC handler. */
 function ipcTransport(): TranscribeTransport {
   return async (pcm16k, model) => {
-    const res = await window.termpolis.voiceTranscribe(pcm16k, model)
-    if (!res?.success) throw new Error(res?.error || 'Groq transcription failed')
-    return { text: res.data?.text ?? '' }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const backstop = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(GROQ_TIMEOUT_MESSAGE)), GROQ_DEADLINE_MS + IPC_TRANSCRIBE_GRACE_MS)
+    })
+    try {
+      const res = await Promise.race([window.termpolis.voiceTranscribe(pcm16k, model), backstop])
+      if (!res?.success) throw new Error(res?.error || 'Groq transcription failed')
+      return { text: res.data?.text ?? '' }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 }
 

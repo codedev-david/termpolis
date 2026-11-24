@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { GROQ_DEADLINE_MS, GROQ_TIMEOUT_MESSAGE } from '../../src/shared/voiceDeadline'
 import {
   encodeWav,
   buildMultipartBody,
@@ -130,6 +131,76 @@ describe('transcribeWithGroq', () => {
     const fetchImpl = fakeFetch(() => ({ ok: true, status: 200, json: async () => ({}) }))
     const res = await transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl })
     expect(res.text).toBe('')
+  })
+})
+
+describe('transcribeWithGroq deadline', () => {
+  const pcm = new Float32Array([0.1, -0.1])
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('aborts at 30 s while the reply body is stalled, and says Groq took too long', async () => {
+    vi.useFakeTimers()
+    let signal: AbortSignal | undefined
+    // Headers arrive at once; the body never does, and ignores the signal (the worst case).
+    const fetchImpl = fakeFetch((_u, init) => {
+      signal = init.signal
+      return { ok: true, status: 200, json: () => new Promise(() => {}) }
+    })
+    const call = transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl })
+    const settled = vi.fn()
+    call.then(settled, settled)
+    await vi.advanceTimersByTimeAsync(GROQ_DEADLINE_MS - 1)
+    expect(settled).not.toHaveBeenCalled()
+    expect(signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(call).rejects.toThrow(GROQ_TIMEOUT_MESSAGE)
+    expect(signal?.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('aborts a request whose headers never arrive, mapping the AbortError to the same message', async () => {
+    vi.useFakeTimers()
+    // A fetch that honours the signal: it rejects with its own AbortError when aborted.
+    const fetchImpl = vi.fn((_u: string, init: any) => new Promise((_res, rej) => {
+      init.signal.addEventListener('abort', () => rej(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })))
+    })) as unknown as typeof fetch
+    const call = transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl })
+    const caught = call.catch((e: Error) => e)
+    await vi.advanceTimersByTimeAsync(GROQ_DEADLINE_MS)
+    const e = await caught
+    expect((e as Error).message).toBe(GROQ_TIMEOUT_MESSAGE)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('also covers a stalled error body on a non-2xx reply', async () => {
+    vi.useFakeTimers()
+    const fetchImpl = fakeFetch(() => ({ ok: false, status: 500, text: () => new Promise(() => {}) }))
+    const caught = transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl }).catch((e: Error) => e)
+    await vi.advanceTimersByTimeAsync(GROQ_DEADLINE_MS)
+    expect(((await caught) as Error).message).toBe(GROQ_TIMEOUT_MESSAGE)
+  })
+
+  it('clears the timer on success and on failure', async () => {
+    vi.useFakeTimers()
+    const good = fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ text: 'hi' }) }))
+    await expect(transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl: good })).resolves.toEqual({ text: 'hi' })
+    expect(vi.getTimerCount()).toBe(0)
+    const bad = fakeFetch(() => ({ ok: false, status: 401, text: async () => 'no' }))
+    await expect(transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl: bad })).rejects.toThrow(/401/)
+    expect(vi.getTimerCount()).toBe(0)
+    const down = vi.fn(() => Promise.reject(new Error('network down'))) as unknown as typeof fetch
+    await expect(transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl: down })).rejects.toThrow(/network down/)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('passes an AbortSignal to fetch', async () => {
+    const fetchImpl = fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ text: 'x' }) }))
+    await transcribeWithGroq(pcm, { apiKey: 'k', fetchImpl })
+    const [, init] = (fetchImpl as any).mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    expect(init.signal.aborted).toBe(false)
   })
 })
 
