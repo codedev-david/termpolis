@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
-import { firstMap } from '../../src/main/world/compile'
+import { firstMap, STATUS_BEAT_MS } from '../../src/main/world/compile'
 import { NO_GIT_MESSAGE } from '../../src/main/world/gitSource'
 import type { StageCache } from '../../src/main/world/stageCache'
 import { createWorldHost, PRESCAN_TTL_MS, type WorldHostDeps, type WorldHostRequest, type WorldHostResponse } from '../../src/main/world/worldHost'
@@ -284,6 +284,50 @@ describe('the first map of a big project (WP4a)', () => {
     expect(steps.slice(0, 3)).toEqual([5, 5.05, 5.1])
     expect(steps[steps.length - 1]).toBe(40)
   }, 60_000)
+
+  it('a read stuck in the snapshot: the bar beats a hundredth every STATUS_BEAT_MS below the next twentieth, never before the first read, and stops with the snapshot (fix round 4, M1)', async () => {
+    vi.useFakeTimers()
+    try {
+      const listed = gate()
+      const stuck = gate()
+      const h = setup({
+        listFiles: async () => {
+          await listed.wait
+          return FILES
+        },
+        provisionalMinFiles: 1000,
+        readSource: async (p: string) => {
+          if (relOf(p) === 'src/lib/more.ts') await stuck.wait
+          return Object.hasOwn(TEXTS, relOf(p)) ? TEXTS[relOf(p)] : null
+        }
+      })
+      await h.init()
+      const boundaries = (): number[] => h.progress().filter((p) => p.stage === 'boundaries').map((p) => p.pct)
+      const snapshot = h.call('snapshotFromFiles', '/r', early())
+      // Still listing: no read has posted, so no beat does.
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 2)
+      expect(boundaries()).toEqual([])
+      listed.open()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(boundaries()).toEqual([13.75, 22.5, 31.25])
+      // The first beat finds the reads moved; then a hundredth a beat, holding below 31.3.
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 7)
+      expect(boundaries().slice(3)).toEqual([31.26, 31.27, 31.28, 31.29])
+      stuck.open()
+      await vi.advanceTimersByTimeAsync(1)
+      await snapshot
+      expect(boundaries().slice(-1)).toEqual([40])
+      const n = boundaries().length
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
+      expect(boundaries()).toHaveLength(n)
+      // A snapshot outside a person's run posts no progress, and has no beat to stop.
+      await h.call('snapshotFromFiles', '/r2')
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
+      expect(boundaries()).toHaveLength(n)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it('a folder whose snapshot no compile took keeps its scans for a while: then they go, and only the last few folders are kept', async () => {
     const h = setup()

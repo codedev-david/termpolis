@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { compileWorldStaged, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
+import { compileWorldStaged, readBeat, scanFile, SEARCH_TIME_MS, SLOW_STAGE_MS, STATUS_BEAT_MS, type CompileDeps, type CompileStage } from '../../src/main/world/compile'
 import { RUNS_GRACE_MS, RUNS_WAIT_MS, testClaims, type TestRun } from '../../src/main/world/testStatus'
 import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder, readTier } from '../../src/main/world/readCap'
@@ -275,6 +275,38 @@ describe('compileWorldStaged reads and progress (WP4a)', () => {
     const n = d.pcts.length
     await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 5)
     expect(d.pcts).toHaveLength(n)
+  })
+
+  it('a read stuck in the read stage: a beat every STATUS_BEAT_MS in which no read moved the bar, a hundredth each, never the next twentieth; the reads go on from there (fix round 4, M1)', async () => {
+    expect([5, 6.85, 6.86, 6.88, 6.89, 31.25].map(readBeat)).toEqual([5.01, 6.86, 6.87, 6.89, 6.89, 31.26])
+    vi.useFakeTimers()
+    let release!: () => void
+    const stuck = new Promise<void>((r) => (release = r))
+    const base = deps()
+    const d = deps({
+      readSource: async (p) => {
+        if (p.endsWith('src/lib/more.ts')) await stuck
+        return (base.readSource as (p: string) => Promise<string | null>)(p)
+      }
+    })
+    const running = compile(d)
+    await vi.advanceTimersByTimeAsync(1)
+    const boundaries = (): number[] => d.pcts.filter(([s]) => s === 'boundaries').map(([, p]) => p)
+    // Three of four read: the first beat finds the reads moved the bar since the start, and posts nothing.
+    expect(boundaries()).toEqual([5, 13.75, 22.5, 31.25])
+    await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS)
+    expect(boundaries()).toHaveLength(4)
+    // Then a hundredth a beat, up to and not onto the next twentieth (31.3), where it holds.
+    await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 6)
+    expect(boundaries().slice(4)).toEqual([31.26, 31.27, 31.28, 31.29])
+    release()
+    await vi.advanceTimersByTimeAsync(10)
+    await running
+    expect(boundaries().slice(-1)).toEqual([40])
+    // The beat ended with the reads.
+    const n = d.pcts.filter(([s]) => s === 'boundaries').length
+    await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS * 3)
+    expect(boundaries()).toHaveLength(n)
   })
 
   it('the test-results search is bounded: at SEARCH_TIME_MS its walks are told to stop, main\'s asks keep their own clock, and a building with no result reads as not yet checked (fix round 3, N2)', async () => {

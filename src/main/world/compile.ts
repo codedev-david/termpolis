@@ -132,6 +132,31 @@ const round2 = (v: number): number => Math.round(v * 100) / 100
  * whole percent for most of a minute (fix round 3). Used by the snapshot's reads and the compile's.
  */
 export const readPct = (done: number, total: number): number => 5 + Math.floor((700 * done) / total) / 20
+/** A hundredth more than `shown`, but never the next twentieth, which only a read reaches: what a beat of the reads
+ *  shows when no read moved the bar since the last beat (fix round 4, M1). Four beats, then it holds below that. */
+export const readBeat = (shown: number): number => Math.min(round2(shown + 0.01), round2((Math.floor(shown * 20 + 1e-6) + 1) / 20 - 0.01))
+/**
+ * Progress of a read stage: `read` posts readPct as the reads go, and every STATUS_BEAT_MS in which no read moved it
+ * (one stuck on a slow disk, say), a beat moves it by readBeat, so the bar never sits on one value while the reads
+ * run. Nothing beats below 5, where no read has posted yet. `stop` ends the beats.
+ */
+export function readProgress(post: (pct: number) => void, shown: number): { read: (done: number, total: number) => void; stop: () => void } {
+  let moved = false
+  const timer = setInterval(() => {
+    const beat = readBeat(shown)
+    if (!moved && shown >= 5 && beat > shown) post((shown = beat))
+    moved = false
+  }, STATUS_BEAT_MS)
+  return {
+    read: (done, total) => {
+      const pct = readPct(done, total)
+      if (pct <= shown) return
+      moved = true
+      post((shown = pct))
+    },
+    stop: () => clearInterval(timer)
+  }
+}
 const baseName = (p: string): string => p.slice(p.lastIndexOf('/') + 1)
 
 function hash(s: string, seed = 2166136261): number {
@@ -771,19 +796,22 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
   const readSource = deps.readSource ?? deps.readFile
   const got: (StageFile | null)[] = new Array<StageFile | null>(toRead.length).fill(null)
   let done = 0
-  let shown = 5
-  await eachLimit(toRead, READ_CONCURRENCY, async (f, i) => {
-    const before = prior && Object.hasOwn(prior.files, f) ? prior.files[f] : undefined
-    // The same text as last time: the old scan stands.
-    const pre = deps.scanned?.(f)
-    if (pre !== undefined) got[i] = before && pre && before.hash === pre.hash ? before : pre
-    else {
-      const text = await safeRead(readSource, `${root}/${f}`)
-      got[i] = before && text !== null && before.hash === contentHash(text) ? before : scanFile(f, text)
-    }
-    const pct = readPct(++done, toRead.length)
-    if (pct > shown) progress('boundaries', (shown = pct))
-  })
+  const readsShown = readProgress((pct) => progress('boundaries', pct), 5)
+  try {
+    await eachLimit(toRead, READ_CONCURRENCY, async (f, i) => {
+      const before = prior && Object.hasOwn(prior.files, f) ? prior.files[f] : undefined
+      // The same text as last time: the old scan stands.
+      const pre = deps.scanned?.(f)
+      if (pre !== undefined) got[i] = before && pre && before.hash === pre.hash ? before : pre
+      else {
+        const text = await safeRead(readSource, `${root}/${f}`)
+        got[i] = before && text !== null && before.hash === contentHash(text) ? before : scanFile(f, text)
+      }
+      readsShown.read(++done, toRead.length)
+    })
+  } finally {
+    readsShown.stop()
+  }
   toRead.forEach((f, i) => {
     const entry = got[i]
     if (entry) entries.set(f, entry)

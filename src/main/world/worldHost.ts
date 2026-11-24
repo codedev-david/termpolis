@@ -21,7 +21,7 @@ import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
-import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, readPct, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
+import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, readProgress, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
 import type { StageCache, StageFile } from './stageCache'
 import { RUNS_WAIT_MS, type TestRun } from './testStatus'
@@ -1081,7 +1081,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
       const scans = new Map<string, StageFile | null>()
-      let shown = 0
+      // The reads' progress, with a beat while a read is stuck (fix round 4, M1): for a person's run only.
+      const reads = early !== null ? readProgress((pct) => postProgress(early, 'boundaries', pct), 0) : null
       sweepRuns()
       if (early !== null) {
         // A run already going for this project keeps its percentage: a second snapshot never takes it back (M1).
@@ -1100,10 +1101,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
                   if (paths.files.length < provisionalMin || drawing.has(early) || provisional.has(early) || running.has(early)) return
                   drawFirst(st, early, paths, head)
                 },
-                onRead: (done: number, total: number) => {
-                  const pct = readPct(done, total)
-                  if (pct > shown) postProgress(early, 'boundaries', (shown = pct))
-                }
+                onRead: (reads as NonNullable<typeof reads>).read
               }
             : {})
         })
@@ -1121,6 +1119,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           dropFirst(early, e)
         }
         throw e
+      } finally {
+        reads?.stop()
       }
     },
     // Cancels the running clone or update and every call waiting behind it (a waiting one never starts git).
