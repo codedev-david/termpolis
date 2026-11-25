@@ -6,7 +6,7 @@
 // world changes.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorldEntry } from '../../../../shared/world/types'
-import type { CloneNeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess'
+import { UPDATE_STOPPED_MESSAGE, type CloneNeedsLogin, type RepoAccess } from '../../../../shared/world/repoAccess'
 import type { OpenTarget } from './worldTargets'
 
 /** `project`: the folder came from a request, so it opens as its project (the git root) like a followed
@@ -18,7 +18,9 @@ export interface WorldRequest { folder: string; seq: number }
 
 /** A remembered repository that needs a sign-in before it can update; the saved copy keeps showing. */
 /** notFound (R4): the host no longer finds the repository, so the notice says main's words and the sign-in choices are links. */
-export type RepoUpdate = { key: string; host: string; helper: boolean; message: string; notFound: boolean } | null
+/** reason (WP4b F-R7): 'failed', the background update failed for another reason (main's words in `message`, with Try
+ *  again); 'token', the repository was opened with a token, so it updates only when the person gives one. */
+export type RepoUpdate = { key: string; host: string; helper: boolean; message: string; notFound: boolean; reason?: 'failed' | 'token' } | null
 
 export const REPO_UPDATE_UNREACHABLE = "Lumopolis couldn't update that repository. Try again."
 
@@ -37,8 +39,10 @@ export interface UseOpenWorld {
   ticket(): () => boolean
   /** Set when the background update of the opened repository needs a sign-in. */
   repoUpdate: RepoUpdate
-  /** An interactive retry (Sign in, Use a token) is running. */
+  /** An interactive retry (Sign in, Use a token, Try again) is running. */
   repoBusy: boolean
+  /** The person asked that retry to stop, and its answer has not come yet. */
+  repoStopping: boolean
   /** What the last interactive retry came back with, for the token dialog. */
   repoError: string | null
   /** Grows each time an update brought new files down, so the view recompiles. */
@@ -47,12 +51,24 @@ export interface UseOpenWorld {
   signIn(): void
   /** Retry the update with a token; it goes straight into the call and is kept nowhere. */
   useToken(value: string): void
+  /** Run a failed update again, the way the background one ran. */
+  tryAgain(): void
+  /** Stop the retry that is running (WP4b F-R6): its answer then says it stopped, unless it had already updated. */
+  stopRepoUpdate(): void
   dismissRepoUpdate(): void
   clearRepoError(): void
 }
 
 const needsOf = ({ needsLogin: n }: CloneNeedsLogin): { host: string; helper: boolean; message: string; notFound: boolean } =>
   ({ host: n.host, helper: n.helper, message: n.message, notFound: n.notFound === true })
+
+/** The host of a git address (https://, ssh:// or git@host:path), for the token dialog's words; '' when there is none. */
+const repoHost = (url: string): string => {
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?([^:/]+)/i.exec(url)
+  if (scheme) return scheme[1]
+  const scp = /^[^@/:]+@([^:/]+):/.exec(url)
+  return scp ? scp[1] : ''
+}
 
 const fromRoot = (root: string): OpenWorld => (root ? { kind: 'root', root, follow: true } : { kind: 'home' })
 const fromRequest = (r: WorldRequest): OpenWorld => ({ kind: 'root', root: r.folder, follow: false, project: true })
@@ -103,14 +119,25 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
 
   const [repoUpdate, setRepoUpdate] = useState<RepoUpdate>(null)
   const [repoBusy, setRepoBusy] = useState(false)
+  const [repoStopping, setRepoStopping] = useState(false)
   const [repoError, setRepoError] = useState<string | null>(null)
   const [repoChanged, setRepoChanged] = useState(0)
   /** The registered world the person is on; an answer for another one is dropped. */
   const openKey = useRef<string | null>(null)
-  const retrying = useRef(false)
+  /** The retry running now (its repository's key and whether the person stopped it), if any. */
+  const retrying = useRef<{ key: string; stopped: boolean } | null>(null)
   /** The id of the world the pane is on that `openKey` belongs to; any other world drops the repo state. */
   const ownedId = useRef(worldId(world))
   const clearRepo = (key: string | null, id: string): void => {
+    // A try for the world being left stops: its answer would be dropped, and a sign-in window would be left for a
+    // world nobody is on (WP4b F-R6).
+    const run = retrying.current
+    if (run !== null) {
+      retrying.current = null
+      setRepoBusy(false)
+      setRepoStopping(false)
+      if (!run.stopped) window.termpolis.worldUpdateCancel(run.key).catch(() => undefined)
+    }
     openKey.current = key
     ownedId.current = id
     setRepoUpdate(null)
@@ -155,50 +182,80 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
         refresh()
         return res.success ? res.data : shown()
       }, shown).then((e) => {
-        // A repository opened with this computer's login updates once, quietly; one opened with a token only when asked.
-        if (e && e.source.kind === 'git' && e.source.login !== 'token') updateInBackground(e.key)
+        if (!e || e.source.kind !== 'git') return
+        const host = repoHost(e.source.url)
+        // A repository opened with this computer's login updates once, quietly; one opened with a token only when the
+        // person gives one, so the notice offers that (WP4b F-R7).
+        if (e.source.login !== 'token') updateInBackground(e.key, host)
+        else if (live.current && openKey.current === e.key) setRepoUpdate({ key: e.key, host, helper: false, message: '', notFound: false, reason: 'token' })
       })
     }
   }, [refresh])
 
-  const updateInBackground = (key: string): void => {
+  // A failed update is said, with main's words and Try again (WP4b F-R7); one the person stopped elsewhere is not.
+  const updateInBackground = (key: string, host: string): void => {
+    const here = (): boolean => live.current && openKey.current === key
+    const failed = (message: string): void => setRepoUpdate({ key, host, helper: false, message, notFound: false, reason: 'failed' })
     window.termpolis.worldUpdateSource(key).then((res) => {
-      if (!live.current || openKey.current !== key || !res.success) return
+      if (!here()) return
+      if (!res.success) { if (res.error !== UPDATE_STOPPED_MESSAGE) failed(res.error); return }
       if ('needsLogin' in res.data) setRepoUpdate({ key, ...needsOf(res.data) })
       else if ('changed' in res.data && res.data.changed) setRepoChanged((n) => n + 1)
-    }, () => undefined)
+    }, () => { if (here()) failed(REPO_UPDATE_UNREACHABLE) })
   }
 
-  /** An interactive retry for the repository the notice is about. */
-  const retry = (access: RepoAccess): void => {
+  /** An interactive retry for the repository the notice is about; no access runs it the background way (Try again). */
+  const retry = (access?: RepoAccess): void => {
     if (!repoUpdate || retrying.current) return
     const shown = repoUpdate
     const key = shown.key
-    retrying.current = true
+    const run = { key, stopped: false }
+    retrying.current = run
     setRepoBusy(true)
     setRepoError(null)
+    // Only this try's own answer counts: one left behind by a world change (clearRepo) touches nothing.
     const finish = (): boolean => {
-      retrying.current = false
+      if (retrying.current !== run) return false
+      retrying.current = null
       if (!live.current) return false
       setRepoBusy(false)
-      return openKey.current === key
+      setRepoStopping(false)
+      return true
     }
-    window.termpolis.worldUpdateSource(key, access).then((res) => {
+    // A stopped try says it stopped, whatever main answered; one that had already updated is kept.
+    const failed = (message: string): void => setRepoError(run.stopped ? UPDATE_STOPPED_MESSAGE : message)
+    const call = access ? window.termpolis.worldUpdateSource(key, access) : window.termpolis.worldUpdateSource(key)
+    call.then((res) => {
       if (!finish()) return
-      if (!res.success) setRepoError(res.error)
-      // The notice keeps saying why it is there; what this try met goes under it (R4).
+      if (!res.success) failed(res.error)
       else if ('needsLogin' in res.data) {
-        setRepoUpdate({ ...needsOf(res.data), key, message: shown.message, notFound: shown.notFound })
-        setRepoError(res.data.needsLogin.message)
+        const needs = needsOf(res.data)
+        if (shown.reason === 'failed') {
+          // Try again met a sign-in: the notice becomes the sign-in notice.
+          setRepoUpdate({ key, ...needs })
+          if (run.stopped) failed('')
+        } else {
+          // The notice keeps saying why it is there; what this try met goes under it (R4).
+          setRepoUpdate({ ...needs, key, message: shown.message, notFound: shown.notFound, ...(shown.reason ? { reason: shown.reason } : {}) })
+          failed(res.data.needsLogin.message)
+        }
       }
       else {
         setRepoUpdate(null)
         if ('changed' in res.data && res.data.changed) setRepoChanged((n) => n + 1)
       }
-    }, () => { if (finish()) setRepoError(REPO_UPDATE_UNREACHABLE) })
+    }, () => { if (finish()) failed(REPO_UPDATE_UNREACHABLE) })
   }
   const signIn = (): void => retry({ mode: 'machine' })
   const useToken = (value: string): void => retry({ mode: 'token', value })
+  const tryAgain = (): void => { if (repoUpdate?.reason === 'failed') retry() }
+  const stopRepoUpdate = (): void => {
+    const run = retrying.current
+    if (run === null || run.stopped) return
+    run.stopped = true
+    setRepoStopping(true)
+    window.termpolis.worldUpdateCancel(run.key).catch(() => undefined)
+  }
   const dismissRepoUpdate = (): void => setRepoUpdate(null)
   const clearRepoError = (): void => setRepoError(null)
 
@@ -214,5 +271,5 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   useEffect(() => { if (id !== ownedId.current) clearRepo(null, id) }, [id])
   useEffect(() => { refresh() }, [id, refresh])
 
-  return { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError }
+  return { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError }
 }

@@ -148,8 +148,13 @@ export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes 
 export const GRAPHICS_FLAT = 'The graphics stopped again, so the map shows in 2D.'
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
-  const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
+  const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
+  // The token dialog closed while its token is tried stops that try, as on the home (WP4b F-R6).
+  const closeToken = (): void => {
+    if (repoBusy) stopRepoUpdate()
+    setTokenOpen(false)
+  }
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
   const [webglFound, setWebglFound] = useState(() => hasWebGL())
   /** The graphics were lost twice while open: the 2D map shows from then on. */
@@ -869,7 +874,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   escRef.current = () => {
     // A dialog open on the home takes the Esc and does its Cancel: never the pane's close or a camera reset.
     if (world.kind === 'home' && homeEscRef.current?.()) { armedRef.current = false; return }
-    if (tokenOpen) { setTokenOpen(false); return }
+    if (tokenOpen) { closeToken(); return }
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
     if (building) { setBuilding(false); return }
@@ -1112,6 +1117,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 onSignIn={signIn}
                 onUseToken={() => { clearRepoError(); setTokenOpen(true) }}
                 onDismiss={dismissRepoUpdate}
+                {...(repoUpdate.reason ? { reason: repoUpdate.reason } : {})}
+                stopping={repoStopping}
+                onStop={stopRepoUpdate}
+                onTryAgain={tryAgain}
               />
             )}
             {recompileShown && (
@@ -1145,7 +1154,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           </div>
         )}
         {repoUpdate && tokenOpen && (
-          <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={() => setTokenOpen(false)} />
+          <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={closeToken} />
         )}
         {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onNeed={setCardNeed} solid={solid} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (

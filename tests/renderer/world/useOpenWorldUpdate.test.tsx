@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import type { WorldEntry } from '../../../src/shared/world/types'
 import { useOpenWorld, REPO_UPDATE_UNREACHABLE } from '../../../src/renderer/src/components/World/useOpenWorld'
+import { UPDATE_STOPPED_MESSAGE } from '../../../src/shared/world/repoAccess'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -17,6 +18,7 @@ function setup(touched: WorldEntry | null, update: unknown = ok({ changed: false
     worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([])),
     worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(touched)),
     worldUpdateSource: vi.fn(async () => update),
+    worldUpdateCancel: vi.fn(async () => ok(true)),
   }
   ;(window as any).termpolis = api
 }
@@ -47,12 +49,47 @@ describe('useOpenWorld repository updates', () => {
     expect(api.worldUpdateSource).toHaveBeenCalledTimes(1)
   })
 
-  it('opening a remembered token repo runs no update and shows nothing', async () => {
+  it('opening a remembered token repo runs no update, and offers Update with a token (WP4b F-R7)', async () => {
     setup(gitEntry('token'))
     const r = renderHook(() => useOpenWorld(''))
     await openIt(r)
     expect(api.worldUpdateSource).not.toHaveBeenCalled()
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: false, message: '', notFound: false, reason: 'token' })
+    // The token goes straight into one update; a rejected one stays a token notice, with the words for the dialog.
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ needsLogin: { host: 'github.com', helper: true, message: 'That token did not open it.' } }))
+    act(() => r.result.current.useToken('ghp_x'))
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kg', { mode: 'token', value: 'ghp_x' })
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: '', notFound: false, reason: 'token' })
+    expect(r.result.current.repoError).toBe('That token did not open it.')
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: true }))
+    act(() => r.result.current.useToken('ghp_y'))
+    await settle()
     expect(r.result.current.repoUpdate).toBeNull()
+    expect(r.result.current.repoChanged).toBe(1)
+  })
+
+  it('a token notice is not shown over a world the person moved to before the touch came back', async () => {
+    setup(gitEntry('token'))
+    let touched!: (v: unknown) => void
+    api.worldTouchSource.mockImplementationOnce(() => new Promise((res) => { touched = res }))
+    const r = renderHook(() => useOpenWorld(''))
+    act(() => r.result.current.open({ kind: 'root', root: 'C:/data/r', key: 'kg' }))
+    act(() => r.result.current.goHome())
+    await act(async () => { touched(ok(gitEntry('token'))) })
+    await settle()
+    expect(r.result.current.repoUpdate).toBeNull()
+  })
+
+  it('a token notice for an ssh or git@ address names its host; one main cannot parse names none', async () => {
+    const at = (url: string): WorldEntry => ({ key: 'kg', source: { kind: 'git', url, root: 'C:/r', login: 'token' }, title: 'r', lastOpened: 1 })
+    for (const [url, host] of [['git@gitlab.example.com:o/r.git', 'gitlab.example.com'], ['ssh://git@code.dev:2222/o/r.git', 'code.dev'], ['https://user@bit.dev/o/r', 'bit.dev'], ['nonsense', '']]) {
+      setup(at(url))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      expect(r.result.current.repoUpdate?.host).toBe(host)
+      r.unmount()
+    }
   })
 
   it('a folder or an unknown key runs no update', async () => {
@@ -83,16 +120,62 @@ describe('useOpenWorld repository updates', () => {
     expect(r.result.current.repoUpdate).toBeNull()
   })
 
-  it('a failed background update keeps the saved world and shows no error', async () => {
-    setup(gitEntry('machine'), fail('boom'))
+  it('a failed background update keeps the saved world and says so, with main\'s words (WP4b F-R7)', async () => {
+    setup(gitEntry('machine'), fail('Lumopolis could not reach github.com.'))
     const r = renderHook(() => useOpenWorld(''))
     await openIt(r)
-    expect(r.result.current.repoUpdate).toBeNull()
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: false, message: 'Lumopolis could not reach github.com.', notFound: false, reason: 'failed' })
     expect(r.result.current.repoError).toBeNull()
     api.worldUpdateSource.mockRejectedValueOnce(new Error('down'))
     await openIt(r)
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: false, message: REPO_UPDATE_UNREACHABLE, notFound: false, reason: 'failed' })
+    // An update stopped by the person elsewhere (a Cancel of the same clone) is no failure to report.
+    api.worldUpdateSource.mockResolvedValueOnce(fail(UPDATE_STOPPED_MESSAGE))
+    await openIt(r)
     expect(r.result.current.repoUpdate).toBeNull()
+  })
+
+  it('a failure that lands after the person left, or after the hook unmounted, shows nothing', async () => {
+    setup(gitEntry('machine'))
+    const r = renderHook(() => useOpenWorld(''))
+    let bad!: (e: unknown) => void
+    api.worldUpdateSource.mockImplementationOnce(() => new Promise((_res, rej) => { bad = rej }))
+    await openIt(r)
+    act(() => r.result.current.goHome())
+    await act(async () => { bad(new Error('down')) })
+    expect(r.result.current.repoUpdate).toBeNull()
+    let gone!: (e: unknown) => void
+    api.worldUpdateSource.mockImplementationOnce(() => new Promise((_res, rej) => { gone = rej }))
+    await openIt(r)
+    r.unmount()
+    await act(async () => { gone(new Error('down')) })
+    expect(api.worldUpdateSource).toHaveBeenCalledTimes(2)
+  })
+
+  it('Try again on a failed update runs it the background way; one that then needs a sign-in becomes the sign-in notice', async () => {
+    setup(gitEntry('machine'), fail('Lumopolis could not reach github.com.'))
+    const r = renderHook(() => useOpenWorld(''))
+    await openIt(r)
+    api.worldUpdateSource.mockResolvedValueOnce(fail('Still not reachable.'))
+    act(() => r.result.current.tryAgain())
+    expect(r.result.current.repoBusy).toBe(true)
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kg')
+    expect(api.worldUpdateSource.mock.calls[1]).toHaveLength(1)
+    expect(r.result.current.repoError).toBe('Still not reachable.')
+    expect(r.result.current.repoUpdate?.reason).toBe('failed')
+    api.worldUpdateSource.mockResolvedValueOnce(ok(NEEDS))
+    act(() => r.result.current.tryAgain())
+    await settle()
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.', notFound: false })
     expect(r.result.current.repoError).toBeNull()
+    // Try again belongs to a failed update only.
+    act(() => r.result.current.tryAgain())
+    expect(api.worldUpdateSource).toHaveBeenCalledTimes(3)
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: false }))
+    act(() => r.result.current.signIn())
+    await settle()
+    expect(r.result.current.repoUpdate).toBeNull()
   })
 
   it('a background needsLogin sets repoUpdate, and Sign in retries interactively and clears it on success', async () => {
@@ -275,6 +358,118 @@ describe('useOpenWorld repository updates', () => {
       r.rerender({ root: 'C:/b' })
       await settle()
       expect(r.result.current.repoUpdate).toBeNull()
+    })
+  })
+
+  describe('Stop while a sign-in or token try runs (WP4b F-R6)', () => {
+    const hanging = (): { answer: (v: unknown) => void; fail: (e: unknown) => void } => {
+      const h = {} as { answer: (v: unknown) => void; fail: (e: unknown) => void }
+      api.worldUpdateSource.mockImplementationOnce(() => new Promise((res, rej) => { h.answer = res; h.fail = rej }))
+      return h
+    }
+
+    it('asks main to stop that update, once, and the try then says it stopped, whatever main answered', async () => {
+      setup(gitEntry('machine'), ok(NEEDS))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      const h = hanging()
+      act(() => r.result.current.signIn())
+      act(() => r.result.current.stopRepoUpdate())
+      act(() => r.result.current.stopRepoUpdate())
+      expect(api.worldUpdateCancel).toHaveBeenCalledTimes(1)
+      expect(api.worldUpdateCancel).toHaveBeenCalledWith('kg')
+      expect(r.result.current.repoStopping).toBe(true)
+      expect(r.result.current.repoBusy).toBe(true)
+      await act(async () => { h.answer(ok(NEEDS)) })
+      expect(r.result.current.repoBusy).toBe(false)
+      expect(r.result.current.repoStopping).toBe(false)
+      expect(r.result.current.repoError).toBe(UPDATE_STOPPED_MESSAGE)
+      expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.', notFound: false })
+      // A stopped try whose call threw says the same; a stop that cannot reach main is quiet.
+      api.worldUpdateCancel.mockRejectedValueOnce(new Error('ipc gone'))
+      const h2 = hanging()
+      act(() => r.result.current.useToken('ghp_x'))
+      act(() => r.result.current.stopRepoUpdate())
+      await act(async () => { h2.fail(new Error('down')) })
+      expect(r.result.current.repoError).toBe(UPDATE_STOPPED_MESSAGE)
+    })
+
+    it('an update that finished before the stop reached it is kept: the notice goes and the world recompiles', async () => {
+      setup(gitEntry('machine'), ok(NEEDS))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      const h = hanging()
+      act(() => r.result.current.signIn())
+      act(() => r.result.current.stopRepoUpdate())
+      await act(async () => { h.answer(ok({ changed: true })) })
+      expect(r.result.current.repoUpdate).toBeNull()
+      expect(r.result.current.repoChanged).toBe(1)
+      expect(r.result.current.repoError).toBeNull()
+    })
+
+    it('leaving after a stop asks main nothing more', async () => {
+      setup(gitEntry('machine'), ok(NEEDS))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      hanging()
+      act(() => r.result.current.signIn())
+      act(() => r.result.current.stopRepoUpdate())
+      act(() => r.result.current.goHome())
+      expect(api.worldUpdateCancel).toHaveBeenCalledTimes(1)
+      expect(r.result.current.repoStopping).toBe(false)
+    })
+
+    it('a stopped Try again that met a sign-in shows the sign-in notice, saying it stopped', async () => {
+      setup(gitEntry('machine'), fail('Lumopolis could not reach github.com.'))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      const h = hanging()
+      act(() => r.result.current.tryAgain())
+      act(() => r.result.current.stopRepoUpdate())
+      await act(async () => { h.answer(ok(NEEDS)) })
+      expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.', notFound: false })
+      expect(r.result.current.repoError).toBe(UPDATE_STOPPED_MESSAGE)
+    })
+
+    it('does nothing when no try runs', async () => {
+      setup(gitEntry('machine'), ok(NEEDS))
+      const r = renderHook(() => useOpenWorld(''))
+      act(() => r.result.current.stopRepoUpdate())
+      await openIt(r)
+      act(() => r.result.current.stopRepoUpdate())
+      expect(api.worldUpdateCancel).not.toHaveBeenCalled()
+      expect(r.result.current.repoStopping).toBe(false)
+    })
+
+    it('leaving the world stops its try; that try\'s late answer leaves a new try alone', async () => {
+      setup(gitEntry('machine'), ok(NEEDS))
+      const r = renderHook(() => useOpenWorld(''))
+      await openIt(r)
+      const h = hanging()
+      act(() => r.result.current.signIn())
+      act(() => r.result.current.goHome())
+      expect(api.worldUpdateCancel).toHaveBeenCalledWith('kg')
+      expect(r.result.current.repoBusy).toBe(false)
+      expect(r.result.current.repoStopping).toBe(false)
+      // Back on it, a new Sign in runs while the old try is still answering.
+      await openIt(r)
+      const h2 = hanging()
+      act(() => r.result.current.signIn())
+      await act(async () => { h.answer(fail('late')) })
+      expect(r.result.current.repoBusy).toBe(true)
+      expect(r.result.current.repoError).toBeNull()
+      await act(async () => { h2.answer(ok({ changed: false })) })
+      expect(r.result.current.repoBusy).toBe(false)
+      expect(r.result.current.repoUpdate).toBeNull()
+      // Leaving a world with no try running asks nothing; one that cannot reach main is quiet.
+      api.worldUpdateCancel.mockRejectedValueOnce(new Error('ipc gone'))
+      await openIt(r)
+      hanging()
+      act(() => r.result.current.signIn())
+      act(() => r.result.current.goHome())
+      act(() => r.result.current.goHome())
+      await settle()
+      expect(api.worldUpdateCancel).toHaveBeenCalledTimes(2)
     })
   })
 

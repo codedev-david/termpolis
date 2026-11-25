@@ -474,12 +474,123 @@ describe('WorldView sources', () => {
 describe('WorldView sign in needed', () => {
   const GIT: WorldEntry = { key: 'kgit', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/r', login: 'machine' }, title: 'rrepo', lastOpened: 3 }
   const NEEDS = { needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } }
-  const gitBridge = (update: unknown, over: Record<string, unknown> = {}) => bridge({
-    worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT])),
-    worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(GIT)),
+  const gitBridge = (update: unknown, over: Record<string, unknown> = {}, entry: WorldEntry = GIT) => bridge({
+    worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([entry])),
+    worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(entry)),
     worldUpdateSource: vi.fn(async () => update),
+    worldUpdateCancel: vi.fn(async () => ok(true)),
     ...over,
   })
+  /** The next update answers only when the test says. */
+  const hangNext = (api: Record<string, ReturnType<typeof vi.fn>>) => {
+    let answer!: (v: unknown) => void
+    api.worldUpdateSource.mockImplementationOnce(() => new Promise((res) => { answer = res }))
+    return (v: unknown) => act(async () => { answer(v) })
+  }
+  const STOPPED = 'Lumopolis stopped updating this repository.'
+
+  // WP4b F-R6: a Sign in or token try can be stopped; the notice then says it stopped.
+  it('while a Sign in runs, Stop takes Dismiss\'s place and the focus; it stops that update once and says so', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    const answer = hangNext(api)
+    const signIn = screen.getByRole('button', { name: 'Sign in to GitHub' })
+    signIn.focus()
+    fireEvent.click(signIn)
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(signIn).toBeDisabled()
+    expect(within(notice).getByRole('button', { name: 'Use a token' })).toBeDisabled()
+    expect(within(notice).queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    const stop = within(notice).getByRole('button', { name: 'Stop' })
+    expect(stop).toHaveFocus()
+    fireEvent.click(stop)
+    expect(api.worldUpdateCancel).toHaveBeenCalledWith('kgit')
+    const stopping = within(notice).getByRole('button', { name: 'Stopping…' })
+    expect(stopping).toBeDisabled()
+    fireEvent.click(stopping)
+    expect(api.worldUpdateCancel).toHaveBeenCalledTimes(1)
+    await answer(fail(STOPPED))
+    await settle()
+    expect(within(notice).getByRole('alert')).toHaveTextContent(STOPPED)
+    expect(within(notice).getByRole('button', { name: 'Dismiss' })).toBeEnabled()
+    // The focus Stop had goes back to the first choice.
+    expect(screen.getByRole('button', { name: 'Sign in to GitHub' })).toHaveFocus()
+  })
+
+  it('a try that ends while the focus is elsewhere leaves the focus where the person put it', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    const answer = hangNext(api)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveFocus()
+    await answer(ok(NEEDS))
+    await settle()
+    expect(screen.getByRole('button', { name: 'Sign in to GitHub' })).not.toHaveFocus()
+    // Stop took the focus, then the person moved it on: it stays there when the try ends.
+    const again = hangNext(api)
+    const signIn = screen.getByRole('button', { name: 'Sign in to GitHub' })
+    signIn.focus()
+    fireEvent.click(signIn)
+    expect(screen.getByRole('button', { name: 'Stop' })).toHaveFocus()
+    const map2d = screen.getByTestId('world-map2d')
+    map2d.focus()
+    await again(ok(NEEDS))
+    await settle()
+    expect(map2d).toHaveFocus()
+  })
+
+  it('cancelling the token dialog, or Esc in it, while its token is tried stops that update', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    for (const close of ['cancel', 'esc'] as const) {
+      fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+      const answer = hangNext(api)
+      fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+      if (close === 'cancel') fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+      else fireEvent.keyDown(screen.getByTestId('world-repo-access-input'), { key: 'Escape' })
+      expect(screen.queryByTestId('world-repo-access')).toBeNull()
+      await answer(fail(STOPPED))
+      await settle()
+      expect(within(screen.getByTestId('world-sign-in-needed')).getByRole('alert')).toHaveTextContent(STOPPED)
+    }
+    expect(api.worldUpdateCancel).toHaveBeenCalledTimes(2)
+    // Closing it with no try running stops nothing.
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect(api.worldUpdateCancel).toHaveBeenCalledTimes(2)
+  })
+
+  // WP4b F-R7: a background update that failed is said, with Try again; a token repository offers Update with a token.
+  it('a failed background update says so in main\'s words over the saved copy, and Try again runs it again', async () => {
+    const api = gitBridge(fail('Lumopolis could not reach github.com.'))
+    await openGit()
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(notice).toHaveTextContent("Lumopolis could not reach github.com. You're seeing the saved copy.")
+    expect(within(notice).queryByRole('button', { name: /Sign in|Use a token/ })).toBeNull()
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: true }))
+    fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kgit')
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  it('a repository opened with a token offers Update with a token, which updates with the token given', async () => {
+    const TOK: WorldEntry = { ...GIT, source: { ...GIT.source, login: 'token' } as WorldEntry['source'] }
+    const api = gitBridge(ok({ changed: false }), {}, TOK)
+    await openGit()
+    expect(api.worldUpdateSource).not.toHaveBeenCalled()
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(notice).toHaveTextContent("Lumopolis updates this repository only with a token you give it. You're seeing the saved copy.")
+    fireEvent.click(within(notice).getByRole('button', { name: 'Update with a token' }))
+    expect(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Make a token on GitHub' })).toBeInTheDocument()
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenCalledWith('kgit', { mode: 'token', value: 'ghp_x' })
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
   const openGit = async () => {
     await mount('')
     fireEvent.click(screen.getByRole('button', { name: 'Open rrepo' }))
@@ -738,14 +849,15 @@ describe('WorldView sign in needed', () => {
     expect(screen.queryByText('Sign in was closed.')).toBeNull()
   })
 
-  it('Dismiss is disabled while a retry runs', async () => {
+  it('Dismiss gives way to Stop while a retry runs', async () => {
     const api = gitBridge(ok(NEEDS))
     await openGit()
     let release!: (v: unknown) => void
     api.worldUpdateSource.mockImplementationOnce(() => new Promise((res) => { release = res }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
     await settle()
-    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled()
     await act(async () => { release(ok({ changed: false })) })
     expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
   })
