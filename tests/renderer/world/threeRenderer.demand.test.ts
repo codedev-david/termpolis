@@ -1107,6 +1107,18 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     r.dispose()
   })
 
+  it('drawnCounts gives the last frame triangles with its draw calls (the perf soak records both)', () => {
+    gpu.gpuName = GEFORCE
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    expect(r.drawnCounts().triangles).toBe(0)
+    r.draw(smallCity(), smallText(), false)
+    rendererOf().info.render.triangles = 1234
+    h.frames.step()
+    expect(r.drawnCounts().triangles).toBe(1234)
+    r.dispose()
+  })
+
   it('perfBegin/perfEnd: the counted frames between them; perfEnd with none begun has no frames', () => {
     gpu.gpuName = GEFORCE
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)

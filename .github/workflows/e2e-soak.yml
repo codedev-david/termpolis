@@ -192,6 +192,16 @@ jobs:
             test-results/
             e2e/screenshots/docs/
           retention-days: 7
+      # The 3D map's frame times on their own (e2e/world-perf.spec.ts, look spec 6.2), so the runs of a soak can be
+      # compared without the rest of test-results/. Nothing is uploaded when the soak ran no world-perf test.
+      - name: Upload Lumopolis frame times
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-perf-${{ inputs.os }}-shard${{ matrix.shard }}-copy${{ matrix.copy }}
+          path: test-results/world-perf/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Tests' export-page job, with the browsers it runs on this runner, each copy with no retry (--retries=0).
   export-page:

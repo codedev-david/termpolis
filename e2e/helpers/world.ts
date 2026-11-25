@@ -1,7 +1,8 @@
 /**
  * What the Lumopolis specs in the real app share: a temp git repository to map, the small Electron-shaped
  * project they map, the app launched on a fresh profile with labelling off and software GL on, and the Add
- * Terminal dialog. e2e/world-view.spec.ts and e2e/world-export.spec.ts both use them.
+ * Terminal dialog. e2e/world-view.spec.ts and e2e/world-export.spec.ts both use them; world-visual and world-perf
+ * share the generated big world (bigFiles).
  *
  * The fixture projects are temp git repositories (the code graph lists a project's files with `git ls-files`).
  * Labelling is switched off in the temp profile (world-settings.json), so the world is named from the code alone
@@ -37,6 +38,22 @@ export function makeRepo(label: string, files: Record<string, string>): string {
   execFileSync('git', ['init', '-q'], { cwd: dir })
   execFileSync('git', ['add', '-A'], { cwd: dir })
   return dir
+}
+
+/** The generated world of e2e/world-visual.spec.ts and e2e/world-perf.spec.ts: `perArea` files in each of 12 folders (14: 168 files): each file imports two in its folder, the last also the first file of the next folder. */
+export const BIG_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
+export function bigFiles(perArea: number): Record<string, string> {
+  const files: Record<string, string> = { 'package.json': JSON.stringify({ name: 'big', version: '1.0.0' }) }
+  BIG_AREAS.forEach((area, a) => {
+    const next = BIG_AREAS[(a + 1) % BIG_AREAS.length]
+    for (let i = 0; i < perArea; i++) {
+      const imports = [1, 2].map((k) => (i - k >= 0 ? `import { f${i - k} } from './m${i - k}'\n` : '')).join('')
+      const cross = i === perArea - 1 ? `import { f0 as n0 } from '../${next}/m0'\n` : ''
+      const call = i === perArea - 1 ? ' + n0(x)' : ''
+      files[`src/${area}/m${i}.ts`] = `${imports}${cross}export function f${i}(x: number): number {\n  return x + ${i}${call}\n}\n`
+    }
+  })
+  return files
 }
 
 /** A small Electron-shaped project: main, a forked host, a preload bridge and a renderer that uses it. */

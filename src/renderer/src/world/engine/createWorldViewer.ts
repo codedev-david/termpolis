@@ -162,6 +162,8 @@ export interface WorldDrawn {
   tier: ZoomTier
   /** GL draw calls of the last frame, every pass (0 in 2D). */
   drawCalls: number
+  /** Triangles those draw calls drew (0 in 2D). */
+  triangles: number
   /** Frames drawn since the 3D map was made: frames are drawn only while something moves (0 in 2D). */
   frames: number
   /** Frames whose render returned, the first-frame watchdog's sign of life (0 in 2D). */
@@ -1051,7 +1053,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: { tier: 'flat' as const, ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 } }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: { tier: 'flat' as const, ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 } }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()

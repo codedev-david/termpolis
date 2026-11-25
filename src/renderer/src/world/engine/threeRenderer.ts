@@ -143,7 +143,7 @@ export interface ThreeRenderer {
    * frames have been drawn since the renderer was built (nothing is drawn while nothing changes). `software`: the
    * context is drawn in software (softwareRenderer), as read when it was made or last came back.
    */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean; perf: RendererPerf }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; triangles: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean; perf: RendererPerf }
   /**
    * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
@@ -855,6 +855,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     sampler.skip(SAMPLER_SKIP_FRAMES)
   }
   let drawCalls = 0 // the last frame's GL draw calls, every pass
+  let triangles = 0 // and the triangles they drew
   let tier: ZoomTier = 'districts'
   /** Every building's floors and block, with the batches' bookkeeping (batchFrame). */
   let parts: BatchPart[] = []
@@ -3059,6 +3060,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       resizedAt = 0
     }
     drawCalls = renderer.info.render.calls
+    triangles = renderer.info.render.triangles
     labelRenderer.render(scene, camera)
     return moving ? 'moving' : looping || turning ? 'looping' : 'still'
   }
@@ -3183,7 +3185,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // comes (a starved frame rate, a 5K view drawn in software, must not hold a finished change open).
       tickChanges()
       return {
-        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
+        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, triangles, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
         perf: { tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs },
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,

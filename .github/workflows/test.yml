@@ -457,7 +457,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # THE Linux e2e gate: the WHOLE e2e directory, blocking, in 6 jobs (4 count shards and the 2 heavy Lumopolis specs).
+  # THE Linux e2e gate: the WHOLE e2e directory, blocking, in 7 jobs (4 count shards and the 3 heavy Lumopolis specs).
   #
   # Until v1.32.5 CI ran 18 named specs and 34 of the 52 on disk had never been
   # executed at all. A spec that cannot fail rots silently: v1.30.3 removed a
@@ -474,9 +474,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1-4: the suite split by test count, without the two heavy Lumopolis specs; 5: world-responsive;
-        # 6: world-visual (HEAVY_SPECS in playwright.config.ts says why).
-        shard: [1, 2, 3, 4, 5, 6]
+        # 1-4: the suite split by test count, without the three heavy Lumopolis specs; 5: world-responsive;
+        # 6: world-visual; 7: world-perf, the 3D map's frame times (HEAVY_SPECS in playwright.config.ts says why).
+        shard: [1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -545,6 +545,7 @@ jobs:
           case "${{ matrix.shard }}" in
             5) xvfb-run --auto-servernum npx playwright test e2e/world-responsive.spec.ts --reporter=list ;;
             6) xvfb-run --auto-servernum npx playwright test e2e/world-visual.spec.ts --reporter=list ;;
+            7) xvfb-run --auto-servernum npx playwright test e2e/world-perf.spec.ts --reporter=list ;;
             *) TERMPOLIS_E2E_SKIP_HEAVY=1 xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list ;;
           esac
       # e2e/world-platform.spec.ts again with the GPU and its software fallback off, so the pane's 2D list (what a machine without
@@ -581,8 +582,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           overwrite: true
+      # The 3D map's frame times from e2e/world-perf.spec.ts (look spec 6.2): one JSON per world and tier,
+      # <os>-<fixture>-<tier>.json, with the renderer's name, p50/p95/p99, drops and draw calls. Reported, not
+      # asserted, beyond the software floor: a hosted runner draws on SwiftShader. Kept 30 days to compare runs.
+      - name: Upload Lumopolis frame times
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumopolis-perf-linux
+          path: test-results/world-perf/
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
 
-  # THE Windows e2e gate: the whole e2e directory again, blocking, in 6 jobs like e2e-full.
+  # THE Windows e2e gate: the whole e2e directory again, blocking, in 7 jobs like e2e-full.
   #
   # ConPTY, NTFS ACLs and the hosted runner's 1024x768 desktop exist only here. Until this job,
   # Windows e2e ran only when someone dispatched e2e-soak, and three Windows-only failures built
@@ -601,9 +614,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1-4: the suite split by test count, without the two heavy Lumopolis specs; 5: world-responsive;
-        # 6: world-visual (HEAVY_SPECS in playwright.config.ts says why).
-        shard: [1, 2, 3, 4, 5, 6]
+        # 1-4: the suite split by test count, without the three heavy Lumopolis specs; 5: world-responsive;
+        # 6: world-visual; 7: world-perf, the 3D map's frame times (HEAVY_SPECS in playwright.config.ts says why).
+        shard: [1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -644,6 +657,7 @@ jobs:
           case "${{ matrix.shard }}" in
             5) npx playwright test e2e/world-responsive.spec.ts --reporter=list ;;
             6) npx playwright test e2e/world-visual.spec.ts --reporter=list ;;
+            7) npx playwright test e2e/world-perf.spec.ts --reporter=list ;;
             *) TERMPOLIS_E2E_SKIP_HEAVY=1 npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list ;;
           esac
       - name: Upload failure traces
@@ -653,6 +667,18 @@ jobs:
           name: playwright-traces-windows-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+          overwrite: true
+      # The 3D map's frame times from e2e/world-perf.spec.ts (look spec 6.2): one JSON per world and tier,
+      # <os>-<fixture>-<tier>.json, with the renderer's name, p50/p95/p99, drops and draw calls. Reported, not
+      # asserted, beyond the software floor: a hosted runner draws on SwiftShader. Kept 30 days to compare runs.
+      - name: Upload Lumopolis frame times
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumopolis-perf-windows
+          path: test-results/world-perf/
+          if-no-files-found: ignore
+          retention-days: 30
           overwrite: true
 
   # macOS e2e smoke: Darwin runner exercising the core boot + first-run
@@ -819,6 +845,18 @@ jobs:
             test-results/world-visual/
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
+      # The 3D map's frame times from e2e/world-perf.spec.ts (look spec 6.2): one JSON per world and tier,
+      # <os>-<fixture>-<tier>.json, with the renderer's name, p50/p95/p99, drops and draw calls. Reported, not
+      # asserted, beyond the software floor: a hosted runner draws on SwiftShader. Kept 30 days to compare runs.
+      - name: Upload Lumopolis frame times
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumopolis-perf-macos
+          path: test-results/world-perf/
+          if-no-files-found: ignore
+          retention-days: 30
           overwrite: true
       - name: Upload failure traces
         if: failure()

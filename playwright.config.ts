@@ -4,7 +4,7 @@ import { defineConfig } from '@playwright/test'
 // about 11). Playwright shards by test count, and these sort last, so both landed in shard 4, which then ran
 // 32-44 minutes against the others' 5-12 and hit its step timeout. CI runs each in a job of its own and sets
 // TERMPOLIS_E2E_SKIP_HEAVY=1 on the four count shards so they are not run twice. A local run runs everything.
-const HEAVY_SPECS = ['**/world-responsive.spec.ts', '**/world-visual.spec.ts']
+const HEAVY_SPECS = ['**/world-responsive.spec.ts', '**/world-visual.spec.ts', '**/world-perf.spec.ts']
 
 export default defineConfig({
   testDir: './e2e',

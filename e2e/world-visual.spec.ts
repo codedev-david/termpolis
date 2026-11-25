@@ -41,6 +41,7 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { closeMore, toolbarControl } from './helpers/worldToolbar'
 import { edgeSummary } from '../src/shared/world/edgeText'
 import { MAX_WHITE_FRACTION, MIN_LIT_FRACTION, MIN_MEAN_OVER_BACKGROUND, pngMetrics } from './worldPixels'
+import { bigFiles } from './helpers/world'
 
 // The thresholds (LIT_MARGIN and the rest), their measurements and the pixel math live in worldPixels.ts.
 /** District labels that must be readable at overview (fewer if the world has fewer districts). */
@@ -94,22 +95,6 @@ const MOTION_FILES = (): Record<string, string> => ({
   'src/api/remote.ts': "export async function remoteItems(): Promise<unknown> {\n  return (await fetch('https://api.shopco.dev/items')).json()\n}\n",
   'vitest-report.json': JSON.stringify({ testResults: [{ name: 'src/store/db.test.ts', status: 'passed', endTime: Date.now() }] }),
 })
-
-/** `perArea` files in each of 12 folders (14: 168 files): each file imports two in its folder, the last also the first file of the next folder. */
-const BIG_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
-function bigFiles(perArea: number): Record<string, string> {
-  const files: Record<string, string> = { 'package.json': JSON.stringify({ name: 'big', version: '1.0.0' }) }
-  BIG_AREAS.forEach((area, a) => {
-    const next = BIG_AREAS[(a + 1) % BIG_AREAS.length]
-    for (let i = 0; i < perArea; i++) {
-      const imports = [1, 2].map((k) => (i - k >= 0 ? `import { f${i - k} } from './m${i - k}'\n` : '')).join('')
-      const cross = i === perArea - 1 ? `import { f0 as n0 } from '../${next}/m0'\n` : ''
-      const call = i === perArea - 1 ? ' + n0(x)' : ''
-      files[`src/${area}/m${i}.ts`] = `${imports}${cross}export function f${i}(x: number): number {\n  return x + ${i}${call}\n}\n`
-    }
-  })
-  return files
-}
 
 test.beforeAll(async () => {
   ensureE2eBuild()
