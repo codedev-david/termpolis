@@ -1,7 +1,8 @@
 /**
  * The 3D map's frame times in CI (look spec §6.2, plan Task 2). Two worlds at 1920x1080: this repository (Termpolis
  * itself) and the generated one of 168 files in 12 folders (world-visual's big world, bigFiles(14)). For each:
- *   - the first frame is fast: the time from the first draw() to the frame that shows it (drawn().perf.firstFrameMs);
+ *   - the first frame is fast: the time from the first draw() to the frame that shows it (drawn().perf.firstFrameMs),
+ *     after a warm-up open of a small world in the same launch (WARM_UP below says why);
  *   - ORBITS scripted orbits of 10 s each, a mouse drag of 360° round the city, timed by the app's own frame-time
  *     sampler (window.__worldPerf, the counted frames between begin() and end()). The numbers (the orbit whose p95 is the
  *     median, and every orbit) are written to test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a
@@ -33,6 +34,18 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
   macos: { termpolis: 1120, big: 360 },
 }
 /**
+ * CI's first-frame guard is a regression guard for GPU-less runners, not the spec's fast first frame (look spec §5.2:
+ * 400 ms on the reference iGPU, 3 s in software, which Task 20 measures on real machines). A runner with no GPU pays a
+ * cold cost the first time anything is drawn in software: its GPU process takes 1.1-1.5 s for its first raster task
+ * and the display compositor holds the swaps meanwhile (FLAKES, soak 45591853353), and SwiftShader compiles each shader
+ * on first use. On the same commit (c81e0a7f) macOS's cold first frame of the Termpolis world ran 539 ms on one runner
+ * and 5707 ms on another, then 4841 ms on that runner's retry: the runner's cost, not the app's. So the spec opens a
+ * small world first (WARM_UP) and times each world's first frame after it: what is left is the app's own work for
+ * that world (its geometry, upload and draw). The cold first frame of the warm-up world is logged and written to the
+ * JSON (coldFirstFrameMs), and not asserted.
+ */
+const WARM_UP_FILES = 2
+/**
  * The first frame's bound in CI, in software: the worst first frame seen on that system's runner over the same soak
  * copies, x 1.3 and rounded up to 100 ms (Linux 1465.7 ms, Windows 687.2, macOS 5706.7). These are runner bounds, not the
  * promise: the spec's 3 s in software and 400 ms on a GPU stay the real-hardware targets, which Task 20 times on real
@@ -58,6 +71,7 @@ interface Probe { drawn(): Drawn }
 interface PerfProbe { begin(): void; end(): Stats }
 interface OrbitResult extends Stats {
   os: string
+  coldFirstFrameMs: number | null
   orbits: Stats[]
   fixture: string
   tier: string
@@ -75,6 +89,8 @@ let app: ElectronApplication
 let page: Page
 let userDataDir: string
 let bigDir: string
+let warmDir: string
+let coldFirstFrameMs: number | null = null
 const FIXTURES: Array<{ label: string; dir: () => string }> = [
   { label: 'termpolis', dir: () => path.resolve('.') },
   { label: 'big', dir: () => bigDir },
@@ -82,18 +98,24 @@ const FIXTURES: Array<{ label: string; dir: () => string }> = [
 const orbits = new Map<string, OrbitResult>()
 
 test.beforeAll(async () => {
+  test.setTimeout(420_000)
   ensureE2eBuild()
   fs.mkdirSync(OUT, { recursive: true })
   bigDir = makeRepo('perf-big', bigFiles(14))
+  warmDir = makeRepo('perf-warm', bigFiles(WARM_UP_FILES))
   ;({ app, page, userDataDir } = await launchWorldApp())
   await page.setViewportSize(VIEWPORT)
   // Motion on, whatever this machine's setting: the looping motions keep the loop drawing between pointer moves.
   await page.emulateMedia({ reducedMotion: 'no-preference' })
+  // The warm-up: the runner's cold cost of drawing in software is paid here, on a small world of the same kinds.
+  await openOn('warm-up', warmDir)
+  coldFirstFrameMs = (await drawn()).perf.firstFrameMs
+  console.log(`world-perf cold first frame (warm-up world, not asserted): ${coldFirstFrameMs} ms`)
 })
 
 test.afterAll(async () => {
   await quitApp(app)
-  removeDirs([userDataDir, bigDir])
+  removeDirs([userDataDir, bigDir, warmDir])
 })
 
 const pane = () => page.locator('[data-testid="world-view"]')
@@ -216,6 +238,7 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       const d = await drawn()
       const result: OrbitResult = {
         os: OS_NAME,
+        coldFirstFrameMs,
         orbits: runs,
         fixture: fx.label,
         tier: d.perf.tier,
