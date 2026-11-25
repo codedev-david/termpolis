@@ -373,6 +373,14 @@ describe('planRequest: a struggling subagent (review R2-I1)', () => {
     expect(p.escalated).toBeUndefined()
   })
 
+  it('a subagent on a model the router does not route leaves the terminal\'s effort alone (R3-M1)', () => {
+    main('high')
+    const o = { model: 'claude-nova-1', max_tokens: 10, tools: [{ name: 'Bash', input_schema: {} }], messages: [{ role: 'user', content: 'another conversation' }] }
+    const b = JSON.stringify(o)
+    expect(planRequest(b, H(), readConversation(JSON.parse(b))).main).toBe(false)
+    expect(reviewer(true)).toMatchObject({ agent: true, effort: 'high', escalated: 1 })
+  })
+
   it('a request whose body could not be read (key 0) does not overwrite the terminal\'s effort (R3-M2)', () => {
     main('high')
     // Too big or not JSON for wireCompress: no conversation, so a Sonnet subagent at medium counts as main.
