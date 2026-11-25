@@ -42,6 +42,11 @@ const renamed = (words: readonly string[]): string[] => [...new Set(words.map((w
  * `words` with TCP renamed when every word is what an older compiler called one of `kinds` and a port is among them:
  * then the TCP came from that port. Anything else (a model's "TCP" on a part with no port, "TCP server", a word that is
  * not one of these crossings) is the model's own, and the same array comes back.
+ *
+ * The labels do not record who wrote them, so a model that wrote exactly the old words ("TCP", "IPC · TCP") on a part
+ * the code found a port on is renamed too (review R2-1). That is safe by construction: a word is replaced only where the
+ * code detected a port (`kinds` come from the code, never from a model) and every word matches a kind the code detected,
+ * so the new label ("Message port") names what the code saw there and stays true whoever wrote the old one.
  */
 export function portWords(words: readonly string[], kinds: readonly BoundaryKind[]): readonly string[] {
   if (!words.includes(OLD_PORT_WORD) || !kinds.includes('port')) return words
@@ -61,7 +66,11 @@ function isCodePortLine(e: WorldEdge): boolean {
   return (edgeItems(e.label) ?? []).some((i) => i.startsWith('port ')) && e.claims.some((c) => c.text === SEEN_IN_CODE)
 }
 
-/** A saved world's parts and lines with TCP renamed where the saved world itself shows it came from a port. */
+/**
+ * A saved world's parts and lines with TCP renamed where the saved world itself shows it came from a port. As in
+ * portWords, a model's own exact old words there are renamed too: the code's port line is the evidence, so the new label
+ * stays true (review R2-1).
+ */
 function upgradeItems(buildings: Building[], edges: WorldEdge[]): { buildings: Building[]; edges: WorldEdge[]; changed: boolean } {
   let changed = false
   // A code-made port line is the evidence: its chips are the code's, and the parts at its ends post or open that port.
