@@ -1886,6 +1886,20 @@ describe('WP2: a lost WebGL context (R03, R04)', () => {
     expect(host.innerHTML).toBe('')
   })
 
+  it('a loss forgets the WebGL found before, so the next open probes again and a page whose WebGL is now blocked opens flat (RESP review I-2)', () => {
+    const { viewer, made } = mount3d({ reducedMotion: true })
+    getContext.mockReturnValue({ getExtension: () => null } as never) // the GPU process came back once
+    made.onContextLost()
+    const before = getContext.mock.calls.length
+    expect(hasWebGL()).toBe(true) // probed again (a context made), not the cached answer
+    expect(getContext.mock.calls.length).toBeGreaterThan(before)
+    made.onContextRestored()
+    getContext.mockReturnValue(null) // after the second loss Chromium blocks WebGL for the page
+    made.onContextLost()
+    expect(hasWebGL()).toBe(false) // a reopened pane is flat, not a 3D legend over the 2D map
+    viewer.dispose()
+  })
+
   it("on('graphics') tells each listener as the option does, until it unsubscribes (the exported page listens so)", () => {
     const seen: WorldGraphics[] = []
     const other: WorldGraphics[] = []

@@ -192,8 +192,8 @@ export interface WorldViewerOptions {
 
 /**
  * A WebGL context was made on this page already: the probe answers true at once. Making one can take more than a
- * second (macOS), on the main thread, and a pane opening asks more than once (each render of WorldView, then the
- * viewer). A renderer that still cannot be made forgets it (forgetWebGL), so the next open probes again.
+ * second (macOS), on the main thread, and a pane opening asks more than once (each mount of WorldView, then the
+ * viewer). A renderer that still cannot be made, or a lost context, forgets it (forgetWebGL), so the next open probes again.
  */
 let webglFound = false
 
@@ -297,7 +297,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         quality: opts.quality ?? 'high',
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
-        onContextLost: () => { if (++losses === 1) graphics('lost'); else dropToFlat() },
+        // A loss forgets the context found before (hasWebGL), so the next open probes again: after repeated losses Chromium
+        // blocks WebGL for the page, and a cached yes would show the 3D legend over the 2D map (RESP review I-2).
+        onContextLost: () => { forgetWebGL(); if (++losses === 1) graphics('lost'); else dropToFlat() },
         onContextRestored: () => { if (r3) graphics('restored') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
