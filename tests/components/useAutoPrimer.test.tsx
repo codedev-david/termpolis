@@ -2560,6 +2560,21 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
     expect((window as any).termpolis.writeToTerminal.mock.calls.some(([, d]: [string, string]) => d.includes('memory_primer'))).toBe(true)
   })
+  // The agent can be gone by the time the quiet wait ends: no name is no Claude, so the hook is not asked about.
+  it('an agent that is gone when the quiet wait ends is not taken for a Claude', async () => {
+    vi.useFakeTimers()
+    const status = vi.fn(async () => hookOn)
+    mockApi({ agentIntegrationMemoryHook: status })
+    useTerminalStore.setState({ terminals: [{ id: 't-cmp-gone', launchPrimed: false } as any] })
+    const { result, rerender } = renderHook(({ a }) => useCompactionReprimer('t-cmp-gone', a, '/repo'), {
+      initialProps: { a: { name: 'Claude Code' } as any },
+    })
+    result.current('Compacting conversation...')
+    rerender({ a: null })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(status).not.toHaveBeenCalled()
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+  })
 
   it('isClaudeAgent reads the agent name', () => {
     expect(isClaudeAgent({ name: 'Claude Code' })).toBe(true)
