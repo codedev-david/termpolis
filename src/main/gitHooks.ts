@@ -329,6 +329,11 @@ export async function shieldMayWriteHooks(f: HooksWriteFacts): Promise<boolean> 
 /** Runs one read-only git command in the repository and prints its output (index.ts hands safeGitAsync). */
 export type HooksGit = (args: string[]) => Promise<string>
 
+/** Whether the installer may write the hooks (shieldHooksVerdict), and if not, why: `gitDirOutside` when the hooks
+ *  folder is in a git folder outside the working tree that the shield can't tell is this repository's (a
+ *  `--separate-git-dir` repository among them), `hooksPath` for every other refusal. */
+export type ShieldHooksVerdict = 'allowed' | 'hooksPath' | 'gitDirOutside'
+
 /** shieldMayWriteHooks for the repository at `repo`, with the roots git names, each checked (M2):
  *  - the working tree (`--show-toplevel`), only when `repo` lies in it: a repository's own core.worktree can name
  *    any folder as its working tree, and then nothing it names counts;
@@ -341,7 +346,11 @@ export type HooksGit = (args: string[]) => Promise<string>
  *  A root git cannot name, or one that fails its check, is left out. `git init --separate-git-dir` makes a `.git`
  *  file that names a git folder with no core.worktree: that repository is refused, since nothing tells it apart from
  *  a `.git` file naming another repository's git folder. */
-export async function shieldHooksAllowed(o: {
+export async function shieldHooksAllowed(o: ShieldHooksFacts): Promise<boolean> {
+  return (await shieldHooksVerdict(o)) === 'allowed'
+}
+
+export interface ShieldHooksFacts {
   repo: string
   hooksDir: string
   git: HooksGit
@@ -350,7 +359,10 @@ export async function shieldHooksAllowed(o: {
   path: PathApi
   platform: NodeJS.Platform
   realpath: Realpath
-}): Promise<boolean> {
+}
+
+/** shieldHooksAllowed's answer with the reason for a refusal (ShieldHooksVerdict), for the words the person sees. */
+export async function shieldHooksVerdict(o: ShieldHooksFacts): Promise<ShieldHooksVerdict> {
   const path = o.path
   const fold = o.platform === 'win32' || o.platform === 'darwin' ? (s: string): string => s.toLowerCase() : (s: string): string => s
   const real = async (p: string): Promise<string> => fold(await realOrWritten(p, path, o.realpath))
@@ -393,7 +405,10 @@ export async function shieldHooksAllowed(o: {
 
   const scopes = (): Promise<string[] | null> =>
     o.git(['config', '--show-scope', '-z', '--get-all', 'core.hooksPath']).then(hooksPathScopes, () => null)
-  return shieldMayWriteHooks({ hooksDir: o.hooksDir, roots, scopes, path, platform: o.platform, realpath: o.realpath })
+  if (await shieldMayWriteHooks({ hooksDir: o.hooksDir, roots, scopes, path, platform: o.platform, realpath: o.realpath })) return 'allowed'
+  // HOLD-A N2: a working tree whose git folder was left out, with the hooks in that folder.
+  if (top !== '' && common !== '' && !roots.includes(common) && (await inside(o.hooksDir, common))) return 'gitDirOutside'
+  return 'hooksPath'
 }
 
 /** The node the hook is baked with: resolveNodeCommand's answer with only the PATH folders written as full paths, or

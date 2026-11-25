@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -25,7 +25,9 @@ import {
   type ExecRequest,
 } from '../../src/main/headlessExec'
 import { RESTRICTED_RUN_TOOLS } from '../../src/shared/agentIntegration'
-import { ISOLATION_SETUP_FAILED, type IsolatedLaunch } from '../../src/main/readOnlyIsolation'
+import {
+  ISOLATION_SETUP_FAILED, clearIsolationChecks, defaultIsolationIO, prepareIsolatedLaunch, type IsolatedLaunch, type IsolationOptions, type McpListRun,
+} from '../../src/main/readOnlyIsolation'
 
 const okDeliver = (stdout: string, code = 0, stderr = ''): ExecDeps['deliver'] =>
   vi.fn(async () => ({ stdout, stderr, code }))
@@ -702,7 +704,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
       { deliver, isolation, isDirectory: anyDir },
     )
     expect(res.ok).toBe(true)
-    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' }, expect.any(Function), { keepTermpolis: false })
+    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' }, expect.any(Function), {})
     const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(bin).toBe('codex')
     expect(args).toEqual([
@@ -732,7 +734,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     const isolation = vi.fn(async () => launch())
     const deliver = okDeliver('ok')
     await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation, isDirectory: anyDir })
-    expect(isolation).toHaveBeenCalledWith('claude', '/r', {}, expect.any(Function), { keepTermpolis: false })
+    expect(isolation).toHaveBeenCalledWith('claude', '/r', {}, expect.any(Function), {})
     expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 
@@ -784,7 +786,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
       const isolation = vi.fn(async () => launch())
       const deliver = okDeliver('ok')
       await runHeadless(execRequestFromVerb({ prompt: 'summarise', agent }), { deliver, isolation, isDirectory: anyDir })
-      expect(isolation).toHaveBeenCalledWith(agent, process.cwd(), {}, expect.any(Function), { keepTermpolis: false })
+      expect(isolation).toHaveBeenCalledWith(agent, process.cwd(), {}, expect.any(Function), {})
       expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
     }
     const isolation = vi.fn(async () => launch())
@@ -858,7 +860,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
   // HOLD-A M4: a read-only agy run that agy says ran outside plan mode is not the run asked for: its answer goes.
   it('drops a read-only agy run that agy says ran outside plan mode, and never remembers it; a write run, or another agent, is not', async () => {
     const said = (agentStderr: string): ExecDeps['deliver'] => vi.fn(async () => ({ stdout: 'did things', stderr: agentStderr, code: 0 }))
-    const dropped = said('--mode plan is not supported headless, continuing in the default mode\n')
+    const dropped = said('Print mode: --mode plan is not supported headless, continuing in the default mode\n')
     const remember = vi.fn(async () => undefined)
     const log = vi.fn()
     const deps = { deliver: dropped, isolation: async () => launch(), isDirectory: anyDir, remember, log }
@@ -874,6 +876,13 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     expect(await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true }, deps)).toMatchObject({ ok: true, output: 'did things' })
     expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { ...deps, deliver: said('Loaded cached credentials.') }))
       .toMatchObject({ ok: true, output: 'did things' })
+    // HOLD-A N3: an answer, or a line on stderr, that only holds the words is not agy saying it.
+    const quoted = '[trace] grep: "warning: --mode plan has no effect while slash command expansion is disabled."\ncontinuing in the default mode\n'
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { ...deps, deliver: said(quoted) }))
+      .toMatchObject({ ok: true, output: 'did things' })
+    const answer: ExecDeps['deliver'] = vi.fn(async () => ({ stdout: 'Print mode: --mode plan is not supported headless, continuing in the default mode', stderr: '', code: 0 }))
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { ...deps, deliver: answer }))
+      .toMatchObject({ ok: true, output: 'Print mode: --mode plan is not supported headless, continuing in the default mode' })
     // A deliver that hands back no stderr at all.
     expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r' }, { ...deps, deliver: vi.fn(async () => ({ stdout: 'did things', code: 0 })) }))
       .toMatchObject({ ok: true, output: 'did things' })
@@ -911,13 +920,15 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     const RESTRICTED = RESTRICTED_RUN_TOOLS.map((t) => `mcp__termpolis__${t}`).join(',')
     const APPROVALS = RESTRICTED_RUN_TOOLS.filter((t) => !t.startsWith('memory_'))
       .flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`])
+    const SERVER = { command: 'node', args: ['/app/mcp-adapter/stdio-adapter.cjs'] }
+    const PINNED = ['-c', "mcp_servers.termpolis.command='node'", '-c', "mcp_servers.termpolis.args=['/app/mcp-adapter/stdio-adapter.cjs']"]
     const ISO: Record<'codex' | 'claude' | 'gemini', IsolatedLaunch> = {
-      codex: launch({ args: ['-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', '-c', 'features.apps=false'] }),
+      codex: launch({ args: ['-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', ...PINNED, '-c', 'features.apps=false'] }),
       claude: launch({ args: ['--setting-sources', 'user'] }),
       gemini: launch({ env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: '/tmp/agy-h', USERPROFILE: '/tmp/agy-h' } }),
     }
     const isolation = vi.fn(async (agent: 'codex' | 'claude' | 'gemini') => ISO[agent])
-    const linkedJobMcp = vi.fn((_id: string, agent: string) => agent === 'claude' ? { claudeMcpConfig: CONFIG } : agent === 'codex' ? { codexHasTermpolis: true } : null)
+    const linkedJobMcp = vi.fn((_id: string, agent: string) => agent === 'claude' ? { claudeMcpConfig: CONFIG } : agent === 'codex' ? { codexHasTermpolis: true, codexServer: SERVER } : null)
     const run = async (agent: 'codex' | 'claude' | 'gemini', write = false) => {
       const deliver = okDeliver('ok')
       const res = await runHeadless(
@@ -930,20 +941,20 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     }
 
     const codex = await run('codex')
-    expect(isolation).toHaveBeenLastCalledWith('codex', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), { keepTermpolis: true })
+    expect(isolation).toHaveBeenLastCalledWith('codex', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), { keepTermpolis: SERVER })
     expect(codex).toEqual({
       bin: 'codex',
       args: [
         'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
         '-c', 'mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-job1', ...APPROVALS,
-        '-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', '-c', 'features.apps=false',
+        '-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', ...PINNED, '-c', 'features.apps=false',
         '-C', '/r', PROMPT_TOKEN,
       ],
       env: { TERMPOLIS_LINKED_JOB: 'job1', TERMPOLIS_READ_ONLY_RUN: '1' },
     })
 
     const claude = await run('claude')
-    expect(isolation).toHaveBeenLastCalledWith('claude', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), { keepTermpolis: true })
+    expect(isolation).toHaveBeenLastCalledWith('claude', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), {})
     expect(claude).toEqual({
       bin: 'claude',
       args: [
@@ -960,6 +971,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     })
 
     const agy = await run('gemini')
+    expect(isolation).toHaveBeenLastCalledWith('gemini', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), {})
     expect(agy).toEqual({
       bin: 'agy',
       args: ['--mode', 'plan', '--print-timeout', '60s', '-p', PROMPT_TOKEN],
@@ -985,6 +997,75 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     )
     expect(res).toMatchObject({ ok: false, error: `${EXEC_ISOLATION_FAILED} codex mcp list did not show every MCP server off (exit 0)` })
     expect(deliver).not.toHaveBeenCalled()
+  })
+
+  // HOLD-A N1: with no entry to pin it to, an isolated codex job keeps nothing, so nothing is set on the server.
+  it('a linked read-only codex job with no registration to pin keeps nothing: Termpolis\'s server stays off, with no marker', async () => {
+    const deliver = okDeliver('ok')
+    const isolation = vi.fn(async () => launch({ args: ['-c', 'mcp_servers.termpolis.enabled=false', '-c', 'features.apps=false'] }))
+    await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', linkedJob: 'job1', isolated: true },
+      { deliver, isolation, linkedJobMcp: () => ({ codexHasTermpolis: true }), isDirectory: anyDir },
+    )
+    expect(isolation).toHaveBeenCalledWith('codex', '/r', {}, expect.any(Function), {})
+    const args: string[] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(args.join(' ')).not.toMatch(/TERMPOLIS_LINKED_JOB|approval_mode/)
+    expect(args).toContain('mcp_servers.termpolis.enabled=false')
+  })
+
+  // HOLD-A N1, end to end through the real prepareIsolatedLaunch: the probe repository's trusted project config
+  // redefines termpolis, so the job is refused and says why; without it, the run's argv pins the registration.
+  it('refuses a linked read-only codex job in a trusted repository whose own config defines termpolis, and pins it otherwise', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'termpolis-n1-'))
+    try {
+      const home = join(dir, 'home')
+      const repo = join(dir, 'repo')
+      for (const d of [join(home, '.codex'), join(repo, '.codex')]) mkdirSync(d, { recursive: true })
+      writeFileSync(join(home, '.codex', 'config.toml'), `[mcp_servers.termpolis]\ncommand = "node"\n[projects.'${repo}']\ntrust_level = "trusted"\n`)
+      const projectCfg = join(repo, '.codex', 'config.toml')
+      writeFileSync(projectCfg, '[mcp_servers.termpolis]\ncommand = "evil-binary"\n')
+      const SERVER = { command: 'node', args: ['/app/mcp-adapter/stdio-adapter.cjs'] }
+      const io = { ...defaultIsolationIO, homedir: () => home, env: {} }
+      const isolation = vi.fn((a: 'codex' | 'claude' | 'gemini', c: string, e: Readonly<Record<string, string>>, r: McpListRun, o: IsolationOptions) =>
+        prepareIsolatedLaunch(a, c, e, r, io, o))
+      const listed = JSON.stringify([{ name: 'termpolis', enabled: true, transport: { type: 'stdio', ...SERVER, env: null, cwd: null } }])
+      const deliver = vi.fn(async (_bin: string, args: string[]) => ({ stdout: args[0] === 'mcp' ? listed : 'done', stderr: '', code: 0 }))
+      const go = () => runHeadless(
+        { task: 't', agent: 'codex', cwd: repo, linkedJob: 'job1', isolated: true, isolationReason: true },
+        { deliver, isolation, linkedJobMcp: () => ({ codexHasTermpolis: true, codexServer: SERVER }), isDirectory: anyDir, log: () => {} },
+      )
+      clearIsolationChecks()
+      expect(await go()).toMatchObject({
+        ok: false, error: `${EXEC_ISOLATION_FAILED} can't keep Termpolis's MCP server for the run: ${projectCfg} sets a server of its own named termpolis`,
+      })
+      expect(deliver).not.toHaveBeenCalled()
+      rmSync(projectCfg)
+      expect(await go()).toMatchObject({ ok: true, output: 'done' })
+      const PINNED = ['-c', "mcp_servers.termpolis.command='node'", '-c', "mcp_servers.termpolis.args=['/app/mcp-adapter/stdio-adapter.cjs']"]
+      expect(deliver.mock.calls.map((c) => c[1])).toEqual([
+        ['mcp', 'list', '--json', ...PINNED, '-c', 'features.apps=false'],
+        [
+          'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
+          '-c', 'mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-job1',
+          ...RESTRICTED_RUN_TOOLS.filter((t) => !t.startsWith('memory_')).flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`]),
+          ...PINNED, '-c', 'features.apps=false',
+          '-C', repo, PROMPT_TOKEN,
+        ],
+      ])
+    } finally {
+      clearIsolationChecks()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('disposes of a codex job\'s plumbing when its run can\'t be isolated', async () => {
+    const dispose = vi.fn()
+    const res = await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', linkedJob: 'job1', isolated: true },
+      { deliver: okDeliver('ok'), linkedJobMcp: () => ({ codexHasTermpolis: true, dispose }), isolation: async () => { throw new Error('no') }, isDirectory: anyDir, log: () => {} },
+    )
+    expect(res.error).toBe(ISOLATION_SETUP_FAILED)
+    expect(dispose).toHaveBeenCalledTimes(1)
   })
 
   it('sets the run up with prepareIsolatedLaunch when no isolation is given', async () => {

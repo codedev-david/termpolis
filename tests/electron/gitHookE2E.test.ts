@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksAllowed, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
+import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksAllowed, shieldHooksVerdict, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
 
 const AWS_KEY = 'AKIA' + 'A'.repeat(16)
 
@@ -245,16 +245,16 @@ afterAll(() => fs.rmSync(ISOLATED_DIR, { recursive: true, force: true }))
 const isolatedEnv: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: ISOLATED_CONFIG, GIT_CONFIG_NOSYSTEM: '1' }
 const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, env: isolatedEnv, stdio: 'pipe' }).toString()
 const hooksOf = (cwd: string): string => path.resolve(cwd, git(cwd, ['rev-parse', '--git-path', 'hooks']).trim())
-const allowedIn = (cwd: string, hooksDir = hooksOf(cwd)): Promise<boolean> =>
-  shieldHooksAllowed({
-    repo: cwd,
-    hooksDir,
-    git: async (args) => git(cwd, ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args]),
-    readFile: readText,
-    path,
-    platform: process.platform,
-    realpath: (p) => fs.promises.realpath(p),
-  })
+const factsIn = (cwd: string, hooksDir = hooksOf(cwd)): Parameters<typeof shieldHooksVerdict>[0] => ({
+  repo: cwd,
+  hooksDir,
+  git: async (args) => git(cwd, ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args]),
+  readFile: readText,
+  path,
+  platform: process.platform,
+  realpath: (p) => fs.promises.realpath(p),
+})
+const allowedIn = (cwd: string, hooksDir = hooksOf(cwd)): Promise<boolean> => shieldHooksAllowed(factsIn(cwd, hooksDir))
 
 /** A throwaway folder, cleaned after each test. */
 function scratch(prefix: string): string {
@@ -400,6 +400,10 @@ describe.skipIf(!gitAvailable)("Commit Shield — a `.git` file that points at a
     const gitDir = path.join(scratch('shield-e2e-sepdir-'), 'repo.git')
     git(tree, ['init', '-q', '--separate-git-dir', gitDir])
     expect(await allowedIn(tree)).toBe(false)
+    // HOLD-A N2: and it is the git-folder refusal, not the core.hooksPath one.
+    expect(await shieldHooksVerdict(factsIn(tree))).toBe('gitDirOutside')
+    git(tree, ['config', 'core.hooksPath', '../elsewhere'])
+    expect(await shieldHooksVerdict(factsIn(tree))).toBe('hooksPath')
   }, 30_000)
 })
 

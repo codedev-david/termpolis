@@ -45,6 +45,7 @@ import {
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
+import type { ServerEntry } from './agentMcpRegistry'
 import { prepareIsolatedLaunch, ISOLATION_SETUP_FAILED, type IsolatedLaunch, type IsolationOptions, type McpListRun } from './readOnlyIsolation'
 import { CODEX_AUTO_APPROVED_TOOLS, RESTRICTED_RUN_TOOLS } from '../shared/agentIntegration'
 import { PRIMER_CLOSE, PRIMER_OPEN, PRIMER_PREFACE } from '../shared/headlessPrompt'
@@ -392,6 +393,9 @@ export interface LinkedJobMcp {
   /** Codex's config.toml holds Termpolis's own server, so the marker and approvals can be set
    *  on it for one run. */
   codexHasTermpolis?: boolean
+  /** Termpolis's own registration of that server, which an isolated run pins it to. Without it, an
+   *  isolated run switches the server off. */
+  codexServer?: ServerEntry
   /** Called once the run has settled, however it ended. */
   dispose?: () => void
 }
@@ -438,7 +442,11 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   const prompt = buildExecPrompt(req.task, primer)
   const primerChars = prompt.length - req.task.length
   const timeoutMs = req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
-  // Set up before the job's MCP plumbing, so a run that can't be isolated has nothing to dispose of.
+  // Codex's plumbing writes nothing, so it is asked first: an isolated run pins the server it names.
+  // Every other agent's is set up after the isolation, so a run that can't be isolated has nothing to
+  // dispose of.
+  const codexMcp = req.linkedJob !== undefined && agent === 'codex' ? linkedJobMcpFor(deps, req.linkedJob, agent) : null
+  const kept = codexMcp?.codexHasTermpolis ? codexMcp.codexServer : undefined
   let isolation: IsolatedLaunch | null = null
   if (req.isolated && req.write !== true) {
     // The MCP list check is spawned exactly as the run will be: same deliver, folder, environment and signal.
@@ -452,8 +460,9 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
       return { stdout: res.stdout, code: res.code }
     }
     try {
-      // A linked job keeps Termpolis's own server, which its marker narrows (HOLD-A I2).
-      const opts: IsolationOptions = { keepTermpolis: req.linkedJob !== undefined }
+      // A linked Codex job keeps Termpolis's own server, pinned to its registration, which its marker
+      // narrows (HOLD-A I2, N1).
+      const opts: IsolationOptions = kept ? { keepTermpolis: kept } : {}
       isolation = await (deps.isolation
         ? deps.isolation(agent, cwd, req.env ?? {}, run, opts)
         : prepareIsolatedLaunch(agent, cwd, req.env ?? {}, run, undefined, opts))
@@ -464,16 +473,18 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
       const reason = err instanceof Error ? err.message : String(err)
       ;(deps.log ?? console.warn)(`[exec] isolated ${agent} run not started: ${reason}`)
       const error = req.isolationReason ? `${EXEC_ISOLATION_FAILED} ${reason}` : ISOLATION_SETUP_FAILED
+      codexMcp?.dispose?.()
       return { ok: false, agent, output: '', error, code: -1, durationMs: now() - started, primerChars }
     }
   }
   // Asked before the job's MCP plumbing is made, so nothing is left to dispose of while it waits.
   const noPersist = req.linkedJob !== undefined && (await canRunUnsaved(deps, agent))
-  const mcp = req.linkedJob === undefined ? null : linkedJobMcpFor(deps, req.linkedJob, agent)
+  const mcp = req.linkedJob === undefined ? null : agent === 'codex' ? codexMcp : linkedJobMcpFor(deps, req.linkedJob, agent)
   const linkedJob: LinkedJobArgs | undefined = req.linkedJob === undefined ? undefined : {
     id: req.linkedJob,
     ...(mcp?.claudeMcpConfig ? { claudeMcpConfig: mcp.claudeMcpConfig } : {}),
-    ...(mcp?.codexHasTermpolis ? { codexHasTermpolis: true } : {}),
+    // An isolated run that kept nothing has the server off: no marker or approvals go on it.
+    ...(mcp?.codexHasTermpolis && (isolation === null || kept !== undefined) ? { codexHasTermpolis: true } : {}),
     ...(noPersist ? { noPersist: true } : {}),
   }
   const { bin, args } = execCommand(agent, req.model, req.write === true, timeoutMs, {

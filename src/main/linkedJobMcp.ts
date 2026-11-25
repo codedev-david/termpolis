@@ -1,7 +1,8 @@
 // Per-run MCP plumbing for a Linked machines job (headlessExec's LinkedJobMcp). claude gets a
 // config file holding only Termpolis's server, with the job marker in that server's env, because
 // `--strict-mcp-config` would otherwise leave it no server at all. codex needs to know whether its
-// config.toml holds Termpolis's own server, which the marker is then set on for the run. agy needs
+// config.toml holds Termpolis's own server, which the marker is then set on for the run, and the entry
+// an isolated run pins that server to (HOLD-A N1). agy needs
 // nothing: it hands its own environment, marker included, to its MCP servers.
 //
 // Plain fs + paths, no electron import, so it is tested on its own.
@@ -30,7 +31,11 @@ export function createLinkedJobMcp(deps: LinkedJobMcpDeps): (jobId: string, agen
   const writeFile = deps.writeFile ?? ((file: string, data: string): void => writeFileSync(file, data, { encoding: 'utf8', mode: 0o600 }))
   const unlink = deps.unlink ?? ((file: string): void => unlinkSync(file))
   return (jobId, agent) => {
-    if (agent === 'codex') return deps.codexHasTermpolis() ? { codexHasTermpolis: true } : null
+    if (agent === 'codex') {
+      if (!deps.codexHasTermpolis()) return null
+      const entry = deps.serverEntry()
+      return { codexHasTermpolis: true, ...(entry ? { codexServer: entry } : {}) }
+    }
     if (agent !== 'claude' || !JOB_ID.test(jobId)) return null
     const entry = deps.serverEntry()
     if (!entry) return null

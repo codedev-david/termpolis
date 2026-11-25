@@ -1020,7 +1020,8 @@ describe('Commit Shield hooks — repo resolution', () => {
       return new Error(`unrouted: ${k}`)
     })
     const r = await invoke('gitHooks:install', { cwd: REPO })
-    expect(r).toEqual({ success: false, error: expect.stringContaining('core.hooksPath') })
+    // HOLD-A N2: its .git names a git folder outside the working tree, and it is told so.
+    expect(r).toEqual({ success: false, error: 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.' })
     expect(asked).toContain('rev-parse --absolute-git-dir')
     expect(asked).toContain('config --local --get core.worktree')
     expect(H.fs.writeFileSync).not.toHaveBeenCalled()
@@ -1061,10 +1062,72 @@ describe('Commit Shield hooks — repo resolution', () => {
 
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
 
-    expect(r).toEqual({ success: true, data: { removed: [] } })
+    // HOLD-A N2: it says the shield it left is still there.
+    expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath)." } })
     expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
     expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(pJoin(OUTSIDE, 'pre-commit'))
     expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([])
+  })
+
+  // HOLD-A N2. `git init --separate-git-dir`: the working tree's .git is a file naming a git folder elsewhere, with no
+  // core.worktree, so the shield can't tell that folder is this repository's (gitHooks.ts shieldHooksVerdict).
+  const SEP = pResolve(REPO, '../sep/repo.git')
+  const SEP_HOOKS = pJoin(SEP, 'hooks')
+  /** git in such a repository; `worktree` answers core.worktree (an Error when it is not set). */
+  const separate = (worktree: () => string | Error = () => new Error('')) => (argv: string[]): string | Error => {
+    const k = argv.join(' ')
+    if (k === 'rev-parse --git-path hooks') return `${SEP_HOOKS}\n`
+    if (k === 'rev-parse --git-common-dir') return `${SEP}\n`
+    if (k === 'rev-parse --absolute-git-dir') return `${SEP}\n`
+    if (k === 'rev-parse --show-toplevel') return `${REPO}\n`
+    if (k === 'config --local --get core.worktree') return worktree()
+    if (k === 'config --show-scope -z --get-all core.hooksPath') return ''
+    return new Error(`unrouted: ${k}`)
+  }
+  const NOT_INSTALLED_SEP = 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.'
+
+  it('says a repository that keeps its git folder outside its working folder was not protected, and writes nothing', async () => {
+    git(separate())
+
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+
+    expect(r).toEqual({ success: false, error: NOT_INSTALLED_SEP })
+    expect(H.fs.mkdirSync).not.toHaveBeenCalled()
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('says the same when the git folder is found outside on the check after the hooks folder is made', async () => {
+    // A submodule-like core.worktree that names this working tree passes the first check, and is gone on the second.
+    let asked = 0
+    git(separate(() => (++asked === 1 ? `${REPO}\n` : new Error(''))))
+
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+
+    expect(asked).toBe(2)
+    expect(H.fs.mkdirSync).toHaveBeenCalledWith(SEP_HOOKS, { recursive: true })
+    expect(r).toEqual({ success: false, error: NOT_INSTALLED_SEP })
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('Remove protection on such a repository says there was no shield to remove, and still drops it from the list', async () => {
+    git(separate())
+    seed(SHIELD_REPOS, JSON.stringify([REPO]))
+
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+    expect(r).toEqual({ success: true, data: { removed: [], notice: 'There was no Commit Shield to remove in this repository.' } })
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([])
+  })
+
+  it('Remove protection on such a repository that still has a shield from before says it was not removed, and leaves it', async () => {
+    git(separate())
+    seed(pJoin(SEP_HOOKS, 'pre-push'), `#!/bin/sh\n${SENTINEL}\n`)
+
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+    expect(r).toEqual({ success: true, data: { removed: [], notice: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.' } })
+    expect(wrote(pJoin(SEP_HOOKS, 'pre-push'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
+    expect(H.fs.unlinkSync).not.toHaveBeenCalled()
   })
 })
 
@@ -1222,6 +1285,19 @@ describe('Commit Shield hooks — protected-repo list', () => {
 
     expect(r.success).toBe(true)
     expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual(['/other-repo'])
+    // HOLD-A N2: nothing was there to remove, and it says so.
+    expect(r.data).toEqual({ removed: [], notice: 'There was no Commit Shield to remove in this repository.' })
+  })
+
+  it('says nothing more when the only shield left is in a linked hook file it may not change', async () => {
+    git(inRepo)
+    seed(PRE_COMMIT, `#!/bin/sh\n${SENTINEL}\n`)
+    H.kinds.set(H.norm(PRE_COMMIT), 'link')
+
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+    expect(r).toEqual({ success: true, data: { removed: [] } })
+    expect(wrote(PRE_COMMIT)).toContain(SENTINEL)
   })
 })
 

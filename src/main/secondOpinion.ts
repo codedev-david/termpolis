@@ -130,11 +130,25 @@ export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number): s
   return ['--mode', 'plan', '--print-timeout', `${secs}s`, ...modelArgs('gemini', model), '-p', PROMPT_TOKEN]
 }
 
-/** Whether agy's stderr says it ran a `--mode plan` turn in its default mode instead ("--mode plan is not supported
- *  headless, continuing in the default mode", or "has no effect" with slash commands off). Such a run is not the
- *  read-only run asked for, so its answer is dropped (HOLD-A M4); the run home's deny rules still held it. Pure. */
+/** The whole lines agy prints when it runs a `--mode plan` turn in its default mode instead, as agy.exe 1.5.15 holds
+ *  them (its `--mode %s` filled in): four "Print mode:" lines, three "warning:" lines, and the one for slash
+ *  commands off. Nothing before or after on the line but trailing spaces and a carriage return. */
+const AGY_PLAN_DROPPED_LINE = new RegExp([
+  '^(?:',
+  'warning: --mode plan (?:is not supported in print mode|is not available for this account|is not available because ',
+  'the terminal sandbox is not available on this host); continuing in the default mode\\.',
+  '|Print mode: --mode plan is (?:unavailable \\((?:rollout flag off|terminal sandbox unavailable)\\)|not supported headless), ',
+  'continuing in the default mode',
+  '|warning: --mode plan has no effect while slash command expansion is disabled\\.',
+  ')[ \\t]*\\r?$',
+].join(''), 'm')
+
+/** Whether agy's stderr has one of the lines it prints when it runs a `--mode plan` turn in its default mode
+ *  instead (AGY_PLAN_DROPPED_LINE). Such a run is not the read-only run asked for, so its answer is dropped
+ *  (HOLD-A M4, N3); the run home's deny rules still held it. Only agy's own whole line counts: an answer, or a
+ *  line that merely quotes the words, is not dropped. Pure. */
 export function agyDroppedPlanMode(stderr: string): boolean {
-  return /--mode\s+plan\b[^\r\n]*\b(?:not supported|no effect)\b|continuing in the default mode/i.test(stderr)
+  return AGY_PLAN_DROPPED_LINE.test(stderr)
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   hooksPathScopes,
   shieldMayWriteHooks,
   shieldHooksAllowed,
+  shieldHooksVerdict,
   type HooksWriteFacts,
   type HookDeps,
   type HookFileKind,
@@ -628,5 +629,42 @@ describe('Commit Shield hooks — where the installer may write (#36)', () => {
     gitdirFile = '/repo/.git\n'
     answers['rev-parse --absolute-git-dir'] = new Error('fatal: not a git repository')
     expect(await shieldHooksAllowed(o)).toBe(false)
+  })
+
+  // HOLD-A N2: a refusal says which kind it is, so the person is told the right reason.
+  it('shieldHooksVerdict tells a git folder kept outside the working folder from a core.hooksPath refusal', async () => {
+    const answers: Record<string, string | Error> = {
+      'rev-parse --show-toplevel': '/repo\n',
+      'rev-parse --git-common-dir': '/sep/repo.git\n',
+      'rev-parse --absolute-git-dir': '/sep/repo.git\n',
+      'config --local --get core.worktree': new Error(''),
+      'config --show-scope -z --get-all core.hooksPath': '',
+    }
+    const git = async (args: string[]): Promise<string> => {
+      const a = answers[args.join(' ')]
+      if (a instanceof Error) throw a
+      return a ?? ''
+    }
+    const base = { repo: '/repo', git, readFile: async () => null, path: posix, platform: 'linux' as NodeJS.Platform, realpath: noLinks }
+    // `git init --separate-git-dir`: the hooks are in a git folder the shield can't tell is this repository's.
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/sep/repo.git/hooks' })).toBe('gitDirOutside')
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/sep/repo.git' })).toBe('gitDirOutside')
+    expect(await shieldHooksAllowed({ ...base, hooksDir: '/sep/repo.git/hooks' })).toBe(false)
+    // The same repository's own core.hooksPath pointing anywhere else is the hooksPath refusal.
+    answers['config --show-scope -z --get-all core.hooksPath'] = 'local\0/elsewhere\0'
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/elsewhere' })).toBe('hooksPath')
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/sep/repo.git-evil/hooks' })).toBe('hooksPath')
+    // A git folder that belongs (here, inside the working tree) is a root, so a refusal there is never this kind.
+    answers['rev-parse --git-common-dir'] = '.git\n'
+    answers['rev-parse --absolute-git-dir'] = '/repo/.git\n'
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/repo/.git/hooks' })).toBe('allowed')
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/elsewhere' })).toBe('hooksPath')
+    // A git that names no git folder, or no working tree (a bare repository it refuses), keeps the old words.
+    answers['rev-parse --git-common-dir'] = ''
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/sep/repo.git/hooks' })).toBe('hooksPath')
+    answers['rev-parse --show-toplevel'] = new Error('fatal: this operation must be run in a work tree')
+    answers['rev-parse --git-common-dir'] = '/sep/repo.git\n'
+    answers['rev-parse --absolute-git-dir'] = '/sep/repo.git\n'
+    expect(await shieldHooksVerdict({ ...base, hooksDir: '/sep/repo.git/hooks' })).toBe('hooksPath')
   })
 })

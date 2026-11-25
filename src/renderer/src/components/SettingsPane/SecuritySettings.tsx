@@ -48,7 +48,7 @@ interface AiSecurityAPI {
   setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
   gitHooksList?: () => Promise<{ success: boolean; data?: ShieldRepo[] }>
   gitHooksInstall?: (cwd?: string) => Promise<{ success: boolean; error?: string; data?: { canceled?: boolean; repo?: string } }>
-  gitHooksUninstall?: (cwd: string) => Promise<{ success: boolean }>
+  gitHooksUninstall?: (cwd: string) => Promise<{ success: boolean; data?: { notice?: string } }>
   setEgressGuard?: (value: boolean) => Promise<{ success: boolean }>
   setMemoryScrub?: (value: boolean) => Promise<{ success: boolean }>
   scan: (text: string) => Promise<{ success: boolean; data?: ScanResult }>
@@ -185,8 +185,9 @@ export function SecuritySettings() {
 
   const unprotectRepo = async (repo: string) => {
     if (!api?.gitHooksUninstall) return
-    await api.gitHooksUninstall(repo)
-    setHookMsg('')
+    const res = await api.gitHooksUninstall(repo)
+    // What it says when it removed nothing (HOLD-A N2).
+    setHookMsg(res.success && res.data?.notice ? res.data.notice : '')
     await refreshHooks()
   }
 

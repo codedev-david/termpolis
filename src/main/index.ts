@@ -195,7 +195,7 @@ import {
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
-import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksAllowed, shieldNodePath, type HookDeps, type HookPaths } from './gitHooks'
+import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksVerdict, shieldNodePath, type HookDeps, type HookPaths, type ShieldHooksVerdict } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
 import { offMainFiles } from './offMainFiles'
@@ -2137,8 +2137,8 @@ async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
 }
 
 /** #36 (WPS M7): the installer writes hooks only into the repository's git folder or working tree, or a folder the
- *  person's own core.hooksPath names (gitHooks.ts shieldHooksAllowed), never where the repository's config points. */
-const shieldMayWrite = (repo: string, hooksDir: string): Promise<boolean> => shieldHooksAllowed({
+ *  person's own core.hooksPath names (gitHooks.ts shieldHooksVerdict), never where the repository's config points. */
+const shieldMayWrite = (repo: string, hooksDir: string): Promise<ShieldHooksVerdict> => shieldHooksVerdict({
   repo,
   hooksDir,
   git: (args) => safeGitAsync(args, { cwd: repo, timeout: 5000, keepEnv: HOOKS_KEEP_ENV }),
@@ -2147,6 +2147,19 @@ const shieldMayWrite = (repo: string, hooksDir: string): Promise<boolean> => shi
   platform: process.platform,
   realpath: async (p) => fsPromises.realpath(p),
 })
+
+/** Why the Commit Shield was not installed, by shieldHooksVerdict's reason. PENDING SIGN-OFF (new wording, #36; N2). */
+const SHIELD_NOT_INSTALLED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
+  hooksPath: "This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.",
+  gitDirOutside: 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.',
+}
+/** What Remove protection says when it removed nothing: a shield it was refused to touch, or none there. PENDING
+ *  SIGN-OFF (new wording, HOLD-A N2). */
+const SHIELD_NOT_REMOVED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
+  hooksPath: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath).",
+  gitDirOutside: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.',
+}
+const SHIELD_NONE_TO_REMOVE = 'There was no Commit Shield to remove in this repository.'
 
 ipcMain.handle('gitHooks:status', async (_, { cwd }: { cwd: string }) => {
   try {
@@ -2171,13 +2184,14 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
     }
     const paths = await hookPathsFor(repo)
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
-    // PENDING SIGN-OFF (new wording, #36).
-    if (!(await shieldMayWrite(repo, paths.hooksDir))) return err("This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.")
+    const verdict = await shieldMayWrite(repo, paths.hooksDir)
+    if (verdict !== 'allowed') return err(SHIELD_NOT_INSTALLED[verdict])
     // PENDING SIGN-OFF (new wording, M1): the hook runs node by the full path found here, never one on PATH.
     if (paths.nodePath === '') return err('The Commit Shield was not installed: Termpolis could not find node on this computer.')
     mkdirSync(paths.hooksDir, { recursive: true })
     // Again, now that the folder exists: a link in its path that led nowhere before is followed now (I1).
-    if (!(await shieldMayWrite(repo, paths.hooksDir))) return err("This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.")
+    const again = await shieldMayWrite(repo, paths.hooksDir)
+    if (again !== 'allowed') return err(SHIELD_NOT_INSTALLED[again])
     // PENDING SIGN-OFF (new wording, I1): a hook file that is a link, or not a regular file, refuses the whole install.
     const unsafe = unsafeHook(paths, realHookDeps)
     if (unsafe) {
@@ -2197,9 +2211,15 @@ ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
     const paths = await hookPathsFor(cwd)
     if (!paths) return err('Not a git repository')
     // A hooks folder outside the repository that its own config names is not touched; the repository still leaves the list.
-    const removed = (await shieldMayWrite(cwd, paths.hooksDir)) ? uninstallHooks(paths, realHookDeps) : []
+    const verdict = await shieldMayWrite(cwd, paths.hooksDir)
+    const removed = verdict === 'allowed' ? uninstallHooks(paths, realHookDeps) : []
     writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
-    return ok({ removed })
+    if (removed.length > 0) return ok({ removed })
+    // Nothing removed: say so, or why a shield is still there (HOLD-A N2). A block left in a linked hook file of a
+    // repository it may write keeps the old answer.
+    const left = Object.values(hookStatus(paths, realHookDeps)).includes('installed')
+    if (!left) return ok({ removed, notice: SHIELD_NONE_TO_REMOVE })
+    return verdict === 'allowed' ? ok({ removed }) : ok({ removed, notice: SHIELD_NOT_REMOVED[verdict] })
   } catch (e: any) { return err(e.message) }
 })
 

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AGY_NO_MCP_SERVERS, AGY_READ_ONLY_SETTINGS, CLAUDE_ISOLATE_ARGS, CODEX_MCP_OFF_COMMAND, CODEX_MCP_OFF_URL, CODEX_MCP_SERVER_OFF,
   CODEX_NO_CONNECTORS_ARGS, ISOLATION_SETUP_FAILED, MAX_CODEX_CONFIG_BYTES, MCP_LIST_PASS_MS, MCP_LIST_TIMEOUT_MS, READ_ONLY_RUN_ENV,
-  agyMcpListEmpty, clearIsolationChecks, codexLayerPaths, codexMcpListAllOff, defaultIsolationIO, prepareIsolatedLaunch, removeDirRetrying,
+  agyMcpListEmpty, clearIsolationChecks, codexLayerPaths, codexMcpListAllOff, codexPinArgs, defaultIsolationIO, prepareIsolatedLaunch, removeDirRetrying,
   sweepStaleAgyHomes, type IsolationIO, type McpListRun, type SweepIO,
 } from '../../src/main/readOnlyIsolation'
 import { CODEX_ISOLATE_MCP_ARGS } from '../../src/main/secondOpinion'
@@ -70,6 +70,20 @@ const projectConfig = async (dir: string, text: string): Promise<string> => {
 const OFF_CMD = (n: string): string[] => ['-c', `mcp_servers.${n}.enabled=false`, '-c', `mcp_servers.${n}.command=${CODEX_MCP_OFF_COMMAND}`]
 const TAIL = [...CODEX_ISOLATE_MCP_ARGS, ...CODEX_NO_CONNECTORS_ARGS]
 
+/** Termpolis's own registration (agentMcpRegistry's termpolisServerEntry), which a linked job's run pins (HOLD-A N1). */
+const KEPT = { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\app\\resources\\mcp-adapter\\stdio-adapter.cjs'], env: { ELECTRON_RUN_AS_NODE: '1' } }
+const PIN = [
+  '-c', "mcp_servers.termpolis.command='C:\\Program Files\\nodejs\\node.exe'",
+  '-c', "mcp_servers.termpolis.args=['C:\\app\\resources\\mcp-adapter\\stdio-adapter.cjs']",
+  '-c', "mcp_servers.termpolis.env.ELECTRON_RUN_AS_NODE='1'",
+]
+/** The kept server as `codex mcp list --json` lists it (codex-cli 0.164.0), with `over` on its transport. A layer's
+ *  other variables (OTHER) are merged in by Codex and are allowed. */
+const keptListed = (over: Record<string, unknown> = {}, enabled = true): string => JSON.stringify({
+  name: 'termpolis', enabled, disabled_reason: null,
+  transport: { type: 'stdio', command: KEPT.command, args: KEPT.args, env: { ...KEPT.env, OTHER: 'x' }, env_vars: [], cwd: null, ...over },
+})
+
 describe('readOnlyIsolation constants', () => {
   it('spells the Codex override, the agy rules, the Claude flag and the read-only marker once', () => {
     expect(CODEX_MCP_SERVER_OFF('docs')).toEqual(['-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled'])
@@ -100,13 +114,23 @@ describe('codexMcpListAllOff', () => {
     ]) expect([bad, codexMcpListAllOff(bad)]).toEqual([bad, false])
   })
 
-  // HOLD-A I2: a linked job's run keeps Termpolis's own server, so the server named kept may be on.
-  it('with a server named kept, passes that one on or off and still every other only off', () => {
-    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true},{"name":"docs","enabled":false}]', 'termpolis')).toBe(true)
-    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":false}]', 'termpolis')).toBe(true)
-    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true},{"name":"docs","enabled":true}]', 'termpolis')).toBe(false)
-    expect(codexMcpListAllOff('[{"name":"Termpolis","enabled":true}]', 'termpolis')).toBe(false)
-    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true}]')).toBe(false)
+  // HOLD-A I2 and N1: a linked job's run keeps Termpolis's own server, so it may be on, but only as the registration pinned.
+  it('with a kept registration, passes Termpolis\'s server on only when its transport is the one pinned, and still every other only off', () => {
+    expect(codexMcpListAllOff(`[${keptListed()},{"name":"docs","enabled":false}]`, KEPT)).toBe(true)
+    expect(codexMcpListAllOff(`[${keptListed({ cwd: undefined })}]`, KEPT)).toBe(true)
+    expect(codexMcpListAllOff(`[${keptListed({ command: 'evil' }, false)}]`, KEPT)).toBe(true)
+    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true,"transport":{"type":"stdio","command":"n","args":[],"env":null}}]', { command: 'n', args: [] })).toBe(true)
+    expect(codexMcpListAllOff(`[${keptListed()},{"name":"docs","enabled":true}]`, KEPT)).toBe(false)
+    expect(codexMcpListAllOff(`[${keptListed()}]`)).toBe(false)
+    expect(codexMcpListAllOff(`[${keptListed().replace('"termpolis"', '"Termpolis"')}]`, KEPT)).toBe(false)
+    for (const over of [
+      { type: 'streamable_http' }, { command: 'evil-binary' }, { args: 'x' }, { args: [] }, { args: ['C:\\evil.cjs'] },
+      { args: [...KEPT.args, '--more'] }, { cwd: 'C:\\elsewhere' }, { env: null }, { env: {} }, { env: { ELECTRON_RUN_AS_NODE: '0' } },
+    ]) expect([over, codexMcpListAllOff(`[${keptListed(over)}]`, KEPT)]).toEqual([over, false])
+    for (const transport of [undefined, null, 'stdio', []]) {
+      const listed = JSON.stringify([{ name: 'termpolis', enabled: true, transport }])
+      expect([transport, codexMcpListAllOff(listed, KEPT)]).toEqual([transport, false])
+    }
   })
 })
 
@@ -133,28 +157,71 @@ describe('prepareIsolatedLaunch for Codex', () => {
     expect({ home: await snapshot(home), project: await snapshot(project), tmp: await snapshot(tmp) }).toEqual(before)
   })
 
-  // HOLD-A I2: a linked job keeps Termpolis's server, which execCommand narrows with the job's marker
-  // or switches off (codexLinkedJobArgs); every other server and the connectors still go off.
-  it('with keepTermpolis, leaves Termpolis\'s own server to the run and checks every other server off', async () => {
+  // HOLD-A I2 and N1: a linked job keeps Termpolis's server, pinned to Termpolis's own registration, which execCommand
+  // narrows with the job's marker or switches off (codexLinkedJobArgs); every other server and the connectors still go off.
+  it('with keepTermpolis, pins Termpolis\'s own server to its registration, leaves it to the run, and checks every other server off', async () => {
     await userConfig('[mcp_servers.docs]\ncommand = "d"\n[mcp_servers.termpolis]\ncommand = "t"\n')
-    const run = vi.fn<McpListRun>(async () => ({ stdout: '[{"name":"docs","enabled":false},{"name":"termpolis","enabled":true}]', code: 0 }))
-    const launch = await prepareIsolatedLaunch('codex', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: true })
-    const expected = [...OFF_CMD('docs'), ...CODEX_NO_CONNECTORS_ARGS]
+    const run = vi.fn<McpListRun>(async () => ({ stdout: `[{"name":"docs","enabled":false},${keptListed()}]`, code: 0 }))
+    const launch = await prepareIsolatedLaunch('codex', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: KEPT })
+    const expected = [...OFF_CMD('docs'), ...PIN, ...CODEX_NO_CONNECTORS_ARGS]
     expect(launch.args).toEqual(expected)
-    expect(launch.args.join(' ')).not.toContain('mcp_servers.termpolis')
+    expect(launch.args).not.toContain('mcp_servers.termpolis.enabled=false')
     expect(launch.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
     expect(run).toHaveBeenCalledWith('codex', ['mcp', 'list', '--json', ...expected], {
       cwd: project, env: { TERMPOLIS_LINKED_JOB: 'j1', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: MCP_LIST_TIMEOUT_MS,
     })
-    // Any other server on still fails it.
+    // Any other server on still fails it, and so does a kept server that is not the one pinned.
+    for (const stdout of [`[{"name":"docs","enabled":true},${keptListed()}]`, `[${keptListed({ command: 'evil-binary' })}]`]) {
+      clearIsolationChecks()
+      await expect(prepareIsolatedLaunch('codex', project, {}, async () => ({ stdout, code: 0 }), realIO(), { keepTermpolis: KEPT }))
+        .rejects.toThrow(/did not show every MCP server off/)
+    }
+    // Without the option, Termpolis's server on fails it.
     clearIsolationChecks()
-    const leaky: McpListRun = async () => ({ stdout: '[{"name":"docs","enabled":true},{"name":"termpolis","enabled":true}]', code: 0 })
-    await expect(prepareIsolatedLaunch('codex', project, {}, leaky, realIO(), { keepTermpolis: true })).rejects.toThrow(/did not show every MCP server off/)
-    // Without the option, Termpolis's server on fails it, and a passed keep check is not a pass for a run that keeps nothing.
-    clearIsolationChecks()
-    await prepareIsolatedLaunch('codex', project, {}, run, realIO(), { keepTermpolis: true })
     await expect(prepareIsolatedLaunch('codex', project, {}, run, realIO())).rejects.toThrow(/did not show every MCP server off/)
-    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  // HOLD-A N1. The repository's author writes a trusted project's .codex/config.toml. Codex merges a server's table
+  // across layers, so a `-c` pin beats the keys it sets but not one it doesn't (another variable, a cwd): a run
+  // that would keep Termpolis's server is refused instead. One that keeps nothing switches it off over the project's.
+  it('refuses to keep Termpolis\'s server when a project config Codex loads defines one, and checks nothing', async () => {
+    await userConfig(`[mcp_servers.termpolis]\ncommand = "t"\n${trust(project)}`)
+    const sub = join(project, 'pkg')
+    await mkdir(sub)
+    const cfg = await projectConfig(project, '[mcp_servers.termpolis]\ncommand = "evil-binary"\nargs = ["x"]\n')
+    const run = passing()
+    const keep = (dir: string): Promise<unknown> => prepareIsolatedLaunch('codex', dir, {}, run, realIO(), { keepTermpolis: KEPT })
+    const refused = `can't keep Termpolis's MCP server for the run: ${cfg} sets a server of its own named termpolis`
+    await expect(keep(project)).rejects.toThrow(refused)
+    await expect(keep(sub)).rejects.toThrow(refused)
+    // Any key of it counts: a dotted one in a folder further down, too.
+    await writeFile(cfg, '[mcp_servers.docs]\ncommand = "d"\n')
+    const subCfg = await projectConfig(sub, 'mcp_servers.termpolis.env.NODE_OPTIONS = "--require=evil.js"\n')
+    await expect(keep(sub)).rejects.toThrow(`can't keep Termpolis's MCP server for the run: ${subCfg} sets a server of its own named termpolis`)
+    expect(run).not.toHaveBeenCalled()
+    // A run that keeps nothing goes ahead, Termpolis's server switched off.
+    expect((await prepareIsolatedLaunch('codex', sub, {}, run, realIO())).args).toEqual([...OFF_CMD('docs'), ...TAIL])
+    // A project config Codex doesn't load (no folder trusted) is not the run's, so the kept run goes ahead.
+    await userConfig('[mcp_servers.termpolis]\ncommand = "t"\n')
+    const ok = vi.fn<McpListRun>(async () => ({ stdout: `[${keptListed()}]`, code: 0 }))
+    expect((await prepareIsolatedLaunch('codex', sub, {}, ok, realIO(), { keepTermpolis: KEPT })).args).toEqual([...PIN, ...CODEX_NO_CONNECTORS_ARGS])
+  })
+
+  // HOLD-A N4: a run that keeps Termpolis's server and one that keeps nothing never share a passed check.
+  it('a passed check that kept Termpolis\'s server is not a pass for a run in the same folder that keeps nothing', async () => {
+    await userConfig('[mcp_servers.termpolis]\ncommand = "t"\n')
+    const io = realIO()
+    const run = vi.fn<McpListRun>(async (_bin, args) => ({
+      stdout: args.includes('mcp_servers.termpolis.enabled=false') ? '[{"name":"termpolis","enabled":false}]' : `[${keptListed()}]`, code: 0,
+    }))
+    expect((await prepareIsolatedLaunch('codex', project, {}, run, io, { keepTermpolis: KEPT })).args).toEqual([...PIN, ...CODEX_NO_CONNECTORS_ARGS])
+    expect((await prepareIsolatedLaunch('codex', project, {}, run, io)).args).toEqual(TAIL)
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(run.mock.calls[1][1]).toEqual(['mcp', 'list', '--json', ...TAIL])
+    // Each pass still stands for its own kind of run.
+    await prepareIsolatedLaunch('codex', project, {}, run, io, { keepTermpolis: KEPT })
+    await prepareIsolatedLaunch('codex', project, {}, run, io)
+    expect(run).toHaveBeenCalledTimes(2)
   })
 
   it('still switches Termpolis\'s server and the connectors off when there is no config at all', async () => {
@@ -324,6 +391,29 @@ describe('prepareIsolatedLaunch for Codex', () => {
   })
 })
 
+// HOLD-A N1: verified with codex-cli 0.164.0 (`codex mcp list --json`, a throwaway CODEX_HOME, no sign-in): each
+// value set this way wins over a trusted project's .codex/config.toml.
+describe('codexPinArgs', () => {
+  it('pins the command, the args and each variable of the registration as TOML literal strings', () => {
+    expect(codexPinArgs(KEPT)).toEqual(PIN)
+    expect(codexPinArgs({ command: '/usr/local/bin/node', args: ['/opt/Termpolis/mcp-adapter/stdio-adapter.cjs', 'b'] })).toEqual([
+      '-c', "mcp_servers.termpolis.command='/usr/local/bin/node'",
+      '-c', "mcp_servers.termpolis.args=['/opt/Termpolis/mcp-adapter/stdio-adapter.cjs','b']",
+    ])
+    expect(codexPinArgs({ command: 'node', args: [], env: {} })).toEqual(['-c', "mcp_servers.termpolis.command='node'", '-c', 'mcp_servers.termpolis.args=[]'])
+  })
+
+  it('throws for a value a literal string can\'t hold, or a variable name that is not a bare key', () => {
+    for (const bad of [
+      { command: "C:\\Users\\O'Brien\\node.exe", args: [] },
+      { command: 'node', args: ['a\nb'] },
+      { command: 'node', args: ['a\u0000'] },
+      { command: 'node', args: [], env: { 'A B': '1' } },
+      { command: 'node', args: [], env: { A: 'x\ry' } },
+    ]) expect(() => codexPinArgs(bad)).toThrow(/^can't keep Termpolis's MCP server for the run: its registration has a value Codex can't be handed as it is$/)
+  })
+})
+
 describe('codexLayerPaths', () => {
   it('names the machine-wide, managed and plugin layers for each OS', () => {
     const tail = (h: string): string[] => [join(h, 'managed_config.toml'), join(h, 'plugins'), join(h, 'plugins', 'cache')]
@@ -437,10 +527,10 @@ describe('prepareIsolatedLaunch for Claude Code', () => {
   // HOLD-A I2: keepTermpolis is Codex's alone. Claude's linked job brings its own server file, and agy's
   // run home holds no server at all, so an agy linked job that may not write runs without Termpolis's.
   it('keepTermpolis changes nothing for Claude Code or agy', async () => {
-    const claude = await prepareIsolatedLaunch('claude', project, {}, passing(), realIO(), { keepTermpolis: true })
+    const claude = await prepareIsolatedLaunch('claude', project, {}, passing(), realIO(), { keepTermpolis: KEPT })
     expect(claude.args).toEqual([...CLAUDE_ISOLATE_ARGS])
     const run = passing()
-    const agy = await prepareIsolatedLaunch('gemini', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: true })
+    const agy = await prepareIsolatedLaunch('gemini', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: KEPT })
     expect(agy.args).toEqual([])
     expect(agy.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1', HOME: agy.env.HOME, USERPROFILE: agy.env.HOME })
     expect(await snapshot(agy.env.HOME)).not.toHaveProperty(join('.gemini', 'config', 'mcp_config.json'))

@@ -134,17 +134,41 @@ describe('agyReadOnlyArgs', () => {
   })
 })
 
-// HOLD-A M4. agy can run a `--mode plan` turn in its default mode and say so on stderr.
+// HOLD-A M4 and N3. agy can run a `--mode plan` turn in its default mode and say so on stderr, in one of these
+// lines, as agy.exe 1.5.15 holds them (`--mode %s` filled in with plan).
+const AGY_PLAN_DROPPED_LINES = [
+  'warning: --mode plan is not supported in print mode; continuing in the default mode.',
+  'Print mode: --mode plan is unavailable (rollout flag off), continuing in the default mode',
+  'warning: --mode plan is not available for this account; continuing in the default mode.',
+  'Print mode: --mode plan is unavailable (terminal sandbox unavailable), continuing in the default mode',
+  'Print mode: --mode plan is not supported headless, continuing in the default mode',
+  'warning: --mode plan is not available because the terminal sandbox is not available on this host; continuing in the default mode.',
+  'warning: --mode plan has no effect while slash command expansion is disabled.',
+]
+
 describe('agyDroppedPlanMode', () => {
-  it('reads the lines agy prints when it runs a plan turn in its default mode, and nothing else', () => {
-    for (const said of [
-      '--mode plan is not supported headless, continuing in the default mode',
-      'Warning: --mode plan has no effect while slash command expansion is disabled\n',
-      'loading\r\n--MODE PLAN is not supported headless\r\n',
+  it('reads each whole line agy prints when it runs a plan turn in its default mode, anywhere in its stderr', () => {
+    for (const line of AGY_PLAN_DROPPED_LINES) {
+      for (const said of [line, `${line}\n`, `Loaded cached credentials.\r\n${line}\r\nthinking`, `${line}  `]) {
+        expect([said, agyDroppedPlanMode(said)]).toEqual([said, true])
+      }
+    }
+  })
+
+  it('never drops a run for an answer or another line that merely holds the words', () => {
+    for (const quiet of [
+      '', 'Loaded cached credentials.', '--mode plan', 'plan mode on', 'the default mode is plan',
       'continuing in the default mode',
-    ]) expect(agyDroppedPlanMode(said), said).toBe(true)
-    for (const quiet of ['', 'Loaded cached credentials.', '--mode plan', 'plan mode on', '--mode accept-edits is not supported here', 'the default mode is plan'])
-      expect(agyDroppedPlanMode(quiet), quiet).toBe(false)
+      'continuing in the default mode.',
+      '[trace] read src/main/secondOpinion.ts: "Print mode: --mode plan is not supported headless, continuing in the default mode"',
+      'The fix: when agy says "warning: --mode plan has no effect while slash command expansion is disabled." it is dropped.',
+      '> Print mode: --mode plan is not supported headless, continuing in the default mode',
+      'Print mode: --mode plan is not supported headless, continuing in the default mode, then it wrote files',
+      'Print mode: --mode accept-edits is not supported headless, continuing in the default mode',
+      'warning: --mode plan is not supported in print mode; continuing in the default mode',
+      'WARNING: --MODE PLAN IS NOT SUPPORTED IN PRINT MODE; CONTINUING IN THE DEFAULT MODE.',
+      '--mode plan is not supported headless, continuing in the default mode',
+    ]) expect([quiet, agyDroppedPlanMode(quiet)]).toEqual([quiet, false])
   })
 })
 
@@ -614,11 +638,15 @@ describe('runSecondOpinion: every review is isolated before it starts (SEC-1)', 
   it('agy: a review agy says it ran outside plan mode is dropped, and why is logged; other words, or other agents, are not', async () => {
     const said = (stderr: string) => vi.fn<DeliverFn>(async () => ({ stdout: 'a review', stderr, code: 0 }))
     const log = vi.fn()
-    const dropped = said('--mode plan is not supported headless, continuing in the default mode\n')
+    const dropped = said('Print mode: --mode plan is not supported headless, continuing in the default mode\n')
     expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, dropped, fakeIsolate().isolate, { cwd: '/app', log }))
       .toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/^\[second-opinion\] gemini review dropped: agy ran it outside plan mode/))
     expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, said('Loaded cached credentials.'), fakeIsolate().isolate, { cwd: '/app', log }))
+      .toEqual({ ok: true, feedback: 'a review' })
+    // HOLD-A N3: a line that only quotes agy's words is not agy's.
+    const quoted = said('[trace] read notes.md: "Print mode: --mode plan is not supported headless, continuing in the default mode"\n')
+    expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, quoted, fakeIsolate().isolate, { cwd: '/app', log }))
       .toEqual({ ok: true, feedback: 'a review' })
     expect(await runSecondOpinion({ agent: 'codex', content: 'x' }, dropped, fakeIsolate().isolate, { cwd: '/app', log }))
       .toEqual({ ok: true, feedback: 'a review' })

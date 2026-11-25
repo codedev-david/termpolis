@@ -55,10 +55,13 @@ describe('linkedJobMcp: per-run MCP plumbing for a Linked machines job', () => {
     expect(writeFile).not.toHaveBeenCalled()
   })
 
-  it('tells codex whether its config holds Termpolis\'s own server, and writes nothing for it', () => {
+  // HOLD-A N1: an isolated codex job pins the server it keeps to this entry.
+  it('tells codex whether its config holds Termpolis\'s own server, with the entry to pin it to, and writes nothing for it', () => {
     const writeFile = vi.fn()
-    const make = (has: boolean) => createLinkedJobMcp({ serverEntry: () => ENTRY, codexHasTermpolis: () => has, tempDir: () => '/tmp', writeFile })
-    expect(make(true)('job1', 'codex')).toEqual({ codexHasTermpolis: true })
+    const make = (has: boolean, entry: typeof ENTRY | null = ENTRY) =>
+      createLinkedJobMcp({ serverEntry: () => entry, codexHasTermpolis: () => has, tempDir: () => '/tmp', writeFile })
+    expect(make(true)('job1', 'codex')).toEqual({ codexHasTermpolis: true, codexServer: ENTRY })
+    expect(make(true, null)('job1', 'codex')).toEqual({ codexHasTermpolis: true })
     expect(make(false)('job1', 'codex')).toBeNull()
     expect(writeFile).not.toHaveBeenCalled()
   })

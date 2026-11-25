@@ -27,6 +27,9 @@
 // A Linked machines job that may not write is isolated too (HOLD-A I2), with `keepTermpolis`: Codex
 // then leaves Termpolis's own server to the run, which the job's marker narrows to its read-only tools
 // (or switches off, codexLinkedJobArgs in headlessExec.ts), and its check lets that one server be on.
+// The kept server is pinned to Termpolis's own registration (codexPinArgs, HOLD-A N1), and a run that
+// would keep it is refused when a project config Codex loads names a server termpolis: Codex merges a
+// server's table across layers, so a pin wins only for the keys it sets.
 // Claude's linked job brings its own server file; agy's run home has no server, so an agy job that may
 // not write runs without Termpolis's.
 //
@@ -37,6 +40,7 @@ import { createHash } from 'crypto'
 import { constants as fsConstants, promises as fsp, type BigIntStats } from 'fs'
 import os from 'os'
 import path from 'path'
+import type { ServerEntry } from './agentMcpRegistry'
 import { codexMcpServerNames, codexTopLevelString, codexTrustedProjects } from './codexConfigEdit'
 import { CODEX_ISOLATE_MCP_ARGS, type SecondOpinionAgent } from './secondOpinion'
 
@@ -100,8 +104,36 @@ export const AGY_NO_MCP_SERVERS = 'No MCP servers configured.'
 
 /** How a run is isolated. */
 export interface IsolationOptions {
-  /** Codex only: leave Termpolis's own MCP server to the run (a Linked machines job, which narrows it). */
-  keepTermpolis?: boolean
+  /** Codex only: leave Termpolis's own MCP server to the run (a Linked machines job, which narrows it),
+   *  pinned to this registration of it (agentMcpRegistry's termpolisServerEntry). */
+  keepTermpolis?: ServerEntry
+}
+
+/** Why a run that keeps Termpolis's server can't start: what the person sees after EXEC_ISOLATION_FAILED. */
+const KEEP_REFUSED = "can't keep Termpolis's MCP server for the run"
+
+/** A variable name Codex reads as one bare key of a `-c` dotted path. */
+const BARE_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** What a TOML literal string can't hold: its quote, a line break or another control character. A value
+ *  without them passes through as it is, a Windows path's backslashes included. */
+const NOT_LITERAL = /['\u0000-\u001f\u007f]/
+
+/** The `-c` overrides that pin Termpolis's server, for one run, to its registration: the command, the
+ *  args and each variable, as TOML literal strings. Checked with codex-cli 0.164.0 (`codex mcp list --json`,
+ *  a throwaway CODEX_HOME): each key set this way wins over the same key in a trusted project's
+ *  .codex/config.toml, a whole args list included, while a key the pin doesn't set still merges in from
+ *  the lower layers. Throws when a value can't be handed over unchanged. Pure. */
+export function codexPinArgs(entry: ServerEntry): string[] {
+  const env = Object.entries(entry.env ?? {})
+  if ([entry.command, ...entry.args, ...env.map(([, v]) => v)].some((v) => NOT_LITERAL.test(v)) || env.some(([k]) => !BARE_KEY.test(k))) {
+    throw new Error(`${KEEP_REFUSED}: its registration has a value Codex can't be handed as it is`)
+  }
+  const lit = (v: string): string => `'${v}'`
+  return [
+    '-c', `mcp_servers.termpolis.command=${lit(entry.command)}`,
+    '-c', `mcp_servers.termpolis.args=[${entry.args.map(lit).join(',')}]`,
+    ...env.flatMap(([k, v]) => ['-c', `mcp_servers.termpolis.env.${k}=${lit(v)}`]),
+  ]
 }
 
 export interface IsolatedLaunch {
@@ -254,6 +286,8 @@ function folderChain(dir: string): string[] {
 interface CodexServers {
   names: string[]
   url: string[]
+  /** The first project config that names a server termpolis, if one does. */
+  projectTermpolis?: string
   /** Every file read and its text, for the check's cache key. */
   read: Array<[string, string]>
   /** The stamp of each layer the parser doesn't read (codexLayerPaths), for the same key. */
@@ -347,7 +381,9 @@ async function codexServers(cwd: string, runEnv: Readonly<Record<string, string>
   }
   for (const file of await projectConfigs(cwd, trusted, io)) {
     const text = await io.readText(file, { noFollow: true })
-    if (text !== null) addServers(found, file, text)
+    if (text === null) continue
+    addServers(found, file, text)
+    if (found.projectTermpolis === undefined && orFail(file, codexMcpServerNames(text)).names.includes('termpolis')) found.projectTermpolis = file
   }
   return found
 }
@@ -360,10 +396,25 @@ export function clearIsolationChecks(): void {
   passes.clear()
 }
 
+/** A plain object (not null, not an array). */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** A listed server's transport is the kept registration: stdio, its command, exactly its args, no folder
+ *  of its own, and each of its variables. Variables another layer adds are the person's own and pass. */
+function isKeptTransport(t: unknown, kept: ServerEntry): boolean {
+  if (!isRecord(t) || t.type !== 'stdio' || t.command !== kept.command || (t.cwd !== null && t.cwd !== undefined)) return false
+  const args = t.args
+  if (!Array.isArray(args) || args.length !== kept.args.length || args.some((a, i) => a !== kept.args[i])) return false
+  const env = t.env
+  return Object.entries(kept.env ?? {}).every(([k, v]) => isRecord(env) && env[k] === v)
+}
+
 /** `codex mcp list --json` output that lists every server off: a JSON array of objects, each with a
- *  string `name` and `enabled: false`, but for the one named `kept`, which may be on. Any other shape
- *  fails. Pure. */
-export function codexMcpListAllOff(stdout: string, kept?: string): boolean {
+ *  string `name` and `enabled: false`, but for Termpolis's own when it is `kept`, which may be on as
+ *  that registration (isKeptTransport). Any other shape fails. Pure. */
+export function codexMcpListAllOff(stdout: string, kept?: ServerEntry): boolean {
   let listed: unknown
   try {
     listed = JSON.parse(stdout)
@@ -371,8 +422,8 @@ export function codexMcpListAllOff(stdout: string, kept?: string): boolean {
     return false
   }
   return Array.isArray(listed) && listed.every((s: unknown) =>
-    typeof s === 'object' && s !== null && !Array.isArray(s) && typeof (s as { name?: unknown }).name === 'string' &&
-    ((s as { enabled?: unknown }).enabled === false || (s as { name: string }).name === kept))
+    isRecord(s) && typeof s.name === 'string' &&
+    (s.enabled === false || (kept !== undefined && s.name === 'termpolis' && isKeptTransport(s.transport, kept))))
 }
 
 /** `agy mcp list` output that reports no server. Pure. */
@@ -412,17 +463,22 @@ export async function prepareIsolatedLaunch(
 ): Promise<IsolatedLaunch> {
   if (agent === 'codex') {
     const found = await codexServers(cwd, runEnv, io)
-    const keep = opts.keepTermpolis === true
+    const kept = opts.keepTermpolis
+    // The repository's author writes its project configs, and a key the pin doesn't set (a variable, a
+    // folder) would still reach the kept server from one: such a run doesn't start.
+    if (kept !== undefined && found.projectTermpolis !== undefined) {
+      throw new Error(`${KEEP_REFUSED}: ${found.projectTermpolis} sets a server of its own named termpolis`)
+    }
     // Termpolis's own server is switched off with its placeholder command too, as every isolated Codex
-    // run already does, so it is off even when no config file names it; unless it is kept for the run.
+    // run already does, so it is off even when no config file names it; unless it is kept for the run,
+    // pinned to its registration.
     const args = [
       ...found.names.filter((n) => n !== 'termpolis').flatMap((n) => CODEX_MCP_SERVER_OFF(n, found.url.includes(n))),
-      ...(keep ? [] : CODEX_ISOLATE_MCP_ARGS),
+      ...(kept !== undefined ? codexPinArgs(kept) : CODEX_ISOLATE_MCP_ARGS),
       ...CODEX_NO_CONNECTORS_ARGS,
     ]
     const env = { ...runEnv, ...READ_ONLY_RUN_ENV }
-    const kept = keep ? 'termpolis' : undefined
-    await checkMcpList([agent, cwd, args, env, found.read, found.layers, keep], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env },
+    await checkMcpList([agent, cwd, args, env, found.read, found.layers, kept ?? null], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env },
       (stdout) => codexMcpListAllOff(stdout, kept), run, io)
     return { args, env: { ...READ_ONLY_RUN_ENV }, dispose: noop }
   }

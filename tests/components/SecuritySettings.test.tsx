@@ -651,6 +651,29 @@ describe('SecuritySettings — Commit Shield git hooks', () => {
     )
   })
 
+  // HOLD-A N2: Remove protection that removed nothing says what main said about it; anything else clears the line.
+  it('shows what Remove protection says when it removed nothing, and clears it after a plain removal', async () => {
+    const api = (window as any).aiSecurity
+    api.gitHooksList = vi.fn().mockResolvedValue({
+      success: true,
+      data: [{ repo: '/repos/demo', status: { 'pre-commit': 'installed', 'pre-push': 'installed' } }],
+    })
+    const notice = 'There was no Commit Shield to remove in this repository.'
+    api.gitHooksUninstall = vi.fn().mockResolvedValueOnce({ success: true, data: { removed: [], notice } })
+      .mockResolvedValueOnce({ success: true, data: { removed: ['pre-commit'] } })
+      .mockResolvedValueOnce({ success: false, error: 'Not a git repository', data: { notice } })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-hook-list'))
+
+    fireEvent.click(within(screen.getByTestId('security-hook-list')).getByText('Remove'))
+    await waitFor(() => expect(screen.getByTestId('security-hook-msg').textContent).toBe(notice))
+    fireEvent.click(within(screen.getByTestId('security-hook-list')).getByText('Remove'))
+    await waitFor(() => expect(screen.queryByTestId('security-hook-msg')).toBeNull())
+    fireEvent.click(within(screen.getByTestId('security-hook-list')).getByText('Remove'))
+    await waitFor(() => expect(api.gitHooksUninstall).toHaveBeenCalledTimes(3))
+    expect(screen.queryByTestId('security-hook-msg')).toBeNull()
+  })
+
   it('shows a repo whose hooks have gone missing as NOT armed', async () => {
     // Someone re-cloned, or ran `git init` fresh. Reporting it as protected would be a lie.
     ;(window as any).aiSecurity.gitHooksList = vi.fn().mockResolvedValue({
