@@ -1107,7 +1107,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 message={repoUpdate.message}
                 notFound={repoUpdate.notFound}
                 busy={repoBusy}
-                error={repoError}
+                error={tokenOpen ? null : repoError}
+                inert={tokenOpen}
                 onSignIn={signIn}
                 onUseToken={() => { clearRepoError(); setTokenOpen(true) }}
                 onDismiss={dismissRepoUpdate}

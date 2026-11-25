@@ -666,6 +666,44 @@ describe('WorldView sign in needed', () => {
     expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
   })
 
+  // WP-SRC N1: a failed token try is said once, in the token dialog the person is in; the notice under it says nothing
+  // and takes no focus or clicks while the dialog is up.
+  it('a failed token try from the notice is announced once, in the token dialog', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    api.worldUpdateSource.mockResolvedValueOnce(fail('That token did not open it.'))
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    await settle()
+    const said = screen.getAllByRole('alert').filter((a) => a.textContent === 'That token did not open it.')
+    expect(said).toHaveLength(1)
+    expect(screen.getByTestId('world-repo-access').contains(said[0])).toBe(true)
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(within(notice).queryByRole('alert')).toBeNull()
+    expect(notice.closest('[inert]') ?? (notice as HTMLElement & { inert?: boolean }).inert).toBeTruthy()
+    // Closed, the notice is live again, and says nothing of the token the person backed out of.
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect((screen.getByTestId('world-sign-in-needed') as HTMLElement & { inert?: boolean }).inert).toBeFalsy()
+  })
+
+  // WP-SRC N2: Tab stays in the token dialog opened from the notice, as it does on the home.
+  it('Tab and Shift+Tab stay in the token dialog opened from the notice', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    const dialog = screen.getByTestId('world-repo-access')
+    const field = screen.getByTestId('world-repo-access-input')
+    field.focus()
+    fireEvent.keyDown(field, { key: 'Tab' })
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }))
+    // from the first control, Shift+Tab goes round to the last one in the dialog, not out to the pane
+    const first = within(dialog).getByRole('button', { name: 'Make a token on GitHub' })
+    first.focus()
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Use this token' }))
+  })
+
   it('cancelling the token dialog leaves the notice', async () => {
     gitBridge(ok(NEEDS))
     await openGit()

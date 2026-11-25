@@ -2,6 +2,7 @@
 // still showing; this notice offers Sign in (when git has a login helper for the host), Use a token,
 // or Dismiss. It sits in the same top-of-world slot as WorldView's other notice. A repository the host no
 // longer finds (R4) says main's words instead, and its sign-in choices are links: the address comes first.
+import { useLayoutEffect, useRef } from 'react'
 import { btnCls, linkCls, signInLabel } from './worldTargets'
 
 export interface SignInNeededNoticeProps {
@@ -16,12 +17,21 @@ export interface SignInNeededNoticeProps {
   onSignIn(): void
   onUseToken(): void
   onDismiss(): void
+  /** The token dialog opened from this notice is up: the notice takes no focus and says nothing, so a failed try is
+   *  announced once, in the dialog (WP-SRC N1). */
+  inert?: boolean
 }
 
-export function SignInNeededNotice({ host, helper, message, notFound, busy, error, onSignIn, onUseToken, onDismiss }: SignInNeededNoticeProps): JSX.Element {
+export function SignInNeededNotice({ host, helper, message, notFound, busy, error, onSignIn, onUseToken, onDismiss, inert = false }: SignInNeededNoticeProps): JSX.Element {
   const choiceCls = notFound ? linkCls : btnCls
+  // React 18 does not pass `inert` through as an attribute, so it is set on the element.
+  const box = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    ;(box.current as HTMLDivElement).inert = inert
+  }, [inert])
   return (
     <div
+      ref={box}
       role="status"
       data-testid="world-sign-in-needed"
       className="text-xs px-3 py-2 rounded border border-[#3c3c3c] flex flex-col gap-2"

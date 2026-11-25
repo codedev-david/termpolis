@@ -23,7 +23,7 @@
  *      only: git hands the askpass its prompt on a command line, which this project keeps off developer
  *      machines.
  */
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { test, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import { randomBytes } from 'crypto'
 import path from 'path'
@@ -213,11 +213,54 @@ function filesContaining(dir: string, text: string): string[] {
   return out
 }
 
+/**
+ * Walks the token dialog's Tab order once round each way, from the control that has the focus, and checks the focus
+ * never leaves the dialog and lands on each stop in turn (the wrap included). Used for the dialog opened from the
+ * clone dialog and from the world view's notice (WP4b N2).
+ */
+async function walkTabRound(page: Page, dialog: Locator): Promise<void> {
+  // Where the focus is: inside the token dialog, or else what holds it (the clone dialog's control, the toolbar, a
+  // terminal, <body>), so a failure names where it went.
+  const where = (): Promise<string> =>
+    page.evaluate(() => {
+      const a = document.activeElement
+      if (a?.closest('[data-testid="world-repo-access"]')) return 'token dialog'
+      return a?.getAttribute('data-testid') ?? a?.getAttribute('aria-label') ?? a?.tagName ?? 'nothing'
+    })
+  // The dialog's Tab order, read from the page: its enabled, shown controls that Tab reaches, in document order.
+  const count = await dialog.evaluate((d) => {
+    const els = Array.from(d.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')).filter(
+      (e) => e.tabIndex >= 0 && !e.matches(':disabled') && e.getClientRects().length > 0
+    )
+    ;(window as unknown as { __tabOrder?: HTMLElement[] }).__tabOrder = els
+    return els.length
+  })
+  // There is somewhere to go round, and the field the dialog opened on is one of its stops.
+  expect(count).toBeGreaterThan(1)
+  const at = (): Promise<number> =>
+    page.evaluate(() => ((window as unknown as { __tabOrder: HTMLElement[] }).__tabOrder).indexOf(document.activeElement as HTMLElement))
+  const start = await at()
+  expect(start).toBeGreaterThanOrEqual(0)
+  // Tab walks the order once round: on the way it goes from the last control to the first (the wrap).
+  for (let i = 1; i <= count; i++) {
+    await page.keyboard.press('Tab')
+    expect(await where(), `after ${i} x Tab`).toBe('token dialog')
+    expect(await at(), `after ${i} x Tab`).toBe((start + i) % count)
+  }
+  // Shift+Tab walks it back once round: on the way it goes from the first control to the last.
+  for (let i = 1; i <= count; i++) {
+    await page.keyboard.press('Shift+Tab')
+    expect(await where(), `after ${i} x Shift+Tab`).toBe('token dialog')
+    expect(await at(), `after ${i} x Shift+Tab`).toBe((((start - i) % count) + count) % count)
+  }
+}
+
 test.describe.serial('Lumopolis private repositories with this computer\'s login', () => {
   test.setTimeout(240_000)
   let userData: string
   let app: ElectronApplication | undefined
   let savedCopy = ''
+  let page0: Page | undefined
 
   test.afterAll(async () => {
     await quitApp(app)
@@ -267,6 +310,21 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
     // No login window, dialog or second app window came up: the app still has exactly its one window.
     expect(run.app.windows()).toHaveLength(1)
     expect(run.errors).toEqual([])
+    page0 = page
+  })
+
+  test('the token dialog opened from the notice keeps Tab and Shift+Tab in it (WP4b N2)', async () => {
+    const page = page0 as Page
+    const notice = page.locator('[data-testid="world-sign-in-needed"]')
+    await notice.getByRole('button', { name: 'Use a token' }).click()
+    const dialog = page.locator('[data-testid="world-repo-access"]')
+    await expect(dialog.locator('[data-testid="world-repo-access-input"]')).toBeFocused()
+    // The notice behind it is inert while the dialog is up, so nothing in it takes the focus or speaks.
+    await expect.poll(() => notice.evaluate((n) => (n as HTMLElement & { inert: boolean }).inert)).toBe(true)
+    await walkTabRound(page, dialog)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect.poll(() => notice.evaluate((n) => (n as HTMLElement & { inert: boolean }).inert)).toBe(false)
   })
 })
 
@@ -297,40 +355,7 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
     await page.keyboard.press('Enter')
     const dialog = page.locator('[data-testid="world-repo-access"]')
     await expect(dialog.locator('[data-testid="world-repo-access-input"]')).toBeFocused()
-    // Where the focus is: inside the token dialog, or else what holds it (the clone dialog's control, the toolbar, a
-    // terminal, <body>), so a failure names where it went.
-    const where = (): Promise<string> =>
-      page.evaluate(() => {
-        const a = document.activeElement
-        if (a?.closest('[data-testid="world-repo-access"]')) return 'token dialog'
-        return a?.getAttribute('data-testid') ?? a?.getAttribute('aria-label') ?? a?.tagName ?? 'nothing'
-      })
-    // The dialog's Tab order, read from the page: its enabled, shown controls that Tab reaches, in document order.
-    const count = await dialog.evaluate((d) => {
-      const els = Array.from(d.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')).filter(
-        (e) => e.tabIndex >= 0 && !e.matches(':disabled') && e.getClientRects().length > 0
-      )
-      ;(window as unknown as { __tabOrder?: HTMLElement[] }).__tabOrder = els
-      return els.length
-    })
-    // There is somewhere to go round, and the field the dialog opened on is one of its stops.
-    expect(count).toBeGreaterThan(1)
-    const at = (): Promise<number> =>
-      page.evaluate(() => ((window as unknown as { __tabOrder: HTMLElement[] }).__tabOrder).indexOf(document.activeElement as HTMLElement))
-    const start = await at()
-    expect(start).toBeGreaterThanOrEqual(0)
-    // Tab walks the order once round: on the way it goes from the last control to the first (the wrap).
-    for (let i = 1; i <= count; i++) {
-      await page.keyboard.press('Tab')
-      expect(await where(), `after ${i} x Tab`).toBe('token dialog')
-      expect(await at(), `after ${i} x Tab`).toBe((start + i) % count)
-    }
-    // Shift+Tab walks it back once round: on the way it goes from the first control to the last.
-    for (let i = 1; i <= count; i++) {
-      await page.keyboard.press('Shift+Tab')
-      expect(await where(), `after ${i} x Shift+Tab`).toBe('token dialog')
-      expect(await at(), `after ${i} x Shift+Tab`).toBe((((start - i) % count) + count) % count)
-    }
+    await walkTabRound(page, dialog)
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
     await expect(useToken).toBeFocused()

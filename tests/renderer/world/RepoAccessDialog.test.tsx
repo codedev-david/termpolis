@@ -95,6 +95,41 @@ describe('RepoAccessDialog', () => {
     expect(props.onSubmit).not.toHaveBeenCalled()
   })
 
+  // WP-SRC N2: the dialog keeps Tab in itself wherever it is opened (the home, or the world view's notice), going round
+  // its own controls, and the key goes no further, so a trap around it never steps a second time.
+  it('Tab and Shift+Tab go round its own controls and stop there', () => {
+    const outer = vi.fn()
+    render(
+      <div onKeyDown={outer}>
+        <button type="button">outside</button>
+        <RepoAccessDialog host="github.com" busy={false} error={null} onSubmit={vi.fn()} onCancel={vi.fn()} />
+      </div>
+    )
+    const dialog = screen.getByTestId('world-repo-access')
+    const order = [screen.getByRole('button', { name: 'Make a token on GitHub' }), input(), screen.getByRole('button', { name: 'Cancel' }), submit()]
+    input().focus()
+    fireEvent.keyDown(input(), { key: 'Tab' })
+    expect(document.activeElement).toBe(order[2])
+    fireEvent.keyDown(order[2], { key: 'Tab' })
+    fireEvent.keyDown(order[3], { key: 'Tab' })
+    // past the last control: the first one, never the button outside
+    expect(document.activeElement).toBe(order[0])
+    fireEvent.keyDown(order[0], { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(order[3])
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(outer).not.toHaveBeenCalled()
+    // Any other key goes on as before.
+    fireEvent.keyDown(order[3], { key: 'a' })
+    expect(outer).toHaveBeenCalledTimes(1)
+  })
+
+  it('while busy, Tab passes over the greyed Use this token', () => {
+    mount({ busy: true })
+    screen.getByRole('button', { name: 'Cancel' }).focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Make a token on GitHub' }))
+  })
+
   it('the GitHub link opens the token page', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Make a token on GitHub' }))
