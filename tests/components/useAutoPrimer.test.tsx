@@ -2448,5 +2448,20 @@ describe('a shell the OS cannot read, at its prompt', () => {
       expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(false)
       expect(writes()).toEqual([])
     })
+
+    // An agent dead on boot: the OS says only the shell, then its next answer times out under load.
+    // A prompt drawn over two lines puts a line break after its report, so the screen reads as a
+    // submitted line; that must not undo what the OS already said.
+    it.each([
+      ['a prompt drawn over two lines', '\x1b]9;9;C:\\repo\x07\r\nC:\\repo on main\r\n> '],
+      ['a submitted line', PS_LINE + '\r\n'],
+    ])('types nothing once the OS said only the shell and then could not tell, on %s', async (_what, output) => {
+      let asked = 0
+      const terminalShellAlone = vi.fn(async () => ({ success: true, data: asked++ === 0 ? true : null }))
+      mockApi({ terminalShellAlone, readTerminalBuffer: screen(output) })
+      expect(await injectAutoPrimer('t1', '/p', false, false, quick)).toBe(false)
+      expect(writes()).toEqual([])
+      expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+    })
   })
 })

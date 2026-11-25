@@ -209,11 +209,17 @@ export const ALONE_ASKS = 3
  * after one that said "only the shell" (the helper timed out under load, the shell was on its way
  * out) is no better news than that one, and counts the same: a dead agent is not typed at because
  * the next question failed. Where the OS cannot tell, the shell's prompt reports are asked instead
- * (shellAtPrompt): a shell at its prompt with nothing submitted since started no agent.
+ * (shellAtPrompt): a shell at its prompt with nothing submitted since started no agent. They only
+ * ever add that: once the OS has said "only the shell", a later answer it cannot give still counts
+ * as gone, whatever the screen shows (a prompt drawn over two lines reads as a submitted line).
  */
 async function agentGone(terminalId: string, asks: number, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  let osSaidAlone = false
   for (let answered = 1; ; answered++) {
-    const alone = (await shellAloneNow(terminalId)) ?? (await shellAtPrompt(terminalId))
+    const os = await shellAloneNow(terminalId)
+    if (os === null && osSaidAlone) return true
+    if (os === true) osSaidAlone = true
+    const alone = os ?? (await shellAtPrompt(terminalId))
     if (alone === false || (alone === null && answered === 1)) return false
     if (alone === null || answered >= asks) return true
     await sleep(ALONE_RECHECK_MS)

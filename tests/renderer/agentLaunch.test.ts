@@ -608,6 +608,107 @@ describe('agentLaunch', () => {
       expect(read).not.toHaveBeenCalled()
     })
 
+    describe('a terminal closed or replaced while its launch waits', () => {
+      const p1 = { id: 'p1', name: 'a', color: '', shellType: 'powershell' as const, cwd: '/', fontSize: 1, theme: '', fontFamily: '', agentCommand: 'claude' }
+      const close = () => useTerminalStore.setState({ terminals: [] })
+      const reopen = () => useTerminalStore.setState({ terminals: [{ ...p1 }] })
+
+      it('types nothing, and stops looking, once the terminal is closed before its prompt came', async () => {
+        const read = reads('')
+        bridge(read)
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+        close()
+        await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS + COMMAND_DELAY_MS)
+        expect(write).not.toHaveBeenCalled()
+        expect(read).toHaveBeenCalledTimes(1)
+      })
+
+      it('types nothing at a new shell that comes back under the same id', async () => {
+        const read = reads('', PROMPT)
+        bridge(read)
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+        close()
+        reopen()
+        await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS + COMMAND_DELAY_MS)
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('types nothing when it is closed during the shell settle, before the first look', async () => {
+        const read = reads(PROMPT)
+        bridge(read)
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        close()
+        reopen()
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+        expect(write).not.toHaveBeenCalled()
+        expect(read).not.toHaveBeenCalled()
+      })
+
+      it('types nothing when it is closed while its output is being read', async () => {
+        const read = vi.fn(async () => {
+          close()
+          return { success: true, data: { output: PROMPT, nextOffset: 0 } }
+        })
+        bridge(read)
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('sends the flush but not the command when it is closed between the two', async () => {
+        bridge(reads(PROMPT))
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+        expect(write.mock.calls).toEqual([['p1', '\r']])
+        close()
+        reopen()
+        await vi.advanceTimersByTimeAsync(COMMAND_DELAY_MS)
+        expect(write.mock.calls).toEqual([['p1', '\r']])
+      })
+
+      it('waits for a terminal added to the store after the launch began, and launches it', async () => {
+        close()
+        bridge(reads('', PROMPT))
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        reopen()
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + PROMPT_POLL_MS + COMMAND_DELAY_MS)
+        expect(write.mock.calls).toEqual([['p1', '\r'], ['p1', 'claude\r']])
+      })
+
+      it('types nothing at a terminal added after the launch began and closed before its prompt', async () => {
+        close()
+        bridge(reads(''))
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        reopen()
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+        close()
+        await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS + COMMAND_DELAY_MS)
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('stops watching the store once its launch is done', async () => {
+        bridge(reads(PROMPT))
+        const write = vi.fn()
+        launchAgents([{ id: 'p1', agentCommand: 'claude', shellType: 'powershell' }], { write, accounts: null })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+        expect(write).toHaveBeenLastCalledWith('p1', 'claude\r')
+        const before = write.mock.calls.length
+        close()
+        reopen()
+        await vi.advanceTimersByTimeAsync(PROMPT_WAIT_MS)
+        expect(write).toHaveBeenCalledTimes(before)
+      })
+    })
+
     it('waits on Linux as on macOS', async () => {
       __setPlatformForTests('linux')
       bridge(reads('', PROMPT))

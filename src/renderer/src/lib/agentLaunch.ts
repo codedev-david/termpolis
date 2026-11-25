@@ -91,12 +91,33 @@ function waitsForPrompt(t: AgentLaunchTarget): boolean {
   return t.shellType === 'powershell' && platform !== '' && platform !== 'win32'
 }
 
-/** Resolves once the terminal's shell has reported its first prompt (promptReport.ts), once its
- *  output cannot be read (nothing to wait on), or PROMPT_WAIT_MS after `startedAt`. */
-async function shellCameUp(id: string, startedAt: number): Promise<void> {
+/**
+ * Watches terminal `id` in the store for a launch that waits on it: `gone()` turns true once the
+ * terminal has been there and then left it (closed, or its workspace swapped out), and stays true
+ * when a terminal with the same id comes back, which is a new shell and not the one this launch was
+ * started for. A terminal not in the store yet is not gone (the launch may run before it is added).
+ */
+function watchTerminal(id: string): { gone: () => boolean; stop: () => void } {
+  const present = (terminals: { id: string }[]): boolean => terminals.some((t) => t.id === id)
+  let seen = present(useTerminalStore.getState().terminals)
+  let gone = false
+  const stop = useTerminalStore.subscribe((s) => {
+    const here = present(s.terminals)
+    if (seen && !here) gone = true
+    seen = seen || here
+  })
+  return { gone: () => gone, stop }
+}
+
+/** Resolves true once the terminal's shell has reported its first prompt (promptReport.ts), once
+ *  its output cannot be read (nothing to wait on), or PROMPT_WAIT_MS after `startedAt`; false as
+ *  soon as the terminal is gone (watchTerminal), so nothing is typed at it or at its successor. */
+async function shellCameUp(id: string, startedAt: number, gone: () => boolean): Promise<boolean> {
   for (;;) {
+    if (gone()) return false
     const output = await terminalOutput(id)
-    if (output === null || promptReported(output) || Date.now() - startedAt >= PROMPT_WAIT_MS) return
+    if (gone()) return false
+    if (output === null || promptReported(output) || Date.now() - startedAt >= PROMPT_WAIT_MS) return true
     await new Promise<void>((resolve) => setTimeout(resolve, PROMPT_POLL_MS))
   }
 }
@@ -129,6 +150,9 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   // Until its command is typed, each terminal holds only its shell, whatever agentCommand says:
   // useAutoPrimer keeps its launch gate shut till then (markAgentLaunch).
   for (const t of agents) markAgentLaunch(t.id, 'pending')
+  // The ones that wait for their shell's first prompt are watched from now on: one closed or
+  // replaced while it waits is never typed at (watchTerminal).
+  const waiting = agents.filter(waitsForPrompt).map((t) => ({ t, watch: watchTerminal(t.id) }))
 
   // Pre-approve every Claude folder in Claude Code's own config so its workspace-trust
   // dialog never renders — only once the user connected the agents, and never for the home
@@ -210,7 +234,19 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   }
   setTimeout(() => {
     flushThenType(agents.filter((t) => !waitsForPrompt(t)))
-    for (const t of agents.filter(waitsForPrompt)) void shellCameUp(t.id, startedAt).then(() => flushThenType([t]))
+    for (const { t, watch } of waiting) {
+      void shellCameUp(t.id, startedAt, watch.gone).then((up) => {
+        if (!up) {
+          watch.stop()
+          return
+        }
+        write(t.id, '\r')
+        setTimeout(() => {
+          watch.stop()
+          if (!watch.gone()) type(t)
+        }, COMMAND_DELAY_MS)
+      })
+    }
   }, testDelay(SHELL_SETTLE_MS))
 
   // Nothing is typed after the command. Codex used to get a blind `1⏎` on a timer, which
