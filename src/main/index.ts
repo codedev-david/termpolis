@@ -237,7 +237,7 @@ import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { depthOfferFor } from './headroom/depthOffer'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
 import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
@@ -781,6 +781,7 @@ import { relaunchLockReason, locks as relaunchLocks } from './accountSwitch'
 import { onFirstPrompt } from './primerSessionGuard'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
+import { installPermissionPolicy, setGestureCamera, type PermissionPolicyDeps } from './permissionPolicy'
 import {
   repairWindowsShortcuts,
   defaultShortcutPaths,
@@ -835,6 +836,15 @@ function isWebUrl(url: string): boolean {
   }
 }
 
+/** The page the window loads in a build: out/renderer/index.html. */
+const rendererIndexFile = (): string => join(__dirname, '../renderer/index.html')
+
+/** What the permission policy (permissionPolicy.ts) grants against: the Termpolis page, in the Termpolis window. */
+const permissionDeps: PermissionPolicyDeps = {
+  appPageUrl: () => process.env['ELECTRON_RENDERER_URL'] || pathToFileURL(rendererIndexFile()).href,
+  isAppContents: (wc) => wc != null && wc === mainWindow?.webContents,
+}
+
 function createWindow() {
   appQuitting = false
   // If the icon fails to load we leave `icon` undefined so the OS uses the
@@ -875,20 +885,16 @@ function createWindow() {
   // until it's set on the live window.
   if (windowIcon) { try { mainWindow.setIcon(windowIcon) } catch { /* non-fatal */ } }
 
-  // Permissions: the renderer needs the microphone (voice input) and clipboard.
-  // Electron rejects getUserMedia without an explicit grant. We keep the prior
-  // permissive default (Electron approves all requests when no handler is set),
-  // so nothing else regresses. NOTE: packaged macOS builds also need
-  // NSMicrophoneUsageDescription + the audio-input entitlement (build config).
-  // Guarded with optional chaining so a minimal BrowserWindow mock (unit tests)
-  // doesn't trip on it; in real Electron the session and handlers always exist.
-  const ses = mainWindow.webContents?.session
-  ses?.setPermissionRequestHandler?.((_wc, _permission, callback) => callback(true))
-  ses?.setPermissionCheckHandler?.(() => true)
+  // Permissions: an allowlist, granted only to the Termpolis page in this window (permissionPolicy.ts):
+  // the microphone for voice, the camera only while hand control is on, the clipboard and
+  // notifications. Everything else is refused and logged. app.on('session-created') puts the same
+  // policy on every session; this is the window's own, set again for a window macOS re-creates.
+  // NOTE: packaged macOS builds also need NSMicrophoneUsageDescription + the audio-input
+  // entitlement (build config).
+  installPermissionPolicy(mainWindow.webContents?.session, permissionDeps)
 
   // The window only ever shows Termpolis itself. A link opened with window.open goes to the user's
-  // browser, never into a second Electron window, where the grant-everything handlers above would
-  // apply to whatever site it is. Nothing may navigate this window away either: a plain link, or a
+  // browser, never into a second Electron window, which would be another page in the app. Nothing may navigate this window away either: a plain link, or a
   // file dropped outside a terminal pane, would otherwise replace the app with that page, preload
   // API and all.
   mainWindow.webContents?.setWindowOpenHandler?.(({ url }) => {
@@ -903,7 +909,7 @@ function createWindow() {
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(rendererIndexFile())
   }
 
   // Confirm close when AI agents are running. Skipped in test mode, and skipped
@@ -4271,6 +4277,9 @@ ipcMain.handle('agentActivity:stats', async () => {
 // renderer receives it via the exact same push path as live watcher events. Only
 // registered under NODE_ENV=test, so production has no way to inject events.
 if (process.env.NODE_ENV === 'test') {
+  // The camera's main-side flag (permissionPolicy.ts), for e2e: a spec turns hand control's camera
+  // on from the main process (electronApp.evaluate) the way WP-GESTURE will.
+  Object.assign(globalThis, { __termpolisGestureCamera: setGestureCamera })
   ipcMain.handle('agentActivity:__test_publish', async (_, { event }: { event?: Partial<AgentEvent> } = {}) => {
     try {
       if (!event || typeof event !== 'object') return err('event required')
@@ -4357,6 +4366,9 @@ if (!gotTheLock) {
   // The launch intro's decision, started now so it is ready long before the window asks. Only the
   // instance that holds the lock reads (and consumes) the update-restart marker.
   void introGate.start()
+  // Every session the app creates gets the permission policy, the default one (created at ready,
+  // after this line) included. Only the Termpolis window's page is ever granted anything.
+  app.on('session-created', (ses) => installPermissionPolicy(ses, permissionDeps))
   // When a second instance tries to launch, focus the existing window
   app.on('second-instance', () => {
     if (mainWindow) {

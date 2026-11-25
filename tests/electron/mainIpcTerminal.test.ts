@@ -1720,14 +1720,64 @@ describe('createWindow — renderer source + chrome', () => {
     }
   })
 
-  it('grants the microphone — Electron rejects getUserMedia without an explicit handler', () => {
+  it('grants the microphone from the app page only, and the camera only while hand control is on', () => {
     recreateWindow()
     const grant = mockWebContents.session.setPermissionRequestHandler.mock.calls.at(-1)![0] as Function
     const check = mockWebContents.session.setPermissionCheckHandler.mock.calls.at(-1)![0] as Function
-    const callback = vi.fn()
-    grant({}, 'media', callback)
-    expect(callback).toHaveBeenCalledWith(true)
-    expect(check()).toBe(true)
+    const page = pathToFileURL(mockMainWindow.loadFile.mock.calls.at(-1)![0] as string).href
+    const ask = (wc: unknown, mediaTypes: string[], requestingUrl = page): boolean => {
+      const callback = vi.fn()
+      grant(wc, 'media', callback, { isMainFrame: true, requestingUrl, mediaTypes })
+      return callback.mock.calls[0][0] as boolean
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(ask(mockWebContents, ['audio'])).toBe(true)
+      expect(ask(mockWebContents, ['video'])).toBe(false)
+      expect(ask({}, ['audio'])).toBe(false) // another webContents
+      expect(ask(mockWebContents, ['audio'], 'https://evil.example/')).toBe(false)
+      expect(check(mockWebContents, 'clipboard-sanitized-write', 'file:///', { isMainFrame: true, requestingUrl: page })).toBe(true)
+      expect(check(mockWebContents, 'geolocation', 'file:///', { isMainFrame: true, requestingUrl: page })).toBe(false)
+      expect(check(null, 'notifications', 'file:///', { isMainFrame: true })).toBe(false)
+
+      // The e2e seam WP-GESTURE's tests drive: present under NODE_ENV=test, the main-side flag itself.
+      const flip = (globalThis as unknown as { __termpolisGestureCamera?: (on: boolean) => void }).__termpolisGestureCamera!
+      flip(true)
+      expect(ask(mockWebContents, ['audio', 'video'])).toBe(true)
+      flip(false)
+      expect(ask(mockWebContents, ['video'])).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('follows the dev server page when the window loads one', () => {
+    process.env['ELECTRON_RENDERER_URL'] = 'http://localhost:5173'
+    try {
+      recreateWindow()
+      const grant = mockWebContents.session.setPermissionRequestHandler.mock.calls.at(-1)![0] as Function
+      const callback = vi.fn()
+      grant(mockWebContents, 'media', callback, { isMainFrame: true, requestingUrl: 'http://localhost:5173/#/', mediaTypes: ['audio'] })
+      expect(callback).toHaveBeenCalledWith(true)
+    } finally {
+      delete process.env['ELECTRON_RENDERER_URL']
+    }
+  })
+
+  it('puts the same policy on every session the app creates, not just the window one', () => {
+    const ses = { setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn() }
+    appOnHandlers.get('session-created')!(ses)
+    const check = ses.setPermissionCheckHandler.mock.calls[0][0] as Function
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      // A webContents in some other session is never the app window: refused.
+      expect(check({}, 'notifications', 'file:///', { isMainFrame: true })).toBe(false)
+      const callback = vi.fn()
+      ;(ses.setPermissionRequestHandler.mock.calls[0][0] as Function)({}, 'media', callback, { isMainFrame: true, requestingUrl: 'file:///x', mediaTypes: ['audio'] })
+      expect(callback).toHaveBeenCalledWith(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('sends window.open links to the browser and never opens a second Electron window', () => {
