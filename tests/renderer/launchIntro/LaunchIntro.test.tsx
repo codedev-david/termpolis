@@ -38,6 +38,24 @@ async function startAll(startTime: number | null): Promise<void> {
   })
 }
 
+// Frames the test runs by hand: once held, a requestAnimationFrame callback runs only on frame().
+let frameQueue: FrameRequestCallback[] = []
+let releaseFrames: (() => void) | null = null
+function holdFrames(): void {
+  const w = window as unknown as Record<string, unknown>
+  const real = { raf: w.requestAnimationFrame, caf: w.cancelAnimationFrame }
+  frameQueue = []
+  w.requestAnimationFrame = (cb: FrameRequestCallback): number => frameQueue.push(cb)
+  w.cancelAnimationFrame = (id: number): void => { frameQueue[id - 1] = () => {} }
+  releaseFrames = () => { w.requestAnimationFrame = real.raf; w.cancelAnimationFrame = real.caf }
+}
+/** Runs the next frame: every callback asked for so far, at the test clock's time. */
+function frame(): void {
+  const due = frameQueue.slice()
+  frameQueue = frameQueue.map(() => () => {})
+  act(() => { for (const cb of due) cb(clock) })
+}
+
 const intro = (): HTMLElement | null => screen.queryByTestId('launch-intro')
 const advance = (ms: number): void => act(() => { vi.advanceTimersByTime(ms) })
 const imgProto = HTMLImageElement.prototype as unknown as Record<string, unknown>
@@ -70,6 +88,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  releaseFrames?.()
+  releaseFrames = null
   vi.useRealTimers()
   const w = window as unknown as Record<string, unknown>
   Element.prototype.animate = saved.animate as typeof Element.prototype.animate
@@ -205,11 +225,13 @@ describe('LaunchIntro', () => {
     expect(intro()).toBeNull()
   })
 
-  it('ends at the hard cap from mount even when the clock runs backwards', async () => {
+  it('ends at the hard cap from its first frame even when the clock runs backwards', async () => {
+    holdFrames()
     clock = 5000
     render(<LaunchIntro play now={now} />)
-    // Started 900 ms after mount by the timeline, but read on a clock that went back to 0: the
-    // computed removal would land long past the budget. The cap from mount holds.
+    frame()
+    // Started 900 ms after its first frame by the timeline, but read on a clock that went back to 0:
+    // the computed removal would land long past the budget. The cap from the first frame holds.
     clock = 0
     await startAll(5900)
     advance(INTRO_HARD_CAP_MS - 1)
@@ -219,13 +241,67 @@ describe('LaunchIntro', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('never shows when the animation has not started within NOT_PAINTED_MS', async () => {
+  it('waits, with no clock running, until the page computes its first frame', async () => {
+    holdFrames()
     render(<LaunchIntro play now={now} />)
+    // No frame yet (a launch still busy, a window not drawn): no frame of the overlay exists, and
+    // nothing counts down.
+    advance(10_000)
+    expect(intro()).not.toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    clock = 10_000
+    frame()
+    clock = 10_200
+    await startAll(10_200)
+    advance(INTRO_TOTAL_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+  })
+
+  it('a busy launch that holds the first frame back past NOT_PAINTED_MS still plays the whole intro, from its start', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // The app's own startup holds the main thread for 1.4 s after mount: the first frame, and the
+    // overlay's first frame on screen, come after it.
+    clock = 1400
+    advance(1400)
+    expect(intro()).not.toBeNull()
+    frame()
+    clock = 1600
+    await startAll(1500)
+    advance(INTRO_TOTAL_MS - 100 - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+  })
+
+  it('plays when its first frame reaches the screen NOT_PAINTED_MS after the page computed it, however long after mount', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    clock = 300
+    advance(300)
+    frame()
+    clock = 300 + NOT_PAINTED_MS
+    await startAll(300 + NOT_PAINTED_MS)
+    advance(INTRO_TOTAL_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+  })
+
+  it('never shows when its first frame has not reached the screen NOT_PAINTED_MS after the page computed it', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    frame()
     advance(NOT_PAINTED_MS - 1)
-    // An animation that never started never had a frame: the overlay was never painted.
+    expect(intro()).not.toBeNull()
+    // The limit passes; the overlay waits one more frame, the first that can learn of a start the
+    // compositor has already made, and none was made.
+    advance(1)
     expect(intro()).not.toBeNull()
     expect(calls.every((c) => c.anim.startTime === null)).toBe(true)
-    advance(1)
+    frame()
     expect(intro()).toBeNull()
     expect(calls.every((c) => c.anim.cancel.mock.calls.length === 1)).toBe(true)
     // A start that comes after giving up changes nothing.
@@ -236,22 +312,60 @@ describe('LaunchIntro', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('never shows when the start is reported past the limit, before its timer has run', async () => {
+  it('keeps an intro whose start the compositor made in time but the page learns of late', async () => {
+    holdFrames()
     render(<LaunchIntro play now={now} />)
+    frame()
+    // A busy main thread runs the limit's timer late, after the compositor started the animation at
+    // 900 but before the page's ready callback has run.
+    clock = 1100
+    advance(NOT_PAINTED_MS)
+    for (const c of calls) c.anim.startTime = 900
+    frame()
+    expect(intro()).not.toBeNull()
+    await startAll(900)
+    advance(INTRO_TOTAL_MS - 200 - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+  })
+
+  it('never shows when the start is reported past the limit from its first frame, before any timer has run', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    frame()
     clock = 90_000
     await startAll(NOT_PAINTED_MS + 1)
     expect(intro()).toBeNull()
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('plays when the animation starts just inside the limit', async () => {
-    render(<LaunchIntro play now={now} />)
-    clock = NOT_PAINTED_MS
-    await startAll(NOT_PAINTED_MS)
-    advance(NOT_PAINTED_MS)
+  it("counts on performance.now() when given no clock, and is gone by the hard cap from its first frame", () => {
+    holdFrames()
+    const read = vi.spyOn(performance, 'now')
+    render(<LaunchIntro play />)
+    frame()
+    expect(read).toHaveBeenCalled()
+    advance(INTRO_HARD_CAP_MS - 1)
     expect(intro()).not.toBeNull()
-    advance(INTRO_TOTAL_MS - NOT_PAINTED_MS)
+    advance(1)
     expect(intro()).toBeNull()
+  })
+
+  it('takes a start reported before its first frame callback as that first frame', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // Ready can resolve ahead of the frame's own callbacks: the start is on screen, so the page
+    // computed that frame no later.
+    clock = 5000
+    await startAll(5000)
+    clock = 5016
+    frame()
+    advance(INTRO_TOTAL_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('asks the browser to decode the artwork at mount, without waiting for it', async () => {

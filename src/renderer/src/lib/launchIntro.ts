@@ -10,9 +10,13 @@ export const INTRO_BUDGET_MS = 4000
  * lands a frame late still lands by 4000 ms.
  */
 export const INTRO_TOTAL_MS = INTRO_BUDGET_MS - 16
-/** If the overlay's animation has not started this long after mount, the intro never appears. */
+/**
+ * If the overlay's animation has not started this long after the page computed its first frame of the
+ * overlay, the intro never appears. Counted from that frame, not mount: a launch that keeps the page
+ * from rendering delays the intro and never eats into it.
+ */
 export const NOT_PAINTED_MS = 1000
-/** Backstop: the overlay is gone by now, whatever the animation or its timers did. */
+/** Backstop, from the same first frame: the overlay is gone by now, whatever the animation or its timers did. */
 export const INTRO_HARD_CAP_MS = NOT_PAINTED_MS + INTRO_TOTAL_MS
 
 export const INTRO_TIMELINE = {

@@ -179,8 +179,8 @@ function freezeScript(t: number): string {
  * early, cutting the closing fade; positive: late). While the overlay is attached, the removal timer
  * (set when the stage animation is ready, to the rest of INTRO_TOTAL_MS) is shifted, and
  * `window.__introRemovalShifted` records that it was. The not-painted and hard-cap timers are untouched
- * (a late shift of 400 ms stays inside the hard cap: the cap counts 4984 ms from mount, and the
- * animation starts within NOT_PAINTED_MS of mount, in practice 100-350 ms).
+ * (a late shift of 400 ms stays inside the hard cap: the cap counts 4984 ms from the overlay's first
+ * frame, and the animation starts within NOT_PAINTED_MS of that frame, in practice 100-850 ms).
  */
 function shiftRemovalScript(shiftMs: number): string {
   return `(() => {

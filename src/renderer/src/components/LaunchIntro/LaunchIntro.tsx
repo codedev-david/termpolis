@@ -103,7 +103,6 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   // animation, not mount: a busy launch that delays the first frame delays the intro, and never eats into it.
   useLayoutEffect(() => {
     if (!active || done) return undefined
-    const mountedAt = now()
     let disposed = false
     const timers: ReturnType<typeof setTimeout>[] = []
     const end = (): void => {
@@ -137,18 +136,38 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
       return el.animate(step.keyframes, { delay: step.delay, duration: step.duration, fill: 'both' })
     })
 
-    // An animation that hasn't started within NOT_PAINTED_MS (a hidden or minimised window, a stalled
-    // renderer) never shows: animations start on the first frame that renders the overlay, so until
-    // they start no frame with the overlay exists.
-    timers.push(setTimeout(end, NOT_PAINTED_MS))
-    // Backstop: gone by the latest start that can play plus the timeline, whatever the clock reports.
-    timers.push(setTimeout(end, INTRO_HARD_CAP_MS))
-    animations[0].ready.then((stage) => {
+    // Every frame the page computes from mount has the overlay in it. The first one, the first frame
+    // of the overlay, comes when the launch lets the page render; until then nothing counts down,
+    // so a busy launch delays the intro and never eats into it. That first frame reaches the screen
+    // when the stage animation starts. If it has not NOT_PAINTED_MS after the page computed it (a
+    // compositor that is not drawing), the intro never shows: until the animation starts, no frame
+    // with the overlay is on screen.
+    const stage = animations[0]
+    const frames: number[] = []
+    let firstFrameAt: number | null = null
+    let started = false
+    const firstFrame = (at: number): void => {
+      if (firstFrameAt !== null) return
+      firstFrameAt = at
+      timers.push(setTimeout(() => {
+        if (started) return
+        // Decided on the next frame, the first that can learn of a start the compositor has already
+        // made while this page was busy (its start time is set before the frame's callbacks run).
+        frames.push(requestAnimationFrame(() => { if (typeof stage.startTime !== 'number') end() }))
+      }, NOT_PAINTED_MS))
+      // Backstop: gone by the latest start that can play plus the timeline, whatever the clock reports.
+      timers.push(setTimeout(end, INTRO_HARD_CAP_MS))
+    }
+    frames.push(requestAnimationFrame(() => firstFrame(now())))
+    stage.ready.then((s) => {
       if (disposed) return
       const t = now()
-      const startedAt = typeof stage.startTime === 'number' ? stage.startTime : t
-      if (startedAt - mountedAt > NOT_PAINTED_MS) { end(); return }
-      clearTimeout(timers[0])
+      const startedAt = typeof s.startTime === 'number' ? s.startTime : t
+      // A start can be reported before the first frame's own callback runs: that frame is on screen,
+      // so the page computed it no later than the start.
+      firstFrame(startedAt)
+      started = true
+      if (startedAt - (firstFrameAt as number) > NOT_PAINTED_MS) { end(); return }
       // The timeline shares performance.now()'s clock. It ends one frame inside 4000 ms, so this
       // removal lands by 4000 ms from the first frame even when the timer runs a frame late.
       timers.push(setTimeout(end, Math.max(0, INTRO_TOTAL_MS - (t - startedAt))))
@@ -160,6 +179,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
       window.removeEventListener('pointerdown', end, opts)
       window.removeEventListener('resize', onResize)
       for (const timer of timers) clearTimeout(timer)
+      for (const f of frames) cancelAnimationFrame(f)
       for (const a of animations) a.cancel()
     }
   }, [active, done, reduced, now])
