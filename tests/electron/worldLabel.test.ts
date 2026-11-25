@@ -415,9 +415,9 @@ describe('labelWorld', () => {
     expect(fl).toHaveLength(12)
     // 15 files with no shared folder or name: the three smallest neighbours pair up, named by their first and last.
     expect(fl.slice(0, 4)).toEqual([
-      { name: '00 – 01', tech: [], members: files.slice(0, 2) },
-      { name: '02 – 03', tech: [], members: files.slice(2, 4) },
-      { name: '04 – 05', tech: [], members: files.slice(4, 6) },
+      { name: '00, 01', tech: [], members: files.slice(0, 2) },
+      { name: '02, 03', tech: [], members: files.slice(2, 4) },
+      { name: '04, 05', tech: [], members: files.slice(4, 6) },
       { name: '06', tech: [], members: ['f/06.ts'] }
     ])
     expect(fl.flatMap((f) => f.members)).toEqual(files)
@@ -2275,7 +2275,7 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
     expect(floors.length).toBeLessThanOrEqual(12)
     expect(floors.map((f) => f.name)).not.toContain('other')
     expect(floors.map((f) => f.name)).toEqual([
-      'archive', 'brainIpc*', 'crypto', 'embed/', 'index – keys', 'memory/', 'paths', 'rerank*', 'store', 'sync/pull/', 'sync/push/', 'types'
+      'archive', 'brainIpc*', 'crypto', 'embed/', 'index, keys', 'memory/', 'paths', 'rerank*', 'store', 'sync/pull/', 'sync/push/', 'types'
     ])
     // Every member is on exactly one floor, none left out.
     expect(floors.flatMap((f) => f.members).sort()).toEqual(BRAIN)
@@ -2299,7 +2299,7 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
     ])
     // A prefix shorter than four letters groups nothing; a folder of one file is that file's floor.
     expect(names(at(['ab.ts', 'abC.ts', 'abD.ts', 'w/x.ts', ...many('z', 12)]))).toEqual([
-      'ab – abC', 'abD – x', 'partA – partB', 'partC – partD', 'partE', 'partF', 'partG', 'partH', 'partI', 'partJ', 'partK', 'partL'
+      'ab, abC', 'abD, x', 'partA, partB', 'partC, partD', 'partE', 'partF', 'partG', 'partH', 'partI', 'partJ', 'partK', 'partL'
     ])
   })
 
@@ -2309,7 +2309,7 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
     const mem = ['cacheA', 'cacheB', 'cacheC', 'queryA', 'queryB', 'queryC', 'x', 'y'].map((m) => `memory/${m}.ts`)
     const split = fallbackFloors(at([...SINGLES, ...mem]))
     expect(split.map((f) => f.name)).toEqual([
-      'archive', 'brainIpc*', 'crypto – index', 'keys', 'memory/cache*', 'memory/query*', 'x', 'y', 'paths', 'rerank*', 'store', 'types'
+      'archive', 'brainIpc*', 'crypto, index', 'keys', 'memory/cache*', 'memory/query*', 'x', 'y', 'paths', 'rerank*', 'store', 'types'
     ])
     expect(Math.max(...split.map((f) => f.members.length))).toBeLessThanOrEqual(cap(19))
     // A folder of 20 look-alike files splits down to single files, which pair up again within the cap.
@@ -2326,6 +2326,25 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
       expect(fl.flatMap((f) => f.members)).toEqual(flat)
       expect(fl.map((f) => f.name)).not.toContain('other')
     }
+  })
+
+  it('no two floors share a name: a repeated file name is told apart by its folders, as few as tell it apart (review M-4)', () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => `src/m${String(i + 1).padStart(2, '0')}/index.ts`)
+    const m = (i: number): string => `m${String(i).padStart(2, '0')}/index`
+    expect(names(twenty)).toEqual([
+      ...Array.from({ length: 8 }, (_, k) => `${m(2 * k + 1)}, ${m(2 * k + 2)}`),
+      m(17), m(18), m(19), m(20)
+    ])
+    // 12 or fewer files: a name only one file has stays its stem; two in one folder are told apart by their extension.
+    expect(names(['src/a/index.ts', 'src/b/index.ts', 'src/index.ts', 'src/a/x/util.ts', 'src/b/x/util.ts', 'src/main.ts', 'src/c/main.css', 'src/c/main.ts'])).toEqual([
+      'a/index', 'b/index', 'src/index', 'a/x/util', 'b/x/util', 'src/main', 'src/c/main.css', 'src/c/main.ts'
+    ])
+  })
+
+  it('a merged floor is named by its two parts, or by the first and last of three or more (review M-5)', () => {
+    const dirs = Array.from({ length: 12 }, (_, i) => `d${String(i + 1).padStart(2, '0')}`)
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts', ...dirs.flatMap((d) => [`src/${d}/x.ts`, `src/${d}/y.ts`])]
+    expect(names(files)).toEqual(['a – c', 'd01/, d02/', ...dirs.slice(2).map((d) => `${d}/`)])
   })
 
   it('12 or fewer members keep one floor per file, unchanged', () => {

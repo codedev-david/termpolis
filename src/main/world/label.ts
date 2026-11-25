@@ -302,12 +302,13 @@ function splitFloor(node: FloorNode): FloorNode[] {
  * More, and the files are grouped by sub-folder, then by a shared start of their names (four characters or more); a group
  * bigger than `ceil(n / 12) * 2` files is split by its own folders and names, down to single files when nothing else
  * divides it; then the two neighbouring groups with the fewest files between them are merged, again and again, until
- * MAX_FLOORS are left. A merged floor is named by its first and last group (`index – keys`). No floor is called "other",
+ * MAX_FLOORS are left. A merged floor is named by its two groups (`index, keys`), or by the first and last of three or
+ * more (`a – c`); a file name two floors share is told apart by its folders (`m03/index`). No floor is called "other",
  * and none holds more than the cap: each merge takes the smallest pair, and while more than 12 floors are left some
  * neighbouring pair fits the cap.
  */
 export function fallbackFloors(members: string[]): Floor[] {
-  if (members.length <= MAX_FLOORS) return members.map(floorOf)
+  if (members.length <= MAX_FLOORS) return distinctNames(members.map(floorOf))
   const cap = Math.ceil(members.length / MAX_FLOORS) * 2
   const units: FloorNode[] = []
   const todo = splitFloor(floorTree(members)).reverse()
@@ -316,7 +317,46 @@ export function fallbackFloors(members: string[]): Floor[] {
     if (u.members.length > cap) todo.push(...splitFloor(u).reverse())
     else units.push(u)
   }
-  return mergeFloors(units.map((u) => ({ name: floorName(u), tech: [], members: u.members })))
+  return mergeFloors(distinctNames(units.map((u) => ({ name: floorName(u), tech: [], members: u.members }))))
+}
+
+/** A file's stem with its last `depth` folders (`m03/index`), or its whole path once it has no more folders to give. */
+function pathName(file: string, depth: number): string {
+  const dirs = file.split('/').slice(0, -1)
+  return depth > dirs.length ? file : `${dirs.slice(-depth).join('/')}/${floorOf(file).name}`
+}
+
+/**
+ * Floors with no name twice (review M-4). Only a single file's floor can repeat another's name (a folder's and a name
+ * start's are named by their path, and end in "/" or "*"), so each repeated one takes as many of its folders as it needs
+ * to be told apart, and its whole path when even that is not enough (index.ts and index.css side by side).
+ */
+function distinctNames(floors: Floor[]): Floor[] {
+  const count = (names: readonly string[]): Map<string, number> => {
+    const c = new Map<string, number>()
+    for (const n of names) c.set(n, (c.get(n) ?? 0) + 1)
+    return c
+  }
+  const first = count(floors.map((f) => f.name))
+  let open = floors.flatMap((f, i) => ((first.get(f.name) as number) > 1 ? [i] : []))
+  if (open.length === 0) return floors
+  const out = floors.slice()
+  for (let depth = 1; open.length > 0; depth++) {
+    const names = open.map((i) => pathName(floors[i].members[0], depth))
+    const now = count(names)
+    open = open.filter((i, k) => {
+      if ((now.get(names[k]) as number) > 1) return true
+      out[i] = { ...floors[i], name: names[k] }
+      return false
+    })
+  }
+  return out
+}
+
+/** A merged floor's name: its two parts ("a, b"), or the first and last of three or more ("a – c"), never a range it is not. */
+function runName(names: readonly string[]): string {
+  if (names.length === 1) return names[0]
+  return names.length === 2 ? `${names[0]}, ${names[1]}` : `${names[0]} – ${names[names.length - 1]}`
 }
 
 /**
@@ -379,7 +419,7 @@ function mergeFloors(floors: Floor[]): Floor[] {
   const out: Floor[] = []
   for (let k = 0; k < n; k = next[k]) {
     const run = floors.slice(k, last[k] + 1)
-    out.push({ name: run.length === 1 ? run[0].name : `${run[0].name} – ${run[run.length - 1].name}`, tech: [], members: run.flatMap((f) => f.members) })
+    out.push({ name: runName(run.map((f) => f.name)), tech: [], members: run.flatMap((f) => f.members) })
   }
   return out
 }
