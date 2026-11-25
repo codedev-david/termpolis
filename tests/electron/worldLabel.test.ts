@@ -15,6 +15,7 @@ import {
   LINE_EXCERPT_CHARS,
   LINES_PER_BATCH,
   NO_MODEL_STRIKES,
+  NOTHING_HOLD_MS,
   cheapModelFor,
   fallbackFloors,
   isLegacyOtherFloors,
@@ -620,7 +621,7 @@ describe('labelWorld', () => {
   })
 
   it('the cache key is a sha256 that covers the excerpts', async () => {
-    const seen: string[] = []
+    let seen: string[] = []
     const cache = {
       get: async (h: string) => {
         seen.push(h)
@@ -630,9 +631,14 @@ describe('labelWorld', () => {
     }
     const llm = async (p: string): Promise<string> => describeEvery(p)
     await labelWorld(twoDistricts(), mkDeps({ cache, llm }))
+    const first = seen
+    seen = []
     await labelWorld(twoDistricts(), mkDeps({ cache, llm, excerpt: async () => 'different' }))
+    // Each pass reads two prompts' keys, each with its held key (ASK #67 N3) after the miss; none is read by both.
+    expect(new Set(first).size).toBe(4)
     expect(new Set(seen).size).toBe(4)
-    expect(seen.every((h) => /^[0-9a-f]{64}$/.test(h))).toBe(true)
+    expect(first.filter((h) => seen.includes(h))).toEqual([])
+    expect([...first, ...seen].every((h) => /^[0-9a-f]{64}$/.test(h))).toBe(true)
     expect(LABEL_PROMPT_VERSION).toMatch(/\S/)
   })
 
@@ -815,29 +821,36 @@ describe('fix round 1', () => {
       JSON.stringify({ buildings: { zzz: { name: F('x') } } })
     ]
     for (const out of bads) {
-      const deps = mkDeps({ llm: vi.fn(async () => out) })
+      let wall = 0
+      const deps = mkDeps({ llm: vi.fn(async () => out), wallNow: () => wall })
       await labelWorld(twoDistricts(), deps)
-      expect(deps.store.size).toBe(0)
+      // No reply is cached as one: each is held (ASK #67 N3), {"heldAt", "reply"} under its own key.
+      expect([...deps.store.values()]).toEqual(Array(4).fill(JSON.stringify({ heldAt: 0, reply: out })))
       // Each pass: d1 [a b] and d2 [c], then a and b alone (nothing was described); c alone would be d2's prompt
-      // again, so it is not sent (M1). Nothing was cached, so the next pass asks the same four.
+      // again, so it is not sent (M1). Within NOTHING_HOLD_MS the next pass asks none of them; after it, the same four.
       expect(deps.llm).toHaveBeenCalledTimes(4)
+      await labelWorld(twoDistricts(), deps)
+      expect(deps.llm).toHaveBeenCalledTimes(4)
+      wall = NOTHING_HOLD_MS
       await labelWorld(twoDistricts(), deps)
       expect(deps.llm).toHaveBeenCalledTimes(8)
     }
     // A reply is cached raw when it described at least one part it was asked about, even if it left others out
     // (I2): GOOD describes a and its line, so d1's reply is cached. d2's names the district but describes neither c
-    // nor its line, and b's (asked alone, as GOOD left it out) describes nothing of b: neither is cached, so both
-    // are asked again next pass instead of being hidden by the cache.
-    const deps = mkDeps({ llm: async () => GOOD })
+    // nor its line, and b's (asked alone, as GOOD left it out) describes nothing of b: neither is cached as a reply.
+    // Both are held (ASK #67 N3), and asked again once NOTHING_HOLD_MS has passed rather than hidden by the cache.
+    const deps = mkDeps({ llm: async () => GOOD, wallNow: () => 0 })
     await labelWorld(twoDistricts(), deps)
-    expect([...deps.store.values()]).toEqual([GOOD])
+    const held = JSON.stringify({ heldAt: 0, reply: GOOD })
+    expect([...deps.store.values()].sort()).toEqual([GOOD, held, held])
   })
 
   it('a reply whose claims are all dropped yields no accepted field', async () => {
     const reply = JSON.stringify({ buildings: { a: { how: [{ text: 'x', evidence: ['E99'] }] } } })
-    const deps = mkDeps({ llm: async () => reply })
+    const deps = mkDeps({ llm: async () => reply, wallNow: () => 0 })
     await labelWorld(twoDistricts(), deps)
-    expect(deps.store.size).toBe(0)
+    // Not cached as a reply; held (ASK #67 N3).
+    expect(new Set(deps.store.values())).toEqual(new Set([JSON.stringify({ heldAt: 0, reply })]))
   })
 
   it('a cached reply with nothing accepted is a miss', async () => {
@@ -2402,5 +2415,136 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
     expect(isLegacyOtherFloors([{ ...legacy[0], name: 'Entry' }, ...legacy.slice(1)], files)).toBe(false)
     expect(isLegacyOtherFloors(legacy, [...files, 'f/15.ts'])).toBe(false)
     expect(isLegacyOtherFloors([], [])).toBe(false)
+  })
+})
+
+describe('ASK #67 N3: a reply that described nothing is held, not asked again every compile', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  /** The cache entries that are not a held reply: the replies kept under their prompt's key. */
+  const replies = (store: Map<string, string>): string[] => [...store.values()].filter((v) => !isHeld(v))
+  const isHeld = (v: string): boolean => {
+    try {
+      const o = JSON.parse(v) as Record<string, unknown>
+      return typeof o.heldAt === 'number' && typeof o.reply === 'string'
+    } catch {
+      return false
+    }
+  }
+
+  it("a model that answers '{}' is asked each prompt once, then not again until NOTHING_HOLD_MS has passed", async () => {
+    let wall = 1_000_000
+    const llm = vi.fn(async (_p: string) => '{}')
+    const deps = mkDeps({ llm, wallNow: () => wall })
+    const first = await labelWorld(twoDistricts(), deps)
+    // d1 [a b] and d2 [c], then a and b alone; c alone is d2's prompt again (M1).
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(replies(deps.store)).toEqual([])
+    expect([...deps.store.values()].every(isHeld)).toBe(true)
+    expect(deps.store.size).toBe(4)
+    // The next compiles within the hold ask nothing, and give the same world.
+    llm.mockClear()
+    wall += NOTHING_HOLD_MS - 1
+    expect(await labelWorld(twoDistricts(), deps)).toEqual({ ...first, tokens: 0 })
+    expect(llm).not.toHaveBeenCalled()
+    // Once the hold has passed, the same prompts are asked again: a model that answered nothing for a while is not
+    // left out for good.
+    wall += 1
+    await labelWorld(twoDistricts(), deps)
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(NOTHING_HOLD_MS).toBe(DAY)
+  })
+
+  it('a held reply gives back what it carried (a district name, a glossary term) without a call', async () => {
+    const named = JSON.stringify({ district: { name: F('Beta Zone') }, glossary: { RPC: F('remote call') } })
+    const llm = vi.fn(async (p: string) => (p.includes('DISTRICT "d2"') ? named : goodFor(p)))
+    const deps = mkDeps({ llm })
+    const first = await labelWorld(twoDistricts(), deps)
+    expect(first.districts.d2.name).toBe('Beta Zone')
+    expect(first.glossary.RPC).toBe('remote call')
+    expect(replies(deps.store)).toHaveLength(1)
+    llm.mockClear()
+    const again = await labelWorld(twoDistricts(), deps)
+    expect(llm).not.toHaveBeenCalled()
+    expect(again).toEqual({ ...first, tokens: 0 })
+  })
+
+  it('a part a cached reply left out, whose own ask described nothing, costs no call on the next compile', async () => {
+    const withoutB = (p: string): string => {
+      const r = JSON.parse(goodFor(p)) as { buildings: Record<string, unknown> }
+      delete r.buildings.b
+      return JSON.stringify(r)
+    }
+    const llm = vi.fn(async (p: string) => (buildingsIn(p).join(' ') === 'b' ? '{}' : withoutB(p)))
+    const deps = mkDeps({ llm })
+    const first = await labelWorld(twoDistricts(), deps)
+    expect(llm.mock.calls.map(([p]) => buildingsIn(p).join(' ')).sort()).toEqual(['a b', 'b', 'c'])
+    expect(first.buildings.b.how).toEqual([])
+    llm.mockClear()
+    expect(await labelWorld(twoDistricts(), deps)).toEqual({ ...first, tokens: 0 })
+    expect(llm).not.toHaveBeenCalled()
+  })
+
+  it('a model that describes the part once the hold has passed is cached as usual, and that reply wins', async () => {
+    let wall = 5_000
+    let good = false
+    const llm = vi.fn(async (p: string) => (good ? goodFor(p) : '{}'))
+    const deps = mkDeps({ llm, wallNow: () => wall })
+    await labelWorld(twoDistricts(), deps)
+    wall += NOTHING_HOLD_MS
+    good = true
+    llm.mockClear()
+    const described = await labelWorld(twoDistricts(), deps)
+    expect(llm).toHaveBeenCalledTimes(2)
+    expect(described.buildings.a.name).toBe('Alpha Hub')
+    // The described replies are cached; the held entries stay but are never read before them.
+    expect(replies(deps.store)).toHaveLength(2)
+    good = false
+    llm.mockClear()
+    expect(await labelWorld(twoDistricts(), deps)).toEqual({ ...described, tokens: 0 })
+    expect(llm).not.toHaveBeenCalled()
+  })
+
+  it('a held entry from the future (the clock was set back), of the wrong shape or with an unreadable reply is a miss', async () => {
+    const llm = vi.fn(async (_p: string) => '{}')
+    const deps = mkDeps({ llm, wallNow: () => 10_000 })
+    await labelWorld(twoDistricts(), deps)
+    const keys = [...deps.store.keys()]
+    for (const bad of [
+      JSON.stringify({ heldAt: 10_001, reply: '{}' }),
+      JSON.stringify({ heldAt: '10000', reply: '{}' }),
+      JSON.stringify({ heldAt: 10_000, reply: 7 }),
+      JSON.stringify({ heldAt: Number.NaN, reply: '{}' }),
+      JSON.stringify([10_000, '{}']),
+      JSON.stringify({ heldAt: 10_000, reply: 'not json' }),
+      'garbage'
+    ]) {
+      for (const k of keys) deps.store.set(k, bad)
+      llm.mockClear()
+      await labelWorld(twoDistricts(), deps)
+      expect(llm, bad).toHaveBeenCalledTimes(4)
+    }
+  })
+
+  it('a null, non-JSON or timed-out reply is not held: it is a failure, asked again as before', async () => {
+    for (const out of [null, 'sorry, no', '[1,2]']) {
+      const deps = mkDeps({ llm: async () => out })
+      await labelWorld(twoDistricts(), deps)
+      expect(deps.store.size).toBe(0)
+    }
+  })
+
+  it('the pass log says how many batches a held reply answered', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    try {
+      const deps = mkDeps({ llm: async () => '{}' })
+      await labelWorld(twoDistricts(), deps)
+      // c alone is d2's prompt again: within the pass, it takes the reply d2's ask just held.
+      expect(info.mock.calls[0][0]).toContain('(3 batches asked a second time; 1 answered by a held reply that described nothing)')
+      info.mockClear()
+      await labelWorld(twoDistricts(), deps)
+      expect(info.mock.calls[0][0]).toContain('(3 batches asked a second time; 5 answered by a held reply that described nothing)')
+    } finally {
+      info.mockRestore()
+    }
   })
 })

@@ -562,10 +562,16 @@ describe('compileWorld', () => {
     const llm = vi.fn(async () => '{}')
     const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['.env.production'])
     expectValid(doc)
-    // The changed building's batch, its district's first batch (it is in it), and the new district's first batch and
-    // that batch's first building alone (the reply described it not). The root's first building alone is the
-    // root's first batch again, so it is not sent twice.
-    expect(llm).toHaveBeenCalledTimes(4)
+    // The changed building's batch, the new district's first batch and that batch's first building alone (the reply
+    // described it not). The root's first building alone is the root's first batch again, so it is not sent twice.
+    // The changed building's district is named by that same first batch: its reply described nothing, so it is held
+    // (ASK #67 N3) and the naming pass takes it rather than asking the same prompt again.
+    const asked = llm.mock.calls.map((c) => (c as unknown as [string])[0])
+    expect(asked.map((p) => [...p.matchAll(/^- "(b-[^"]+)": /gm)].map((m) => m[1]).join(' '))).toEqual([
+      'b-env',
+      'b-src-main-index b-src-main-ipc b-src-main-telemetry',
+      'b-src-main-index'
+    ])
     const names = new Map(doc.districts.map((d) => [d.id, d.name]))
     expect(names.get('d-src-main')).toBe(fresh.districts[1].name)
     expect(names.get('d-src-renderer')).toBe('old d-src-renderer')
@@ -732,6 +738,15 @@ describe('compileWorld', () => {
     llm.mockClear()
     await compileFixture({ label: labelDeps({ llm }) }, prev)
     expect(llm).toHaveBeenCalledTimes(8)
+    // With one label cache across compiles, as the world store keeps it, those replies are held (ASK #67 N3): the
+    // next compile asks none of the prompts they answered.
+    const kept = labelDeps({ llm })
+    llm.mockClear()
+    await compileFixture({ label: kept }, null, ['src/renderer/view.ts'])
+    expect(llm).toHaveBeenCalledTimes(8)
+    llm.mockClear()
+    await compileFixture({ label: kept }, prev)
+    expect(llm).not.toHaveBeenCalled()
     llm.mockClear()
     await compileFixture({ label: labelDeps({ llm }) }, prev, [])
     expect(llm).not.toHaveBeenCalled()

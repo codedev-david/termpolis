@@ -73,6 +73,8 @@ export interface LabelDeps {
   /** The clock a model call is timed with, in ms (default performance.now: monotonic, so a laptop that
    *  sleeps or a clock that is set mid-call does not make a quick failure look like a timeout). */
   now?: () => number
+  /** The date, in ms since the epoch (default Date.now): how long ago a held reply was given (NOTHING_HOLD_MS). */
+  wallNow?: () => number
   /** True once the world was removed: the pass asks nothing more, and a call cut short by the removal is neither a
    *  quick failure nor asked again. Optional (never stopped). */
   stopped?: () => boolean
@@ -124,6 +126,12 @@ export const LABEL_NO_MODEL_MS = 1000
 /** Calls that reached no model, with none reaching one, after which a pass stops asking: no agent is installed or
  *  consent is off, and every further call would be one more spawn or refusal for nothing. */
 export const NO_MODEL_STRIKES = 2
+/** How long a reply that described none of the parts it was asked about stands for its prompt (ASK #67 N3). It is
+ *  kept in the cache beside the replies, as held, and a compile within this time takes it as the answer and asks
+ *  nothing: a model that answers '{}' for a part would otherwise be asked about it on every compile. Its accepted
+ *  fields (a district name, a glossary term) come back with it, so the world is the same as when it was given.
+ *  Once this time has passed the prompt is asked again, so a part a model once left out is not left out for good. */
+export const NOTHING_HOLD_MS = 24 * 60 * 60 * 1000
 const MAX_EXCERPTS_PER_BUILDING = 3
 /** Files of a line's from part read to find the one that imports its to part. */
 const MAX_IMPORTER_SCAN = 12
@@ -1007,6 +1015,8 @@ interface Pass {
   reached: boolean
   /** Second-chance batches not sent because their prompt was already sent this pass. */
   repeats: number
+  /** Batches a held reply answered (NOTHING_HOLD_MS): not sent. */
+  held: number
   /** The world was removed (LabelDeps.stopped). */
   stopped: () => boolean
 }
@@ -1081,11 +1091,22 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
     applyReply(into, reply, batch, buildings, evidence, named) > 0 &&
     (buildings.length + p.edges.length === 0 || Object.keys(into.buildings).length + Object.keys(into.edges).length > 0)
 
+  // A reply that described nothing is held under its own key, so the cache's replies stay replies.
+  const heldKey = sha(`held
+${key}`)
+  const wallNow = deps.wallNow ?? Date.now
   try {
     const hit = await deps.cache.get(key)
     const cached = hit === null ? null : parseReply(hit)
     const fromCache = emptyLabels()
     if (cached && counts(fromCache, cached)) return fromCache
+    const held = heldReply(await deps.cache.get(heldKey), wallNow())
+    if (held) {
+      pass.held++
+      const fromHeld = emptyLabels()
+      counts(fromHeld, held)
+      return fromHeld
+    }
   } catch {
     // a broken cache is a miss
   }
@@ -1119,14 +1140,37 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
   // A reply that counts is cached even if it left parts out: those get the second chance in smaller batches,
   // whose prompts differ and are cached on their own. The second chance is worked out from the reply whether it
   // came from the model or the cache, so every pass asks a left-out part again until it is described. A reply
-  // that described none of its parts is not cached; its parts get the second chance too.
-  if (!counts(out, reply)) return out
+  // that described none of its parts is not cached as a reply: it is held (NOTHING_HOLD_MS), and its parts get the
+  // second chance too.
+  if (!counts(out, reply)) {
+    try {
+      await deps.cache.set(heldKey, JSON.stringify({ heldAt: wallNow(), reply: raw }))
+    } catch {
+      // an unwritable cache only costs a repeat call next time
+    }
+    return out
+  }
   try {
     await deps.cache.set(key, raw as string)
   } catch {
     // an unwritable cache only costs a repeat call next time
   }
   return out
+}
+
+/** The reply a held entry carries, while it is younger than NOTHING_HOLD_MS; null for a miss: none, the wrong shape, an
+ *  unreadable reply, too old, or given after `now` (the clock was set back, so its age is unknown). */
+function heldReply(entry: string | null, now: number): Json | null {
+  if (entry === null) return null
+  let v: unknown
+  try {
+    v = JSON.parse(entry)
+  } catch {
+    return null
+  }
+  if (!isObj(v) || typeof v.heldAt !== 'number' || typeof v.reply !== 'string') return null
+  const age = now - v.heldAt
+  return age >= 0 && age < NOTHING_HOLD_MS ? parseReply(v.reply) : null
 }
 
 /** A batch of `buildings` of `p`, with the lines of `p` they own: a line rides with its from building when that
@@ -1227,7 +1271,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const only = deps.firstBatchOf
   const plan = planBatches(g).filter((p) => !only || (p.first && only.has(p.district.id)))
   const isStopped = deps.stopped
-  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, stopped: () => isStopped?.() === true }
+  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, held: 0, stopped: () => isStopped?.() === true }
   const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, pass))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
@@ -1246,8 +1290,9 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const left = buildings.filter((b) => bare(labels.buildings[b.id])).length
   const leftLines = edges.filter((e) => bare(labels.edges[edgeId(e)])).length
   const stopped = pass.stopped() ? '; the world was removed, the rest was not asked' : noModel(pass) ? '; no model reachable, the rest was not asked' : ''
+  const held = pass.held > 0 ? `; ${pass.held} answered by a held reply that described nothing` : ''
   console.info(
-    `[world label] left undescribed: ${left} of ${buildings.length} buildings, ${leftLines} of ${edges.length} lines (${again.length - pass.repeats} batches asked a second time${stopped})`
+    `[world label] left undescribed: ${left} of ${buildings.length} buildings, ${leftLines} of ${edges.length} lines (${again.length - pass.repeats} batches asked a second time${held}${stopped})`
   )
   return labels
 }
