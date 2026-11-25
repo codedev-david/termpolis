@@ -211,13 +211,20 @@ describe('profileHookOf: whether the launching account\'s own profile holds the 
     expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, isDefault: true, connection: { server: true, hook: false, allow: true } }), {})).toBeNull()
     expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, agent: 'codex' }), {})).toBeNull()
   })
-  it('has no word on a terminal it knows nothing of: no account, a stale one, one changed by hand, no view', () => {
+  it('has no word on a terminal with no account: it runs on the default profile, which the ledger describes', () => {
     expect(profileHookOf({ id: 't' }, view(other), {})).toBeNull()
-    expect(profileHookOf({ id: 't', agentAccountId: 'acc_gone' }, view(other), {})).toBeNull()
-    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), { t: true })).toBeNull()
-    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, null, {})).toBeNull()
-    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, undefined, undefined)).toBeNull()
+    expect(profileHookOf({ id: 't' }, null, {})).toBeNull()
     expect(profileHookOf(undefined, view(other), {})).toBeNull()
+    // A record kept for a terminal of another id is no word on this one.
     expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), { u: true })).toBe(true)
+  })
+  // Port review, Minor 1: when the profile can't be told, the ledger (the default profile's) used to decide, and a
+  // profile without the hook got no pointer. A missing pointer is the bad direction; a duplicate is harmless.
+  it('is false when it cannot tell the profile: changed by hand, no view yet, or an account that is gone', () => {
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), { t: true })).toBe(false)
+    expect(profileHookOf({ id: 't' }, view(other), { t: true })).toBe(false)
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, null, {})).toBe(false)
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, undefined, undefined)).toBe(false)
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_gone' }, view(other), {})).toBe(false)
   })
 })

@@ -2461,12 +2461,21 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
         mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOff) })
         expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
       })
-      it('goes by the ledger alone on the default profile and on an account changed by hand', async () => {
+      it('goes by the ledger alone on the default profile', async () => {
         mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row({ isDefault: true, connection: conn(false) }))
         expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
-        put(row({ connection: conn(false) }), { 't-acc': true })
-        expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
+      })
+      // Port review, Minor 1: a profile it can't tell is not taken for the default one, so the pointer is typed.
+      it('is false on a profile it cannot tell: an account changed by hand, no accounts read yet, an account that is gone', async () => {
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
+        put(row(), { 't-acc': true })
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
+        put(row())
+        useTerminalStore.setState({ accountsView: null })
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
+        put(row({ id: 'acc_other' }))
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
       })
       it('a launch on an account profile without the hook types the pointer', async () => {
         vi.useFakeTimers()

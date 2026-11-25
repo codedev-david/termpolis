@@ -278,14 +278,17 @@ export function isClaudeAgent(a: { name?: string } | null | undefined): boolean 
  * silently, at launch and after every compaction. A pointer typed into a Claude that had the hook
  * after all is a duplicate the user can see. Main answers a ledger it cannot read with "not
  * connected" for the same reason (agentMemoryHookAsync). That read is the ledger's two answers alone,
- * off main's thread: the full status reads every agent's config synchronously, and this is asked per
- * launch and per compaction. It is asked afresh each time, never cached, so a hook turned on or off in
- * Settings counts from the next launch.
+ * off main's thread once the ledger exists (while main has none it can read, it makes one on its own
+ * thread, as the status does): the full status reads every agent's config synchronously, and this is
+ * asked per launch and per compaction. It is asked afresh each time, never cached, so a hook turned
+ * on or off in Settings counts from the next launch.
  *
  * The ledger says what Termpolis meant to install, in the default profile. A Claude on another
  * registered account runs on that profile's own settings.json, so with `terminalId` that account's
  * row decides as well (profileHookOf): a profile without the hook, or a folder that is missing,
- * gets the pointer though the ledger has the hook on.
+ * gets the pointer though the ledger has the hook on. So does a profile Termpolis cannot tell: an
+ * account changed by hand, accounts not read yet, or an account no longer registered. Only a
+ * terminal with no account, or one on the default profile, goes by the ledger alone.
  */
 export async function claudeHookLoadsMemory(terminalId?: string): Promise<boolean> {
   const status = window.termpolis?.agentIntegrationMemoryHook

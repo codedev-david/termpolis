@@ -111,18 +111,24 @@ export function onUnconnectedAccount(
   return !!row && !(row.isDefault || row.connect)
 }
 
-/** Does the profile this terminal's Claude runs on hold Termpolis's SessionStart memory hook? Only a registered Claude
- *  account other than the default profile has a word here: its own settings.json, as main last read it (a missing
- *  folder holds no hook). null for the default profile, which Agent Integration's ledger describes, and for a terminal
- *  with no account, a stale one, another agent's or one changed by hand: the caller goes by the ledger alone then. */
+/** Does the profile this terminal's Claude runs on hold Termpolis's SessionStart memory hook? A registered Claude
+ *  account other than the default profile answers from its own settings.json, as main last read it (a missing folder
+ *  holds no hook). null for a terminal with no account, the default profile's row and another agent's row: the default
+ *  profile is what Agent Integration's ledger describes, so the caller goes by the ledger alone then. false when the
+ *  profile can't be told: the terminal's account was changed by hand (a typed line, or a /switch-account restart onto
+ *  another profile), the accounts aren't read yet, or its account is no longer registered. The ledger says nothing
+ *  about such a profile, so the caller types the pointer: a missing pointer leaves that Claude without its memory, a
+ *  duplicate one is only seen. */
 export function profileHookOf(
   t: { id: string; agentAccountId?: string } | undefined,
   view: { accounts: readonly AccountRowView[] } | null | undefined,
   byHand: Readonly<Record<string, boolean>> | undefined,
 ): boolean | null {
-  if (!t?.agentAccountId || byHand?.[t.id]) return null
+  if (t && byHand?.[t.id]) return false
+  if (!t?.agentAccountId) return null
   const row = view?.accounts.find((r) => r.id === t.agentAccountId)
-  if (!row || row.isDefault || row.agent !== 'claude') return null
+  if (!row) return false
+  if (row.isDefault || row.agent !== 'claude') return null
   return row.connection?.hook === true
 }
 
