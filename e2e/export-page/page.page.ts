@@ -182,12 +182,12 @@ test('the request log is live: a copy of the page without its CSP that asks for 
   const meta = /<meta http-equiv="Content-Security-Policy" content="[^"]*">/
   expect(html, 'the keyword page carries its CSP').toMatch(meta)
   // A reserved name (.invalid) on https and its default port: a blocked port (such as 9) is refused by Firefox and
-  // WebKit before any request event, and the route aborts this one before any lookup.
+  // WebKit before any request event, and the offline context (WebKit's route) fails this one before any lookup.
   const canary = 'https://export-canary.invalid/canary.png'
   const copy = path.join(FIXTURE_DIR, 'request-canary.html')
   fs.writeFileSync(copy, html.replace(meta, '').replace('</body>', `<img alt="" src="${canary}"></body>`))
   const o = await open(copy)
-  // The route aborts it, so it never leaves the machine; what matters is that the log saw it and foreign() reports it.
+  // The offline context (WebKit's route) fails it, so it never leaves the machine; what matters is that the log saw it and foreign() reports it.
   await expect.poll(() => o.foreign(), { message: `foreign() reports the canary (${info.project.name}${SELF_LOAD_UNSEEN.has(info.project.name) ? ', whose own file:// load is unseen' : ''})` }).toContain(canary)
   expect(o.foreign()).toEqual([canary])
 })

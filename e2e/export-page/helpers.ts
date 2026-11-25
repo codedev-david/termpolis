@@ -183,8 +183,8 @@ async function emulateViewport(page: Page, { width, height }: { width: number; h
 type Fixtures = { open: (file: string, opts?: OpenOptions) => Promise<Opened> }
 
 /**
- * `open(file, opts)`: the exported file in this project's browser, every request logged and all but the page's own
- * file aborted. One browser (or Electron) per test, closed after it. Each test then checks `foreign()` is empty.
+ * `open(file, opts)`: the exported file in this project's browser, every request logged and the context offline (in
+ * WebKit, every request but the page's own file and its data: and blob: URLs aborted), so nothing leaves the machine. One browser (or Electron) per test, closed after it. Each test then checks `foreign()` is empty.
  */
 export const test = base.extend<Fixtures>({
   // Playwright reads a fixture's first parameter as an object pattern, and this one needs no other fixture.
@@ -214,7 +214,19 @@ export const test = base.extend<Fixtures>({
       const requests: string[] = []
       const allowed = (url: string): boolean => same(url, own) || url.startsWith('data:') || url.startsWith('blob:')
       context.on('request', (r) => { requests.push(r.url()) })
-      await context.route('**/*', (route) => (allowed(route.request().url()) ? route.continue() : route.abort()))
+      // Offline, not a route: the browser fails every network request before any lookup, so nothing leaves the
+      // machine, and the page's own file:// load and its data: and blob: URLs are left alone. Any route makes
+      // Playwright pause every request in the browser, the page's own 37 MB smart.html included, and on the Windows
+      // runner that held its delivery for up to 6.8 s (export-page soak 45592749570: Electron's file arrived in
+      // 147-227 ms over 36 loads without a route and in a median 460 ms, twice over 6 s, over 36 with one), which
+      // smart.page.ts read as Ask ready over its 6 s budget. WebKit alone keeps the route: offline, it fails the
+      // file:// navigation itself ("WebKit encountered an internal error"), its route held the file no longer than no
+      // route did there (medians 141-148 ms either way), and it is not held to that budget.
+      if (info.project.use.browserName === 'webkit') {
+        await context.route('**/*', (route) => (allowed(route.request().url()) ? route.continue() : route.abort()))
+      } else {
+        await context.setOffline(true)
+      }
       await context.addInitScript(WATCH_CSP)
       if (opts.noWebGL) await context.addInitScript(NO_WEBGL)
       if (opts.wasmFails) await context.addInitScript(WASM_FAILS)
