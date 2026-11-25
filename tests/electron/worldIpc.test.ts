@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DESIGN_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
+import { ANNOTATE_FAILED, DESIGN_FAILED, SETTINGS_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 import { shownAsIs, shownError, WORLD_CALL_FAILED } from '../../src/main/world/windowError'
+import { WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER } from '../../src/main/world/worldStore'
 
 const DOC = { projectKey: 'k', version: 1 } as unknown as WorldDoc
 
@@ -84,7 +85,27 @@ describe('registerWorldIpc', () => {
 
   it('world:settings-get answers an error when loading the settings fails', async () => {
     const settings = Object.assign(fakeSettings(), { ready: vi.fn(async () => { throw new Error('disk gone') }) })
-    expect(await setup(() => null, settings).invoke('world:settings-get')).toEqual({ success: false, error: 'disk gone' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      // #65: the raw reason goes to the log only; the window gets fixed words.
+      expect(await setup(() => null, settings).invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(warn).toHaveBeenCalledWith('[world] the Lumopolis settings failed:', expect.objectContaining({ message: 'disk gone' }))
+    } finally {
+      warn.mockRestore()
+    }
+    expect(SETTINGS_FAILED).toBe("Lumopolis couldn't change that setting. Try again.")
+  })
+
+  it('#65: world:settings-set answers fixed words when saving the change fails, and logs why', async () => {
+    const settings = fakeSettings()
+    settings.set.mockImplementationOnce(() => { throw new Error('EPERM C:/Users/x/settings.json') })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await setup(() => null, settings).invoke('world:settings-set', { worldLabelling: false })).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(warn).toHaveBeenCalledWith('[world] the Lumopolis settings failed:', expect.objectContaining({ message: 'EPERM C:/Users/x/settings.json' }))
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('world:settings-set applies only the allowlisted field and answers the new settings', async () => {
@@ -162,16 +183,22 @@ describe('registerWorldIpc', () => {
       throw 'odd'
     })
     const { invoke } = setup(() => null, settings)
-    expect(await invoke('world:settings-get')).toEqual({ success: false, error: 'disk gone' })
-    expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: 'odd' })
-    settings.get.mockImplementation(() => {
-      throw 'odd get'
-    })
-    settings.set.mockImplementation(() => {
-      throw new Error('read only')
-    })
-    expect(await invoke('world:settings-get')).toEqual({ success: false, error: 'odd get' })
-    expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: 'read only' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: SETTINGS_FAILED })
+      settings.get.mockImplementation(() => {
+        throw 'odd get'
+      })
+      settings.set.mockImplementation(() => {
+        throw new Error('read only')
+      })
+      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(warn).toHaveBeenCalledWith('[world] the Lumopolis settings failed:', 'odd get')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('handlers return ok() shapes', async () => {
@@ -509,12 +536,25 @@ describe('world:annotate', () => {
     expect(await s.invoke('world:annotate', { key: 'zz', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: 'No world with that key.' })
   })
 
-  it('never shows a raw failure', async () => {
+  it('never shows a raw failure: any other failure reads as a reason after the pane prefix "Couldn\'t confirm:"', async () => {
     const s = setup()
     annotated(s).annotate.mockRejectedValueOnce(new Error('EACCES: C:\secret\path'))
-    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: "Couldn't save that confirmation." })
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
     annotated(s).annotate.mockRejectedValueOnce('odd')
-    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: "Couldn't save that confirmation." })
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
+    // A coded save failure from the host is still one Try again answers: the same fixed reason.
+    annotated(s).annotate.mockRejectedValueOnce(Object.assign(shownError(WORLD_SAVE_FAILED), { code: 'WORLD_SAVE_FAILED' }))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
+    expect(ANNOTATE_FAILED).toBe("Lumopolis couldn't save it just now. Try again.")
+  })
+
+  it('#65: a world a newer Termpolis saved says so (by its code), since trying again would not help', async () => {
+    const s = setup()
+    annotated(s).annotate.mockRejectedValueOnce(Object.assign(shownError('the host words'), { code: 'WORLD_SAVED_BY_NEWER' }))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: WORLD_SAVED_BY_NEWER })
+    // The code alone is not enough: an error main never marked fit to show (it did not come from the host) is fixed text.
+    annotated(s).annotate.mockRejectedValueOnce(Object.assign(new Error('raw'), { code: 'WORLD_SAVED_BY_NEWER' }))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
   })
 
   it('rejects a missing key, a non-string id, and blank or non-string text', async () => {

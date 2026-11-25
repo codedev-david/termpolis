@@ -43,18 +43,19 @@
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import { NO_PART } from './annotations'
+import { WORLD_SAVED_BY_NEWER } from './worldStore'
 import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { TOKEN_REJECTED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
-import { AUTH_MESSAGE } from './gitSource'
+import { AUTH_MESSAGE, NOT_FOUND_MESSAGE } from './gitSource'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
-import { windowMessage } from './windowError'
+import { isShownAsIs, windowMessage } from './windowError'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
 
 export interface WorldIpcMain {
@@ -65,7 +66,27 @@ export interface WorldIpcWindow {
   webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
-const ANNOTATE_FAILED = "Couldn't save that confirmation."
+/** PENDING SIGN-OFF (#65): why a confirmation or the service names were not saved. The pane puts it after "Couldn't
+ *  confirm:" or "Couldn't save the service names:", so it reads as the reason, never as a second "Couldn't save". */
+export const ANNOTATE_FAILED = "Lumopolis couldn't save it just now. Try again."
+
+/** PENDING SIGN-OFF (#65): what a settings read or change that failed answers; the reason goes to the log. */
+export const SETTINGS_FAILED = "Lumopolis couldn't change that setting. Try again."
+
+/** The host's coded refusals of annotate the window is told by name, because a Try again would not help. */
+const ANNOTATE_REFUSALS: Record<string, string> = { WORLD_SAVED_BY_NEWER }
+
+/** The words for a failure of annotate that is a host refusal (the host marked it and gave a known code), else null. */
+const refusalOf = (e: unknown): string | null => {
+  const code = isShownAsIs(e) ? (e as { code?: unknown }).code : undefined
+  return typeof code === 'string' && Object.prototype.hasOwnProperty.call(ANNOTATE_REFUSALS, code) ? ANNOTATE_REFUSALS[code] : null
+}
+
+/** A settings failure: logged, answered with fixed words. */
+const settingsFailed = (e: unknown): ReturnType<typeof err> => {
+  console.warn('[world] the Lumopolis settings failed:', e)
+  return err(SETTINGS_FAILED)
+}
 
 export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'> &
   Partial<Pick<WorldClient, 'cancelLabelling'>>
@@ -243,9 +264,10 @@ const accessOf = (args: unknown): { access?: RepoAccess } | null => {
 }
 
 /** A sign-in failure as the renderer's data: the host, whether git has a helper, and the words to show. */
-const needsLoginOf = (n: NeedsLogin, access: RepoAccess | undefined): CloneNeedsLogin => ({
-  needsLogin: { host: n.host, helper: n.helper, message: access?.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE }
-})
+const needsLoginOf = (n: NeedsLogin, access: RepoAccess | undefined): CloneNeedsLogin =>
+  n.notFound
+    ? { needsLogin: { host: n.host, helper: n.helper, notFound: true, message: NOT_FOUND_MESSAGE } }
+    : { needsLogin: { host: n.host, helper: n.helper, message: access?.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE } }
 
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
 export function registerWorldIpc(
@@ -293,6 +315,8 @@ export function registerWorldIpc(
       return ok(await client.annotate(key, itemId, claim))
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
+      const refusal = refusalOf(e)
+      if (refusal !== null) return err(refusal)
       return err(m === NO_PART || m === 'No world with that key.' ? m : ANNOTATE_FAILED)
     }
   })
@@ -304,7 +328,7 @@ export function registerWorldIpc(
       await settings.ready?.()
       return ok(settings.get())
     } catch (e) {
-      return err(e instanceof Error ? e.message : String(e))
+      return settingsFailed(e)
     }
   })
   ipc.handle('world:settings-set', (_event: unknown, args?: unknown) => {
@@ -316,7 +340,7 @@ export function registerWorldIpc(
       client.applySettings()
       return ok(next)
     } catch (e) {
-      return err(e instanceof Error ? e.message : String(e))
+      return settingsFailed(e)
     }
   })
 
@@ -553,7 +577,8 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     } catch {
       return err(UPDATE_FAILED)
     }
-    if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
+    // F-R8: "not found" from the server is no reason to ask for a sign-in over a saved copy: the address may be gone.
+    if (!res.ok) return res.needsLogin && !res.needsLogin.notFound ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
     if (access) {
       try {
         await registry.setLogin(key, access.mode)

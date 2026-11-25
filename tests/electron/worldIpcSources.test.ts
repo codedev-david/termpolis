@@ -10,7 +10,7 @@ import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
-import { AUTH_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
+import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
 import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import { createSourceRegistry } from '../../src/main/world/sources'
 import type { WorldDoc, WorldEntry, WorldSource } from '../../src/shared/world/types'
@@ -283,6 +283,15 @@ describe('registerWorldIpc sources handlers', () => {
     expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
+  it('F-R8: a not-found a git server sent to a clone with no login keeps its own words and the notFound mark', async () => {
+    const s = setup()
+    const notFound = { ok: false as const, error: NOT_FOUND_MESSAGE, detail: 'remote: Repository not found.', needsLogin: { host: 'gitlab.com', helper: false, notFound: true as const } }
+    ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce(notFound)
+    expect(await s.invoke('world:clone', { url: 'https://gitlab.com/a/b.git' }))
+      .toEqual({ success: true, data: { needsLogin: { host: 'gitlab.com', helper: false, notFound: true, message: NOT_FOUND_MESSAGE } } })
+    expect(s.registry.upsert).not.toHaveBeenCalled()
+  })
+
   it('a machine clone is remembered as machine, a token clone as token, and the token is never in the saved entry', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'world-ipc-login-'))
     try {
@@ -404,6 +413,9 @@ describe('registerWorldIpc sources handlers', () => {
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(needs)
     expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'token', value: 'neutral-value-10' } }))
       .toEqual({ success: true, data: { needsLogin: { host: 'github.com', helper: true, message: TOKEN_REJECTED_MESSAGE } } })
+    // F-R8: a background update a git server answered "not found" never asks for a sign-in: the address may be gone.
+    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: NOT_FOUND_MESSAGE, needsLogin: { host: 'github.com', helper: true, notFound: true } })
+    expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: NOT_FOUND_MESSAGE })
     // any other failure keeps its own message, and a host that throws is a fixed one
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: 'Lumopolis could not reach it.' })
     expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: 'Lumopolis could not reach it.' })

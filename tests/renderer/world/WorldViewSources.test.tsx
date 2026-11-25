@@ -29,6 +29,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 
 import { WorldView } from '../../../src/renderer/src/components/World'
 import type { WorldAskLink } from '../../../src/renderer/src/components/World/WorldView'
+import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -258,7 +259,8 @@ describe('WorldView sources', () => {
     await mount('/repo')
     switchTo('design:d1')
     await settle()
-    expect(screen.getByTestId('world-error')).toHaveTextContent('bridge down')
+    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
+    expect(screen.getByTestId('world-error')).not.toHaveTextContent('bridge down')
   })
 
   it('a design load that lands after the pane moved on is dropped', async () => {
@@ -444,14 +446,17 @@ describe('WorldView sources', () => {
     expect(api2.worldDesignGet).toHaveBeenCalledWith('design:d1')
   })
 
-  it('a failed or thrown recent-worlds list leaves the list empty', async () => {
+  it('a failed or thrown recent-worlds list says it could not be read, never a false "No worlds yet" (F-R12)', async () => {
     bridge({ worldSourcesList: vi.fn(async () => fail('nope')) })
     await mount('')
-    expect(screen.getByText(/No worlds yet/)).toBeInTheDocument()
+    expect(screen.getByTestId('world-list-error')).toHaveTextContent("Lumopolis couldn't load your recent worlds.")
+    expect(screen.queryByText(/No worlds yet/)).toBeNull()
+    expect(screen.queryByText('nope')).toBeNull()
     cleanup()
     bridge({ worldSourcesList: vi.fn(async () => { throw new Error('down') }) })
     await mount('')
-    expect(screen.getByText(/No worlds yet/)).toBeInTheDocument()
+    expect(screen.getByTestId('world-list-error')).toBeInTheDocument()
+    expect(screen.queryByText(/No worlds yet/)).toBeNull()
   })
 
   it('a list or a design change that lands after unmount is dropped', async () => {
@@ -512,7 +517,7 @@ describe('WorldView sign in needed', () => {
     await openGit()
     const failed = screen.getByTestId('world-recompile-error')
     expect(failed).toHaveTextContent('Lumopolis could not map this project.')
-    expect(failed).toHaveTextContent('down')
+    expect(failed).toHaveTextContent(UI_FAILED)
     expect(screen.queryByTestId('world-empty')).toBeNull()
     fireEvent.click(within(failed).getByRole('button', { name: 'Try again' }))
     expect(screen.queryByTestId('world-recompile-error')).toBeNull()

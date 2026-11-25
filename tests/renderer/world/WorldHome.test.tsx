@@ -18,7 +18,8 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
 }))
 
 import { WorldHome, agoText, targetOf } from '../../../src/renderer/src/components/World/WorldHome'
-import { CloneDialog } from '../../../src/renderer/src/components/World/CloneDialog'
+import { CloneDialog, SIGNING_IN_MESSAGE } from '../../../src/renderer/src/components/World/CloneDialog'
+import { linkCls, whereOf } from '../../../src/renderer/src/components/World/worldTargets'
 import { DesignStart } from '../../../src/renderer/src/components/World/DesignStart'
 import { BuildItDialog } from '../../../src/renderer/src/components/World/BuildItDialog'
 import { WorldSwitcher } from '../../../src/renderer/src/components/World/WorldSwitcher'
@@ -427,7 +428,7 @@ describe('CloneDialog sign-in choices', () => {
     const props = mount()
     fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
     expect(api.worldClone).toHaveBeenLastCalledWith('https://github.com/o/r.git', undefined, { mode: 'machine' })
-    expect(screen.getByText('Finish signing in in the window that opened…')).toBeInTheDocument()
+    expect(screen.getByText(SIGNING_IN_MESSAGE)).toBeInTheDocument()
     expect(screen.getByTestId('world-clone-sign-in')).toBeDisabled()
     expect(screen.getByTestId('world-clone-use-token')).toBeDisabled()
     d.resolve(ok(GOT))
@@ -441,7 +442,7 @@ describe('CloneDialog sign-in choices', () => {
     fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
     await settle()
     expect(screen.getByTestId('world-clone-sign-in')).toBeEnabled()
-    expect(screen.queryByText('Finish signing in in the window that opened…')).toBeNull()
+    expect(screen.queryByText(SIGNING_IN_MESSAGE)).toBeNull()
     expect(api.worldClone).toHaveBeenCalledTimes(2)
   })
 
@@ -500,6 +501,46 @@ describe('CloneDialog sign-in choices', () => {
     fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
     await settle()
     expect(screen.getByRole('alert')).toHaveTextContent('Sign in was closed.')
+  })
+
+  it('F-R11: the machine sign-in words do not claim a window opened', () => {
+    expect(SIGNING_IN_MESSAGE).toBe("Signing in with this computer's login… If a sign-in window opens, finish there.")
+  })
+
+  it('F-R8: a repository the host could not find shows the address hint first, with the sign-in choices as secondary links', async () => {
+    const NOT_FOUND = "Lumopolis couldn't find that repository. Check the address, or sign in if it's private."
+    bridge({ worldClone: vi.fn(async () => ok({ needsLogin: { host: 'gitlab.example.com', helper: true, notFound: true, message: NOT_FOUND } })) })
+    mount()
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_FOUND)
+    expect(screen.getByTestId('world-clone-sign-in')).toHaveClass(...linkCls.split(' '))
+    expect(screen.getByTestId('world-clone-use-token')).toHaveClass(...linkCls.split(' '))
+    // A sign-in that is needed (not a maybe) keeps the ordinary buttons.
+    cleanup()
+    bridge({ worldClone: vi.fn(async () => NEEDS(true)) })
+    mount()
+    expect(await screen.findByTestId('world-clone-sign-in')).not.toHaveClass('underline')
+  })
+})
+
+describe('CloneDialog keyboard (F-R13)', () => {
+  it('the address field has the focus when the dialog opens', () => {
+    bridge()
+    render(<CloneDialog onCloned={vi.fn()} onClose={vi.fn()} />)
+    expect(screen.getByLabelText('Repository URL')).toHaveFocus()
+  })
+
+  it('Enter in the branch field clones, as it does in the address field; other keys do not', async () => {
+    const api = bridge()
+    const onCloned = vi.fn()
+    render(<CloneDialog onCloned={onCloned} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.change(screen.getByLabelText('Branch (optional)'), { target: { value: 'dev' } })
+    fireEvent.keyDown(screen.getByLabelText('Branch (optional)'), { key: 'a' })
+    expect(api.worldClone).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByLabelText('Branch (optional)'), { key: 'Enter' })
+    expect(api.worldClone).toHaveBeenCalledWith('https://x.dev/a.git', 'dev')
+    await settle()
+    expect(onCloned).toHaveBeenCalled()
   })
 })
 
@@ -725,5 +766,223 @@ describe('WorldSwitcher', () => {
     fireEvent.change(sel, { target: { value: '' } })
     expect(onOpen).toHaveBeenCalledTimes(2)
     expect(onHome).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('WorldSwitcher where (F-R12)', () => {
+  it('each world names where it is in its option title, so two of one name can be told apart', () => {
+    render(<WorldSwitcher entries={entries()} onOpen={vi.fn()} onHome={vi.fn()} />)
+    const sel = screen.getByLabelText('Worlds')
+    expect(sel.querySelector('option[value="k-dir"]')).toHaveAttribute('title', 'C:/')
+    expect(sel.querySelector('option[value="k-git"]')).toHaveAttribute('title', 'https://x.dev/a.git')
+    expect(sel.querySelector('option[value="design:shop"]')).not.toHaveAttribute('title')
+  })
+})
+
+describe('whereOf (F-R12)', () => {
+  const at = (source: WorldEntry['source']): WorldEntry => ({ key: 'k', source, title: 't', lastOpened: 1 })
+  it('a folder or project shows its parent folder, a repository its address and branch, a design nothing', () => {
+    expect(whereOf(at({ kind: 'folder', root: 'C:/work/api' }))).toBe('C:/work')
+    expect(whereOf(at({ kind: 'project', root: 'D:\\old\\api\\' }))).toBe('D:\\old')
+    expect(whereOf(at({ kind: 'folder', root: 'C:/api' }))).toBe('C:/')
+    expect(whereOf(at({ kind: 'folder', root: 'C:\\api' }))).toBe('C:\\')
+    expect(whereOf(at({ kind: 'folder', root: '/home/u/api' }))).toBe('/home/u')
+    expect(whereOf(at({ kind: 'folder', root: '/api' }))).toBe('/')
+    expect(whereOf(at({ kind: 'folder', root: 'api' }))).toBe('')
+    expect(whereOf(at({ kind: 'git', url: 'https://x.dev/a.git', root: 'C:/data/a' }))).toBe('https://x.dev/a.git')
+    expect(whereOf(at({ kind: 'git', url: 'https://x.dev/a.git', ref: 'dev', root: 'C:/data/a' }))).toBe('https://x.dev/a.git · dev')
+    expect(whereOf(at({ kind: 'design', id: 'shop', title: 'Shop' }))).toBe('')
+  })
+})
+
+describe('WorldHome recent worlds (F-R12)', () => {
+  it('each world shows where it is on a second line', () => {
+    bridge()
+    home({ entries: [
+      { key: 'a1', source: { kind: 'folder', root: 'C:/work/api' }, title: 'api', lastOpened: NOW },
+      { key: 'a2', source: { kind: 'folder', root: 'C:/old/api' }, title: 'api', lastOpened: NOW },
+      { key: 'g', source: { kind: 'git', url: 'https://x.dev/a.git', ref: 'dev', root: 'C:/data/a' }, title: 'a', lastOpened: NOW, missing: true },
+      { key: 'd', source: { kind: 'design', id: 'shop', title: 'Shop' }, title: 'Shop', lastOpened: NOW },
+    ] })
+    expect(screen.getByTestId('world-recent-a1')).toHaveTextContent('C:/work')
+    expect(screen.getByTestId('world-recent-a2')).toHaveTextContent('C:/old')
+    expect(screen.getByTestId('world-recent-g')).toHaveTextContent('https://x.dev/a.git · dev')
+    expect(screen.getByTestId('world-recent-d').querySelector('[data-testid="world-where"]')).toBeNull()
+  })
+
+  it('a list main could not read says so, with Try again, instead of "No worlds yet"', () => {
+    bridge()
+    const props = home({ entries: [], listError: true })
+    expect(screen.queryByText(/No worlds yet/)).toBeNull()
+    expect(screen.getByTestId('world-list-error')).toHaveTextContent("Lumopolis couldn't load your recent worlds.")
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(props.onChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('a list that could not be read again keeps the worlds already shown under the message', () => {
+    bridge()
+    home({ listError: true })
+    expect(screen.getByTestId('world-list-error')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Recent worlds' }).querySelectorAll('li')).toHaveLength(5)
+  })
+})
+
+describe('WorldHome stale opens (F-R4)', () => {
+  const lapsing = () => {
+    let live = true
+    return { ticket: () => () => live, lapse: () => { live = false } }
+  }
+
+  it('Map this project that finishes after the pane moved on does not open it, but the list still reloads', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    bridge({ worldMapProject: vi.fn(() => d.promise) })
+    const t = lapsing()
+    const props = home({ ticket: t.ticket })
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    t.lapse()
+    d.resolve(ok({ key: 'k-new', source: { kind: 'project', root: 'C:/repo/src-root' }, title: 'x', lastOpened: NOW }))
+    await settle()
+    expect(props.onChanged).toHaveBeenCalled()
+    expect(props.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('Open a folder that finishes after the pane moved on does not open it either', async () => {
+    const d = deferred<Res<WorldEntry | null>>()
+    bridge({ worldOpenFolder: vi.fn(() => d.promise) })
+    const t = lapsing()
+    const props = home({ ticket: t.ticket })
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    t.lapse()
+    d.resolve(ok({ key: 'k-f', source: { kind: 'folder', root: 'C:/picked' }, title: 'picked', lastOpened: NOW }))
+    await settle()
+    expect(props.onChanged).toHaveBeenCalled()
+    expect(props.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('a clone or a design that finishes after the pane moved on is listed but not opened', async () => {
+    const c = deferred<Res<WorldEntry>>()
+    bridge({ worldClone: vi.fn(() => c.promise) })
+    const t = lapsing()
+    const props = home({ ticket: t.ticket })
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    t.lapse()
+    c.resolve(ok({ key: 'k-c', source: { kind: 'git', url: 'https://x.dev/a.git', root: 'C:/data/clone' }, title: 'clone', lastOpened: NOW }))
+    await settle()
+    expect(props.onChanged).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).not.toHaveBeenCalled()
+    cleanup()
+    const d = deferred<Res<unknown>>()
+    bridge({ worldDesignDraft: vi.fn(() => d.promise) })
+    const u = lapsing()
+    const again = home({ ticket: u.ticket })
+    fireEvent.click(screen.getByRole('button', { name: /^Design something new/ }))
+    fireEvent.change(screen.getByPlaceholderText('Describe the app you want…'), { target: { value: 'A shop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
+    u.lapse()
+    d.resolve(ok({ key: 'design:new', doc: {}, text: 'Drafted.' }))
+    await settle()
+    expect(again.onChanged).toHaveBeenCalledTimes(1)
+    expect(again.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('with a ticket that holds, each of them opens its world as before', async () => {
+    bridge()
+    const props = home({ ticket: () => () => true })
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    await settle()
+    expect(props.onOpen).toHaveBeenLastCalledWith({ kind: 'root', root: 'C:/picked', key: 'k-f' })
+  })
+})
+
+describe('WorldHome dialog keyboard (F-R13)', () => {
+  it('while a dialog is up the home behind it is inert and the pane is told; closing gives the focus back to the button that opened it', () => {
+    bridge()
+    const onDialog = vi.fn()
+    home({ onDialog })
+    const content = screen.getByTestId('world-home-content')
+    expect(content.inert).not.toBe(true)
+    const trigger = screen.getByRole('button', { name: /^Open a git repository/ })
+    trigger.focus()
+    fireEvent.click(trigger)
+    expect(content.inert).toBe(true)
+    expect(onDialog).toHaveBeenLastCalledWith(true)
+    expect(screen.getByLabelText('Repository URL')).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(content.inert).toBe(false)
+    expect(onDialog).toHaveBeenLastCalledWith(false)
+    expect(trigger).toHaveFocus()
+  })
+
+  it('the design dialog starts in its description box and gives the focus back too', () => {
+    bridge()
+    home()
+    const trigger = screen.getByRole('button', { name: /^Design something new/ })
+    fireEvent.click(trigger)
+    expect(screen.getByPlaceholderText('Describe the app you want…')).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(trigger).toHaveFocus()
+  })
+
+  it("Tab and Shift+Tab go round the dialog's own controls", () => {
+    bridge()
+    home()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    const url = screen.getByLabelText('Repository URL')
+    fireEvent.change(url, { target: { value: 'https://x.dev/a.git' } })
+    const clone = screen.getByRole('button', { name: 'Clone' })
+    clone.focus()
+    fireEvent.keyDown(clone, { key: 'Tab' })
+    expect(url).toHaveFocus()
+    fireEvent.keyDown(url, { key: 'Tab', shiftKey: true })
+    expect(clone).toHaveFocus()
+    // In between, Tab is the browser's own (not prevented), and other keys are left alone.
+    const branch = screen.getByLabelText('Branch (optional)')
+    branch.focus()
+    expect(fireEvent.keyDown(branch, { key: 'Tab' })).toBe(true)
+    expect(fireEvent.keyDown(branch, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(fireEvent.keyDown(branch, { key: 'x' })).toBe(true)
+    expect(branch).toHaveFocus()
+  })
+
+  it('a trigger that went away while the dialog was up is not focused', () => {
+    bridge()
+    const onDialog = vi.fn()
+    home({ onDialog })
+    const trigger = screen.getByRole('button', { name: /^Open a git repository/ })
+    fireEvent.click(trigger)
+    trigger.remove()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(trigger).not.toHaveFocus()
+    expect(onDialog).toHaveBeenLastCalledWith(false)
+  })
+})
+
+describe('CloneDialog token dialog keyboard (F-R13)', () => {
+  it('the clone dialog under the token dialog is inert, and closing the token dialog gives the focus back to Use a token', async () => {
+    bridge({ worldClone: vi.fn(async () => ok({ needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } })) })
+    render(<CloneDialog onCloned={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    fireEvent.click(await screen.findByTestId('world-clone-use-token'))
+    expect(screen.getByTestId('world-clone').inert).toBe(true)
+    expect(screen.getByTestId('world-repo-access-input')).toHaveFocus()
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByTestId('world-clone').inert).toBe(false)
+    expect(screen.getByTestId('world-clone-use-token')).toHaveFocus()
+  })
+
+  it('a clone dialog that closes with the token dialog still up focuses nothing that has gone', async () => {
+    bridge({ worldClone: vi.fn(async () => ok({ needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } })) })
+    const r = render(<CloneDialog onCloned={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    const useToken = await screen.findByTestId('world-clone-use-token')
+    fireEvent.click(useToken)
+    r.unmount()
+    expect(useToken.isConnected).toBe(false)
+    expect(useToken).not.toHaveFocus()
   })
 })

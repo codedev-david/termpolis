@@ -17,6 +17,21 @@ export function targetOf(entry: WorldEntry): OpenTarget {
   return s.kind === 'design' ? { kind: 'design', key: entry.key } : { kind: 'root', root: s.root, key: entry.key }
 }
 
+/** Where a recent world is, for the line under its name (F-R12: names are folder names, so two `api` folders, or two
+ *  branches of one repository, look alike): a folder's parent folder, a repository's address and branch, nothing
+ *  for a design. */
+export function whereOf(entry: WorldEntry): string {
+  const s = entry.source
+  if (s.kind === 'design') return ''
+  if (s.kind === 'git') return s.ref ? `${s.url} · ${s.ref}` : s.url
+  const root = s.root.replace(/[\\/]+$/, '')
+  const cut = Math.max(root.lastIndexOf('/'), root.lastIndexOf('\\'))
+  if (cut < 0) return ''
+  const parent = root.slice(0, cut)
+  // The top of a drive or the file system keeps its separator: "C:/", "/".
+  return parent === '' || parent.endsWith(':') ? root.slice(0, cut + 1) : parent
+}
+
 // The height bound keeps Cancel and the main button on screen in a short pane: the pane less the top-24 offset
 // (96px) and a 12px margin below. Past that the dialog scrolls inside itself.
 export const dialogCls = 'absolute left-1/2 top-24 -translate-x-1/2 z-10 w-[32rem] max-w-[calc(100%-24px)] max-h-[calc(100%-108px)] overflow-y-auto rounded-lg border border-[#3c3c3c] bg-[#252526] shadow-2xl p-4 flex flex-col gap-3 text-sm text-[#d4d4d4]'
@@ -24,6 +39,9 @@ export const dialogCls = 'absolute left-1/2 top-24 -translate-x-1/2 z-10 w-[32re
 // too narrow for them wraps whole buttons instead (flex-wrap on each dialog's button row).
 export const btnCls = 'text-xs whitespace-nowrap min-w-[4.5rem] px-3 py-1.5 rounded border border-[#3c3c3c] hover:bg-[#37373d] disabled:opacity-50 disabled:hover:bg-transparent'
 export const primaryCls = 'text-xs whitespace-nowrap min-w-[4.5rem] px-3 py-1.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white disabled:opacity-50 disabled:hover:bg-[#0078d4]'
+// A secondary choice: a text link beside the dialog's buttons, for a step that may not be the remedy (F-R8: sign in
+// when the host only said it could not find the repository).
+export const linkCls = 'text-xs whitespace-nowrap px-1 py-1.5 text-[#4fc1ff] underline hover:text-white disabled:opacity-50 disabled:hover:text-[#4fc1ff]'
 export const fieldCls = 'w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#0078d4] disabled:opacity-60'
 
 /** The label of the "sign in with this computer's login" button. */

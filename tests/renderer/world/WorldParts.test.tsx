@@ -412,6 +412,13 @@ describe('WorldToolbar Export', () => {
     expect(screen.queryByTestId('world-export')).toBeNull()
   })
 
+  it('F-R13: inert while the home has a dialog up, live again after', () => {
+    const r = render(<WorldToolbar {...props({ inert: true })} />)
+    expect(screen.getByRole('toolbar').inert).toBe(true)
+    r.rerender(<WorldToolbar {...props()} />)
+    expect(screen.getByRole('toolbar').inert).toBe(false)
+  })
+
   it('Export opens its menu; each item calls onExport with its kind and closes the menu', () => {
     const onExport = vi.fn()
     render(<WorldToolbar {...props({ onExport, onBuildIt: vi.fn() })} />)

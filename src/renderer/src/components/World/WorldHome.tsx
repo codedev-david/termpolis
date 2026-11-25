@@ -2,13 +2,14 @@
 // repository, a new design) and the recent worlds below them. A world whose folder or design is gone
 // shows "missing" and can only be removed (its files, if any, are left alone).
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties, MutableRefObject } from 'react'
+import type { CSSProperties, KeyboardEvent, MutableRefObject } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
 import { DesignStart } from './DesignStart'
-import { targetOf, UI_FAILED } from './worldTargets'
+import { targetOf, UI_FAILED, whereOf } from './worldTargets'
 import type { OpenTarget } from './worldTargets'
 import { useUiZoom } from './worldPane'
+import { focusables } from '../../hooks/useFocusTrap'
 
 export { targetOf }
 export type { OpenTarget }
@@ -24,7 +25,16 @@ export interface WorldHomeProps {
   now?: number
   /** The pane's Esc, offered to the home first (WorldView): true when an open dialog took it. Set on every render. */
   escRef?: MutableRefObject<(() => boolean) | null>
+  /** The last list main was asked for could not be read (useOpenWorld). */
+  listError?: boolean
+  /** useOpenWorld's ticket: an action that finishes after the pane moved to another world opens nothing (F-R4). */
+  ticket?: () => () => boolean
+  /** A dialog opened (true) or closed (false): the pane makes its toolbar inert meanwhile (F-R13). */
+  onDialog?: (open: boolean) => void
 }
+
+export const LIST_FAILED = "Lumopolis couldn't load your recent worlds."
+const always = (): (() => boolean) => () => true
 
 const ICONS: Record<WorldSource['kind'], { icon: string; label: string }> = {
   project: { icon: 'fa-diagram-project', label: 'Project' },
@@ -47,7 +57,7 @@ export function agoText(at: number, now: number): string {
 const CHOICE_GRID: CSSProperties = { gridTemplateColumns: 'repeat(auto-fit, minmax(min(15rem, 100%), 1fr))' }
 const choiceCls = 'flex flex-col items-start gap-1 rounded-lg border border-[#3c3c3c] bg-[#1b2236] hover:bg-[#222b44] hover:border-[#4fc1ff]/60 px-4 py-3 text-left disabled:opacity-50 disabled:hover:bg-[#1b2236] disabled:hover:border-[#3c3c3c]'
 
-export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef }: WorldHomeProps): JSX.Element {
+export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef, listError = false, ticket = always, onDialog }: WorldHomeProps): JSX.Element {
   const zoom = useUiZoom()
   const [dialog, setDialog] = useState<'clone' | 'design' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +67,37 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
   useLayoutEffect(() => {
     if (dialog !== null) (homeRef.current as HTMLDivElement).scrollTop = 0
   }, [dialog])
+  // While a dialog is up the home behind it is inert (Tab, clicks and a screen reader stay in the dialog) and the
+  // pane makes its toolbar so too. Closed, the focus goes back to the choice that opened it (F-R13).
+  const contentRef = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLElement | null>(null)
+  const onDialogRef = useRef(onDialog)
+  onDialogRef.current = onDialog
+  const open = dialog !== null
+  useLayoutEffect(() => {
+    if (!open) return
+    const content = contentRef.current as HTMLDivElement
+    const from = trigger.current
+    content.inert = true
+    onDialogRef.current?.(true)
+    return () => {
+      content.inert = false
+      onDialogRef.current?.(false)
+      if (from !== null && from.isConnected) from.focus()
+    }
+  }, [open])
+  /** Tab past a dialog's last control comes round to its first, and Shift+Tab the other way. */
+  const trapTab = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Tab') return
+    const list = focusables(e.currentTarget)
+    const at = document.activeElement
+    const to = e.shiftKey ? (at === list[0] ? list[list.length - 1] : null) : (at === list[list.length - 1] ? list[0] : null)
+    if (to) { e.preventDefault(); to.focus() }
+  }
+  // An action that opens a world when it is done, and the dialogs, open it only while the pane is still where the
+  // person started it: a world picked meanwhile (the switcher, a terminal) stays (F-R4).
+  const dialogTicket = useRef<() => boolean>(always())
+  const openDialog = (which: 'clone' | 'design'): void => { setError(null); dialogTicket.current = ticket(); setDialog(which) }
   const at = now ?? Date.now()
   // An open dialog takes the pane's Esc, wherever the focus is in the pane, and does its Cancel with it: the pane
   // stays open. The dialog sets what that is (dialogEsc) as it renders.
@@ -76,22 +117,24 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
   }
 
   const mapProject = (): void => run(async () => {
+    const still = ticket()
     const api = window.termpolis
     const found = await api.gitFindRoot(projectCwd)
     const root = found.success && found.data ? found.data : projectCwd
     const res = await api.worldMapProject(root)
     if (!res.success) return res.error
     onChanged()
-    onOpen({ kind: 'root', root, follow: true })
+    if (still()) onOpen({ kind: 'root', root, follow: true })
     return null
   })
 
   const openFolder = (): void => run(async () => {
+    const still = ticket()
     const res = await window.termpolis.worldOpenFolder()
     if (!res.success) return res.error
     if (res.data === null) return null
     onChanged()
-    onOpen(targetOf(res.data))
+    if (still()) onOpen(targetOf(res.data))
     return null
   })
 
@@ -105,13 +148,13 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
   const choices: { label: string; hint: string; icon: string; onClick: () => void; disabled?: boolean }[] = [
     { label: 'Map this project', hint: projectCwd ? 'The project open in the active terminal' : 'Open a terminal in a project first', icon: 'fa-diagram-project', onClick: mapProject, disabled: !projectCwd },
     { label: 'Open a folder…', hint: 'Any folder on this computer', icon: 'fa-folder-open', onClick: openFolder },
-    { label: 'Open a git repository…', hint: 'Cloned into Termpolis, read-only', icon: 'fa-code-branch', onClick: () => { setError(null); setDialog('clone') } },
-    { label: 'Design something new', hint: 'Describe an app and see it planned', icon: 'fa-pen-ruler', onClick: () => { setError(null); setDialog('design') } },
+    { label: 'Open a git repository…', hint: 'Cloned into Termpolis, read-only', icon: 'fa-code-branch', onClick: () => openDialog('clone') },
+    { label: 'Design something new', hint: 'Describe an app and see it planned', icon: 'fa-pen-ruler', onClick: () => openDialog('design') },
   ]
 
   return (
     <div ref={homeRef} data-testid="world-home" className={dialog === null ? 'overflow-auto' : 'overflow-hidden'} style={{ position: 'absolute', inset: 0 }}>
-      <div className="mx-auto max-w-3xl px-6 py-10 flex flex-col gap-6" style={zoom}>
+      <div ref={contentRef} data-testid="world-home-content" className="mx-auto max-w-3xl px-6 py-10 flex flex-col gap-6" style={zoom}>
         <div className="flex flex-col items-center gap-1 text-center">
           <h1 className="text-3xl font-semibold text-white inline-flex flex-wrap justify-center items-center gap-x-3">
             <i className="fa-solid fa-earth-americas text-[#4fc1ff]" aria-hidden="true" />
@@ -122,7 +165,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
         {/* Two columns where the pane has room for them, one in a narrow pane: the pane's width, not the window's. */}
         <div className="grid gap-3" style={CHOICE_GRID}>
           {choices.map((c) => (
-            <button key={c.label} type="button" className={choiceCls} onClick={c.onClick} disabled={c.disabled}>
+            <button key={c.label} type="button" className={choiceCls} onClick={(e) => { trigger.current = e.currentTarget; c.onClick() }} disabled={c.disabled}>
               <span className="inline-flex items-center gap-2 text-sm font-semibold text-white">
                 <i className={`fa-solid ${c.icon} text-[#4fc1ff]`} aria-hidden="true" />
                 {c.label}
@@ -134,16 +177,27 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
         {error !== null && <p role="alert" className="text-xs text-[#f14c4c] text-center">{error}</p>}
         <section className="flex flex-col gap-2">
           <h2 className="text-xs uppercase tracking-wide text-[#9ca3af]">Recent worlds</h2>
+          {listError && (
+            <div data-testid="world-list-error" className="flex flex-wrap items-center gap-2 text-xs text-[#f0b429]">
+              <span>{LIST_FAILED}</span>
+              <button type="button" className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] text-[#d4d4d4] hover:bg-[#37373d]" onClick={onChanged}>Try again</button>
+            </div>
+          )}
           {entries.length === 0 ? (
-            <p className="text-xs text-[#6b7280]">No worlds yet. Pick one of the choices above to make your first.</p>
+            !listError && <p className="text-xs text-[#6b7280]">No worlds yet. Pick one of the choices above to make your first.</p>
           ) : (
             <ul aria-label="Recent worlds" className="flex flex-col gap-1">
               {entries.map((e) => {
                 const kind = ICONS[e.source.kind]
+                const where = whereOf(e)
                 const body = (
                   <>
                     <i className={`fa-solid ${kind.icon} w-4 text-[#9ca3af]`} title={kind.label} aria-hidden="true" />
-                    <span className="flex-1 truncate text-sm text-[#d4d4d4]">{e.title}</span>
+                    {/* The name, and where it is under it: two worlds can share a name (F-R12). */}
+                    <span className="flex-1 min-w-0 flex flex-col">
+                      <span className="truncate text-sm text-[#d4d4d4]">{e.title}</span>
+                      {where !== '' && <span data-testid="world-where" title={where} className="truncate text-xs text-[#6b7280]">{where}</span>}
+                    </span>
                     <span className="text-xs text-[#6b7280]">{agoText(e.lastOpened, at)}</span>
                   </>
                 )
@@ -170,21 +224,24 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef 
           )}
         </section>
       </div>
-      {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
-      {dialog === 'clone' && (
-        <CloneDialog
-          escRef={dialogEsc}
-          onClose={() => setDialog(null)}
-          onCloned={(entry) => { setDialog(null); onChanged(); onOpen(targetOf(entry)) }}
-        />
-      )}
-      {dialog === 'design' && (
-        <DesignStart
-          escRef={dialogEsc}
-          onClose={() => setDialog(null)}
-          onDrafted={(key) => { setDialog(null); onChanged(); onOpen({ kind: 'design', key }) }}
-        />
-      )}
+      {/* Not positioned: the scrim and the dialogs place themselves in the home, as before. */}
+      <div onKeyDown={trapTab}>
+        {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
+        {dialog === 'clone' && (
+          <CloneDialog
+            escRef={dialogEsc}
+            onClose={() => setDialog(null)}
+            onCloned={(entry) => { setDialog(null); onChanged(); if (dialogTicket.current()) onOpen(targetOf(entry)) }}
+          />
+        )}
+        {dialog === 'design' && (
+          <DesignStart
+            escRef={dialogEsc}
+            onClose={() => setDialog(null)}
+            onDrafted={(key) => { setDialog(null); onChanged(); if (dialogTicket.current()) onOpen({ kind: 'design', key }) }}
+          />
+        )}
+      </div>
     </div>
   )
 }

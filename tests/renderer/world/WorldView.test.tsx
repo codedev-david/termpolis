@@ -43,6 +43,7 @@ import { WorldView } from '../../../src/renderer/src/components/World'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
 import { GRAPHICS_FLAT, GRAPHICS_LOST } from '../../../src/renderer/src/components/World/WorldView'
+import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -1081,7 +1082,7 @@ describe('WorldView', () => {
     fireEvent.click(screen.getByTestId('world-relayout'))
     fireEvent.click(screen.getByTestId('world-relayout-go'))
     await settle()
-    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-layout failed: ipc down')
+    expect(screen.getByTestId('world-notice')).toHaveTextContent(`Re-layout failed: ${UI_FAILED}`)
   })
 
   it('opens cards from the viewer, and card links and close drive the viewer', async () => {
@@ -1225,6 +1226,44 @@ describe('WorldView', () => {
     expect(screen.getByRole('list', { name: 'Recent worlds' })).toHaveTextContent('repo')
   })
 
+  it('the home: a list main could not read says so, and a dialog up makes the toolbar inert until it closes (F-R12, F-R13)', async () => {
+    bridge({ worldSourcesList: vi.fn(async () => fail('disk')) })
+    await mount({ root: '' })
+    expect(screen.getByTestId('world-list-error')).toHaveTextContent("Lumopolis couldn't load your recent worlds.")
+    expect(screen.queryByText(/No worlds yet/)).toBeNull()
+    const bar = screen.getByRole('toolbar')
+    expect(bar.inert).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    expect(bar.inert).toBe(true)
+    fireEvent.click(within(screen.getByTestId('world-clone')).getByRole('button', { name: 'Cancel' }))
+    expect(bar.inert).toBe(false)
+  })
+
+  it('a world picked in the switcher while Map this project is still on its way stays open (F-R4)', async () => {
+    const entry: WorldEntry = { key: 'k-o', source: { kind: 'folder', root: '/other' }, title: 'other', lastOpened: 1 } as WorldEntry
+    const mapped = deferred<Res<WorldEntry>>()
+    const b = bridge({
+      worldSourcesList: vi.fn(async () => ok([entry])),
+      worldMapProject: vi.fn(() => mapped.promise),
+      worldTouchSource: vi.fn(async () => ok(entry)),
+      worldUpdateSource: vi.fn(async () => ok({ changed: false })),
+    })
+    await mount()
+    const worlds = () => screen.getByRole('combobox', { name: 'Worlds' }) as HTMLSelectElement
+    fireEvent.change(worlds(), { target: { value: '__home' } })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    expect(b.api.worldMapProject).toHaveBeenCalledWith('/repo')
+    fireEvent.change(worlds(), { target: { value: 'k-o' } })
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('other')
+    await act(async () => { mapped.resolve(ok({ key: 'k-r', source: { kind: 'project', root: '/repo' }, title: 'repo', lastOpened: 1 } as WorldEntry)) })
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('other')
+    expect(screen.getByTestId('world-project')).not.toHaveTextContent('repo')
+  })
+
   it('a world already saved, a failed compile, a refused or failing registration and a world the user picked register nothing more', async () => {
     let b = bridge({ worldMapProject: vi.fn(async () => ok({})) })
     await mount()
@@ -1313,11 +1352,13 @@ describe('WorldView', () => {
     cleanup()
     bridge({ worldGet: vi.fn(async () => { throw new Error('boom') }) })
     await mount()
-    expect(screen.getByTestId('world-error')).toHaveTextContent('boom')
+    // #65: a call that throws (no answer from main) shows fixed words, never the throw's own text.
+    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
+    expect(screen.getByTestId('world-error')).not.toHaveTextContent('boom')
     cleanup()
     bridge({ worldGet: vi.fn(() => Promise.reject('odd')) })
     await mount()
-    expect(screen.getByTestId('world-error')).toHaveTextContent('odd')
+    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
   })
 
   it('answers that land after unmount are dropped (get, compile, failure)', async () => {
@@ -1494,7 +1535,7 @@ describe('WorldView card actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent("Couldn't confirm: No part with that id.")
     fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
     await settle()
-    expect(screen.getByRole('status')).toHaveTextContent("Couldn't confirm: boom")
+    expect(screen.getByRole('status')).toHaveTextContent(`Couldn't confirm: ${UI_FAILED}`)
   })
 
   it('an evidence button shows what it points at under the card, and closing the card or the evidence clears it', async () => {
@@ -1528,7 +1569,7 @@ describe('WorldView card actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: nope")
     save('y')
     await settle()
-    expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: boom")
+    expect(screen.getByRole('status')).toHaveTextContent(`Couldn't save the service names: ${UI_FAILED}`)
   })
 
   // U4: a Confirm or a service-names save that comes back after another world opened must not draw
@@ -2464,7 +2505,7 @@ describe('WorldView export', () => {
       expect(screen.getByTestId('world-notice')).toBeInTheDocument()
       await act(async () => { if (end === 'throw') compile.reject(new Error('down')); else compile.resolve(fail('no source files found')) })
       await settle()
-      expect(screen.getByTestId('world-error')).toHaveTextContent(end === 'throw' ? 'down' : 'no source files found')
+      expect(screen.getByTestId('world-error')).toHaveTextContent(end === 'throw' ? UI_FAILED : 'no source files found')
       expect(screen.queryByTestId('world-notice')).toBeNull()
       m.unmount()
     }

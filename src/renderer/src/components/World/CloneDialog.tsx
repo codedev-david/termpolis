@@ -1,11 +1,11 @@
 // Lumopolis: open a git repository. The URL is checked as it is typed (the same rules main enforces:
 // https://, ssh:// or git@ only, nothing that reads as an option), with an optional branch. While
 // main clones (shallow, into Termpolis's data folder) an indeterminate bar runs; Cancel stops it.
-import { useRef, useState, type MutableRefObject } from 'react'
+import { useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { WorldEntry } from '../../../../shared/world/types'
 import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess'
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
-import { btnCls, dialogCls, fieldCls, primaryCls, signInLabel } from './worldTargets'
+import { btnCls, dialogCls, fieldCls, linkCls, primaryCls, signInLabel } from './worldTargets'
 import { RepoAccessDialog } from './RepoAccessDialog'
 import { useUiZoom } from './worldPane'
 
@@ -17,6 +17,8 @@ export interface CloneDialogProps {
 }
 
 export const CLONE_UNREACHABLE = "Lumopolis couldn't clone that repository. Try again."
+/** A machine sign-in may need no window at all (a helper with a saved login), so the words do not say one opened. */
+export const SIGNING_IN_MESSAGE = "Signing in with this computer's login… If a sign-in window opens, finish there."
 
 export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JSX.Element {
   const zoom = useUiZoom()
@@ -81,18 +83,37 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
     setSigningIn(false)
     window.termpolis.worldCloneCancel(trimmed, ref).catch(() => undefined)
   }
+  const choiceCls = login !== null && login.notFound === true ? linkCls : btnCls
   const closeToken = (): void => { setTokenOpen(false); setTokenError(null) }
   // Esc is the Cancel of the dialog on top: the token dialog's when it is up, else this one's (which stops a clone
   // under way before it closes anything).
-  if (escRef) escRef.current = tokenOpen && login !== null ? closeToken : cancel
+  const tokenShown = tokenOpen && login !== null
+  if (escRef) escRef.current = tokenShown ? closeToken : cancel
+  // Under the token dialog this one is inert, so Tab stays in that dialog; closed, the focus comes back to the button
+  // that opened it (F-R13).
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const useTokenRef = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    if (!tokenShown) return
+    const d = dialogRef.current as HTMLDivElement
+    // Use a token is drawn whenever login is set, so it is there whenever the token dialog is. On unmount React runs
+    // this before it takes the nodes away, and the home then gives the focus back to its own choice.
+    const back = useTokenRef.current as HTMLButtonElement
+    d.inert = true
+    return () => {
+      d.inert = false
+      back.focus()
+    }
+  }, [tokenShown])
 
   return (
     <>
-    <div role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls} style={zoom}>
+    <div ref={dialogRef} role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
         Repository URL
         <input
+          autoFocus
           value={url}
           disabled={cloning}
           placeholder="https://github.com/owner/repo.git"
@@ -110,6 +131,7 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
           placeholder="main"
           spellCheck={false}
           onChange={(e) => { setBranch(e.target.value); edited() }}
+          onKeyDown={(e) => { if (e.key === 'Enter') clone() }}
           className={fieldCls}
         />
       </label>
@@ -119,16 +141,18 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
           <div className="h-full w-1/3 motion-safe:animate-pulse rounded bg-[#0078d4]" />
         </div>
       )}
-      {signingIn && <p className="text-xs text-[#9ca3af]">Finish signing in in the window that opened…</p>}
+      {signingIn && <p className="text-xs text-[#9ca3af]">{SIGNING_IN_MESSAGE}</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
       {login !== null && (
+        // When the host only said it could not find the repository, the address is the likelier fault: the
+        // sign-in choices are offered as links, beneath the hint to check it (F-R8).
         <div className="flex gap-2">
           {login.helper && (
-            <button type="button" data-testid="world-clone-sign-in" className={btnCls} disabled={cloning} onClick={() => clone({ mode: 'machine' })}>
+            <button type="button" data-testid="world-clone-sign-in" className={choiceCls} disabled={cloning} onClick={() => clone({ mode: 'machine' })}>
               {signInLabel(login.host)}
             </button>
           )}
-          <button type="button" data-testid="world-clone-use-token" className={btnCls} disabled={cloning} onClick={() => setTokenOpen(true)}>Use a token</button>
+          <button ref={useTokenRef} type="button" data-testid="world-clone-use-token" className={choiceCls} disabled={cloning} onClick={() => setTokenOpen(true)}>Use a token</button>
         </div>
       )}
       <div className="flex flex-wrap justify-end gap-2">
@@ -136,7 +160,7 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
         <button type="button" className={primaryCls} disabled={!canClone} onClick={() => clone()}>Clone</button>
       </div>
     </div>
-    {tokenOpen && login !== null && (
+    {tokenShown && (
       <RepoAccessDialog
         host={login.host}
         busy={cloning}

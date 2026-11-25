@@ -18,9 +18,12 @@ export function shownAsIs<E extends Error>(e: E): E {
 /** An Error whose message is fixed text, fit to show in the window. */
 export const shownError = (message: string): Error => shownAsIs(new Error(message))
 
+/** Whether `e` was marked fit to show in the window as it is. */
+export const isShownAsIs = (e: unknown): e is Error => e instanceof Error && shown.has(e)
+
 /** The message the window gets for a world call's failure. One not marked is logged as it was, and goes out as fixed text. */
 export function windowMessage(e: unknown): string {
-  if (e instanceof Error && shown.has(e)) return e.message
+  if (isShownAsIs(e)) return e.message
   console.warn('[world] a world call failed in main:', e)
   return WORLD_CALL_FAILED
 }

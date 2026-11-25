@@ -303,15 +303,14 @@ describe('cloneRepo', () => {
     expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_ASKPASS', 'SSH_ASKPASS']))
   })
 
-  it('a 404 shows the fixed headline with git\'s own error line (not "Cloning into") as its detail, and leaves nothing at root', async () => {
+  it('a 404 no git server sent shows the fixed headline with git\'s own error line (not "Cloning into") as its detail, and leaves nothing at root', async () => {
     const stderr = [
       "Cloning into 'C:\\Users\\x\\world\\repos\\abc.tmp-r1'...",
-      'remote: Repository not found.',
       "fatal: repository 'https://user:pw@github.com/a/b.git/' not found"
     ].join('\n')
     const { deps, rm, rename, mark } = mkDeps({ execFile: async () => ({ code: 128, stderr }) })
     const r = await cloneRepo(URL1, undefined, deps)
-    expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "remote: Repository not found." })
+    expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: "fatal: repository 'https://***@github.com/a/b.git/' not found" })
     expect(rm).toHaveBeenLastCalledWith(WORK)
     expect(rename).not.toHaveBeenCalled()
     expect(mark).not.toHaveBeenCalled()

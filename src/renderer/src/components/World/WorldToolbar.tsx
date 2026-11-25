@@ -73,6 +73,8 @@ export interface WorldToolbarProps {
   onBuildIt?: () => void
   /** An Export or Build it dialog is open: both buttons are off until it closes. */
   dialogOpen?: boolean
+  /** A dialog on the home is up: the whole toolbar is inert, so Tab and clicks stay in that dialog (F-R13). */
+  inert?: boolean
   /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
   labelCost?: string
   /** The saved views of this world, newest first. */
@@ -123,6 +125,8 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const [moreSide, setMoreSide] = useState<'left' | 'right'>('left')
   const moreRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  const inert = props.inert === true
+  useLayoutEffect(() => { (barRef.current as HTMLDivElement).inert = inert }, [inert])
   /** The side the More menu hangs toward: the one with room, on screen (the toolbar is drawn `scale` times bigger on a big monitor). */
   const sideNow = (): 'left' | 'right' => {
     const wrap = screenRect(moreRef.current as HTMLDivElement)

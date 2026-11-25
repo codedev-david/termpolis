@@ -54,6 +54,9 @@ export const SSH_AUTH_MESSAGE =
 export const HOST_KEY_MESSAGE = "This computer doesn't trust that server's ssh host key yet. Connect to it once with ssh in a terminal, then try again."
 /** Any other failure. Git's own line goes in the result's `detail`, never in the headline. PENDING SIGN-OFF. */
 export const UNREACHABLE_MESSAGE = "Lumopolis couldn't reach that repository. Check the address and your connection, then try again."
+/** A git server answered an anonymous https clone with "not found": a wrong address, or a private repository on a host
+ *  that answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. PENDING SIGN-OFF. */
+export const NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, or sign in if it's private."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'
 
@@ -89,6 +92,10 @@ const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned
 const AUTH_RE = /terminal prompts disabled|could not read (username|password)|unable to get password from user|authentication failed|permission denied \(publickey|access denied|invalid username or/i
 /** What ssh says, as its last word, when the server's host key is not one it knows (or has changed). */
 const HOST_KEY_RE = /host key verification failed/i
+/** A line the server itself sent to git (its side band, or the plain-text body of an HTTP error): the address reached a
+ *  git server. A host that does not resolve, refuses the connection or fails TLS never sends one, nor does a web server
+ *  that answers a wrong address with an HTML page. */
+const SERVER_LINE_RE = /^remote: \S/m
 
 export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boolean = process.platform === 'win32'): string[] {
   return [
@@ -487,6 +494,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   let auth = false
   let hostKey = false
   let notFound = false
+  let fromServer = false
   let failedStep = -1
   /** The clone's HEAD commit, or null when it cannot be read in the time left. */
   const readHead = async (): Promise<string | null> => {
@@ -519,6 +527,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
         auth = AUTH_RE.test(r.stderr)
         hostKey = HOST_KEY_RE.test(r.stderr)
         notFound = NOT_FOUND_RE.test(r.stderr)
+        fromServer = SERVER_LINE_RE.test(r.stderr)
         failure = firstLine(r.stderr)
         break
       }
@@ -549,10 +558,15 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     // A failed update leaves the earlier complete clone alone; a failed first clone leaves nothing.
     if (!updating) await rmq(work)
     const host = httpsHost(url)
-    // "Not found" after a sign-in means that account can't see it; with no login it is just not there (a typo
-    // must never ask for a sign-in), and over ssh it is the ssh agent's business.
+    // "Not found" after a sign-in means that account can't see it; with no login, a sign-in is offered only once a git
+    // server said it (below: a typo'd host never asks for one), and over ssh it is the ssh agent's business.
     const unseen = notFound && run.mode !== 'none' && host !== null
     if (hostKey) return { ok: false, error: HOST_KEY_MESSAGE, detail: failure }
+    // F-R8: some hosts answer an anonymous caller 404 for a private repository. Once a git server has said so itself (the
+    // host check), the not-found words come with the sign-in choices; a host that never answered stays a plain failure.
+    if (!auth && notFound && run.mode === 'none' && host !== null && fromServer) {
+      return { ok: false, error: NOT_FOUND_MESSAGE, detail: failure, needsLogin: { host, helper: await hasLoginHelper(deps, host), notFound: true } }
+    }
     if (!auth && !unseen) return { ok: false, error: UNREACHABLE_MESSAGE, detail: failure }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }

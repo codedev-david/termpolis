@@ -10,6 +10,7 @@ import {
   NO_GIT_MESSAGE,
   SSH_AUTH_MESSAGE,
   UNREACHABLE_MESSAGE,
+  NOT_FOUND_MESSAGE,
   VERSION_FAILED_MESSAGE,
   cloneArgs,
   cloneKey,
@@ -315,8 +316,43 @@ describe('cloneRepo login modes', () => {
     })
   })
 
-  it('with no login a missing repository stays a plain failure: a typo never asks for a sign-in', async () => {
-    for (const stderr of NOT_FOUND) {
+  // F-R8: a host that answers an anonymous caller 404 (GitLab does, for a private project) strands nobody once a git server
+  // said it: the not-found words come with the sign-in choices, marked notFound so they show as the second choice.
+  it('with no login, a not-found a git server sent offers sign-in as the second choice, with its own words', async () => {
+    const GITLAB = "remote: The project you were looking for could not be found or you don't have permission to view it.\nfatal: repository 'https://gitlab.example.com/o/r.git/' not found"
+    for (const [url, stderr, host] of [
+      [HTTPS, NOT_FOUND[0], 'github.com'],
+      ['https://gitlab.example.com/o/r.git', GITLAB, 'gitlab.example.com']
+    ]) {
+      for (const helper of [true, false]) {
+        const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: helper ? 'credential.helper\nmanager\0' : '' } })
+        expect(await cloneRepo(url, undefined, deps, { mode: 'none' })).toEqual({
+          ok: false,
+          error: NOT_FOUND_MESSAGE,
+          detail: stderr.split('\n')[0],
+          needsLogin: { host, helper, notFound: true }
+        })
+        expect(of('clone')).toHaveLength(1)
+      }
+    }
+    // The same answer to an update's fetch (a background update runs with no login unless the entry has one).
+    const upd = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
+    expect(await cloneRepo(HTTPS, undefined, upd.deps, { mode: 'none' })).toMatchObject({ error: NOT_FOUND_MESSAGE, needsLogin: { notFound: true } })
+    // A line that only starts like one ("remote:" with nothing after it) is not a server's message.
+    const bare = fakeDeps({ step: () => ({ code: 128, stderr: "remote:\nfatal: repository 'https://github.com/o/r.git/' not found" }) })
+    expect(await cloneRepo(HTTPS, undefined, bare.deps, { mode: 'none' })).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: 'remote:' })
+    expect(NOT_FOUND_MESSAGE).toBe("Lumopolis couldn't find that repository. Check the address, or sign in if it's private.")
+  })
+
+  it('with no login a missing repository no git server answered for stays a plain failure: a typo never asks for a sign-in', async () => {
+    const NO_SERVER = [
+      // A host that does not resolve, or will not connect, never reaches a git server.
+      "fatal: unable to access 'https://gitub.com/o/r.git/': Could not resolve host: gitub.com",
+      "fatal: unable to access 'https://github.com:444/o/r.git/': Failed to connect to github.com port 444",
+      // A web server that answers a wrong address with its own 404 page sends git no message of its own.
+      ...NOT_FOUND.slice(1)
+    ]
+    for (const stderr of NO_SERVER) {
       const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
       const r = await cloneRepo(HTTPS, undefined, deps, { mode: 'none' })
       expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: expect.any(String) })

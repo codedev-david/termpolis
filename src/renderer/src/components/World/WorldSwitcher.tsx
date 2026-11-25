@@ -1,7 +1,7 @@
 // The Lumopolis toolbar's world switcher: Home, then the recent worlds (a missing one is left out:
 // it can only be removed, from the home).
 import type { WorldEntry } from '../../../../shared/world/types'
-import { targetOf } from './worldTargets'
+import { targetOf, whereOf } from './worldTargets'
 import type { OpenTarget } from './worldTargets'
 
 export interface WorldSwitcherProps {
@@ -29,7 +29,8 @@ export function WorldSwitcher({ entries, onOpen, onHome }: WorldSwitcherProps): 
     >
       <option value="">Switch world…</option>
       <option value={HOME}>Home</option>
-      {open.map((e) => <option key={e.key} value={e.key}>{e.title}</option>)}
+      {/* Where each one is, as its hover title: two worlds can share a name (F-R12). */}
+      {open.map((e) => <option key={e.key} value={e.key} title={whereOf(e) || undefined}>{e.title}</option>)}
     </select>
   )
 }

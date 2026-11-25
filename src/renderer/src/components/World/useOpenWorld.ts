@@ -27,7 +27,12 @@ export interface UseOpenWorld {
   goHome(): void
   /** Recent worlds, newest first (empty until main answers). */
   entries: WorldEntry[]
+  /** The last list main was asked for could not be read: the home says so, with Try again, instead of "No worlds yet". */
+  listError: boolean
   refresh(): void
+  /** Taken when an action starts that will open a world once it is done (the home's Map this project, a clone): it
+   *  says false once the pane has moved to another world meanwhile, or closed, so the older action no longer opens one. */
+  ticket(): () => boolean
   /** Set when the background update of the opened repository needs a sign-in. */
   repoUpdate: RepoUpdate
   /** An interactive retry (Sign in, Use a token) is running. */
@@ -56,6 +61,11 @@ export const worldId = (w: OpenWorld): string =>
 export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld {
   const [world, setWorld] = useState<OpenWorld>(() => (request ? fromRequest(request) : fromRoot(root)))
   const [entries, setEntries] = useState<WorldEntry[]>([])
+  const [listError, setListError] = useState(false)
+  /** Grows with every list asked for: only the newest answer is shown (two can land out of order). */
+  const listSeq = useRef(0)
+  /** Grows with every move to another world (open, home, a request, a followed cd): what a ticket checks. */
+  const moves = useRef(0)
   /** The list as last shown, for `open`, which outlives a render. */
   const shownEntries = useRef(entries)
   shownEntries.current = entries
@@ -70,7 +80,7 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   const first = useRef(true)
   useEffect(() => {
     if (first.current) { first.current = false; return }
-    if (following.current) setWorld(fromRoot(root))
+    if (following.current) { moves.current++; setWorld(fromRoot(root)) }
   }, [root])
 
   // A request while the pane is open: that folder's project, kept (a cd no longer moves the pane).
@@ -83,6 +93,7 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     if (seq === asked.current || !r) return
     asked.current = seq
     following.current = false
+    moves.current++
     setWorld(fromRequest(r))
   }, [seq])
 
@@ -103,16 +114,29 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   }
 
   const refresh = useCallback((): void => {
+    const mine = ++listSeq.current
+    const newest = (): boolean => live.current && listSeq.current === mine
+    // A list that could not be read keeps the one shown, and says so (main logs why).
     window.termpolis.worldSourcesList().then(
-      (res) => { if (live.current && res.success) setEntries(res.data) },
-      () => undefined,
+      (res) => {
+        if (!newest()) return
+        if (res.success) setEntries(res.data)
+        setListError(!res.success)
+      },
+      () => { if (newest()) setListError(true) },
     )
+  }, [])
+
+  const ticket = useCallback((): (() => boolean) => {
+    const at = moves.current
+    return () => live.current && moves.current === at
   }, [])
 
   // A registered world being opened (from the home, the switcher or a dialog) is marked opened now, and
   // the list reloads once main has saved that, so "last opened" and the newest-first order stay true.
   const open = useCallback((t: OpenTarget): void => {
     following.current = t.kind === 'root' && t.follow === true
+    moves.current++
     const next: OpenWorld = t.kind === 'root' ? { kind: 'root', root: t.root, follow: following.current } : { kind: 'design', key: t.key }
     setWorld(next)
     clearRepo(t.key ?? null, worldId(next))
@@ -169,6 +193,7 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
 
   const goHome = useCallback((): void => {
     following.current = false
+    moves.current++
     clearRepo(null, worldId({ kind: 'home' }))
     setWorld({ kind: 'home' })
   }, [])
@@ -178,5 +203,5 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   useEffect(() => { if (id !== ownedId.current) clearRepo(null, id) }, [id])
   useEffect(() => { refresh() }, [id, refresh])
 
-  return { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError }
+  return { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError }
 }

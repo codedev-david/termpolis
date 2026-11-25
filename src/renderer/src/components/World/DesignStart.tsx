@@ -66,6 +66,7 @@ export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): J
       <p className="text-xs text-[#9ca3af]">Lumopolis drafts a planned world from your description. Nothing is written until you choose Build it.</p>
       <div className="relative">
         <textarea
+          autoFocus
           value={text}
           rows={5}
           disabled={drafting !== null}

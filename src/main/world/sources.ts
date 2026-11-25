@@ -9,6 +9,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { graphKeyForRoot } from '../codeGraph'
 import { WorldReadError, worldFileName } from './worldStore'
+import { shownAsIs } from './windowError'
 import { renameWithRetry } from './gitSource'
 import { moveAside, retryLocked, sleepMs } from './storeFiles'
 import { stripUrlUserinfo } from '../../shared/world/gitUrl'
@@ -128,9 +129,10 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
       text = await retryLocked(() => readFile(file, 'utf8'), sleep)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        // The caller (and through ipc the pane) gets a fixed error with no path in it; the log gets the raw one.
+        // The caller (and through ipc the pane) gets a fixed error with no path in it, marked fit to show (M-new-1);
+        // the log gets the raw one.
         console.warn(`[world sources] the list of worlds could not be read: ${String(err)}`)
-        throw new WorldReadError('SOURCES_READ_FAILED')
+        throw shownAsIs(new WorldReadError('SOURCES_READ_FAILED'))
       }
       unread = []
       return []
@@ -146,7 +148,7 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
       // Kept for inspection; a list that could not be moved aside is not read as empty, so no save writes over it.
       if (await moveAside(file, { now: deps.now, rename, sleep })) return []
       console.warn('[world sources] the list of worlds does not parse and could not be moved aside')
-      throw new WorldReadError('SOURCES_READ_FAILED')
+      throw shownAsIs(new WorldReadError('SOURCES_READ_FAILED'))
     }
     // Entries stay as stored (an unknown login included) so a save never rewrites what a newer build wrote.
     const entries: WorldEntry[] = []

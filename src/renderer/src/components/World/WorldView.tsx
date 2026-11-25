@@ -57,7 +57,7 @@ import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import { tourCard } from '../../world/engine/cards'
 import type { BuildAgent } from './BuildItDialog'
-import type { OpenTarget } from './worldTargets'
+import { UI_FAILED, type OpenTarget } from './worldTargets'
 import { WORLD_OPENED_EVENT } from './worldOpen'
 import { filesNotice, nextFilesNotice } from './worldNotes'
 
@@ -119,7 +119,11 @@ export interface WorldProbe {
   apply(a: WorldAction): Promise<void>
 }
 
-const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+/** #65: a world call that threw (main never answered) shows fixed words; the throw's own text names internals. */
+const messageOf = (e: unknown): string => {
+  console.warn('[world] a world call failed in the window:', e)
+  return UI_FAILED
+}
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
 /** The toolbar's line about the last labelling run. */
 const labelCostLine = (tokens: number): string =>
@@ -141,7 +145,7 @@ export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes 
 export const GRAPHICS_FLAT = 'The graphics stopped again, so the map shows in 2D.'
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
-  const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
+  const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
   const [webglFound, setWebglFound] = useState(() => hasWebGL())
@@ -280,6 +284,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
   /** The home's share of the pane's Esc (WorldHome): true when a dialog open on it took the key. */
   const homeEscRef = useRef<(() => boolean) | null>(null)
+  /** A dialog on the home is up: the toolbar is inert meanwhile (F-R13). */
+  const [homeDialog, setHomeDialog] = useState(false)
   /**
    * The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads
    * once, and a newer world of the same project animates from it.
@@ -1015,6 +1021,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onExport={doc && doc.provisional !== true && worldKey !== null ? openExport : undefined}
         onBuildIt={designKey !== null && buildIt && doc ? openBuildIt : undefined}
         dialogOpen={dialogOpen}
+        inert={home && homeDialog}
         bookmarks={bookmarks}
         onSaveBookmark={onSaveBookmark}
         onBookmark={onBookmark}
@@ -1053,7 +1060,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName, { planned: layers.planned, proposal }) }}
           />
         )}
-        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} escRef={homeEscRef} />}
+        {home && <WorldHome entries={entries} listError={listError} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} ticket={ticket} onDialog={setHomeDialog} escRef={homeEscRef} />}
         {empty && (
           <WorldEmptyState
             mode={empty}

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { createSourceRegistry, keyForSource, type WorldSource } from '../../src/main/world/sources'
 import { WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
+import { windowMessage } from '../../src/main/world/windowError'
 import * as fsp from 'node:fs/promises'
 
 vi.mock('node:fs/promises', async (orig) => {
@@ -293,7 +294,10 @@ describe('source registry', () => {
       await writeFile(sourcesFile(), 'x')
       vi.mocked(fsp.rename).mockRejectedValueOnce(new Error('refused'))
       const r = reg()
-      await expect(r.list()).rejects.toMatchObject({ name: 'WorldReadError', code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      const unparsed = await r.list().catch((e: unknown) => e)
+      expect(unparsed).toMatchObject({ name: 'WorldReadError', code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      // M-new-1: the fixed words reach the window as they are, never as WORLD_CALL_FAILED.
+      expect(windowMessage(unparsed)).toBe(WORLD_READ_FAILED)
       expect(warn).toHaveBeenCalledWith('[world sources] the list of worlds does not parse and could not be moved aside')
       expect(await readFile(sourcesFile(), 'utf8')).toBe('x')
       expect(await backups()).toEqual([])
@@ -305,6 +309,7 @@ describe('source registry', () => {
       const err = await reg().list().catch((e: unknown) => e)
       expect(err).toBeInstanceOf(WorldReadError)
       expect(err).toMatchObject({ code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(windowMessage(err)).toBe(WORLD_READ_FAILED)
       expect(JSON.stringify(err) + String((err as Error).message)).not.toContain(dir)
       expect(warn.mock.calls[1][0]).toMatch(/^\[world sources\] the list of worlds could not be read: Error: EISDIR/)
     } finally {

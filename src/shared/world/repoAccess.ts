@@ -16,6 +16,9 @@ export type RepoLogin = 'machine' | 'token'
 export interface NeedsLogin {
   host: string
   helper: boolean
+  /** F-R8: a git server said the repository is not there for an anonymous caller. The address may be wrong, so the
+   *  sign-in choices are the second choice, and a background update never asks for one. */
+  notFound?: true
 }
 
 /** What main answers (as success) when opening or updating a repository needs a sign-in first:
