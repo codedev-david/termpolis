@@ -159,6 +159,15 @@ const probe = <T,>(fn: string, ...args: unknown[]): Promise<T> =>
     const p = (window as unknown as { __termpolis_world: Record<string, (...a: unknown[]) => unknown> }).__termpolis_world
     return p[fn](...args) as T
   }, { fn, args })
+/**
+ * The probe while a world may still be loading: undefined until the world view has a doc to draw (the
+ * probe is absent before then), so a poll retries rather than failing on its first read.
+ */
+const probeOnceLoaded = <T,>(fn: string, ...args: unknown[]): Promise<T | undefined> =>
+  page.evaluate(({ fn, args }) => {
+    const p = (window as unknown as { __termpolis_world?: Record<string, (...a: unknown[]) => unknown> }).__termpolis_world
+    return p?.[fn](...args) as T | undefined
+  }, { fn, args })
 
 /** The world main stored for the project. */
 async function worldDoc(): Promise<Doc> {
@@ -510,7 +519,7 @@ test.describe.serial('Lumopolis on this platform', () => {
     await expect(await toolbarControl(page, 'world-layer-planned')).toHaveAttribute('aria-pressed', 'true')
     await closeMore(page)
     if (mode === 'webgl') {
-      await expect.poll(async () => [...(await probe<{ wireframes: string[] }>('drawn')).wireframes].sort(), { timeout: 60_000 }).toEqual(['catalog', 'orders', 'storefront'])
+      await expect.poll(async () => [...((await probeOnceLoaded<{ wireframes: string[] }>('drawn'))?.wireframes ?? [])].sort(), { timeout: 60_000 }).toEqual(['catalog', 'orders', 'storefront'])
     } else {
       await expect(fallback()).toBeVisible()
     }

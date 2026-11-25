@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
 import { INTRO_ART } from '../../assets/intro/introManifest'
 import type { IntroImg } from '../../assets/intro/introManifest'
-import { INTRO_HARD_CAP_MS, INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
+import { INTRO_HARD_CAP_MS, INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, ON_TIME_SLACK_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
 
 // The two-second launch intro: pre-rendered lettering from the film's title cards, animated with the
 // Web Animations API over the starting app. It is a non-interactive overlay: it never takes focus,
@@ -77,13 +77,18 @@ function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+function pageHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
 function viewportScale(): number {
   return introScale({ width: window.innerWidth, height: window.innerHeight })
 }
 
 export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   // Decided once per mount: a late change of the setting never starts an intro half-way.
-  const [active] = useState(() => (play ?? (window.termpolis?.launchIntro === true && introEnabled())) && canAnimate())
+  // A page hidden at mount never shows it: nobody would see it, and it would be stale when shown.
+  const [active] = useState(() => (play ?? (window.termpolis?.launchIntro === true && introEnabled())) && canAnimate() && !pageHidden())
   const [reduced] = useState(() => reducedMotion ?? prefersReducedMotion())
   const [done, setDone] = useState(false)
   const [scale, setScale] = useState(viewportScale)
@@ -137,8 +142,9 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     })
 
     // Every frame the page computes from mount has the overlay in it. The first one, the first frame
-    // of the overlay, comes when the launch lets the page render; until then nothing counts down,
-    // so a busy launch delays the intro and never eats into it. That first frame reaches the screen
+    // of the overlay, comes when the launch lets the page render; until then only the guard below
+    // runs (a window that is not drawing at all), so a busy launch delays the intro and never eats
+    // into it. That first frame reaches the screen
     // when the stage animation starts. If it has not NOT_PAINTED_MS after the page computed it (a
     // compositor that is not drawing), the intro never shows: until the animation starts, no frame
     // with the overlay is on screen.
@@ -146,7 +152,8 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     const frames: number[] = []
     let firstFrameAt: number | null = null
     let started = false
-    const firstFrame = (at: number): void => {
+    // `late`: how long ago that frame was, when the page learns of it from a start reported late.
+    const firstFrame = (at: number, late = 0): void => {
       if (firstFrameAt !== null) return
       firstFrameAt = at
       timers.push(setTimeout(() => {
@@ -155,17 +162,31 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
         // made while this page was busy (its start time is set before the frame's callbacks run).
         frames.push(requestAnimationFrame(() => { if (typeof stage.startTime !== 'number') end() }))
       }, NOT_PAINTED_MS))
-      // Backstop: gone by the latest start that can play plus the timeline, whatever the clock reports.
-      timers.push(setTimeout(end, INTRO_HARD_CAP_MS))
+      // Backstop: gone by the latest start that can play plus the timeline, from that first frame
+      // (which a start reported late puts in the past), whatever the clock reports.
+      timers.push(setTimeout(end, Math.min(INTRO_HARD_CAP_MS, Math.max(0, INTRO_HARD_CAP_MS - late))))
     }
     frames.push(requestAnimationFrame(() => firstFrame(now())))
+    // No frame at all NOT_PAINTED_MS after mount, with a main thread free to run this timer on time:
+    // the window is not drawing (minimised or covered before its first frame), and the intro never
+    // shows, so a window restored later shows no stale intro. A timer that runs late means a busy
+    // launch, which holds the first frame back as well: it waits again, and that wait counts nothing.
+    const guard = (): void => {
+      const armedAt = now()
+      timers.push(setTimeout(() => {
+        if (firstFrameAt !== null) return
+        if (now() - armedAt < NOT_PAINTED_MS + ON_TIME_SLACK_MS) end()
+        else guard()
+      }, NOT_PAINTED_MS))
+    }
+    guard()
     stage.ready.then((s) => {
       if (disposed) return
       const t = now()
       const startedAt = typeof s.startTime === 'number' ? s.startTime : t
       // A start can be reported before the first frame's own callback runs: that frame is on screen,
       // so the page computed it no later than the start.
-      firstFrame(startedAt)
+      firstFrame(startedAt, t - startedAt)
       started = true
       if (startedAt - (firstFrameAt as number) > NOT_PAINTED_MS) { end(); return }
       // The timeline shares performance.now()'s clock. It ends one frame inside 4000 ms, so this

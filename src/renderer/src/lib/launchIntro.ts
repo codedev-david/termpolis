@@ -16,6 +16,14 @@ export const INTRO_TOTAL_MS = INTRO_BUDGET_MS - 16
  * from rendering delays the intro and never eats into it.
  */
 export const NOT_PAINTED_MS = 1000
+/**
+ * A window that has drawn no frame at all NOT_PAINTED_MS after mount is not drawing (minimised, or
+ * covered, before its first frame): the intro never appears, so a window restored later shows no
+ * stale intro. The guard's timer runs in a hidden window too (no background throttling), so it is
+ * told apart from a busy launch by running on time: a timer that runs this much late or more means
+ * the main thread was busy, which holds the first frame back too, and the guard waits again.
+ */
+export const ON_TIME_SLACK_MS = 50
 /** Backstop, from the same first frame: the overlay is gone by now, whatever the animation or its timers did. */
 export const INTRO_HARD_CAP_MS = NOT_PAINTED_MS + INTRO_TOTAL_MS
 

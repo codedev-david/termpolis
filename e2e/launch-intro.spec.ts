@@ -72,19 +72,34 @@ let app: ElectronApplication | null = null
 // and 0.3 to 0.8 s for each one after it, its display compositor held both swaps meanwhile, and the
 // page got no frame for up to 2.8 s (Chromium traces of soak 45591853353). Every later launch on
 // the same runner, each with a userData folder of its own, draws on time: in the cold soak jobs only
-// the spec's first launch ever failed, never a later one, and its retry passed. What the first launch pays is
-// the runner's (the app's code and the OS's graphics paths read in for the first time), not the
-// app's or its profile's. So the spec pays it once before it measures anything: one launch that plays
-// the intro to its end and draws a frame of the app, in a folder no test uses.
+// the spec's first launch ever failed, never a later one, and its retry passed. A user on a machine
+// without a GPU (a VM, a remote desktop session) pays the same on a first launch after an install or
+// a reboot. The app handles it: once its first frame is computed the intro plays (choppy while frames
+// are starved), or never shows if that frame has not reached the screen NOT_PAINTED_MS later, and the
+// hard cap ends it INTRO_HARD_CAP_MS after that frame, so it is never stuck and never blocks input.
+// What such a launch cannot do is meet the frame-exact checks below, which hold a launch that draws
+// on time. So the spec pays the cold launch once, before it measures anything, in a folder no test
+// uses, and holds it to what the app promises a cold launch: the intro is gone within the hard cap
+// (plus the frames a starved launch takes to compute its first one) of being put in the page, and
+// the app then draws.
+const WARM_UP_SLACK_MS = 3000
 test.beforeAll(async () => {
   ensureE2eBuild()
   const env: Record<string, string> = { ...(process.env as Record<string, string>), NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_TEST_LAUNCH_INTRO: '1' }
   const warm = await electron.launch({ args: [...e2eLaunchArgs('intro-warm-up'), '--force-device-scale-factor=1'], env })
   try {
+    // In the document from its first byte, so an intro that comes and goes before the page is
+    // reachable is still seen.
+    for (const content of [WATCH_SCRIPT, SPAN_SCRIPT]) await warm.context().addInitScript({ content })
     const page = await warm.firstWindow()
     await page.setViewportSize({ width: VIEW_W, height: VIEW_H })
-    await page.locator(INTRO).waitFor({ state: 'attached', timeout: 60_000 })
-    await page.locator(INTRO).waitFor({ state: 'detached', timeout: 60_000 })
+    // The window opens and the page mounts in their own time on a cold runner; the intro's own time
+    // is bounded below.
+    await page.waitForFunction(() => (window as unknown as { __introSpan?: IntroSpan }).__introSpan?.detachedAt != null, undefined, { timeout: 60_000 })
+    const span = await page.evaluate(() => (window as unknown as { __introSpan: IntroSpan }).__introSpan)
+    console.log(`intro warm-up: in the page for ${((span.detachedAt as number) - (span.attachedAt as number)).toFixed(1)} ms`)
+    expect(await page.evaluate(() => (window as unknown as { __introSeen?: boolean }).__introSeen)).toBe(true)
+    expect((span.detachedAt as number) - (span.attachedAt as number)).toBeLessThanOrEqual(INTRO_HARD_CAP_MS + WARM_UP_SLACK_MS)
     await expect(page.locator('button[title="Settings"]')).toBeVisible({ timeout: 30_000 })
     await page.screenshot()
   } finally {
@@ -102,6 +117,17 @@ const WATCH_SCRIPT = `(() => {
   window.__introSeen = false
   new MutationObserver(() => {
     if (document.querySelector('${INTRO}')) window.__introSeen = true
+  }).observe(document, { childList: true, subtree: true })
+})()`
+
+interface IntroSpan { attachedAt: number | null; detachedAt: number | null }
+/** Stamps when the overlay is first put in the page and when it leaves it. */
+const SPAN_SCRIPT = `(() => {
+  const m = window.__introSpan = { attachedAt: null, detachedAt: null }
+  new MutationObserver(() => {
+    const on = !!document.querySelector('${INTRO}')
+    if (on && m.attachedAt === null) m.attachedAt = performance.now()
+    if (!on && m.attachedAt !== null && m.detachedAt === null) m.detachedAt = performance.now()
   }).observe(document, { childList: true, subtree: true })
 })()`
 
@@ -168,7 +194,8 @@ const TIMING_SCRIPT = `(() => {
 
 /**
  * Holds the intro at film time \`t\`, from the moment it mounts. The overlay removes itself on its
- * own timers (never started by NOT_PAINTED_MS, the removal at start + INTRO_TOTAL_MS, the hard cap),
+ * own timers (the not-painted limit and the guard at NOT_PAINTED_MS, the removal at start +
+ * INTRO_TOTAL_MS, the hard cap at INTRO_HARD_CAP_MS from the first frame, less what a late start took),
  * and pausing animations does not stop them, so a slow runner could lose the overlay before the
  * screenshot. While the overlay is attached, a timer with one of those delays never fires; every
  * other timer is untouched. Each frame pins every animation at \`t\`.
@@ -177,8 +204,8 @@ const TIMING_SCRIPT = `(() => {
 function freezeScript(t: number): string {
   return `(() => {
   const realSetTimeout = window.setTimeout.bind(window)
-  const introTimer = (delay) => delay === ${NOT_PAINTED_MS} || delay === ${INTRO_HARD_CAP_MS}
-    || (delay >= ${INTRO_TOTAL_MS - NOT_PAINTED_MS} && delay <= ${INTRO_TOTAL_MS})
+  const introTimer = (delay) => delay === ${NOT_PAINTED_MS}
+    || (delay >= ${INTRO_TOTAL_MS - NOT_PAINTED_MS} && delay <= ${INTRO_HARD_CAP_MS})
   window.setTimeout = (cb, delay, ...args) => {
     if (document.querySelector('${INTRO}') && introTimer(Number(delay))) {
       window.__introTimersHeld = (window.__introTimersHeld || 0) + 1

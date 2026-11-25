@@ -3,7 +3,7 @@ import { render, act, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { LaunchIntro } from '../../../src/renderer/src/components/LaunchIntro/LaunchIntro'
 import { INTRO_ART } from '../../../src/renderer/src/assets/intro/introManifest'
-import { INTRO_HARD_CAP_MS, INTRO_TOTAL_MS, NOT_PAINTED_MS, introSteps } from '../../../src/renderer/src/lib/launchIntro'
+import { INTRO_HARD_CAP_MS, INTRO_TOTAL_MS, NOT_PAINTED_MS, ON_TIME_SLACK_MS, introSteps } from '../../../src/renderer/src/lib/launchIntro'
 
 // A stand-in for a Web Animation: play-pending (startTime null) until the test starts it, the way a
 // real one waits for the next frame the browser commits.
@@ -241,19 +241,110 @@ describe('LaunchIntro', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('waits, with no clock running, until the page computes its first frame', async () => {
+  it('never shows in a window that draws no frame NOT_PAINTED_MS after mount, so a window restored later shows no stale intro', async () => {
     holdFrames()
     render(<LaunchIntro play now={now} />)
-    // No frame yet (a launch still busy, a window not drawn): no frame of the overlay exists, and
-    // nothing counts down.
-    advance(10_000)
+    // Minimised or covered before its first frame: the page's timers run (no background throttling)
+    // but no frame comes. The guard fires on time with no frame, so the window is not drawing.
+    clock = NOT_PAINTED_MS - 1
+    advance(NOT_PAINTED_MS - 1)
     expect(intro()).not.toBeNull()
+    clock = NOT_PAINTED_MS
+    advance(1)
+    expect(intro()).toBeNull()
+    expect(calls.every((c) => c.anim.cancel.mock.calls.length === 1)).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
-    clock = 10_000
+    // Restored an hour later: its first frame, and a start, change nothing.
+    clock = 3_600_000
     frame()
-    clock = 10_200
-    await startAll(10_200)
+    await startAll(3_600_000)
+    advance(10_000)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a busy thread that runs the guard late keeps waiting for the first frame, and plays the whole intro from it', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // The launch holds the main thread: the guard runs 2.5 s after mount, so its lateness says the page
+    // was busy, not that the window is not drawing. It waits again, and runs late again.
+    clock = 2500
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock = 5000
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    frame()
+    clock = 5100
+    await startAll(5100)
     advance(INTRO_TOTAL_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a guard that ran late once still ends the intro when it next runs on time with no frame', () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    clock = 1600
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock = 1600 + NOT_PAINTED_MS + ON_TIME_SLACK_MS - 1
+    advance(NOT_PAINTED_MS)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('counts a guard that runs ON_TIME_SLACK_MS late as late', () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    clock = NOT_PAINTED_MS + ON_TIME_SLACK_MS
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('renders nothing, and animates nothing, in a page that is hidden at mount', () => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    try {
+      render(<LaunchIntro play now={now} />)
+      expect(intro()).toBeNull()
+      expect(calls).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState
+    }
+    expect(document.visibilityState).not.toBe('hidden')
+  })
+
+  it('arms the hard cap from a start reported before any frame, and counts it from that start', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // The start is on screen, then the window is covered before the frame's own callback: no frame
+    // ever runs. The clock reads 0 while the timeline says 5000, so the removal timer lands at 8984;
+    // the cap, counted from the start, still ends it at INTRO_HARD_CAP_MS.
+    await startAll(5000)
+    advance(INTRO_HARD_CAP_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('counts the hard cap from the start when the page learns of it late', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // Started at 900, learned of at 1700 on a busy page: the cap is armed for what is left of it from
+    // that start, so it lands at 900 + INTRO_HARD_CAP_MS, not 1700 + INTRO_HARD_CAP_MS.
+    clock = 1700
+    advance(800)
+    const arm = vi.spyOn(globalThis, 'setTimeout')
+    await startAll(900)
+    const delays = arm.mock.calls.map((c) => c[1])
+    expect(delays).toContain(INTRO_HARD_CAP_MS - 800)
+    expect(delays).not.toContain(INTRO_HARD_CAP_MS)
+    advance(INTRO_TOTAL_MS - 800 - 1)
     expect(intro()).not.toBeNull()
     advance(1)
     expect(intro()).toBeNull()
