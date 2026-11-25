@@ -219,14 +219,14 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     //    it opens on a trust prompt, which the re-primer waits out. Typed once the shell's prompt is
     //    up: a line typed into a PowerShell still starting on macOS loses its Enter, and the guard
     //    (rightly) types nothing onto a shell prompt holding an unsent line.
-    await waitForShellLine(termId, false, 30_000)
+    expect(await waitForShellLine(termId, false, 30_000), 'expected the shell to report its prompt (OSC 9;9 or OSC 7) within 30 s').toBe(true)
     await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
     const running = await askShellAlone(termId, 'running', 45_000)
     if (running === null) expect(await waitForShellLine(termId, true, 15_000), 'expected the shell to take the node line in').toBe(true)
     expect(running, 'expected the OS to see node running in the terminal (is `node` on the PATH of the terminals the app opens?)').not.toBe(true)
-    // Where the OS cannot read the shell the pointer is typed as it always was, so this test runs
-    // the flow without exercising the guard. Say so in the report instead of passing silently.
-    if (running === null) test.info().annotations.push({ type: 'note', description: 'the OS cannot tell what runs in this shell: the guard was not exercised here' })
+    // Where the OS cannot read the shell only the screen half of the guard runs (the shell's prompt
+    // report, which shows node's line went in), not the OS half. Say so in the report.
+    if (running === null) test.info().annotations.push({ type: 'note', description: 'the OS cannot tell what runs in this shell: only the prompt-report half of the guard was exercised here' })
 
     // 1) Detect an agent (the re-primer only fires when an agent is present). The
     //    launch primer is disabled, so this does NOT paste.
