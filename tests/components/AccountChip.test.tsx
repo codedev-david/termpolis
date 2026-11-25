@@ -368,15 +368,32 @@ describe('the accounts view keeps itself current as limits end', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('waits for an end past setTimeout\'s longest delay in steps', async () => {
-    const far = NOW + 30 * 24 * H
+  it('waits for a far end in steps of a minute at most, one timer at a time', async () => {
+    const far = NOW + 3 * H
     useTerminalStore.setState({ accountsView: limited({ limit: { seenAt: NOW, resetsAt: far, text: 'x', scope: 'account' }, limitEnds: far }) })
     stop = watchLimitEnds(undefined)
-    await vi.advanceTimersByTimeAsync(2 ** 31 - 1)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(codedev().limit).toBeDefined()
     expect(vi.getTimerCount()).toBe(1)
     await vi.advanceTimersByTimeAsync(far - Date.now() + 1000)
     expect(codedev().limit).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  // Port review, Minor 3: a window that stays visible and focused across a sleep gets no visibilitychange and no focus,
+  // and on macOS a timer does not count the time asleep, so one armed for the end would fire late by the whole sleep.
+  // Each step is a minute at most, so the label clears within about a minute of the wake.
+  it('clears within a minute of a wake that brought no visibility or focus event', async () => {
+    const api = { list: vi.fn(async () => ({ success: true as const, data: VIEW })) }
+    useTerminalStore.setState({ accountsView: limited({ limitedOutside: NOW - H, limitedOutsideEnds: NOW + H }) })
+    stop = watchLimitEnds(api as never)
+    // The laptop slept for two hours: the clock is past the end, and no timer ran meanwhile.
+    vi.setSystemTime(NOW + 2 * H)
+    expect(codedev().limitedOutside).toBe(NOW - H)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(codedev().limitedOutside).toBeUndefined()
+    expect(api.list).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing when the view went away before the timer fired, and stops on its stop', async () => {

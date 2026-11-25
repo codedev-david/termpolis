@@ -32,27 +32,31 @@ export function noteTerminalAccount(e: TerminalAccountEvent): void {
 
 /** A timer fires a little after the moment it was set for, so the limit has surely ended by then. */
 const LIMIT_END_SLACK_MS = 250
-/** setTimeout's longest delay (about 24.8 days); a later end is waited for in steps. */
-const MAX_TIMER_MS = 2 ** 31 - 1
+/** The longest one timer waits; a later end is waited for in steps. A window that stays visible and focused across a
+ *  sleep gets no visibilitychange and no focus, and on macOS a timer does not count the time asleep, so a timer set for
+ *  the end itself would fire late by the whole sleep. In steps of a minute the label clears within a minute of the
+ *  wake. A step that finds nothing ended only sets the next one, with no list call. */
+const MAX_TIMER_MS = 60_000
 
 /**
  * Keeps the store's view current as its usage limits end. One timer, set to the next moment a limit
- * or a failover-hook marker in the view ends (none while nothing is limited); then the ended ones are
- * dropped from the view at once, so every label that reads it (the sidebar's Launch on ▸, the chips,
+ * or a failover-hook marker in the view ends, but never more than a minute ahead (none while nothing
+ * is limited); then the ended ones are dropped from the view at once, so every label that reads it
+ * (the sidebar's Launch on ▸, the chips,
  * the account menu, Settings ▸ Accounts, the launch ask) clears by itself, and main's view is read
  * again (main drops them too). Set again whenever the view changes. Returns the stop.
  */
 export function watchLimitEnds(api: Pick<AccountsAPI, 'list'> | undefined = window.accounts): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null
-  // The timer's callback, and the same check when the window wakes: a laptop that slept across a
-  // limit's end fires the timer late, or not before the label is looked at again.
+  // The timer's callback, and the same check when the window is shown or focused: a laptop that slept
+  // across a limit's end would otherwise wait for the next step (MAX_TIMER_MS).
   const check = (): void => {
     const store = useTerminalStore.getState()
     const held = store.accountsView
     if (!held) return
     const current = currentAccountsView(held, Date.now())
     if (current === held) {
-      arm(held) // nothing ended yet (woke early, or a far end waited for in steps): wait on
+      arm(held) // nothing ended yet (a step short of a far end, or a show or focus before it): wait on
       return
     }
     store.setAccountsView(current)
