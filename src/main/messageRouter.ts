@@ -451,7 +451,9 @@ function routeFromHome(d: RouterDeps, id: string, s: TerminalState, prompt: stri
     const dec = decideSwitch({ current: s.current, want, confidence: route.confidence, economy: s.economy, now, currentEffort: s.effort, wantEffort: route.effort })
     model = dec.model; effort = dec.effort; switched = dec.switched; reason = dec.reason; saving = dec.saving
   }
-  if (!cheaper(model, top)) return back(reason, s.current !== home, saving)
+  // Not under what runs: it stays there. A switch only when what ran was something else (a step down
+  // being undone), not when the session's own cheaper ask simply keeps running (review R3-M3).
+  if (!cheaper(model, top)) return back(reason, s.current !== top, saving)
   s.sent = true
   s.routed = model
   d.setRoute(id, { family: model, effort, down: true })

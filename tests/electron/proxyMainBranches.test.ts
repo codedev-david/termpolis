@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import * as http from 'http'
 import * as net from 'net'
-import { createProxyServer, resultFrame } from '../../src/main/headroomProxy/proxyMain'
+import { createProxyServer, resultFrame, applyRouteFrame } from '../../src/main/headroomProxy/proxyMain'
+import { routeTargetOf, agentRouteOf, _resetModelRouteForTests } from '../../src/main/headroomProxy/modelRoute'
 import { setCodexAsker, setCodexRoute, _resetCodexRouteForTests } from '../../src/main/headroomProxy/codexRoute'
 
 const body = `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[],"reasoning":{"effort":"medium"},"stream":true}`
@@ -73,5 +74,31 @@ describe('proxyMain branches', () => {
     // The head was already sent: the proxy can only drop the connection, so the answer is cut off
     // mid-body (an end() here would read as a whole, short answer).
     expect(r).toEqual({ error: 'aborted' })
+  })
+})
+
+describe('applyRouteFrame: the router frames main sends the proxy child (review R3-M3)', () => {
+  beforeEach(() => _resetModelRouteForTests())
+
+  it('a route frame keeps its down flag', () => {
+    expect(applyRouteFrame({ kind: 'route', terminal: 't', family: 'haiku', effort: 'low', on: true, down: true })).toBe(true)
+    expect(routeTargetOf('t')).toEqual({ family: 'haiku', effort: 'low', down: true })
+    applyRouteFrame({ kind: 'route', terminal: 't', family: 'sonnet', effort: null, on: true })
+    expect(routeTargetOf('t')).toEqual({ family: 'sonnet', effort: null })
+  })
+
+  it('an agent-route frame keeps its home and on flags', () => {
+    expect(applyRouteFrame({ kind: 'agent-route', terminal: 't', key: 4, family: 'sonnet', effort: 'medium', on: true, home: true })).toBe(true)
+    expect(agentRouteOf('t', 4)).toEqual({ family: 'sonnet', effort: 'medium', home: true })
+    applyRouteFrame({ kind: 'agent-route', terminal: 't', key: 5, family: 'sonnet', effort: 'medium', on: true })
+    expect(agentRouteOf('t', 5)).toEqual({ family: 'sonnet', effort: 'medium' })
+    applyRouteFrame({ kind: 'agent-route', terminal: 't', key: 6, family: null, effort: null, on: false })
+    expect(agentRouteOf('t', 6)).toMatchObject({ off: true })
+  })
+
+  it('any other frame is left to the caller', () => {
+    expect(applyRouteFrame({ kind: 'config' })).toBe(false)
+    expect(applyRouteFrame(null)).toBe(false)
+    expect(routeTargetOf('t')).toBeUndefined()
   })
 })

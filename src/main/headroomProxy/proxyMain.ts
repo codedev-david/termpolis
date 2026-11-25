@@ -319,6 +319,16 @@ export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
   return { kind: 'stash', stashes }
 }
 
+/** Applies a router frame from main: `route` (the terminal's main conversation, with `down` for a step
+ *  down from home) or `agent-route` (a subagent, with `home` for a home pane's). True when it was one.
+ *  Every flag is passed on: dropping `down` or `home` here would undo the home rules (review R3-M3). */
+export function applyRouteFrame(msg: unknown): boolean {
+  const r = msg as { kind?: unknown; terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown; down?: unknown; home?: unknown } | null
+  if (r?.kind === 'route') { setRoute(r.terminal, r.family, r.effort, r.on, r.down); return true } // v1.56.0 per-message routing
+  if (r?.kind === 'agent-route') { setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on, r.home); return true } // v1.57.0 subagents
+  return false
+}
+
 /* v8 ignore start -- utilityProcess child entry: exercised at runtime in the fork, not unit-testable */
 const parentPort = (process as unknown as { parentPort?: { on: (ev: string, cb: (e: { data: unknown }) => void) => void; postMessage: (m: unknown) => void } }).parentPort
 if (parentPort) {
@@ -335,10 +345,9 @@ if (parentPort) {
     const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
     if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
-    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown; down?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on, r.down); return } // v1.56.0 per-message routing
+    if (applyRouteFrame(msg)) return // route and agent-route
     if (msg.kind === 'codex-route') { const r = msg as { terminal?: unknown; key?: unknown; effort?: unknown }; setCodexRoute(r.terminal, r.key, r.effort); return } // v1.58.0 Codex effort
     if (msg.kind === 'codex-forget') { forgetCodexTerminal((msg as { terminal?: unknown }).terminal); return }
-    if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown; home?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on, r.home); return } // v1.57.0 subagents
     if (msg.kind !== 'init' || server) return
     applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     // v1.57.0: a subagent's task goes to main, where the local classifier routes it (agent-route back).

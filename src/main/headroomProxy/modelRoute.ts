@@ -328,11 +328,18 @@ export function planRequest(body: string, headers: Record<string, string | strin
   if (!terminal || !m || !asked || !hasTools(body)) return plain
   const key = conv?.key ?? 0
   const main = isMain(terminal, header(headers, SESSION_HEADER), asked, key, conv?.continued === true)
-  if (!isRouteFamily(asked)) return { ...plain, main }
+  if (!isRouteFamily(asked)) {
+    // A main on a model the router does not route: its effort is unknown now, so a home pane's subagent is
+    // not raised against the one it had before (review R3-M1).
+    if (main) delete (mains.get(terminal) as MainConv).effort
+    return { ...plain, main }
+  }
   let target: RouteTarget | undefined
   const agent = !main && key > 0
   if (main) {
-    ;(mains.get(terminal) as MainConv).effort = effortOrDefault(asked, askedEffort) // isMain has set it
+    // Recorded only from a request that could be read (key > 0): one too big or not JSON may be a
+    // subagent on the session's own model, which must not set the terminal's effort (review R3-M2).
+    if (key > 0) (mains.get(terminal) as MainConv).effort = effortOrDefault(asked, askedEffort) // isMain has set it
     target = routes.get(terminal)
     // MODELHOME: a step down never moves the session up, nor sideways: asked at or below it, it runs as asked.
     if (target?.down && target.family && !cheaper(target.family, asked)) target = { family: null, effort: null }

@@ -473,6 +473,20 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(d.setRoute).toHaveBeenLastCalledWith('t', expect.objectContaining({ family: 'sonnet', down: true }))
   })
 
+  it('a session asking for Sonnet under an Opus home keeps its cached Sonnet for a sure-Haiku message, named as Sonnet (R3-M3)', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('haiku', 0.9)) })
+    registerTerminal('t', false)
+    setTerminalHome('t', 'opus')
+    // /model sonnet typed in the session, on a big warm conversation: Haiku's re-read would cost more.
+    main('t', 'sonnet', 'sonnet', { input_tokens: 10, cache_read_input_tokens: 170_000 })
+    d.setRoute.mockClear()
+    const e = await routePrompt({ terminalId: 't', prompt: QUICK })
+    // Nothing moves: what runs is the session's Sonnet, with home beside it, and no step down is sent
+    // (a down route to Sonnet would be one the proxy ignores).
+    expect(e).toMatchObject({ model: 'sonnet', home: 'opus', switched: false, reason: 'switch-costs-more' })
+    expect(d.setRoute.mock.calls.every(([, p]) => p?.family == null)).toBe(true)
+  })
+
   it('a surely simple message that fits a Sonnet home says it fits, not that nothing is cheaper (R2-M2)', async () => {
     deps({ classify: vi.fn(async () => vote('sonnet', 0.9)) })
     registerTerminal('t', false)

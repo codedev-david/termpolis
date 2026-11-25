@@ -363,6 +363,24 @@ describe('planRequest: a struggling subagent (review R2-I1)', () => {
     expect(p.escalated).toBeUndefined()
   })
 
+  it('a main that moves to a model the router does not route forgets its effort: no raise (R3-M1)', () => {
+    main('high')
+    const o = { model: 'claude-nova-1', max_tokens: 10, tools: [{ name: 'Bash', input_schema: {} }], messages: [{ role: 'user', content: 'the session' }], output_config: { effort: 'low' } }
+    const b = JSON.stringify(o)
+    expect(planRequest(b, H(), readConversation(JSON.parse(b))).main).toBe(true) // same conversation: still main
+    const p = reviewer(true)
+    expect(p).toMatchObject({ agent: true, effort: 'medium' })
+    expect(p.escalated).toBeUndefined()
+  })
+
+  it('a request whose body could not be read (key 0) does not overwrite the terminal\'s effort (R3-M2)', () => {
+    main('high')
+    // Too big or not JSON for wireCompress: no conversation, so a Sonnet subagent at medium counts as main.
+    const o = { model: 'claude-sonnet-5-5', max_tokens: 10, tools: [{ name: 'Bash', input_schema: {} }], messages: [{ role: 'user', content: 'a subagent' }], output_config: { effort: 'medium' } }
+    expect(planRequest(JSON.stringify(o), H(), null).main).toBe(true)
+    expect(reviewer(true)).toMatchObject({ agent: true, effort: 'high', escalated: 1 })
+  })
+
   it('an Auto pane\'s subagent keeps today\'s raise, as far as xhigh', () => {
     main('high')
     const p = reviewer(undefined)
