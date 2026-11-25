@@ -12,7 +12,11 @@ import { ASK_LOADING, SELF_LOAD_UNSEEN, ask, askReady, askState, cityClip, expec
 import { FIXTURE_DIR, FIXTURE_JSON, KEYWORD_HTML, SMART_HTML } from './paths'
 import { FRAME_FLIGHT_S } from '../../src/renderer/src/world/engine/cameraRig'
 
-const world = JSON.parse(fs.readFileSync(FIXTURE_JSON, 'utf8')) as { tours: Array<{ title: string; steps: Array<{ caption: string }> }> }
+const world = JSON.parse(fs.readFileSync(FIXTURE_JSON, 'utf8')) as {
+  tours: Array<{ title: string; steps: Array<{ caption: string }> }>
+  buildings: Array<{ id: string; name: string }>
+  layout: { positions: Record<string, [number, number, number]> }
+}
 const SMART_BROWSERS = new Set(['electron', 'msedge', 'chrome'])
 
 /** Whether the page drew the 3D city (a canvas in the view) rather than the 2D map. */
@@ -138,7 +142,10 @@ async function openCardByClick(page: Page): Promise<void> {
  * How far the label of the building named `name` sits from the middle of the city's free area (cityClip), as a
  * share of that area's half-diagonal; null when no such label is drawn. The page exposes no camera (by design), but
  * its labels are DOM elements the viewer places over each building, so a label at the middle is a building framed
- * there.
+ * there. The label is read where the viewer put it over its building, before it stepped aside: a name that would
+ * cover another (or a panel) is moved off its point by margins (threeRenderer's nudgeLabel), which say where the
+ * labels fit, not where the camera looks. In the 1008x681 window of a Windows runner a framed Terminal panes once
+ * stepped 103 px aside, which read its name at 0.45 and its point at 0.19.
  */
 async function labelOffset(page: Page, name: string): Promise<number | null> {
   const clip = await cityClip(page)
@@ -151,7 +158,10 @@ async function labelOffset(page: Page, name: string): Promise<number | null> {
       if (el.textContent !== name || getComputedStyle(el).display === 'none') continue
       const r = el.getBoundingClientRect()
       if (r.width === 0 && r.height === 0) continue
-      const d = Math.hypot(r.x + r.width / 2 - cx, r.y + r.height / 2 - cy) / half
+      const css = getComputedStyle(el)
+      const x = r.x + r.width / 2 - (parseFloat(css.marginLeft) || 0)
+      const y = r.y + r.height / 2 - (parseFloat(css.marginTop) || 0)
+      const d = Math.hypot(x - cx, y - cy) / half
       if (best === null || d < best) best = d
     }
     return best
@@ -292,45 +302,71 @@ test('keyword Ask answers before smart Ask is ready', async ({ open }, info) => 
 
 test('clicking a result flies to it and opens its card', async ({ open }) => {
   // The page's clock is Playwright's, so the first reading can be taken with time stopped (see below).
-  const o = await open(KEYWORD_HTML, { clock: true })
+  const o = await open(KEYWORD_HTML, { clock: true, configViewport: true })
   await askReady(o.page)
   await settle(o.page)
   const three = await in3d(o.page)
-  // Lesson distiller stands at a corner of the fixture city (-48, 0, 41): with no flight its label sits about
-  // 1.0 of the half-diagonal from the middle of the free area, and the flight brings it under 0.1. A building
-  // near the middle (Terminal host, about 0.2 before any flight) could not show a camera that never moved, and
-  // one framed off-centre among far neighbours (Linked machines, 0.32 -> 0.35) does not come to the middle.
-  const ids = await ask(o.page, 'lesson distiller')
-  expect(ids, 'Lesson distiller among the results').toContain('b-distiller')
-  const first = o.page.locator('.wx-ask-results button.wx-ask-pick[data-id="b-distiller"]')
-  const name = (await first.locator('.wx-ask-name').textContent()) ?? ''
-  const reading = (): Promise<number | null> => labelOffset(o.page, name)
+  // The building flown to is one whose name, once picked, is drawn far from the middle of the free area (over
+  // 0.4 of its half-diagonal), so the flight has somewhere to go. Which building that is depends on the layout,
+  // not on its name: the selected part's name is not drawn where it would sit over a panel further than it may
+  // step aside, and the card opens over the city's left. Lesson distiller, at a corner of the fixture city
+  // (-48, 0, 41), stands under it: its name shows on the pick's first frame only if that frame is drawn before
+  // the page has measured the open card's box (the panels are measured outside the frames), and otherwise only
+  // once the picture's move beside the card has brought it to the card's edge, where a Windows runner read 0.39.
+  // So the parts are tried farthest from the city's middle first (a building near the middle could not show a
+  // camera that never moved), each asked for by name and picked, and the first whose name is drawn on its pick's
+  // first frame, far from the middle, is flown to. Without WebGL the first is picked.
+  const at = Object.values(world.layout.positions)
+  const mid = [0, 2].map((k) => (Math.min(...at.map((p) => p[k])) + Math.max(...at.map((p) => p[k]))) / 2)
+  const rim = (id: string): number => { const p = world.layout.positions[id]; return Math.hypot(p[0] - mid[0], p[2] - mid[1]) }
+  const candidates = world.buildings.filter((b) => b.id in world.layout.positions).sort((a, b) => rim(b.id) - rim(a.id))
+  const pickOf = (id: string) => o.page.locator(`.wx-ask-results button.wx-ask-pick[data-id="${id}"]`)
+  /** Asks for the building by name and picks it from the results; its name as the results give it. */
+  const pick = async (b: { id: string; name: string }, click: (button: ReturnType<typeof pickOf>) => Promise<void>): Promise<string> => {
+    const ids = await ask(o.page, b.name)
+    expect(ids, `${b.name} among the results for its own name`).toContain(b.id)
+    const button = pickOf(b.id)
+    const shown = (await button.locator('.wx-ask-name').textContent()) ?? ''
+    await click(button)
+    return shown
+  }
+  let name = ''
   let from: number | null = null
   let landed: number | null = null
   if (three) {
     // The first reading is taken with the camera near-still. Hovering the building cannot draw its label here: at the
     // opening view a district's slab stands for its buildings, so a hover picks the district. So time stops (the
     // page's frames, timers and clock with it, and the idle turn), the click selects the building, and the clock
-    // is stepped one frame at a time until the selected building's label is drawn. The flight (1.5 s, eased in)
-    // has then barely moved the camera: the reading has been up to 7% under that of a camera that never moved.
+    // is stepped to its first frame, where its label is read. The flight (1.5 s, eased in) has then barely moved
+    // the camera: the reading has been up to 7% under that of a camera that never moved.
     // Every step waits for the GPU to finish the last frame first (clockStep): drawn in software the page draws no
     // frame before that, so a step taken sooner moves the page's time without drawing it.
     expect(await watchFrames(o.page), 'the 3D city draws with a WebGL context').toBe(true)
     await pauseClock(o.page)
     try {
-      // A frame drawn just before the click, so the click's own frame is one 16 ms step after it. A frame comes as
-      // much later as the page's time moved since the last one drawn, and the picture moving beside the card that
-      // opens eases as far: one 16 ms step takes Lesson distiller's label to about 0.57, the camera all but still,
-      // and each 16 ms after it about 0.04 nearer the middle. A first frame 0.125 s after the last (the page
-      // waiting on its GPU) read under 0.5, and one up to 0.5 s after it (the looping motions are drawn that far
-      // apart in software) can read as low as the 0.39 a Windows runner once read.
+      // Each part is picked just after a frame is drawn (before the first, one drawn for it; then the last part
+      // tried's first frame), so its own first frame is one 16 ms step after it. A frame comes as much later as the
+      // page's time moved since the last one drawn, and the picture moving beside the card eases as far (each 16 ms
+      // about 0.04 nearer the middle): a first frame 0.125 s after the last read under 0.5 where one 16 ms after it
+      // read 0.57. Read on its own first frame, a part's reading is one of a camera all but still: each part tried
+      // moved it by 16 ms of its eased-in flight.
       await drawOne(o.page)
-      await expect(first).toBeVisible()
-      await first.click({ force: true }) // no actionability wait: it watches animation frames, and they are stopped
-      for (let step = 0; step < 10 && from === null; step++) {
-        await clockStep(o.page, 16)
-        from = await reading()
+      const tried: string[] = []
+      for (const b of candidates) {
+        // No actionability wait on the click: it watches animation frames, and they are stopped. Keyword Ask
+        // answers without a timer, so asking works with the clock stopped.
+        const shown = await pick(b, async (button) => { await expect(button).toBeVisible(); await button.click({ force: true }) })
+        await drawOne(o.page)
+        const read = await labelOffset(o.page, shown)
+        tried.push(`${shown} ${read === null ? 'not drawn' : read.toFixed(3)}`)
+        if (read !== null && read > 0.4) {
+          name = shown
+          from = read
+          break
+        }
       }
+      test.info().annotations.push({ type: 'tried', description: tried.join('; ') })
+      expect(from, `a part whose name is drawn far from the middle once it is picked (tried: ${tried.join('; ')})`).not.toBeNull()
       // The rest of the flight runs on the stopped clock too, so where the camera ends up depends on the page's time
       // alone, never on how long this browser takes to answer: Firefox on a macOS runner once stalled over 4 s on a
       // frame mid-flight. And few frames: a frame there can take seconds, so running every 16 ms frame of the flight
@@ -340,15 +376,14 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
         await clockStep(o.page, FLIGHT_MS, 'fastForward')
         for (let step = 0; step < EASE_FRAMES; step++) await clockStep(o.page, 50, 'fastForward')
         await gpuIdle(o.page)
-        landed = await reading()
+        landed = await labelOffset(o.page, name)
       }
     } finally {
       // Also on a failure, so its trace shows the page running rather than frozen.
       await o.page.clock.resume().catch(() => undefined)
     }
-    expect(from, `the label of ${name} is drawn once it is picked`).not.toBeNull()
   } else {
-    await first.click()
+    name = await pick(candidates[0], (button) => button.click())
   }
   const card = o.page.locator('.wx-card')
   await expect(card).toBeVisible()

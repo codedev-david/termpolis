@@ -38,6 +38,13 @@ export interface OpenOptions {
   clock?: boolean
   /** The page records when each step of its start happens, for phaseReport (smart.page.ts's readiness budget). */
   phases?: boolean
+  /**
+   * Electron's page gets the config's viewport, from before it loads, as Playwright gives it to every browser
+   * project. Electron's window is a real one, as big as the screen lets it be: a Windows runner's 1024x768 screen
+   * leaves it 1008x681, where the page lays out for a narrow window (no strip kept for the Ask box, which covers the
+   * right of the city), so a spec that measures the wide layout's free area (cityClip) needs this.
+   */
+  configViewport?: boolean
 }
 
 export interface Opened {
@@ -160,6 +167,19 @@ async function launchElectron(): Promise<{ app: ElectronApplication; page: Page;
   }
 }
 
+/**
+ * Emulates a `width` by `height` viewport at the window's own device scale factor. The CDP session stays attached
+ * (Chromium drops a session's emulation when it detaches) and closes with the page; the override outlives the
+ * page's navigations.
+ */
+async function emulateViewport(page: Page, { width, height }: { width: number; height: number }): Promise<void> {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 0, mobile: false })
+  // Within a pixel: the window's own display scaling leaves a rounding pixel under emulation (1281 at 114%).
+  const near = (): Promise<string> => page.evaluate(({ w, h }) => (Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 ? 'ok' : `${innerWidth}x${innerHeight}`), { w: width, h: height })
+  await expect.poll(near, { message: `the Electron page at the config viewport, ${width}x${height}`, timeout: 10_000 }).toBe('ok')
+}
+
 type Fixtures = { open: (file: string, opts?: OpenOptions) => Promise<Opened> }
 
 /**
@@ -204,6 +224,7 @@ export const test = base.extend<Fixtures>({
       if (opts.clock) await context.clock.install()
       if (page === null) page = await context.newPage()
       const p = page
+      if (opts.configViewport && info.project.name === 'electron') await emulateViewport(p, info.project.use.viewport ?? { width: 1280, height: 800 })
       const errors: string[] = []
       p.on('pageerror', (e) => { errors.push(String(e)) })
       await p.goto(own, { waitUntil: 'load', timeout: 60_000 })
