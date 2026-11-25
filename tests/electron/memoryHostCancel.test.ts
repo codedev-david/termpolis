@@ -217,6 +217,22 @@ describe('memory host: the interactive lane', () => {
     expect(embedsOffThread({ fn: 'weaveCandidates', lane: 'interactive' })).toBe(false)
   })
 
+  it('the startup warm calls embed on the host thread, never the worker: the first Ask, agent search and routerClassify find the model loaded (RESP review I-1)', async () => {
+    expect(embedsOffThread({ fn: 'warmProbeEmbeddings' })).toBe(false)
+    expect(embedsOffThread({ fn: 'routerWarm' })).toBe(false)
+    // On the background lane they would be a caller's mistake, but still stay here: warming the worker would leave this
+    // thread's model cold, which is the one every interactive embed uses.
+    expect(embedsOffThread({ fn: 'warmProbeEmbeddings', lane: 'background' })).toBe(false)
+    expect(embedsOffThread({ fn: 'routerWarm', lane: 'background' })).toBe(false)
+    await initHost()
+    _setEmbeddingsAvailable(null) // not probed yet, as at startup
+    const seen: boolean[] = []
+    _setEmbedFnForTests(async () => { seen.push(inBackgroundEmbeds()); await tick(); seen.push(inBackgroundEmbeds()); return [0.1, 0.2, 0.3] })
+    const res = await call(1, 'warmProbeEmbeddings', [])
+    expect(res).toMatchObject({ kind: 'result', ok: true, result: true })
+    expect(seen).toEqual([false, false])
+  })
+
   it("a background write is not let in between the Ask's reads: it waits through the linger after the search, so the listing runs first (world-responsive t3)", async () => {
     await initHost()
     await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })

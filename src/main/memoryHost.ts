@@ -371,18 +371,25 @@ export function argsWithSignal(fn: string, args: unknown[], signal: AbortSignal 
 
 const inflight = new Map<number, AbortController>()
 
-/** Run one call against the whitelist. Sync and async exports are handled uniformly (`await` on a
- *  non-promise is the value itself), so the client only ever sees Promises. */
+/** Calls that warm this thread's embedder, so they embed here whatever lane they come on: the startup warm probe and the
+ *  router's seed embeds. Every interactive embed runs on this thread, so a warm-up sent to the worker would leave the model the
+ *  first Ask, an agent's search and routerClassify (5 s deadline) use cold, and would report embeddings ready while it never
+ *  loaded (RESP review I-1). The worker loads its own copy on the first background embed, which nothing waits on. */
+export const ON_THREAD_CALLS: ReadonlySet<string> = new Set(['warmProbeEmbeddings', 'routerWarm'])
+
 /** Whether a call's embeds go to the embedding worker (wired in the host block below) rather than this thread: a call on the
  *  background lane, or a bulk call sent with no lane. One ingest passage takes seconds to embed on a busy machine, and on this
  *  thread it held every call behind it (world-responsive t3). A read sent with no lane (an agent's search) and every
  *  interactive or single call embed here, as before: a query embed takes about 140 ms, and on the worker it would queue behind
  *  the passages. */
 export function embedsOffThread(msg: Pick<HostCallMsg, 'fn' | 'lane'>): boolean {
+  if (ON_THREAD_CALLS.has(msg.fn)) return false
   if (msg.lane === 'background') return true
   return msg.lane === undefined && !LANE_FREE_CALLS.has(msg.fn) && !CANCELLABLE_READS.has(msg.fn)
 }
 
+/** Run one call against the whitelist. Sync and async exports are handled uniformly (`await` on a
+ *  non-promise is the value itself), so the client only ever sees Promises. */
 export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   const handler = HOST_HANDLERS[msg.fn]
   if (typeof handler !== 'function') {
