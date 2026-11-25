@@ -247,6 +247,23 @@ describe('Java and Kotlin scan', () => {
     expect(scanLangImports('E.kt', 'package k\nimport a.B\n')).toEqual({ pkg: 'k', refs: ['jv:a.B'] })
   })
 
+  it('records a Kotlin class whose type parameters carry a bound, and a declaration after annotations on its line (WP7 #89 N3)', () => {
+    const kt = [
+      'package k',
+      'class Box<T : Any>(val t: T)',
+      'interface Repo<K : Comparable<K>, V> {',
+      '  fun get(k: K): V',
+      '}',
+      'typealias Pairs<T : Any> = List<Pair<T, T>>',
+      '@Serializable data class Z(val a: Int)',
+      '@Ser(with = X::class) @file:Keep internal class W',
+      '@JvmInline value class Id<T : Comparable<T>>(val v: T)',
+      '@file:JvmName("Main")',
+      '  @Inject fun member() {}'
+    ].join('\n')
+    expect(scanLangImports('Misc.kt', kt)?.decls).toEqual(['Box', 'Repo', 'Pairs', 'Z', 'W', 'Id'])
+  })
+
   it('records at most 256 Kotlin top-level names', () => {
     const kt = Array.from({ length: 300 }, (_, i) => `fun f${i}() {}`).join('\n')
     const decls = scanLangImports('Many.kt', kt)?.decls ?? []
@@ -504,7 +521,8 @@ describe('Rust attributes on the lines above a mod', () => {
     expect(refs('src/lib.rs', '#[derive(Debug)]\nstruct S;\nmod after;')).toEqual(['rs:m:after'])
     expect(refs('src/lib.rs', 'const A: [u8; 1] = [1];\nmod after;')).toEqual(['rs:m:after'])
     expect(refs('src/lib.rs', 'fn f() { let a = [1]; }\nmod after;')).toEqual(['rs:m:after'])
-    expect(refs('src/lib.rs', '#[path = x([1])]\nmod nested;')).toEqual(['rs:m:nested'])
+    // Brackets inside an attribute no longer end it (WP7 #89 N2): this is a path attribute, so the mod is not followed.
+    expect(refs('src/lib.rs', '#[path = x([1])]\nmod nested;')).toEqual([])
     expect(refs('src/lib.rs', ']\nmod a;')).toEqual(['rs:m:a'])
     expect(refs('src/lib.rs', '[a]\nmod b;')).toEqual(['rs:m:b'])
     // Seventeen attributes up, past the bound of sixteen; more than a thousand characters of blank lines or of one
@@ -512,6 +530,15 @@ describe('Rust attributes on the lines above a mod', () => {
     expect(refs('src/lib.rs', '#[path = "x.rs"]\n' + '#[a]\n'.repeat(16) + 'mod far;')).toEqual(['rs:m:far'])
     expect(refs('src/lib.rs', '#[path = "x.rs"]\n' + '\n'.repeat(1001) + 'mod far;')).toEqual(['rs:m:far'])
     expect(refs('src/lib.rs', '#[path = "' + 'x'.repeat(1001) + '"]\nmod far;')).toEqual(['rs:m:far'])
+  })
+
+  it('reads past an attribute that holds brackets of its own, as `#[cfg(any(a, b[0]))]` (WP7 #89 N2)', () => {
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\n#[cfg(any(a, b[0]))]\nmod p;\nmod q;')).toEqual(['rs:m:q'])
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\n#[cfg(x[y[0]][1])]\n#[doc = "]"]\nmod p;')).toEqual([])
+    expect(refs('src/lib.rs', '#[cfg(any(a, b[0]))]\nmod p;')).toEqual(['rs:m:p'])
+    // Brackets that never open an attribute stop the walk, as before.
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\n[[a]\nmod b;')).toEqual(['rs:m:b'])
+    expect(refs('src/lib.rs', '#[path = "x.rs"]\nlet a = [b[0]];\nmod c;')).toEqual(['rs:m:c'])
   })
 })
 
@@ -556,7 +583,9 @@ describe('hostile input stays linear', TIMED, () => {
   it.each<[string, (n: number) => string, string[]]>([
     ['"use a" lines', (n) => fill('use a\n', n), []],
     ['"]" then "mod x;" lines', (n) => fill(']\nmod x;\n', n), ['rs:m:x']],
-    ['"#[a]" lines then "mod x;"', (n) => fill('#[a]\n', n) + 'mod x;', ['rs:m:x']]
+    ['"#[a]" lines then "mod x;"', (n) => fill('#[a]\n', n) + 'mod x;', ['rs:m:x']],
+    ['"#[a[0]]" lines then "mod x;"', (n) => fill('#[a[0]]\n', n) + 'mod x;', ['rs:m:x']],
+    ['a "]" run then "mod x;"', (n) => fill(']', n) + '\nmod x;', ['rs:m:x']]
   ])('reads a Rust use with no `;` in reach as nothing, in linear time (%s)', (label, make, want) => grows(make, reads('src/lib.rs', want), label))
 
   it('reads a Rust use with no `;` in reach as nothing, and the next one', () => {
@@ -581,5 +610,9 @@ describe('hostile input stays linear', TIMED, () => {
     const none: Probe<unknown> = { read: (src) => scanLangImports('a.kt', src), check: (found) => expect(found).toEqual({ refs: [] }) }
     grows((n) => 'fun ' + 'a'.repeat(n), none)
     grows((n) => 'fun <' + '<'.repeat(n), none)
+    grows((n) => 'class A<' + '<'.repeat(n), none)
+    grows((n) => 'class A' + fill('<B>', n), none)
+    grows((n) => fill('@a ', n), none)
+    grows((n) => fill('@a(b) ', n) + '\n', none)
   })
 })

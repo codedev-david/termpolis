@@ -187,11 +187,21 @@ describe('codeGraphExtract', () => {
         ['Big.kt', big, (syms, src) => expect(syms.length).toBeGreaterThan(src.length / 100)],
         ['Blank.kt', (n) => '\n'.repeat(n) + 'class A', (syms, src) => expect(byName(syms, 'A')!.startLine).toBe(src.length - 6)],
         ['Ann.kt', (n) => fill('@a\n', n), none],
+        ['AnnLine.kt', (n) => fill('@a ', n), none],
+        ['AnnArgs.kt', (n) => fill('@a(b) ', n) + '\n', none],
         ['Mods.kt', (n) => fill('public\n', n), none],
         ['Long.kt', (n) => 'fun ' + 'a'.repeat(n), none]
       ])('%s', (file, make, check) => linear(make, symbols(file), N, file, check))
       it('joins an annotation above a declaration, but no longer a modifier', () => {
         expect(names(extractFile('Split.kt', 'public\nclass A\n@Inject\nfun b() {}')!.symbols)).toEqual(['A', 'b'])
+      })
+      it('finds a function after nine or more annotations on its line or above it (WP7 #89 N5)', () => {
+        const nine = Array.from({ length: 9 }, (_, i) => `@A${i}`)
+        const same = extractFile('Same.kt', nine.join(' ') + ' fun f() {\n}')!.symbols
+        expect(same.map((s) => [s.name, s.startLine, s.endLine])).toEqual([['f', 1, 2]])
+        const mixed = extractFile('Mixed.kt', '@A\n@B(x = 1) ' + nine.join(' ') + ' private fun g() {}')!.symbols
+        expect(mixed.map((s) => [s.name, s.startLine])).toEqual([['g', 1]])
+        expect(names(extractFile('Above.kt', nine.join('\n') + '\nfun h() {}')!.symbols)).toEqual(['h'])
       })
     })
 
@@ -435,9 +445,12 @@ describe('codeGraphExtract', () => {
         i: ['UIKit']
       })
       expect(names(extractFile('A.swift', '@available(iOS 13, *)\n@MainActor\nfunc run() {}\n@objc func go() {}')!.symbols)).toEqual(['run', 'go'])
+      // Nine or more attributes on the func's own line (WP7 #89 N5, as Kotlin).
+      const nine = Array.from({ length: 9 }, (_, i) => `@a${i}`).join(' ')
+      expect(show('N.swift', nine + ' public func many() {\n}').s).toEqual([['many', 'function', 1, 2]])
     })
 
-    it.each([...empty, ...named('@a\n', 'public\n', 'static \n')])('Swift: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('A.swift'), label))
+    it.each([...empty, ...named('@a\n', '@a ', 'public\n', 'static \n')])('Swift: %s reads as no symbol, in time linear in its size', (label, make) => grows(make, noSymbols('A.swift'), label))
 
     it('JS imports: default, named, multi-line, side-effect, type-only, namespace, a list over 2000 characters', () => {
       const long = 'import {' + Array.from({ length: 400 }, (_, i) => ` name${i}`).join(',') + "\n} from './long'"

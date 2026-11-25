@@ -290,9 +290,13 @@ function attrsAbove(t: string, at: number): string {
     let j = k - 1
     while (j >= 0 && k - j <= RS_ATTR_SPAN && /\s/.test(t[j])) j--
     if (j < 0 || t[j] !== ']') break
+    // The `[` that opens it, past the brackets inside it (`#[cfg(any(a, b[0]))]`: WP7 #89 N2). An attribute holds no
+    // `;`, `{` or `}`: reaching one means the `]` closed something else.
     let open = j - 1
-    // An attribute holds no `;`, `{` or `}`: reaching one means the `]` closed something else.
-    while (open > 0 && j - open <= RS_ATTR_SPAN && t[open] !== '[' && !';{}'.includes(t[open])) open--
+    for (let depth = 0; open > 0 && j - open <= RS_ATTR_SPAN && !';{}'.includes(t[open]); open--) {
+      if (t[open] === ']') depth++
+      else if (t[open] === '[' && depth-- === 0) break
+    }
     const hash = t[open] !== '[' ? -1 : t[open - 1] === '#' ? open - 1 : t[open - 1] === '!' && t[open - 2] === '#' ? open - 2 : -1
     if (hash < 0) break
     out += t.slice(hash, j + 1)
@@ -326,11 +330,14 @@ function scanRust(text: string): string[] {
 const JV_PACKAGE = /^package\s+([A-Za-z_][\w.]*)$/
 const JV_IMPORT = /^import\s+(?:static\s+)?([A-Za-z_][\w.]*?(?:\.\*)?)(?:\s+as\s+\w+)?$/
 
-// A Kotlin top-level declaration starts a line; members are indented. The head (up to `(`, `:`, `=` or `{`) holds the
-// name, after any type parameters (bounds and one level of nesting included) and receiver: `fun <T : Any> List<T>.second(`
-// names `second`. A head longer than 200 characters is no declaration anyone imports, and is not read.
+// A Kotlin top-level declaration starts a line, after any annotations on that line (`@Serializable data class Z`);
+// members are indented. The head (up to `(`, `:`, `=` or `{`) holds the name, with type parameters before it or after it
+// (bounds and one level of nesting included: `class Box<T : Any>`, WP7 #89 N3) and a receiver: `fun <T : Any>
+// List<T>.second(` names `second`. A head of more than 200 parts is no declaration anyone imports, and is not read. Each
+// annotation, and each part of the head, is told from the next by its first character, so a line that is no
+// declaration is given up in time linear in its length.
 const KT_TOP =
-  /^(?:(?:public|internal|private|protected|open|final|abstract|sealed|data|enum|annotation|value|inline|suspend|operator|infix|tailrec|external|const|lateinit|expect|actual|fun)[ \t]+)*(?:fun|val|var|class|interface|object|typealias)[ \t]+((?:<(?:[^\n<>]|<[^\n<>]*>){0,200}>[ \t]*)?[^\n(:={]{1,200})(?=[\n(:={]|$)/gm
+  /^(?:@[\w.:]+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|internal|private|protected|open|final|abstract|sealed|data|enum|annotation|value|inline|suspend|operator|infix|tailrec|external|const|lateinit|expect|actual|fun)[ \t]+)*(?:fun|val|var|class|interface|object|typealias)[ \t]+((?:<(?:[^\n<>]|<[^\n<>]*>){0,200}>[ \t]*)?(?:[^\n(:={<]|<(?:[^\n<>]|<[^\n<>]*>){0,200}>){1,200})(?=[\n(:={]|$)/gm
 
 /** A Kotlin file's top-level names, at most MAX_KT_NAMES. */
 function kotlinNames(t: string): string[] {
