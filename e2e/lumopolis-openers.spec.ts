@@ -177,7 +177,9 @@ test.describe.serial('The ways into Lumopolis', () => {
     await expect(page.getByTestId('world-project')).toHaveText(path.basename(repoB), { timeout: 30_000 })
     // The sequence was swallowed: none of it reached the screen.
     const shown = await text(b)
-    expect(shown).not.toContain('7377')
+    // The sequence's own start (7377 then its separator): a bare 7377 is in a macOS runner's host name, which the
+    // prompt prints (iad20-...-aa9f-7377c6121708-...), and failed the check with nothing leaked.
+    expect(shown).not.toContain('7377;')
     expect(shown).not.toMatch(/lumopolis;[0-9a-f]{32}/)
   })
 

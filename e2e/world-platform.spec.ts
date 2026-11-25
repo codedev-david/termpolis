@@ -481,7 +481,9 @@ test.describe.serial('Lumopolis on this platform', () => {
       await expect(pane()).toBeVisible({ timeout: 20_000 })
       await expect(projectName()).toHaveText(OTHER_NAME, { timeout: 30_000 })
       const shown = await text(id)
-      expect(shown).not.toContain('7377')
+      // The sequence's own start (7377 then its separator): a bare 7377 is in a macOS runner's host name, which the
+      // prompt prints (iad20-...-aa9f-7377c6121708-...), and failed the check with nothing leaked.
+      expect(shown).not.toContain('7377;')
       expect(shown).not.toMatch(/lumopolis;[0-9a-f]{32}/)
       await closePane()
       note(`lumopolis in ${shell}: the missing folder, plain lumopolis and a quoted folder with spaces all worked`)
@@ -493,7 +495,9 @@ test.describe.serial('Lumopolis on this platform', () => {
     if (!(await pane().count())) {
       await paletteType(page, 'Open Lumopolis')
       await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
-      await expect(pane()).toBeVisible()
+      // The same wait as test 8's opens: each open makes a new WebGL context, and on a slow macOS runner (SwiftShader)
+      // that held the page about 6 s (test 8's traces: 5.9 s and 6.0 s from Enter to the pane), past the default 5 s.
+      await expect(pane()).toBeVisible({ timeout: 20_000 })
     }
     const home = page.locator('[data-testid="world-home"]')
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption('__home')

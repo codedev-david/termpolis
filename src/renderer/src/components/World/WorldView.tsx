@@ -638,15 +638,6 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const covered = world.kind === 'home' || !doc
   useEffect(() => { viewer?.setPaused(covered || shows2d || !shown) }, [viewer, covered, shows2d, shown])
 
-  // The e2e probe, while this viewer is up (and only under the test flag).
-  useEffect(() => {
-    if (!viewer || !exposesWorldProbe()) return
-    const w = window as unknown as { __termpolis_world?: WorldProbe }
-    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState(), position: (id) => docRef.current?.layout.positions[id] ?? null, apply: (a) => viewer.apply(a) }
-    w.__termpolis_world = probe
-    return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
-  }, [viewer])
-
   useEffect(() => {
     if (!viewer || !doc) return
     const held = loadedRef.current
@@ -658,6 +649,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     // open building and flies to the selection's new spot or the overview.
     if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held })
     else viewer.load(doc)
+  }, [viewer, doc])
+
+  // The e2e probe (only under the test flag), while the viewer holds the world the pane shows. While another world
+  // loads, the viewer still holds the last one, paused under the loading screen: a probe up then answered for a world
+  // the pane had left (its wireframes) and for none (its positions, read from the pane's doc), and a test waiting on
+  // the new world's parts saw the old world's at once. Put up after the load above, so it never describes another doc.
+  useEffect(() => {
+    if (!viewer || !doc || !exposesWorldProbe()) return
+    const w = window as unknown as { __termpolis_world?: WorldProbe }
+    const positions = doc.layout.positions
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState(), position: (id) => positions[id] ?? null, apply: (a) => viewer.apply(a) }
+    w.__termpolis_world = probe
+    return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
   }, [viewer, doc])
 
   // A tour waiting for the complete world (whenComplete) goes once the doc is no first map: it was loaded just above.

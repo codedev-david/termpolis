@@ -1121,15 +1121,28 @@ describe('WorldView', () => {
       expect(probe()).toBe(other)
     })
 
-    it('has no positions before the world arrives', async () => {
+    it('is not there before the world arrives, nor while another world loads, so it never answers for the world left', async () => {
       ;(window as any).termpolisTestFlags = { worldProbe: true }
       const get = deferred<Res<WorldDoc | null>>()
-      bridge({ worldGet: vi.fn(() => get.promise) })
-      await mount()
-      expect(probe().position('b1')).toBeNull()
+      const b = bridge({ worldGet: vi.fn(() => get.promise) })
+      const { rerender, onClose } = await mount()
+      expect(viewer()).toBeTruthy()
+      expect(probe()).toBeUndefined()
       await act(async () => { get.resolve(ok(minimal())) })
       await settle()
       expect(probe().position('b1')).toEqual(minimal().layout.positions.b1)
+
+      // Another folder: the viewer still holds the first world, paused under the loading screen. No probe answers for it.
+      const next = deferred<Res<WorldDoc | null>>()
+      b.api.worldGet.mockReturnValueOnce(next.promise)
+      rerender(<WorldView root="/next" onClose={onClose} />)
+      await settle()
+      expect(probe()).toBeUndefined()
+      const other: WorldDoc = { ...minimal(), projectKey: 'next', layout: { ...minimal().layout, positions: { b1: [7, 0, 7] } } }
+      await act(async () => { next.resolve(ok(other)) })
+      await settle()
+      expect(viewer().load).toHaveBeenLastCalledWith(other)
+      expect(probe().position('b1')).toEqual([7, 0, 7])
     })
 
     it('is not there without WebGL (no viewer)', async () => {
