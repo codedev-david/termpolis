@@ -96,6 +96,15 @@ jobs:
       - name: Install gdb
         if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends gdb || true
+      # e2e/world-platform.spec.ts types `lumopolis` in bash and in zsh, and fails when zsh is missing, as test.yml's
+      # e2e job knows. Same step as there: install zsh and make compinit's folders as a desktop has them.
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends zsh
+          insecure=$(zsh -fc 'autoload -Uz compaudit; compaudit' 2>/dev/null || true)
+          echo "compaudit: ${insecure:-nothing insecure}"
+          if [ -n "$insecure" ]; then echo "$insecure" | xargs sudo chmod g-w,o-w; fi
       # The model job's download, by the exact hash of its files.
       - name: Restore the embedding model
         uses: actions/cache/restore@v4
