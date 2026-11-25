@@ -306,6 +306,20 @@ describe('compileWorld', () => {
     expect('filesCapped' in cut).toBe(false)
   })
 
+  it('the top-level dot-folders left out as tooling are counted on the world, and absent when there are none (review M-1)', async () => {
+    const doc = await compileWorld({ snap: { ...snapOf(FIXTURE), toolingFolders: 2 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect(doc.toolingFolders).toBe(2)
+    const none = await compileWorld({ snap: { ...snapOf(FIXTURE), toolingFolders: 0 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect('toolingFolders' in none).toBe(false)
+    expect('toolingFolders' in (await compileFixture())).toBe(false)
+    // A world drawn from the code index gets its files unfiltered: the folders are counted from them, each once, and a
+    // dot-folder deeper down or one left out anyway (node_modules) counts for none.
+    const indexed = { ...FIXTURE, '.github/a/x.ts': '', '.github/b/y.ts': '', '.storybook/main.ts': '', '.tools/node_modules/d/i.js': '', 'src/.gen/z.ts': '' }
+    const fromIndex = await compileWorld({ snap: snapOf(indexed), projectKey: 'demo', head: HEAD, previous: null }, mkDeps(indexed))
+    expect(fromIndex.toolingFolders).toBe(2)
+    expect(fromIndex.buildings.flatMap((b) => b.members).filter((f) => /^\.[^/]+\//.test(f))).toEqual([])
+  })
+
   it('counts the unreadable names the world would have shown: source files outside the folders it leaves out', async () => {
     const unreadable = ['src/q\uFFFD.ts', 'lib/r\uFFFD.py', 'notes/n\uFFFD.md', 'vendor/v\uFFFD.ts', 'web/w\uFFFD.min.js', 'img/i\uFFFD.png']
     const doc = await compileWorld({ snap: { ...snapOf(FIXTURE), unreadable }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))

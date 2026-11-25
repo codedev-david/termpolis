@@ -433,8 +433,8 @@ export function validateWorld(
   if (e.length) return { ok: false, errors: e }
   const dropped = ctx.dropped.length > 0 ? { dropped: ctx.dropped } : {}
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
-  // filesCapped, nestedCapped, filesUnreadable, filesRead and filesListed (the files note's counts) are kept only as
-  // whole numbers of at least 0; provisional and savedByNewer only as true. A cargo or process colour that is not a
+  // filesCapped, nestedCapped, filesUnreadable, filesRead, filesListed and toolingFolders (the files note's counts) are
+  // kept only as whole numbers of at least 0; provisional and savedByNewer only as true. A cargo or process colour that is not a
   // plain hex colour is made grey rather than failing the world. The caller's doc IS changed in place: a missing claims
   // list or name state is filled in, and in lenient mode (dropBadItems) bad claims, tour steps and tours are spliced out
   // of its arrays. So pass a doc you own (the store passes one it just parsed). The doc returned is that doc, or a shallow
@@ -448,9 +448,10 @@ export function validateWorld(
   const badNested = badCount(doc.nestedCapped)
   const badRead = badCount(doc.filesRead)
   const badListed = badCount(doc.filesListed)
+  const badTooling = badCount(doc.toolingFolders)
   const badProvisional = doc.provisional !== undefined && doc.provisional !== true
   const badNewer = doc.savedByNewer !== undefined && doc.savedByNewer !== true
-  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badProvisional || badNewer || cargo || processes) {
+  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested || badRead || badListed || badTooling || badProvisional || badNewer || cargo || processes) {
     const rest: Record<string, unknown> = { ...doc }
     if (cargo) rest.cargo = cargo
     if (processes) rest.processes = processes
@@ -461,6 +462,7 @@ export function validateWorld(
     if (badNested) delete rest.nestedCapped
     if (badRead) delete rest.filesRead
     if (badListed) delete rest.filesListed
+    if (badTooling) delete rest.toolingFolders
     if (badProvisional) delete rest.provisional
     if (badNewer) delete rest.savedByNewer
     return { ok: true, doc: rest as unknown as WorldDoc, ...dropped }

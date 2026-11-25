@@ -302,6 +302,28 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     expect(got?.files.filter((f) => f.startsWith('b/'))).toEqual(['b/g000000.ts', 'b/g000001.ts'])
   })
 
+  it('a nested repository its caller skips is never listed, so it spends none of the shared cap (review M-2)', async () => {
+    const many = (n: number, pre: string): string[] => Array.from({ length: n }, (_, i) => `H ${pre}${String(i).padStart(6, '0')}.ts`)
+    const git = fakeGit({
+      'ls /r': z(...many(2, 'root'), '? .superpowers/x/', '? .tools/', '? b/'),
+      'ls /r/b': z(...many(5, 'g'), '? .inner/'),
+      'ls /r/b/.inner': z('H i.ts')
+    })
+    // The caller is asked about each nested folder by its path from the top, as a folder entry.
+    const asked: string[] = []
+    const skipNested = (rel: string): boolean => {
+      asked.push(rel)
+      return rel.startsWith('.')
+    }
+    const exists = existsIn(['/r/.git', '/r/.superpowers/x/.git', '/r/.tools/.git', '/r/b/.git', '/r/b/.inner/.git'])
+    const got = await listRepo('/r', { git, exists, skipNested })
+    expect(got?.nestedCapped).toBe(false)
+    expect(got?.files).toEqual(['b/.inner/i.ts', 'b/g000000.ts', 'b/g000001.ts', 'b/g000002.ts', 'b/g000003.ts', 'b/g000004.ts', 'root000000.ts', 'root000001.ts'])
+    expect(got?.nested).toEqual(['b', 'b/.inner'])
+    expect(asked).toEqual(['.superpowers/x/', '.tools/', 'b/', 'b/.inner/'])
+    expect(git.mock.calls.map((c) => c[0][c[0].indexOf('-C') + 1])).toEqual(['/r', '/r/b', '/r/b/.inner'])
+  })
+
   it('runs every git with the safety flags: the listing, the submodule listing, the top lookup and the nested listings', async () => {
     const git = fakeGit({
       'ls /r/services': z('H a.ts', '? sdk/'),

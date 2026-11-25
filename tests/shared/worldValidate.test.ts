@@ -92,6 +92,17 @@ describe('validateWorld', () => {
     }
   })
 
+  it('toolingFolders is optional: a whole count is kept, junk is dropped and leaves the other counts (review M-1)', () => {
+    expect(((r) => r.ok && 'toolingFolders' in r.doc)(validateWorld(fresh()))).toBe(false)
+    const kept = validateWorld({ ...fresh(), toolingFolders: 3 })
+    expect(kept.ok && kept.doc.toolingFolders).toBe(3)
+    for (const junk of ['3', -1, 2.5, null]) {
+      const r = validateWorld({ ...fresh(), toolingFolders: junk, nestedCapped: 1 })
+      expect(r.ok && 'toolingFolders' in r.doc).toBe(false)
+      expect(r.ok && r.doc.nestedCapped).toBe(1)
+    }
+  })
+
   it('filesRead and filesListed (a listing read in part) are kept as whole counts, junk dropped alone', () => {
     const plain = validateWorld(fresh())
     expect(plain.ok && ('filesRead' in plain.doc || 'filesListed' in plain.doc || 'provisional' in plain.doc)).toBe(false)

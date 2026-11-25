@@ -2453,6 +2453,17 @@ describe('fileSnapshot', () => {
     const whole = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts'], capped: false }) })
     expect('filesCapped' in whole).toBe(false)
     expect('nestedCapped' in whole).toBe(false)
+    expect('toolingFolders' in whole).toBe(false)
+    // The top-level dot-folders whose source files the world leaves out are counted, each once (review M-1): not a
+    // dot-file, a dot-folder deeper down (not tooling), a folder left out anyway (node_modules) or one with no source.
+    const tooling = await snapshotFromFiles('/r', {
+      read,
+      listFiles: async () => [
+        'src/a.ts', '.github/actions/x/index.ts', '.github/actions/y/main.ts', '.storybook/preview.tsx', '.eslintrc.cjs',
+        'src/.gen/b.ts', '.idea/workspace.xml', '.tools/node_modules/dep/index.js'
+      ]
+    })
+    expect(tooling).toMatchObject({ files: ['src/a.ts'], toolingFolders: 2 })
     // Only the nested repositories were cut: the cap they shared, and no claim that the folder's own files were.
     const nestedCut = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts'], capped: false, nestedCapped: true }) })
     expect(nestedCut).toMatchObject({ files: ['src/a.ts'], nestedCapped: MAP_FILE_CAP })
@@ -2565,6 +2576,12 @@ describe('fileSnapshot', () => {
     replies.push({ code: 0, stdout: 'H main.ts\0? tools/sdk/\0', missing: false }, { code: 0, stdout: 'H index.ts\0', missing: false })
     expect((await gitListFiles('/r', exec, false, git, has(['/r/.git', '/r/tools/sdk/.git'])))?.files).toEqual(['main.ts', 'tools/sdk/index.ts'])
     expect(calls[1].args).toEqual(lsFilesArgs('/r/tools/sdk', false))
+    // A nested repository under a top-level tooling folder holds nothing the world shows, so its git is never run
+    // (review M-2); one at the top that is itself such a folder is skipped too.
+    calls.length = 0
+    replies.push({ code: 0, stdout: 'H main.ts ? .superpowers/wt/ ? .config/ ', missing: false })
+    expect((await gitListFiles('/r', exec, false, git, has(['/r/.git', '/r/.superpowers/wt/.git', '/r/.config/.git'])))?.files).toEqual(['main.ts'])
+    expect(calls).toHaveLength(1)
     // A nested checkout of this same repository (its .git a file into our own git folder) is never listed; a nested
     // repository git refuses is walked as a plain folder, under the shared cap.
     calls.length = 0

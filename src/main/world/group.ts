@@ -142,6 +142,21 @@ export function isToolingPath(rel: string): boolean {
   return rel.charCodeAt(0) === 46 && rel.indexOf('/') > 0
 }
 
+/** The top-level dot-folder a file is left out for as tooling, or null: none, or a file left out anyway (node_modules). */
+export function toolingFolder(rel: string): string | null {
+  return isToolingPath(rel) && !isIgnoredPath(rel) ? rel.slice(0, rel.indexOf('/')) : null
+}
+
+/** How many top-level dot-folders the files are left out for as tooling (review M-1). */
+export function toolingFolderCount(files: Iterable<string>): number {
+  const folders = new Set<string>()
+  for (const f of files) {
+    const folder = toolingFolder(f)
+    if (folder !== null) folders.add(folder)
+  }
+  return folders.size
+}
+
 /** True for files under dependency, virtual-environment, cache and build output folders, minified or bundled files,
  *  and files under a top-level dot-folder (isToolingPath). */
 export function isIgnored(path: string): boolean {

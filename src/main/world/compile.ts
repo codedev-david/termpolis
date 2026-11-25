@@ -17,7 +17,7 @@ import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
 import { markTwoWay } from '../../shared/world/cardFacts'
 import { domainToASCII } from 'node:url'
-import { edgeId, groupProject, idSlug, isIgnored, resolveImport, shortHash, uniqueIds, type GroupBuilding, type Grouping } from './group'
+import { edgeId, groupProject, idSlug, isIgnored, resolveImport, shortHash, toolingFolderCount, uniqueIds, type GroupBuilding, type Grouping } from './group'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { languageForFile } from '../codeGraphExtract'
 import { mergeAnnotations } from './annotations'
@@ -868,14 +868,17 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
 /**
  * The doc's files note counts: a capped walk records the files the world maps; nested repositories cut at the cap
  * record the cap they shared; names the listing could not read are counted when the world would have shown them (a
- * source file outside the folders it leaves out).
+ * source file outside the folders it leaves out); the top-level dot-folders left out as tooling are counted.
  */
-function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<WorldDoc, 'filesCapped' | 'nestedCapped' | 'filesUnreadable'> {
+function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<WorldDoc, 'filesCapped' | 'nestedCapped' | 'filesUnreadable' | 'toolingFolders'> {
   const unreadable = (snap.unreadable ?? []).filter((f) => !isIgnored(f) && isIndexableCodeFile(`${root}/${f}`) && languageForFile(f) !== null).length
+  // A listing counted them as it left them out (fileSnapshot.ts); a world drawn from the code index has them in its files.
+  const tooling = snap.toolingFolders ?? toolingFolderCount(snap.files)
   return {
     ...(snap.filesCapped !== undefined ? { filesCapped: mapped } : {}),
     ...(snap.nestedCapped !== undefined ? { nestedCapped: snap.nestedCapped } : {}),
-    ...(unreadable > 0 ? { filesUnreadable: unreadable } : {})
+    ...(unreadable > 0 ? { filesUnreadable: unreadable } : {}),
+    ...(tooling > 0 ? { toolingFolders: tooling } : {})
   }
 }
 

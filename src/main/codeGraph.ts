@@ -691,6 +691,8 @@ export interface GraphSnapshot {
   nestedCapped?: number
   /** Listed names that are not valid UTF-8, so no read finds them: the world counts the source files among them. */
   unreadable?: string[]
+  /** How many top-level dot-folders held source files the world leaves out as tooling (world/group.ts isToolingPath). */
+  toolingFolders?: number
 }
 
 const slashed = (p: string): string => p.replace(/\\/g, '/')

@@ -17,7 +17,7 @@ import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
 import { listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
-import { isIgnored } from './group'
+import { isIgnored, isToolingPath, toolingFolderCount } from './group'
 import { access, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
@@ -90,7 +90,8 @@ export async function gitListFiles(
     return r.code === 0 ? r.stdout : null
   }
   // isWindows names git's safety flags (the Windows hooks path); folders compare case folded where this platform folds.
-  return listRepo(root, { git, exists: has, isFile, readText, walk, isWindows })
+  // A nested repository the world leaves out whole (under a top-level tooling folder) is never listed (review M-2).
+  return listRepo(root, { git, exists: has, isFile, readText, walk, isWindows, skipNested: isIgnored })
 }
 
 /** Whether `root` sits in a git repository: a `.git` (folder, or the file a worktree or submodule has) in it or above it. */
@@ -218,9 +219,16 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
   }
   candidates.sort()
   const unreadable = listing.unreadable ?? []
+  // The top-level dot-folders whose source files the world leaves out as tooling (look spec §9.1), counted so the
+  // world can say so (review M-1); a file left out anyway (node_modules) or that is no source counts for none.
+  const tooling = toolingFolderCount(listing.files.flatMap((raw) => {
+    const rel = safeRelative(raw)
+    return rel !== null && isToolingPath(rel) && isSourceFile(`${base}/${rel}`) ? [rel] : []
+  }))
   const notes = {
     ...(listing.nestedCapped ? { nestedCapped: MAP_FILE_CAP } : {}),
-    ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {})
+    ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {}),
+    ...(tooling > 0 ? { toolingFolders: tooling } : {})
   }
   deps.onListed?.({
     root: base,

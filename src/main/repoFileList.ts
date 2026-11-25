@@ -223,6 +223,9 @@ export interface ListRepoDeps {
   readText?: (path: string) => Promise<string | null>
   /** Walks a nested repository git refuses as a plain folder, listing at most `cap` files. Default: it is left out. */
   walk?: (absDir: string, cap: number) => Promise<NestedWalk>
+  /** A nested repository (its path from the top, as a folder entry: `.superpowers/wt/`) the caller has no use for: it
+   *  is never listed, so it spends none of the shared cap and never marks the listing cut. Default: none is skipped. */
+  skipNested?: (rel: string) => boolean
   /** The platform git runs on: its safety flags, and whether paths fold case. Default: this one. */
   platform?: NodeJS.Platform
   /** Which safety flags git gets (the Windows hooks path or the POSIX one) when the caller names it apart from the
@@ -263,6 +266,8 @@ interface Ctx {
   left: number
   capped: boolean
   common: Map<string, Promise<string | null>>
+  /** The folder the listing started at: nested paths are named from it for skipNested. */
+  top: string
 }
 
 /** One absolute path, as git prints it on any platform (`/x`, `C:/x`, `C:\x`). */
@@ -357,6 +362,7 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
       const at = `${root}/${n.slice(0, -1)}`
       // git lists a folder holding a repository of its own as one entry; anything else with a trailing slash is not one.
       if (!(await deps.exists(`${at}/.git`))) continue
+      if (deps.skipNested?.(`${at.slice(ctx.top.length + 1)}/`)) continue
       // The budget is spent: no more git is started, and the world says the nested repositories were cut, unless all
       // that is left are worktrees of the repository itself (told without git), which add nothing.
       if (ctx.left === 0) {
@@ -395,7 +401,7 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
 export async function listRepo(root: string, deps: ListRepoDeps): Promise<RepoListing | null> {
   const base = trimRoot(root)
   const platform = deps.platform ?? process.platform
-  const ctx: Ctx = { deps, isWindows: deps.isWindows ?? platform === 'win32', platform, left: MAP_FILE_CAP, capped: false, common: new Map() }
+  const ctx: Ctx = { deps, isWindows: deps.isWindows ?? platform === 'win32', platform, left: MAP_FILE_CAP, capped: false, common: new Map(), top: base }
   const own = await deps.git(lsFilesArgs(base, ctx.isWindows))
   if (own === null) return null
   const got = await collect(base, own, ctx, [])

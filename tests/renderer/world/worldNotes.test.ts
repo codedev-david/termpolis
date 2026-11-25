@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, provisionalNotice, readCappedNotice, savedByNewerNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
+import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, provisionalNotice, readCappedNotice, savedByNewerNotice, toolingNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
 
 describe('worldNotes: what the pane says about the files a world maps', () => {
   it('WP4a: a listing read in part says every file is shown and how many were read; a first map says it is still reading', () => {
@@ -61,6 +61,18 @@ describe('worldNotes: what the pane says about the files a world maps', () => {
     expect(filesNotice({ nestedCapped: 0 })).toBeNull()
     expect(filesNotice({ nestedCapped: 20000 })).toBe(nestedCappedNotice(20000))
     expect(filesNotice({ nestedCapped: 20000, filesUnreadable: 1 })).toBe(`${nestedCappedNotice(20000)} ${unreadableNotice(1)}`)
+  })
+
+  it('the tooling folders left out join a note the world already has, and never make one of their own (review M-1)', () => {
+    expect(toolingNotice(1)).toBe('1 top-level dot-folder is left out as tooling.')
+    expect(toolingNotice(1200)).toBe('1,200 top-level dot-folders are left out as tooling.')
+    expect(filesNotice({ toolingFolders: 3 })).toBeNull()
+    expect(filesNotice({ filesCapped: 5, toolingFolders: 3 })).toBe(`${cappedNotice(5)} ${toolingNotice(3)}`)
+    expect(filesNotice({ nestedCapped: 20000, toolingFolders: 0 })).toBe(nestedCappedNotice(20000))
+    expect(filesNotice({ provisional: true, toolingFolders: 3 })).toBe(provisionalNotice())
+    // A world a newer Termpolis saved is not a note that files were left out.
+    expect(filesNotice({ savedByNewer: true, toolingFolders: 3 })).toBe(savedByNewerNotice())
+    expect(isFilesNotice(`${unreadableNotice(1)} ${toolingNotice(2)}`)).toBe(true)
   })
 
   it('tells its own notes from every other notice', () => {

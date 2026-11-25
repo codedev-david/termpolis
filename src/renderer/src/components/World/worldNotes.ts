@@ -4,7 +4,9 @@
 // UTF-8 leave it carrying filesUnreadable, the source files skipped for it; a listing of more files than a map reads
 // (main/world/readCap.ts) leaves it carrying filesRead and filesListed; a first map drawn from the listing while the
 // files are still being read is provisional; a stored world written by a newer Termpolis, opened read-only, is
-// savedByNewer. The pane says them all, in one note; a first map says only that.
+// savedByNewer. The pane says them all, in one note; a first map says only that. How many top-level dot-folders the
+// world leaves out as tooling (toolingFolders, look spec §9.1) is said only beside a note that files are left out or
+// cut: that is the world's rule, not a cut of its own.
 
 const CAPPED_START = 'Showing the first '
 const NESTED_START = 'The repositories inside this folder hold more than '
@@ -37,6 +39,11 @@ export function readCappedNotice(listed: number, read: number): string {
   return `All ${count(listed)} files are shown, but only ${count(read)} were read for the lines between them.`
 }
 
+/** The line for the top-level dot-folders the world leaves out as tooling, said after another files note. */
+export function toolingNotice(folders: number): string {
+  return folders === 1 ? '1 top-level dot-folder is left out as tooling.' : `${count(folders)} top-level dot-folders are left out as tooling.`
+}
+
 /** The note for a stored world written by a newer Termpolis, which this version opens read-only. */
 export function savedByNewerNotice(): string {
   return SAVED_BY_NEWER
@@ -53,6 +60,7 @@ interface FilesNoteDoc {
   filesUnreadable?: number
   filesRead?: number
   filesListed?: number
+  toolingFolders?: number
   provisional?: boolean
   savedByNewer?: boolean
 }
@@ -63,10 +71,12 @@ export function filesNotice(doc: FilesNoteDoc | null): string | null {
   if (doc && doc.provisional === true) return provisionalNotice()
   const parts: string[] = []
   if (doc && doc.savedByNewer === true) parts.push(savedByNewerNotice())
+  const before = parts.length
   if (doc && doc.filesCapped !== undefined && doc.filesCapped > 0) parts.push(cappedNotice(doc.filesCapped))
   if (doc && doc.nestedCapped !== undefined && doc.nestedCapped > 0) parts.push(nestedCappedNotice(doc.nestedCapped))
   if (doc && doc.filesUnreadable !== undefined && doc.filesUnreadable > 0) parts.push(unreadableNotice(doc.filesUnreadable))
   if (doc && doc.filesRead !== undefined && doc.filesListed !== undefined && doc.filesListed > doc.filesRead) parts.push(readCappedNotice(doc.filesListed, doc.filesRead))
+  if (doc && parts.length > before && doc.toolingFolders !== undefined && doc.toolingFolders > 0) parts.push(toolingNotice(doc.toolingFolders))
   return parts.length > 0 ? parts.join(' ') : null
 }
 

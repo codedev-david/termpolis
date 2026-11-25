@@ -94,6 +94,9 @@ export interface WorldDoc {
   nestedCapped?: number
   /** Source files left out because their names are not valid UTF-8, so no read finds them. Absent when there are none. */
   filesUnreadable?: number
+  /** How many top-level dot-folders (.github, .storybook and the like) held source files the world leaves out as
+   *  tooling (look spec §9.1). Absent when none did. */
+  toolingFolders?: number
   /** A listing of more files than a map reads: how many were read for their lines and details (the rest are parts
    *  with no lines). Absent when every file was read. */
   filesRead?: number
