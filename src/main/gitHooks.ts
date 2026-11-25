@@ -26,7 +26,7 @@
 // The emitted script FAILS OPEN by design (see renderBlock). Fully fs-injected so
 // the whole thing is unit tested without a repo.
 
-import { join } from 'path'
+import { join, type posix } from 'path'
 
 export type HookName = 'pre-commit' | 'pre-push'
 
@@ -218,6 +218,83 @@ export function uninstallHooks(paths: HookPaths, deps: HookDeps): HookName[] {
     cleaned.push(name)
   }
   return cleaned
+}
+
+// WHERE THE INSTALLER MAY WRITE (#36, WPS M7). `git rev-parse --git-path hooks` answers with core.hooksPath, and a
+// repository's own config (a folder that arrived with its .git: an extracted archive, a shared folder) can point that
+// anywhere: `core.hooksPath=../../elsewhere` would have "Protect a repository" write pre-commit and pre-push outside
+// it. So the hooks folder must lie in the repository's git folder (its common dir, which holds a linked worktree's
+// hooks) or its working tree (husky's `.husky`), compared after following links. Outside both, it is allowed only when
+// core.hooksPath is the person's own setting (global or system) and the repository sets none of its own.
+
+/** The scopes of every core.hooksPath value, from `git config --show-scope -z --get-all core.hooksPath`
+ *  (`scope NUL value NUL`, repeated). */
+export function hooksPathScopes(out: string): string[] {
+  return out.split('\0').filter((_, i) => i % 2 === 0).filter((s) => s !== '')
+}
+
+type Realpath = (p: string) => Promise<string>
+/** node's path, or its win32 or posix rules. */
+export type PathApi = typeof posix
+
+/** `p` with its nearest existing ancestor's links followed (the hooks folder may not exist yet), or as written. */
+async function realOrWritten(p: string, path: PathApi, realpath: Realpath): Promise<string> {
+  let at = path.resolve(p)
+  let rest = ''
+  for (;;) {
+    try {
+      return path.join(await realpath(at), rest)
+    } catch {
+      const up = path.dirname(at)
+      if (up === at) return path.resolve(p)
+      rest = path.join(path.basename(at), rest)
+      at = up
+    }
+  }
+}
+
+export interface HooksWriteFacts {
+  hooksDir: string
+  /** The repository's git folder (common dir) and working tree, absolute. */
+  roots: string[]
+  /** Reads core.hooksPath's scopes; null when they could not be read. Asked only for a folder outside the roots. */
+  scopes: () => Promise<string[] | null>
+  /** The path rules hooksDir was resolved with (index.ts: node's own), and the platform, whose file names ignore case
+   *  on Windows and macOS. */
+  path: PathApi
+  platform: NodeJS.Platform
+  realpath: Realpath
+}
+
+/** True when the installer may write hooks into `hooksDir` (see above). */
+export async function shieldMayWriteHooks(f: HooksWriteFacts): Promise<boolean> {
+  const path = f.path
+  const fold = f.platform === 'win32' || f.platform === 'darwin' ? (s: string): string => s.toLowerCase() : (s: string): string => s
+  const dir = fold(await realOrWritten(f.hooksDir, path, f.realpath))
+  for (const root of f.roots) {
+    const rel = path.relative(fold(await realOrWritten(root, path, f.realpath)), dir)
+    if (rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))) return true
+  }
+  const scopes = await f.scopes()
+  if (scopes === null) return false
+  return scopes.some((s) => s === 'global' || s === 'system') && !scopes.some((s) => s === 'local' || s === 'worktree')
+}
+
+/** Runs one read-only git command in the repository and prints its output (index.ts hands safeGitAsync). */
+export type HooksGit = (args: string[]) => Promise<string>
+
+/** shieldMayWriteHooks for the repository at `repo`, asking git for its common dir, top level and the scopes. A bare
+ *  repository has no top level; a root git cannot name is left out. */
+export async function shieldHooksAllowed(o: { repo: string; hooksDir: string; git: HooksGit; path: PathApi; platform: NodeJS.Platform; realpath: Realpath }): Promise<boolean> {
+  const path = o.path
+  const roots: string[] = []
+  for (const flag of ['--git-common-dir', '--show-toplevel']) {
+    const named = await o.git(['rev-parse', flag]).then((s) => s.trim(), () => '')
+    if (named !== '') roots.push(path.resolve(o.repo, named))
+  }
+  const scopes = (): Promise<string[] | null> =>
+    o.git(['config', '--show-scope', '-z', '--get-all', 'core.hooksPath']).then(hooksPathScopes, () => null)
+  return shieldMayWriteHooks({ hooksDir: o.hooksDir, roots, scopes, path, platform: o.platform, realpath: o.realpath })
 }
 
 export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, HookState> {

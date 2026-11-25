@@ -8,12 +8,16 @@
 //
 // Everything is dependency-injected — no real filesystem, no real shell.
 import { describe, it, expect } from 'vitest'
-import { join } from 'path'
+import { join, posix, win32 } from 'path'
 import {
   renderHook,
   installHooks,
   uninstallHooks,
   hookStatus,
+  hooksPathScopes,
+  shieldMayWriteHooks,
+  shieldHooksAllowed,
+  type HooksWriteFacts,
   type HookDeps,
   type HookPaths,
 } from '../../src/main/gitHooks'
@@ -396,5 +400,115 @@ describe('hookStatus', () => {
     const fs = fakeFs({ [PRE_COMMIT]: HUSKY })
     const deps: HookDeps = { ...fs.deps, readFile: () => null }
     expect(hookStatus(PATHS, deps)['pre-commit']).toBe('foreign')
+  })
+})
+
+// #36 (WPS M7). `rev-parse --git-path hooks` answers with core.hooksPath, and a repository's own config can point that
+// anywhere, so "Protect a repository" would write pre-commit and pre-push outside it. The installer writes only into
+// the repository's git folder or working tree, after following links, unless core.hooksPath is the person's own.
+describe('Commit Shield hooks — where the installer may write (#36)', () => {
+  const noLinks = async (p: string): Promise<string> => p
+  const facts = (hooksDir: string, roots: string[], scopes: string[] | null, over: Partial<HooksWriteFacts> = {}) =>
+    shieldMayWriteHooks({ hooksDir, roots, scopes: async () => scopes, path: posix, platform: 'linux', realpath: noLinks, ...over })
+
+  it('allows the git folder, a folder inside it, and a folder in the working tree (husky)', async () => {
+    expect(await facts('/repo/.git/hooks', ['/repo/.git', '/repo'], ['local'])).toBe(true)
+    expect(await facts('/repo/.git', ['/repo/.git', '/repo'], ['local'])).toBe(true)
+    expect(await facts('/repo/.husky', ['/repo/.git', '/repo'], ['local'])).toBe(true)
+    expect(await facts('/repo/..hooks', ['/repo'], ['local'])).toBe(true) // a name that starts with two dots is inside
+    // A linked worktree: its hooks live in the main repository's git folder, its common dir.
+    expect(await facts('/main/.git/hooks', ['/main/.git', '/wt'], null)).toBe(true)
+  })
+
+  it("refuses a folder outside the repository that the repository's own config names", async () => {
+    expect(await facts('/elsewhere', ['/repo/.git', '/repo'], ['local', 'command'])).toBe(false)
+    expect(await facts('/elsewhere', ['/repo/.git', '/repo'], ['worktree'])).toBe(false)
+    expect(await facts('/elsewhere', ['/repo/.git', '/repo'], ['global', 'local'])).toBe(false) // the local one wins
+    expect(await facts('/repo-evil/hooks', ['/repo/.git', '/repo'], ['local'])).toBe(false) // a prefix is not inside
+    expect(await facts('/', ['/repo'], ['local'])).toBe(false) // the parent is not inside
+    expect(await facts('/elsewhere', [], ['local'])).toBe(false)
+  })
+
+  it("allows a folder outside it only when core.hooksPath is the person's own (global or system)", async () => {
+    expect(await facts('/home/me/.githooks', ['/repo/.git', '/repo'], ['global', 'command'])).toBe(true)
+    expect(await facts('/etc/githooks', ['/repo/.git', '/repo'], ['system'])).toBe(true)
+    // Only the app's own command-line setting, unread, or read as nothing: refused.
+    expect(await facts('/home/me/.githooks', ['/repo/.git', '/repo'], ['command'])).toBe(false)
+    expect(await facts('/home/me/.githooks', ['/repo/.git', '/repo'], null)).toBe(false)
+    expect(await facts('/home/me/.githooks', ['/repo/.git', '/repo'], [])).toBe(false)
+  })
+
+  it('asks for the scopes only when the folder is outside the repository', async () => {
+    let asked = 0
+    const scopes = async (): Promise<string[] | null> => { asked++; return ['global'] }
+    await shieldMayWriteHooks({ hooksDir: '/repo/.git/hooks', roots: ['/repo/.git'], scopes, path: posix, platform: 'linux', realpath: noLinks })
+    expect(asked).toBe(0)
+    await shieldMayWriteHooks({ hooksDir: '/x', roots: ['/repo/.git'], scopes, path: posix, platform: 'linux', realpath: noLinks })
+    expect(asked).toBe(1)
+  })
+
+  it('ignores case and slash direction on Windows, case on macOS, and neither on Linux', async () => {
+    expect(await facts('C:\\Repo\\.git\\hooks', ['c:/repo/.git/'], ['local'], { path: win32, platform: 'win32' })).toBe(true)
+    expect(await facts('D:\\repo\\.git\\hooks', ['C:\\repo\\.git'], ['local'], { path: win32, platform: 'win32' })).toBe(false) // another drive
+    expect(await facts('/Users/me/Repo/.git/hooks', ['/Users/me/repo/.git'], ['local'], { platform: 'darwin' })).toBe(true)
+    expect(await facts('/home/me/Repo/.git/hooks', ['/home/me/repo/.git'], ['local'])).toBe(false)
+  })
+
+  it('follows links: a folder in the repository that leads outside is outside, and the reverse is inside', async () => {
+    const links: Record<string, string> = { '/repo/hooks-link': '/elsewhere', '/link/repo': '/real/repo' }
+    const real = new Set(['/', '/repo', '/real', '/real/repo', '/real/repo/.git'])
+    // Only what exists resolves; a hooks folder may not exist yet (the installer creates it).
+    const realpath = async (p: string): Promise<string> => {
+      if (p in links) return links[p]
+      if (real.has(p)) return p
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    }
+    expect(await facts('/repo/hooks-link/pre', ['/repo/.git', '/repo'], ['local'], { realpath })).toBe(false)
+    expect(await facts('/link/repo/.git/hooks', ['/real/repo/.git'], ['local'], { realpath })).toBe(true)
+  })
+
+  it('a realpath that always fails compares the paths as written', async () => {
+    const realpath = async (): Promise<string> => { throw new Error('EACCES') }
+    expect(await facts('/repo/.git/hooks', ['/repo/.git'], ['local'], { realpath })).toBe(true)
+    expect(await facts('/elsewhere', ['/repo/.git'], ['local'], { realpath })).toBe(false)
+  })
+
+  it('hooksPathScopes reads the scope of every value from `git config --show-scope -z --get-all`', () => {
+    // Measured on git 2.5x: a repository value, then the app's own `-c core.hooksPath=NUL` read prefix.
+    expect(hooksPathScopes('local\0../../elsewhere\0command\0NUL\0')).toEqual(['local', 'command'])
+    expect(hooksPathScopes('global\0/home/me/.githooks\0')).toEqual(['global'])
+    expect(hooksPathScopes('')).toEqual([])
+  })
+
+  it('shieldHooksAllowed asks git for the common dir, the top level and the scopes, through the runner given', async () => {
+    const asked: string[] = []
+    const answers: Record<string, string | Error> = {
+      'rev-parse --git-common-dir': '.git\n',
+      'rev-parse --show-toplevel': '/repo\n',
+      'config --show-scope -z --get-all core.hooksPath': 'local\0../elsewhere\0',
+    }
+    const git = async (args: string[]): Promise<string> => {
+      const k = args.join(' ')
+      asked.push(k)
+      const a = answers[k]
+      if (a instanceof Error) throw a
+      return a
+    }
+    const base = { path: posix, platform: 'linux' as NodeJS.Platform, realpath: noLinks }
+    expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/repo/.git/hooks', git, ...base })).toBe(true)
+    expect(asked).toEqual(['rev-parse --git-common-dir', 'rev-parse --show-toplevel'])
+    expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/elsewhere', git, ...base })).toBe(false)
+    answers['config --show-scope -z --get-all core.hooksPath'] = 'global\0/elsewhere\0'
+    expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/elsewhere', git, ...base })).toBe(true)
+    // A bare repository has no top level; its hooks are in the folder itself.
+    answers['rev-parse --show-toplevel'] = new Error('fatal: this operation must be run in a work tree')
+    answers['rev-parse --git-common-dir'] = '.\n'
+    expect(await shieldHooksAllowed({ repo: '/repo.git', hooksDir: '/repo.git/hooks', git, ...base })).toBe(true)
+    // A git that cannot read the scopes refuses the outside folder.
+    answers['config --show-scope -z --get-all core.hooksPath'] = new Error('error: unknown option `show-scope\'')
+    expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/elsewhere', git, ...base })).toBe(false)
+    // An empty answer names no folder: nothing is inside.
+    answers['rev-parse --git-common-dir'] = '  \n'
+    expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/repo/.git/hooks', git, ...base })).toBe(false)
   })
 })

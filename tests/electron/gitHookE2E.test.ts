@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
+import { installHooks, uninstallHooks, hookStatus, shieldHooksAllowed, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
 
 const AWS_KEY = 'AKIA' + 'A'.repeat(16)
 
@@ -185,6 +185,32 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     expect(fs.existsSync(marker)).toBe(false) // the planted git never ran
     expect(r.status).toBe(1) // the real git's staged diff was scanned, and the secret blocks
     expect(r.stderr).toMatch(/AWS Access Key ID/)
+  }, 30_000)
+
+  // #36 (WPS M7). With real git: the repository's own core.hooksPath pointing outside it is refused, and the places a
+  // shield belongs (the git folder, husky's .husky, a linked worktree's common hooks) are allowed.
+  it("refuses a hooks folder the repository's own config puts outside it, with real git's answers", async () => {
+    const { dir } = makeRepo()
+    const run = (cwd: string) => async (args: string[]): Promise<string> =>
+      execFileSync('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], { cwd, stdio: 'pipe' }).toString()
+    const where = (cwd: string): string => path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd }).toString().trim())
+    const allowed = (cwd: string): Promise<boolean> =>
+      shieldHooksAllowed({ repo: cwd, hooksDir: where(cwd), git: run(cwd), path, platform: process.platform, realpath: (p) => fs.promises.realpath(p) })
+
+    expect(await allowed(dir)).toBe(true) // .git/hooks
+    execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: dir })
+    expect(await allowed(dir)).toBe(true)
+    execFileSync('git', ['config', 'core.hooksPath', '../elsewhere'], { cwd: dir })
+    expect(where(dir)).toBe(path.resolve(dir, '../elsewhere'))
+    expect(await allowed(dir)).toBe(false)
+    execFileSync('git', ['config', '--unset', 'core.hooksPath'], { cwd: dir })
+
+    stage(dir, 'app.ts', 'export const x = 1\n')
+    expect(commit(dir).ok).toBe(true)
+    const wt = path.join(dir, '..', path.basename(dir) + '-wt')
+    repos.push(wt)
+    execFileSync('git', ['worktree', 'add', '-q', wt], { cwd: dir })
+    expect(await allowed(wt)).toBe(true) // the main repository's .git/hooks, through the common dir
   }, 30_000)
 
   it('does not destroy a pre-existing foreign hook — it still runs, and still gates the commit', () => {

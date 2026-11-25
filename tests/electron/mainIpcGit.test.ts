@@ -849,6 +849,53 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(wrote(PRE_PUSH)).toContain('termpolis-githook.cjs')
     expect(H.fs.mkdirSync).toHaveBeenCalledWith(HOOKS_DIR, { recursive: true })
   })
+
+  // #36 (WPS M7): a repository's own core.hooksPath must not make the installer write outside it.
+  const OUTSIDE_REL = '../elsewhere/hooks'
+  const OUTSIDE = pResolve(REPO, OUTSIDE_REL)
+  const hooksPathIn = (scopes: string) => (argv: string[]): string | Error => {
+    const k = argv.join(' ')
+    if (k === 'rev-parse --git-path hooks') return OUTSIDE_REL
+    if (k === 'rev-parse --git-common-dir') return '.git\n'
+    if (k === 'rev-parse --show-toplevel') return `${REPO}\n`
+    if (k === 'config --show-scope -z --get-all core.hooksPath') return scopes
+    return new Error(`unrouted: ${k}`)
+  }
+
+  it("refuses to install where the repository's own core.hooksPath points outside it, and writes nothing", async () => {
+    git(hooksPathIn('local\0../elsewhere/hooks\0command\0NUL\0'))
+
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+
+    expect(r).toEqual({ success: false, error: expect.stringContaining('core.hooksPath') })
+    expect(H.fs.mkdirSync).not.toHaveBeenCalledWith(OUTSIDE, expect.anything())
+    expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBeUndefined()
+    expect(wrote(pJoin(OUTSIDE, 'pre-push'))).toBeUndefined()
+    expect(wrote(SHIELD_REPOS)).toBeUndefined() // not listed as protected
+  })
+
+  it('installs into a hooks folder outside the repository when core.hooksPath is the person\'s own global setting', async () => {
+    git(hooksPathIn('global\0/home/me/.githooks\0command\0NUL\0'))
+
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+
+    expect(r.success).toBe(true)
+    expect(r.data.written).toEqual(['pre-commit', 'pre-push'])
+    expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toContain(SENTINEL)
+  })
+
+  it("uninstall leaves a hooks folder outside the repository alone, and still drops the repository from the list", async () => {
+    git(hooksPathIn('local\0../elsewhere/hooks\0'))
+    seed(SHIELD_REPOS, JSON.stringify([REPO]))
+    seed(pJoin(OUTSIDE, 'pre-commit'), `#!/bin/sh\n${SENTINEL}\n`)
+
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+    expect(r).toEqual({ success: true, data: { removed: [] } })
+    expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
+    expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(pJoin(OUTSIDE, 'pre-commit'))
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([])
+  })
 })
 
 // =========================================================================

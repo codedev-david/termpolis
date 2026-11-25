@@ -187,6 +187,7 @@ import {
 import { readZip } from './zipArchive'
 import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
+import * as ghPath from 'node:path'
 import {
   buildChanges, countChanges, isUnmerged, parseUnpushedZ, resolveInsideRepo, synthesizeUntrackedDiff,
   UNPUSHED_FORMAT, UNPUSHED_MAX, type ChangeMode,
@@ -194,7 +195,7 @@ import {
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
-import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
+import { installHooks, uninstallHooks, hookStatus, shieldHooksAllowed, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
 import { offMainFiles } from './offMainFiles'
@@ -2130,6 +2131,17 @@ async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
   } catch { return null }
 }
 
+/** #36 (WPS M7): the installer writes hooks only into the repository's git folder or working tree, or a folder the
+ *  person's own core.hooksPath names (gitHooks.ts shieldHooksAllowed), never where the repository's config points. */
+const shieldMayWrite = (repo: string, hooksDir: string): Promise<boolean> => shieldHooksAllowed({
+  repo,
+  hooksDir,
+  git: (args) => safeGitAsync(args, { cwd: repo, timeout: 5000 }),
+  path: ghPath, // the rules ghResolve resolved hooksDir with
+  platform: process.platform,
+  realpath: async (p) => fsPromises.realpath(p),
+})
+
 ipcMain.handle('gitHooks:status', async (_, { cwd }: { cwd: string }) => {
   try {
     const paths = await hookPathsFor(cwd)
@@ -2153,6 +2165,8 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
     }
     const paths = await hookPathsFor(repo)
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
+    // PENDING SIGN-OFF (new wording, #36).
+    if (!(await shieldMayWrite(repo, paths.hooksDir))) return err("This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.")
     mkdirSync(paths.hooksDir, { recursive: true })
     const written = installHooks(paths, realHookDeps)
     writeShieldRepos([...readShieldRepos(), repo])
@@ -2165,7 +2179,8 @@ ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
   try {
     const paths = await hookPathsFor(cwd)
     if (!paths) return err('Not a git repository')
-    const removed = uninstallHooks(paths, realHookDeps)
+    // A hooks folder outside the repository that its own config names is not touched; the repository still leaves the list.
+    const removed = (await shieldMayWrite(cwd, paths.hooksDir)) ? uninstallHooks(paths, realHookDeps) : []
     writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
     return ok({ removed })
   } catch (e: any) { return err(e.message) }
