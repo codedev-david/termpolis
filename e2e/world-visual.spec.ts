@@ -374,7 +374,27 @@ async function world(root: string): Promise<World> {
  * until the buildings show, then takes the pointer off the canvas.
  */
 async function toBuildingsTier(further = 0): Promise<void> {
-  const tier = (): Promise<string> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn().tier)
+  // The tier, and the frames drawn, as the last frame drawn left them, and the camera's distance now.
+  const state = (): Promise<{ tier: string; frames: number; dist: number }> =>
+    page.evaluate(() => {
+      const probe = (window as unknown as { __termpolis_world: { drawn(): { tier: string; frames: number }; cameraState(): { pos: number[]; target: number[] } } }).__termpolis_world
+      const d = probe.drawn()
+      const c = probe.cameraState()
+      return { tier: d.tier, frames: d.frames, dist: Math.hypot(...c.pos.map((v, k) => v - c.target[k])) }
+    })
+  // The tier for the camera after a notch. The tier is set as a frame is drawn, so it is read from a frame begun
+  // after the notch moved the camera: drawn in software, no frame is drawn while the GPU is still drawing the last
+  // (SOFTWARE_FENCE_MAX_MS, 10 s at most), so the tier can trail a notch by a frame. Read at a fixed time after the
+  // notch it named the tier of one notch earlier now and then, the wheeling stopped a notch early or late, and the
+  // click checks below came in at another camera than the one their aim point was found from.
+  const notch = async (): Promise<string> => {
+    const before = (await state()).dist
+    await page.mouse.wheel(0, -100)
+    await expect.poll(async () => (await state()).dist, { message: 'a wheel notch never moved the camera', timeout: 5_000 }).not.toBe(before)
+    const moved = (await state()).frames
+    await expect.poll(async () => (await state()).frames, { message: 'no frame was drawn after a wheel notch', timeout: 15_000 }).toBeGreaterThan(moved)
+    return (await state()).tier
+  }
   const box = await page.locator('[data-testid="world-canvas-host"] canvas').boundingBox()
   // This window reports a device pixel ratio a hair under 1 (0.99999998), and OrbitControls
   // (three r160) divides the wheel delta by `devicePixelRatio | 0`: zero, so one notch would fly
@@ -382,16 +402,11 @@ async function toBuildingsTier(further = 0): Promise<void> {
   await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
   // OrbitControls scales the distance by 0.95 per 100 px of wheel: about 14 steps from the overview to half its distance.
-  for (let i = 0; i < 40 && (await tier()) === 'districts'; i++) {
-    await page.mouse.wheel(0, -100)
-    await page.waitForTimeout(120)
-  }
-  expect(await tier(), 'wheeling in from the overview never reached the buildings').not.toBe('districts')
+  let tier = (await state()).tier
+  for (let i = 0; i < 40 && tier === 'districts'; i++) tier = await notch()
+  expect(tier, 'wheeling in from the overview never reached the buildings').not.toBe('districts')
   // `further` notches more, past the first one that shows buildings.
-  for (let i = 0; i < further; i++) {
-    await page.mouse.wheel(0, -100)
-    await page.waitForTimeout(120)
-  }
+  for (let i = 0; i < further; i++) await notch()
   await page.mouse.move(2, 400)
   await page.waitForTimeout(1500)
 }
