@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CI_CACHE_MS, CI_RUNS_FETCHED, GH_TIMEOUT_MS, createWorldRuns, type RunsDeps } from '../../src/main/world/worldRuns'
+import { CI_CACHE_MS, CI_FAIL_HOLD_MS, CI_RUNS_FETCHED, GH_TIMEOUT_MS, createWorldRuns, type RunsDeps } from '../../src/main/world/worldRuns'
 import { commandOnPath } from '../../src/main/binPath'
 import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from '../../src/main/world/transcriptRuns'
@@ -248,20 +248,43 @@ describe('ciRuns', () => {
     }
     for (const [name, exec] of Object.entries(failures)) {
       const spy = vi.fn(exec)
-      const w = createWorldRuns(make({ exec: spy }).d)
+      const { d, clock } = make({ exec: spy })
+      const w = createWorldRuns(d)
       expect(await w.ciRuns(ROOT), name).toBeNull()
+      // Held for CI_FAIL_HOLD_MS (fix round 2, N2): still no answer, and neither gh nor git is started again.
+      const started = spy.mock.calls.length
+      clock.t += CI_FAIL_HOLD_MS - 1
+      expect(await w.ciRuns(ROOT), name).toBeNull()
+      expect(spy.mock.calls.length, name).toBe(started)
+      // Past the hold it asks again.
+      clock.t += 1
       expect(await w.ciRuns(ROOT), name).toBeNull()
       expect(ghCalls(spy), name).toBe(2)
     }
-    // gh back: the next call asks it again and gets the runs.
+    // gh back: past the hold the next call asks it again, and that answer is kept as any other.
     let ghUp = false
     const back = vi.fn(async (bin: string, args: string[]) =>
       bin === GH ? (ghUp ? { stdout: JSON.stringify([row()]) } : { stdout: '', error: new Error('offline') }) : plain(args)[0] === 'diff-tree' ? { stdout: 'x.ts' } : gitAnswer(args)
     )
-    const w = createWorldRuns(make({ exec: back }).d)
+    const { d, clock } = make({ exec: back })
+    const w = createWorldRuns(d)
     expect(await w.ciRuns(ROOT)).toBeNull()
     ghUp = true
+    expect(await w.ciRuns(ROOT)).toBeNull()
+    expect(ghCalls(back)).toBe(1)
+    clock.t += CI_FAIL_HOLD_MS
     expect((await w.ciRuns(ROOT))?.runs).toHaveLength(1)
+    clock.t += 60_000
+    expect(await w.ciRuns(ROOT)).toEqual({ head: HEAD, runs: [expect.objectContaining({ file: 'x.ts' })], age: 60_000 })
+    expect(ghCalls(back)).toBe(2)
+  })
+
+  it('a failure is held per project: another repository still asks gh (fix round 2, N2)', async () => {
+    const spy = vi.fn(async (bin: string, args: string[]) => (bin === GH ? { stdout: '', error: new Error('offline') } : gitAnswer(args)))
+    const w = createWorldRuns(make({ exec: spy }).d)
+    expect(await w.ciRuns(ROOT)).toBeNull()
+    expect(await w.ciRuns(`${ROOT}-other`)).toBeNull()
+    expect(ghCalls(spy)).toBe(2)
   })
 
   it('only a gh that answered with zero runs of HEAD is "no CI", and that is kept', async () => {

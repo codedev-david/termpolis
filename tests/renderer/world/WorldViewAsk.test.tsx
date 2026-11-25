@@ -274,6 +274,29 @@ describe('Ask bar inside the Lumopolis pane', () => {
     expect(v.load).toHaveBeenLastCalledWith(retested, { animateFrom: tested })
   })
 
+  // WP4b fix round 2, N1: the flag is the host's word; what the pane fetched may be newer. A world whose parts changed
+  // between the push and the fetch (a watcher recompile landed) stops the tour, so it waits for the answer.
+  it('a status-only push whose fetched world has changed parts waits for the answer, and then loads as an ordinary world', async () => {
+    speakAnswers = true
+    const first = minimal()
+    const moved = { ...minimal(), generatedAt: first.generatedAt + 1, layout: { ...first.layout, round: 1 } }
+    const b = bridge({ worldGet: vi.fn().mockResolvedValueOnce(ok(first)).mockResolvedValue(ok(moved)) })
+    await mount()
+    const v = viewer()
+    const tour = deferred<undefined>()
+    v.play.mockImplementationOnce(() => tour.promise)
+    await askQ()
+    await b.updated({ root: '/repo', projectKey: first.projectKey, statusOnly: true })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(1)
+    await act(async () => { tour.resolve(undefined) })
+    const u = speech.speak.mock.calls[0][0] as { onend: () => void }
+    act(() => { u.onend() })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(2)
+    expect(v.load).toHaveBeenLastCalledWith(moved, { animateFrom: v.load.mock.calls[0][0] })
+  })
+
   it('with no answer under way a world update loads at once', async () => {
     const first = minimal()
     const second = { ...minimal(), generatedAt: first.generatedAt + 1 }

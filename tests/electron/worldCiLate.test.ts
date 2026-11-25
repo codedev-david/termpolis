@@ -370,6 +370,21 @@ describe('CI answers are kept by the commit main judged (WP4b fix round 1, I2)',
     await h.send({ kind: 'call', id: 5, fn: 'compile', args: ['k1', snap(), HEAD] })
     expect(h.ciAsks()).toHaveLength(3)
     expect(ciOf({ runs: [], head: 'h1', age: 'x' }, 'h1')).toEqual({ runs: [], keep: true, age: 0 })
+    // Fix round 2, N4: an age from a clock stepped back an hour is clamped to 0, so the answer is kept for main's 10
+    // minutes from now, not 70.
+    t += 2
+    const back = h.send({ kind: 'call', id: 6, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.ciAsks()).toHaveLength(4))
+    await h.answer(h.ciAsks()[3], [RUN], HEAD.head, -60 * 60_000)
+    await back
+    t += CI_MEMO_MS - 1
+    await h.send({ kind: 'call', id: 7, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(h.ciAsks()).toHaveLength(4)
+    t += 1
+    const gone = h.send({ kind: 'call', id: 8, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.ciAsks()).toHaveLength(5))
+    await h.answer(h.ciAsks()[4], [RUN], HEAD.head, 0)
+    await gone
   })
 
   it("HEAD switched while the map was built, then back within 10 minutes: the map never shows the other commit's status", async () => {

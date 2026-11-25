@@ -31,6 +31,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
+import { sameParts } from '../../../../shared/world/diff'
 import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
@@ -523,9 +524,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           // Loading a world stops the answer's tour, so it waits until the answer is over. A first map gives way at once:
           // the answer is computed from the complete world and its tour waits for it (whenComplete), never the reverse.
           // A status-only world stops nothing, so it loads at once, unless a world held back is waiting: it is newer than
-          // that one, so it waits in its place and loads as an ordinary world then (fix round 1, M6).
-          const statusOnly = e.statusOnly === true
-          if (askBusyRef.current && docRef.current?.provisional !== true && (!statusOnly || heldDocRef.current !== null)) { heldDocRef.current = got; return }
+          // that one, so it waits in its place and loads as an ordinary world then (fix round 1, M6). The flag is the
+          // host's word for the world it saved; the one fetched may be newer still (a watcher recompile landed between),
+          // so it skips the wait only when its parts are the ones shown (fix round 2, N1).
+          const shown = docRef.current
+          const statusOnly = e.statusOnly === true && shown !== null && sameParts(shown, got)
+          if (askBusyRef.current && shown?.provisional !== true && (!statusOnly || heldDocRef.current !== null)) { heldDocRef.current = got; return }
           if (statusOnly) statusOnlyRef.current = got
           setError(null)
           setDoc(got)

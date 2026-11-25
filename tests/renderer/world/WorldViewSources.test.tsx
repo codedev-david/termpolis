@@ -581,6 +581,18 @@ describe('WorldView sign in needed', () => {
     }
   })
 
+  // WP4b fix round 2 (M5 note): the notice can hold the focus, so it is named by its own words for a screen reader.
+  it('the notice is named by its words, so a screen reader says where the focus went', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    const notice = screen.getByTestId('world-sign-in-needed')
+    const words = notice.querySelector('span') as HTMLSpanElement
+    expect(words.id).not.toBe('')
+    expect(notice).toHaveAttribute('aria-labelledby', words.id)
+    expect(notice).toHaveAccessibleName(words.textContent as string)
+    expect(screen.getByRole('status', { name: words.textContent as string })).toBe(notice)
+  })
+
   it('a stop pressed while the focus is elsewhere leaves it there', async () => {
     const api = gitBridge(ok(NEEDS))
     await openGit()

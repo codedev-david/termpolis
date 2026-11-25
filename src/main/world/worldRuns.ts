@@ -16,6 +16,12 @@ import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
 /** How long one root's CI result is kept (while HEAD stays the same). */
 export const CI_CACHE_MS = 10 * 60_000
+/**
+ * How long a failed CI look (git or gh gave no answer: offline, signed out, rate-limited, timed out) holds for one root
+ * (WP4b fix round 2, N2). Inside it the answer is still none, and nothing is started, so a failing gh is not run again
+ * on every compile. It is never kept as "no CI".
+ */
+export const CI_FAIL_HOLD_MS = 90_000
 /** How long `gh` may take. */
 export const GH_TIMEOUT_MS = 5000
 const GIT_TIMEOUT_MS = 5000
@@ -94,6 +100,8 @@ interface GhRow {
 export function createWorldRuns(d: RunsDeps): WorldRuns {
   const transcripts = new Map<string, CachedFiles>()
   const ci = new Map<string, CachedCi>()
+  /** When each root's last CI look failed: no answer, and nothing is started, for CI_FAIL_HOLD_MS. */
+  const failedAt = new Map<string, number>()
 
   const transcriptFiles = async (root: string): Promise<string[]> => {
     if (!d.transcriptsAllowed()) return []
@@ -186,7 +194,9 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     const gitBin = await d.gitBin()
     if (gitBin === null || (await binInside(gitBin, root, d.realpath))) return none
     const git = (at: string, args: string[]): Promise<string | null> => run(gitBin, at, args)
-    try {
+    const failed = failedAt.get(root)
+    if (failed !== undefined && d.now() - failed < CI_FAIL_HOLD_MS) return null
+    const look = async (): Promise<CiAnswer | null> => {
       const head = ((await git(root, ['rev-parse', 'HEAD'])) ?? '').toLowerCase()
       // No commit to judge (git failed, or a repository with no commit yet): no answer.
       if (!FULL_SHA.test(head)) return null
@@ -197,9 +207,11 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
       if (runs === null) return null
       ci.set(root, { at: d.now(), head, runs })
       return { head, runs, age: 0 }
-    } catch {
-      return null
     }
+    const answer = await look().catch(() => null)
+    // A hold ends by time alone: a look that answers is only ever made once the hold is over.
+    if (answer === null) failedAt.set(root, d.now())
+    return answer
   }
 
   return { transcriptFiles, ciRuns }

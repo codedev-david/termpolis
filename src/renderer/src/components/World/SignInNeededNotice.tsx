@@ -5,7 +5,7 @@
 // WP4b: the same slot says a background update that failed (main's words, with Try again) and that a repository opened
 // with a token updates only with one (Update with a token); while a try runs, Stop takes Dismiss's place (F-R6), and the
 // notice says what the try is doing (fix round 1, M5).
-import { useLayoutEffect, useRef } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 import { holdFocus } from '../../hooks/useFocusTrap'
 import { SIGNING_IN_MESSAGE } from './CloneDialog'
 import type { RepoTry } from './useOpenWorld'
@@ -60,6 +60,8 @@ export function SignInNeededNotice({ host, helper, message, notFound, busy, tryi
   // never falls to the page, and the first choice gets it back when the try ends (fix round 1, M5).
   const stopBtn = useRef<HTMLButtonElement>(null)
   const heldFocus = useRef(false)
+  // The notice can hold the focus, so its own words name it: a screen reader says where the focus went (fix round 2).
+  const wordsId = useId()
   useLayoutEffect(() => {
     const b = box.current as HTMLDivElement
     const at = document.activeElement
@@ -86,11 +88,12 @@ export function SignInNeededNotice({ host, helper, message, notFound, busy, tryi
       ref={box}
       role="status"
       tabIndex={-1}
+      aria-labelledby={wordsId}
       data-testid="world-sign-in-needed"
       className="text-xs px-3 py-2 rounded border border-[#3c3c3c] flex flex-col gap-2 focus:outline-none"
       style={{ background: '#252526', maxWidth: 420 }}
     >
-      <span>{said}</span>
+      <span id={wordsId}>{said}</span>
       {doing !== null && <span data-testid="world-sign-in-progress" className="text-[#9da5b4]">{doing}</span>}
       {error !== null && <span role="alert" className="text-[#f14c4c]">{reason === 'failed' ? lessTryAgain(error) : error}</span>}
       <div className="flex flex-wrap justify-end gap-2">
