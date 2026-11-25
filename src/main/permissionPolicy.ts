@@ -98,6 +98,8 @@ function parse(url: string | undefined): URL | null {
 
 const isWeb = (u: URL): boolean => u.protocol === 'http:' || u.protocol === 'https:'
 
+const defaultLog = (line: string): void => console.warn(line)
+
 /**
  * The page URL of the file main loads with loadFile(absPath), as the window then holds it. Electron
  * formats the path as url.format does (escaping only ? and #) and Chromium parses that; new URL
@@ -137,8 +139,19 @@ export interface AppPage {
   track(wc: NavigatingContents | null | undefined): void
 }
 
-/** Whether a committed URL is the kind of page main loads: a file, or the dev server's origin. */
-function sameKind(got: string, computed: () => string): boolean {
+/**
+ * A file URL's file, however its host and drive are spelled: a UNC path as //server/share/...,
+ * whether the server is the URL's host (file://server/share, Chromium) or the path's first segment
+ * (file:////server/share, new URL); decoded, and case-folded on Windows. Query and hash are not part of it.
+ */
+function fileOf(u: URL, platform: NodeJS.Platform): string {
+  const path = decodePath(u.pathname)
+  const file = (u.host ? `//${u.host}${path}` : path).replace(/^\/{2,}/, '//')
+  return platform === 'win32' ? file.toLowerCase() : file
+}
+
+/** Whether a committed URL is the page main loads: the same file, or the dev server's origin. */
+function samePage(got: string, computed: () => string, platform: NodeJS.Platform): boolean {
   const g = parse(got)
   let want: URL | null
   try {
@@ -146,8 +159,9 @@ function sameKind(got: string, computed: () => string): boolean {
   } catch {
     want = null
   }
-  if (!g || !want) return g?.protocol === 'file:'
-  return isWeb(want) ? g.origin === want.origin : g.protocol === want.protocol
+  if (!g || !want || g.protocol !== want.protocol) return false
+  if (isWeb(want)) return g.origin === want.origin
+  return want.protocol === 'file:' && fileOf(g, platform) === fileOf(want, platform)
 }
 
 /**
@@ -156,19 +170,34 @@ function sameKind(got: string, computed: () => string): boolean {
  * \\server\share\... commits as file://server/share/..., where new URL gives an empty host. A
  * check against the wrong spelling refuses every grant, so the URL the window commits on its first
  * navigation is recorded and used, and the computed one only until then (no page has asked for
- * anything before its first navigation). The window's navigation lock keeps any other page out.
+ * anything before its first navigation). Only a commit of the same file is recorded (samePage); any
+ * other page is logged once, grants stay with the computed URL, and the next navigation is watched.
  */
-export function createAppPage(computed: () => string): AppPage {
+export function createAppPage(
+  computed: () => string,
+  log: (line: string) => void = defaultLog,
+  platform: NodeJS.Platform = process.platform,
+): AppPage {
   let committed: string | null = null
+  let noted = false
+  const watch = (contents: NavigatingContents): void => {
+    contents.once?.('did-navigate', () => {
+      const got = contents.getURL?.()
+      if (got && samePage(got, computed, platform)) {
+        committed = got
+        return
+      }
+      if (!noted) {
+        noted = true
+        log('[permissions] the window committed a page that is not the Termpolis page; grants stay with the computed page URL')
+      }
+      watch(contents)
+    })
+  }
   return {
     url: () => committed ?? computed(),
     track(wc) {
-      if (!wc?.once) return
-      const contents = wc
-      contents.once?.('did-navigate', () => {
-        const got = contents.getURL?.()
-        if (got && sameKind(got, computed)) committed = got
-      })
+      if (wc?.once) watch(wc)
     },
   }
 }
@@ -255,8 +284,6 @@ export function resetPermissionLog(): void {
   logged.clear()
   capNoted = false
 }
-
-const defaultLog = (line: string): void => console.warn(line)
 
 type LogKind = 'request' | 'check' | 'device' | 'chooser'
 

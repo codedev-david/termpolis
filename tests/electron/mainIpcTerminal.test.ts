@@ -1830,26 +1830,29 @@ describe('createWindow — renderer source + chrome', () => {
     expect(mockWebContents.session.setPermissionRequestHandler).toHaveBeenCalledTimes(2)
   })
 
-  it('grants against the page URL the window committed, not only the computed one (a UNC install)', () => {
+  it('records the page the window commits, but not another file committed before it', () => {
     recreateWindow()
     const computed = pathToFileURL(mockMainWindow.loadFile.mock.calls.at(-1)![0] as string).href
     expect(mockWebContents.once).toHaveBeenCalledWith('did-navigate', expect.any(Function))
-    const committed = 'file://server/share/Termpolis/resources/app.asar/out/renderer/index.html'
+    const splash = new URL('splash.html', computed).href
     const navigate = (url: string) => {
       Object.assign(mockWebContents, { getURL: () => url })
       wcOnceHandlers.get('did-navigate')!()
     }
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
-      navigate(committed)
       const grant = mockWebContents.session.setPermissionRequestHandler.mock.calls.at(-1)![0] as Function
       const ask = (requestingUrl: string): boolean => {
         const callback = vi.fn()
         grant(mockWebContents, 'media', callback, { isMainFrame: true, requestingUrl, mediaTypes: ['audio'] })
         return callback.mock.calls[0][0] as boolean
       }
-      expect(ask(`${committed}#/world`)).toBe(true)
-      expect(ask('file://server/share/other.html')).toBe(false)
+      navigate(splash)
+      expect(ask(splash)).toBe(false)
+      expect(warn).toHaveBeenCalledWith('[permissions] the window committed a page that is not the Termpolis page; grants stay with the computed page URL')
+      navigate(`${computed}#/`)
+      expect(ask(`${computed}#/world`)).toBe(true)
+      expect(ask(splash)).toBe(false)
     } finally {
       warn.mockRestore()
       // Put the computed page back for the tests after this one.

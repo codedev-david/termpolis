@@ -140,7 +140,7 @@ describe('createAppPage: grant against the page URL Chromium committed', () => {
   it('a UNC install: the computed URL misses Chromium\'s spelling, the committed one matches', () => {
     // new URL gives a UNC path an empty host, so the computed page alone refuses every grant.
     expect(isAppPage(`${UNC_COMMITTED}#/world`, fileUrlOf(UNC), 'win32')).toBe(false)
-    const page = createAppPage(() => fileUrlOf(UNC))
+    const page = createAppPage(() => fileUrlOf(UNC), vi.fn(), 'win32')
     const wc = navigating(UNC_COMMITTED)
     page.track(wc)
     expect(page.url()).toBe(fileUrlOf(UNC))
@@ -170,6 +170,67 @@ describe('createAppPage: grant against the page URL Chromium committed', () => {
     expect(page.url()).toBe(PAGE)
   })
 
+  const LOGGED = '[permissions] the window committed a page that is not the Termpolis page; grants stay with the computed page URL'
+  const SPLASH = 'file://server/share/Termpolis/resources/app.asar/out/renderer/splash.html'
+
+  it('a splash.html committed first is not the page: not granted, logged once, and the real page after it is', () => {
+    const log = vi.fn()
+    const page = createAppPage(() => fileUrlOf(UNC), log, 'win32')
+    const wc = navigating(SPLASH)
+    page.track(wc)
+    wc.navigate()
+    expect(page.url()).toBe(fileUrlOf(UNC))
+    const d = deps({ appPageUrl: () => page.url() })
+    const ask = (requestingUrl: string) => decideRequest(appWc, 'media', { isMainFrame: true, requestingUrl, mediaTypes: ['audio'] }, d)
+    expect(ask(SPLASH)).toBe('foreign')
+    expect(log.mock.calls).toEqual([[LOGGED]])
+    for (const line of log.mock.calls.flat()) expect(String(line)).not.toMatch(/file:|splash|server|share/)
+    // Still waiting for the page: the next navigation, another stray file, is logged no more.
+    wc.getURL.mockReturnValue('file://server/share/Termpolis/other.html')
+    wc.navigate()
+    expect(page.url()).toBe(fileUrlOf(UNC))
+    expect(log).toHaveBeenCalledTimes(1)
+    // The real page, in Chromium's spelling, is then recorded and granted; splash.html still is not.
+    wc.getURL.mockReturnValue(`${UNC_COMMITTED}#/`)
+    wc.navigate()
+    expect(page.url()).toBe(`${UNC_COMMITTED}#/`)
+    expect(ask(`${UNC_COMMITTED}#/world`)).toBeNull()
+    expect(ask(SPLASH)).toBe('foreign')
+    expect(wc.once).toHaveBeenCalledTimes(3)
+  })
+
+  it('records the same file however the host, drive or case is spelled, and nothing else', () => {
+    const win = String.raw`C:\Users\Some One\Termpolis\out\renderer\index.html`
+    const accepted = (computed: string, got: string, platform: NodeJS.Platform): boolean => {
+      const page = createAppPage(() => computed, vi.fn(), platform)
+      const wc = navigating(got)
+      page.track(wc)
+      wc.navigate()
+      return page.url() === got
+    }
+    // UNC: the server as the host, or as the path's first segment (new URL's spelling).
+    expect(fileUrlOf(UNC)).toMatch(/^file:\/{4,}server\/share\//)
+    expect(accepted(fileUrlOf(UNC), UNC_COMMITTED, 'win32')).toBe(true)
+    expect(accepted(UNC_COMMITTED, fileUrlOf(UNC), 'win32')).toBe(true)
+    expect(accepted('file:////server/share/Termpolis/index.html', 'file://server/share/Termpolis/index.html', 'win32')).toBe(true)
+    expect(accepted('file:////server/share/Termpolis/index.html', 'file://server/share/Termpolis/index.html', 'linux')).toBe(true)
+    // A drive letter and path in another case, escapes decoded, a query or hash: the same file on Windows.
+    expect(accepted(fileUrlOf(win), 'file:///c:/users/some%20one/TERMPOLIS/out/renderer/index.html?x#/', 'win32')).toBe(true)
+    expect(accepted(fileUrlOf(win), 'file:///C:/Users/Some%20One/Termpolis/out/renderer/index.html', 'linux')).toBe(true)
+    // ...but not where paths are case-sensitive.
+    expect(accepted('file:///opt/Termpolis/index.html', 'file:///opt/termpolis/index.html', 'linux')).toBe(false)
+    expect(accepted('file:///opt/Termpolis/index.html', 'file:///opt/Termpolis/index.html#/', 'linux')).toBe(true)
+    // Another file, another folder, another server or share: not the page.
+    for (const got of [
+      SPLASH,
+      'file://server/share/Termpolis/resources/app.asar/out/index.html',
+      'file://other/share/Termpolis/resources/app.asar/out/renderer/index.html',
+      'file://server/other/Termpolis/resources/app.asar/out/renderer/index.html',
+      'file:///Termpolis/resources/app.asar/out/renderer/index.html',
+      'https://server/share/Termpolis/resources/app.asar/out/renderer/index.html',
+    ]) expect(accepted(fileUrlOf(UNC), got, 'win32'), got).toBe(false)
+  })
+
   it('keeps the computed page when the window commits a page of another kind, or nothing', () => {
     const dev = createAppPage(() => DEV)
     for (const url of ['file:///x/index.html', 'http://localhost:9999/', 'https://evil.example/', 'not a url', '', undefined]) {
@@ -188,23 +249,21 @@ describe('createAppPage: grant against the page URL Chromium committed', () => {
     file.track(web)
     web.navigate()
     expect(file.url()).toBe(PAGE)
-    const noUrl = { once: (_e: string, l: () => void) => l() }
+    let noUrlListener: (() => void) | undefined
+    const noUrl = { once: (_e: string, l: () => void) => { noUrlListener = l } }
     file.track(noUrl)
+    noUrlListener!()
     expect(file.url()).toBe(PAGE)
   })
 
-  it('takes a committed file page even when the computed one cannot be built', () => {
-    let fail = true
-    const page = createAppPage(() => { if (fail) throw new Error('no path'); return PAGE })
-    const web = navigating('https://evil.example/')
-    page.track(web)
-    web.navigate()
-    expect(() => page.url()).toThrow('no path')
+  it('records nothing when the computed page cannot be built: there is no file to compare with', () => {
+    const log = vi.fn()
+    const page = createAppPage(() => { throw new Error('no path') }, log)
     const wc = navigating(UNC_COMMITTED)
     page.track(wc)
     wc.navigate()
-    expect(page.url()).toBe(UNC_COMMITTED)
-    fail = false
+    expect(() => page.url()).toThrow('no path')
+    expect(log.mock.calls).toEqual([[LOGGED]])
   })
 
   it('tolerates a missing webContents or one without events', () => {
