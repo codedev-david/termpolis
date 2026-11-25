@@ -197,6 +197,14 @@ export const CONTEXT_WAIT_MS = 10_000
 /** How long a compile waits for main's test runs: one figure with the compile's own wait for them (testStatus.ts). */
 export { RUNS_WAIT_MS }
 /**
+ * How long a compile waits for main's CI results before it draws the map without them (WP4b #26). main asks `gh`,
+ * which can hang on a slow network; the ask goes on past this, and when it answers the world is compiled again with
+ * them. Short, so a person opening a world never watches the bar stand at status for the network.
+ */
+export const CI_ASK_MS = 1_500
+/** How long main's CI answer for one project and commit is kept by the host: main keeps its own for as long. */
+export const CI_MEMO_MS = 10 * 60_000
+/**
  * The watcher recompile's debounce. Its input is already paced: main tells the host only after the code
  * watcher's window (CODE_WATCH_MS) and its re-index, and no more often than every 2 s. So this wait only gathers what
  * lands together; a longer one would add itself to the time from a saved file to the world showing it.
@@ -438,6 +446,8 @@ export interface WorldHostDeps {
   contextTimeoutMs?: number
   /** How long to wait for main's test runs (default RUNS_WAIT_MS). */
   runsTimeoutMs?: number
+  /** How long a compile waits for main's CI answer before it goes on without it (default CI_ASK_MS). */
+  ciAskMs?: number
   /** Clones a git source (default: gitSource's cloneRepo with the real git, size check and remover). */
   cloneRepo?: typeof cloneRepo
   /** Overrides for the real clone deps (tests). */
@@ -654,6 +664,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const llmQueueTimeoutMs = deps.llmQueueTimeoutMs ?? LLM_QUEUE_TIMEOUT_MS
   const contextTimeoutMs = deps.contextTimeoutMs ?? CONTEXT_WAIT_MS
   const runsTimeoutMs = deps.runsTimeoutMs ?? RUNS_WAIT_MS
+  const ciAskMs = deps.ciAskMs ?? CI_ASK_MS
   const clone = deps.cloneRepo ?? cloneRepo
 
   /** Set by init. `labelling` is read each time a compile starts, so a settings message applies to the next one. */
@@ -757,9 +768,41 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
       post({ kind: 'runs', id, projectKey, source })
     })
-  const askCi = (projectKey: string) => async (): Promise<TestRun[] | null> => {
-    const answer = await askRunsMain(projectKey, 'ci')
-    return answer === null ? null : cleanRuns(answer.runs, 'ci')
+  /**
+   * main's CI results for a project at a commit (WP4b #26). A compile waits ciAskMs for them, then goes on without
+   * them (null: not known, so the status stage keeps what each building showed). The ask goes on: compiles meanwhile
+   * share it, its answer is kept per project and commit for CI_MEMO_MS, and when it came after a compile stopped
+   * waiting, the stored world is compiled again with it (ciLanded). No answer at all (null) is not kept.
+   */
+  const ciMemo = new Map<string, { at: number; commit: string; runs: TestRun[] }>()
+  const ciAsking = new Map<string, { commit: string; answer: Promise<TestRun[] | null>; late: boolean }>()
+  const askCi = (projectKey: string, head: WorldHead) => async (): Promise<TestRun[] | null> => {
+    const commit = head.head
+    const hit = ciMemo.get(projectKey)
+    if (hit && hit.commit === commit && now() - hit.at < CI_MEMO_MS) return hit.runs
+    let ask = ciAsking.get(projectKey)
+    if (!ask || ask.commit !== commit) {
+      const answer = askRunsMain(projectKey, 'ci').then((a) => (a === null ? null : cleanRuns(a.runs, 'ci')))
+      const mine = { commit, answer, late: false }
+      ciAsking.set(projectKey, mine)
+      void answer.then((runs) => {
+        // An ask for an older commit, replaced by a newer one meanwhile, is not this project's any more.
+        if (ciAsking.get(projectKey) !== mine) return
+        ciAsking.delete(projectKey)
+        if (runs === null) return
+        ciMemo.set(projectKey, { at: now(), commit, runs })
+        if (mine.late) ciLanded(projectKey, commit)
+      })
+      ask = mine
+    }
+    const waiting = ask
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<'late'>((r) => (timer = setTimeout(() => r('late'), ciAskMs)))
+    const got = await Promise.race([waiting.answer, late])
+    clearTimeout(timer)
+    if (got !== 'late') return got
+    waiting.late = true
+    return null
   }
   /** Main names the transcript files; this host reads the tail of each, parses it and yields between files. */
   const transcriptCache = new Map<string, { at: number; runs: TestRun[] }>()
@@ -831,7 +874,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     }
     const out = await compile(
       { snap: r.from.snap, projectKey: key, head: r.from.head, previous: r.base, ...only, ...stagedArg(r.cache, []), ...planArg(r.from.plan) },
-      depsFor(st, key, r.from.snap, askMain(key), stopped)
+      depsFor(st, key, r.from.snap, r.from.head, askMain(key), stopped)
     )
     await serial(key, async () => {
       if (!st.labelling || removed.has(key)) return
@@ -844,7 +887,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const fromCache = async (): Promise<null> => null
       const again = await compile(
         { snap: now.snap, projectKey: key, head: now.head, previous, ...only, ...stagedArg(await stagesOf(st, key), []), ...planArg(now.plan) },
-        depsFor(st, key, now.snap, fromCache)
+        depsFor(st, key, now.snap, now.head, fromCache)
       )
       await saveCompiled(st, key, again, now)
     })
@@ -891,10 +934,32 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
   }
 
+  /**
+   * main's CI results came after the compile of this commit stopped waiting for them (WP4b #26): the stored world is
+   * compiled again, in the project's queue, from what it was compiled from, with no file read again (changed and
+   * reread empty), so only the status stage changes, and it is saved and pushed. Nothing is compiled for a world never
+   * saved or since removed, or one compiled meanwhile for another commit. Labels come from the label cache only.
+   */
+  const ciLanded = (key: string, commit: string): void => {
+    const st = state as HostState
+    void serial(key, async () => {
+      const from = compiledFrom.get(key)
+      if (!from || from.head.head !== commit) return
+      const previous = await st.store.load(key)
+      if (!previous) return
+      const fromCache = async (): Promise<null> => null
+      const out = await compile(
+        { snap: from.snap, projectKey: key, head: from.head, previous, changed: [], ...stagedArg(await stagesOf(st, key), []), ...planArg(from.plan) },
+        depsFor(st, key, from.snap, from.head, st.labelling ? fromCache : null)
+      )
+      await saveCompiled(st, key, out, from)
+    }).catch((err: unknown) => console.warn('[world host] the late CI results could not be added:', err))
+  }
+
   /** `llm` is main's model, the label cache only, or none (labelling off). `stopped`: given to the label run's pass only,
    *  which a removal stops (LabelDeps.stopped, checked before a batch reads its excerpts). A cache-only pass is never
    *  stopped, so a world compiled while removed still takes its labels from the cache. */
-  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm'], stopped?: () => boolean): CompileDeps => {
+  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, head: WorldHead, llm: LabelDeps['llm'], stopped?: () => boolean): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const cloned = isCloneRoot(st.userDataPath, root)
     const rf = cloned ? confinedTo(root, readFile) : readFile
@@ -918,7 +983,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       label,
       now,
       // A cloned repository's own transcripts and CI are not this machine's: no runs from main for it.
-      ...(cloned ? {} : { transcriptRuns: askTranscripts(projectKey, root), ciRuns: askCi(projectKey) }),
+      ...(cloned ? {} : { transcriptRuns: askTranscripts(projectKey, root), ciRuns: askCi(projectKey, head) }),
       annotations: () => st.annotations.list(projectKey),
       copyAnnotations: async (renames) => st.annotations.copyRenamed(projectKey, renames),
       onProgress: (stage, pct) => postProgress(projectKey, stage, pct)
@@ -1002,7 +1067,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
               missed = true
               return null
             }
-            const out = await compile(input, withPrescan(depsFor(st, key, cur.snap, labelled ? cacheOnly : null), takePrescan(cur.snap.root, false)))
+            const out = await compile(input, withPrescan(depsFor(st, key, cur.snap, cur.head, labelled ? cacheOnly : null), takePrescan(cur.snap.root, false)))
             const from = { snap: cur.snap, head: cur.head, ...planArg(cur.plan) }
             await saveCompiled(st, key, out, from)
             st.checked.add(key)
@@ -1068,7 +1133,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           const cache = await stagesOf(st, key)
           st.checked.delete(key)
           const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn } : {}) }
-          const out = await compile(input, stoppable(withPrescan(depsFor(st, key, snap, labelled ? cacheOnly : null), scans), stop))
+          const out = await compile(input, stoppable(withPrescan(depsFor(st, key, snap, head, labelled ? cacheOnly : null), scans), stop))
           // Stopped while it ran: what it built from the reads it got is never saved.
           if (stop.stopped()) throw stoppedError()
           // The run's own progress is over: a label run after it reports from its own start.
