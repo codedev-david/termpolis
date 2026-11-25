@@ -1840,6 +1840,30 @@ describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOO
     expect(orbNames(helpers)).toEqual(['five.io', 'four.io'])
   })
 
+  it('test files and folders are found in any case and in other languages; source named like them still counts (review M-3)', async () => {
+    const doc = await compileHosts({
+      'TESTS/net.ts': "fetch('https://one.io/x')\n",
+      'src/Fixtures/net.ts': "fetch('https://two.io/x')\n",
+      'spec/net.ts': "fetch('https://three.io/x')\n",
+      'lib/Spec/net.ts': "fetch('https://four.io/x')\n",
+      'src/net.Test.ts': "fetch('https://five.io/x')\n",
+      'svc/net_test.go': "fetch('https://six.io/x')\n",
+      'py/test_net.py': "fetch('https://seven.io/x')\n",
+      'py/net_test.py': "fetch('https://eight.io/x')\n",
+      'java/NetTest.java': "fetch('https://nine.io/x')\n",
+      'cs/NetTests.cs': "fetch('https://ten.io/x')\n",
+      // Look-alikes: source, so their hosts are orbs.
+      'py/latest.py': "fetch('https://a1.io/x')\n",
+      'py/contest_net.py': "fetch('https://a2.io/x')\n",
+      'svc/contest.go': "fetch('https://a3.io/x')\n",
+      'java/Testing.java': "fetch('https://a4.io/x')\n",
+      'cs/Latest.cs': "fetch('https://a5.io/x')\n",
+      'src/inspector/net.ts': "fetch('https://a6.io/x')\n",
+      'src/specs.ts': "fetch('https://a7.io/x')\n"
+    })
+    expect(orbNames(doc)).toEqual(['a1.io', 'a2.io', 'a3.io', 'a4.io', 'a5.io', 'a6.io', 'a7.io'])
+  })
+
   it('a host named like a fixture is still an orb when source code calls it', async () => {
     const doc = await compileHosts({ ...HOSTS, 'src/d.ts': "fetch('https://h.io/live')\n" })
     expect(orbNames(doc)).toEqual(['api.github.com', 'h.io'])

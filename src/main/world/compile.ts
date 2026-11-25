@@ -574,7 +574,7 @@ const RESERVED_TLDS = new Set(['test', 'example', 'invalid', 'localhost'])
 /** Second-level names RFC 2606 keeps for documentation. */
 const RESERVED_DOMAINS = ['example.com', 'example.net', 'example.org']
 /** Folders that hold tests, test helpers and fixtures, whatever their files are called. */
-const TEST_DIRS = new Set(['tests', 'test', 'e2e', '__tests__', 'fixtures'])
+const TEST_DIRS = new Set(['tests', 'test', 'e2e', '__tests__', 'fixtures', 'spec'])
 
 /**
  * True for a host no real service answers on (look spec §9.2): one under a reserved top-level name (`relay.test`,
@@ -587,9 +587,16 @@ export function isReservedHost(host: string): boolean {
   return RESERVED_DOMAINS.some((d) => h === d || h.endsWith(`.${d}`))
 }
 
-/** True for a test file, or any file under a folder of tests or fixtures: what it calls is the test's, not the app's. */
+/**
+ * Test files by name in any case and in the common other languages: a.test.ts in any case, Go's net_test.go, Python's
+ * test_net.py and net_test.py, and a Java, Kotlin or C# class named NetTest or NetTests (by its capital, so Latest.cs and
+ * Testing.java are source). linkTests keeps to TEST_FILE, the files its runners report.
+ */
+const TEST_NAMES = [new RegExp(TEST_FILE.source, 'i'), /_test\.(?:go|py)$/i, /(?:^|\/)test_[^/]*\.py$/i, /[^/]Tests?\.(?:java|kt|cs)$/]
+
+/** True for a test file, or any file under a folder of tests or fixtures (in any case): what it calls is the test's. */
 function isTestSource(file: string): boolean {
-  return TEST_FILE.test(file) || file.split('/').slice(0, -1).some((dir) => TEST_DIRS.has(dir))
+  return TEST_NAMES.some((re) => re.test(file)) || file.split('/').slice(0, -1).some((dir) => TEST_DIRS.has(dir.toLowerCase()))
 }
 
 /** Two orbs are one when they are the same kind and the same agent or host (a host in punycode, so its two spellings are one). */
