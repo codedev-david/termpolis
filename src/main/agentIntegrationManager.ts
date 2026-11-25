@@ -1169,9 +1169,12 @@ async function readLedgerAsync(paths: AgentIntegrationPaths): Promise<Ledger | n
 /** The status's `connected` and `primerHook`, and nothing else: what the launch prime and the compaction re-prime ask once
  *  per Claude launch and once per compaction, to leave a Claude alone that loads its memory through the SessionStart hook.
  *  getAgentIntegrationStatus reads every agent's config on the main thread, ~/.claude.json among them, which can run to
- *  megabytes; this reads the ledger alone, on the thread pool (the typing-lag rule), afresh on every call, so a change
- *  made in Settings is seen by the next launch. Only when there is no ledger it can read does it take the synchronous
- *  path, which makes one once. Unusable paths answer as the status does then: not connected. */
+ *  megabytes; once the ledger exists this reads it alone, on the thread pool (the typing-lag rule), afresh on every call,
+ *  so a change made in Settings is seen by the next launch. It is not always off the main thread: with no ledger it can
+ *  read (none yet, or one that is corrupt, too large or of another version) it takes the synchronous path on main, which
+ *  looks for an older install in every agent's config and writes a ledger, as the status does. That happens once for a
+ *  missing ledger, and on every call while the file stays unreadable. Unusable paths answer as the status does then:
+ *  not connected. */
 export async function agentMemoryHookAsync(paths: AgentIntegrationPaths): Promise<{ connected: boolean; primerHook: boolean }> {
   try {
     const ledger = (await readLedgerAsync(paths)) ?? loadLedger(paths)

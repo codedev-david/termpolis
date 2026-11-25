@@ -359,6 +359,14 @@ describe('agentMemoryHookAsync', () => {
     expect((await agentMemoryHookAsync({ ...sb.paths, userData: undefined as never })).connected).toBe(false)
     expect((await agentMemoryHookAsync(undefined as never)).connected).toBe(false)
   })
+  // Port review, Minor 5: a relative userData has no ledger path, so the async read has nothing to read (it is not the
+  // throw that undefined takes) and the answer is the status's for no ledger: not connected, the hook on.
+  it('answers as for no ledger when userData is relative: no ledger path to read', async () => {
+    const rel = { ...sb.paths, userData: 'relative/dir' }
+    expect(await agentMemoryHookAsync(rel)).toEqual({ connected: false, primerHook: true })
+    expect(await agentMemoryHookAsync(rel)).toEqual(pick(rel))
+    expect(await isAgentIntegrationGrantedAsync(rel)).toBe(false)
+  })
 })
 
 // It shares agentMemoryHookAsync's ledger read: the same answers as the synchronous one, and false, never a throw, on
