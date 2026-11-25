@@ -12,7 +12,7 @@
 // Secret samples use repeated characters: they satisfy the rule regexes while failing entropy
 // heuristics, so GitHub push protection will not block this file.
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -152,6 +152,39 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     expect(hookStatus(paths, realDeps)['pre-commit']).toBe('absent')
 
     expect(commit(dir).ok).toBe(true)
+  }, 30_000)
+
+  // #1. The scanner runs in the repository being committed. A relative PATH entry names a folder inside it, so a bare
+  // `git` would start the one planted there (measured: Node 24 on Windows runs tools\git.exe for PATH=tools;...). The
+  // stand-in records that it ran; the scanner must start the real git, scan the real diff, and block the secret.
+  it('starts the real git by its full path, never a git planted in the repository behind a relative PATH entry', () => {
+    const { dir } = makeRepo()
+    stage(dir, 'config.env', `AWS_ACCESS_KEY_ID=${AWS_KEY}\n`)
+    const tools = path.join(dir, 'tools')
+    fs.mkdirSync(tools)
+    const marker = path.join(dir, 'planted-git-ran')
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `tools${path.delimiter}${process.env.PATH ?? process.env.Path ?? ''}` }
+    delete env.Path // one spelling, so the relative entry is the one Node and the scanner both read
+    if (process.platform === 'win32') {
+      // The stand-in has to be a real .exe: node itself, under the name git.exe, with a preload that records it ran.
+      const planted = path.join(tools, 'git.exe')
+      try { fs.linkSync(process.execPath, planted) } catch { fs.copyFileSync(process.execPath, planted) }
+      const preload = path.join(dir, 'record.cjs')
+      fs.writeFileSync(preload, `if (require('path').basename(process.execPath).toLowerCase() === 'git.exe') require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')\n`)
+      env.NODE_OPTIONS = `--require "${preload.replace(/\\/g, '/')}"`
+    } else {
+      fs.writeFileSync(path.join(tools, 'git'), `#!/bin/sh\necho ran > '${marker}'\nexit 0\n`, { mode: 0o755 })
+    }
+    // The premise, on this machine: a bare `git` with this PATH, in this folder, starts the planted one. (Not with
+    // `--version`: node answers that before any --require preload runs, so the stand-in would not record itself.)
+    try { execFileSync('git', ['rev-parse', '--git-dir'], { cwd: dir, env, stdio: 'pipe' }) } catch { /* the stand-in fails; it ran */ }
+    expect(fs.existsSync(marker), 'the planted git runs for a bare `git` here').toBe(true)
+    fs.rmSync(marker)
+
+    const r = spawnSync(process.execPath, [SCANNER, 'pre-commit'], { cwd: dir, env, encoding: 'utf8' })
+    expect(fs.existsSync(marker)).toBe(false) // the planted git never ran
+    expect(r.status).toBe(1) // the real git's staged diff was scanned, and the secret blocks
+    expect(r.stderr).toMatch(/AWS Access Key ID/)
   }, 30_000)
 
   it('does not destroy a pre-existing foreign hook — it still runs, and still gates the commit', () => {

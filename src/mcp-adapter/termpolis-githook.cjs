@@ -36,6 +36,7 @@ const fs = require('fs')
 const path = require('path')
 
 const RULES = require('./secretRules.cjs')
+const { gitFor } = require('./binPath.cjs')
 
 const SETTINGS_FILE = 'ai-security-settings.json'
 // 32 MB. A monorepo's staged diff can be enormous and ENOBUFS must not become a failed
@@ -89,9 +90,16 @@ function readSettings(file) {
 
 // Never a shell. Hook argv is attacker-adjacent (branch and file names land in it), and
 // a shell would turn a crafted name into command injection on `git commit`.
+// Never the bare name either: this runs in the repository being committed, and a relative
+// or empty PATH entry names a folder inside it, so a git planted there would run instead
+// (#1). binPath.cjs finds git by its full path with the app's rules; no git, or one inside
+// the repository, throws, which fails open like any other error.
 function runGit(args, cwd) {
-  return execFileSync('git', args, {
-    cwd: cwd || process.cwd(),
+  const where = cwd || process.cwd()
+  const bin = gitFor(where)
+  if (bin === null) throw new Error('git not found')
+  return execFileSync(bin, args, {
+    cwd: where,
     encoding: 'utf8',
     shell: false,
     maxBuffer: MAX_BUFFER,

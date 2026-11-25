@@ -21,7 +21,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { scanPushRange, scanStagedDiff } from '../../src/main/commitScan'
 import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
@@ -62,6 +62,7 @@ const hook = require_(HOOK_PATH) as {
   settingsPath: () => string
   formatBlock: (res: ScanRes, mode: string) => string
   redactSample: (s: string) => string
+  runGit: (args: string[], cwd?: string) => string
   GIT_ARGS: Record<string, string[]>
 }
 
@@ -265,6 +266,39 @@ describe('termpolis-githook — FAIL OPEN on every internal error', () => {
   it('still blocks when git hands back a Buffer instead of a string', () => {
     const g = () => Buffer.from(`+AWS_ACCESS_KEY_ID=${AWS_KEY}\n`) as unknown as string
     expect(hook.main(['pre-commit'], { git: g, readSettings: () => ON, stderr: capture().stderr })).toBe(1)
+  })
+})
+
+// #1. runGit starts git by the full path binPath.cjs finds, never the bare name (the real-commit proof with a planted
+// git is in gitHookE2E.test.ts; these run in this process so the lines count toward coverage).
+describe('termpolis-githook — runGit starts git by its full path', () => {
+  const dirs: string[] = []
+  const savedPath = process.env.PATH
+  afterEach(() => {
+    process.env.PATH = savedPath
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+  const repo = (): string => {
+    const d = mkdtempSync(join(tmpdir(), 'tp-rungit-'))
+    dirs.push(d)
+    expect(spawnSync('git', ['init', '-q'], { cwd: d }).status).toBe(0)
+    return d
+  }
+
+  it('runs the real git in the folder given, or in the current folder when none is', () => {
+    expect(hook.runGit(['rev-parse', '--is-inside-work-tree'], repo()).trim()).toBe('true')
+    expect(hook.runGit(['rev-parse', '--is-inside-work-tree']).trim()).toBe('true') // the test runs in the checkout
+  })
+
+  it('throws when the only git found lies inside the repository, and the hook then fails open', () => {
+    const d = repo()
+    mkdirSync(join(d, 'bin'))
+    writeFileSync(join(d, 'bin', process.platform === 'win32' ? 'git.exe' : 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    process.env.PATH = join(d, 'bin') // fixed, found first, and refused: it is inside `d`
+    expect(() => hook.runGit(['rev-parse', '--git-dir'], d)).toThrow('git not found')
+    const err = capture()
+    expect(hook.main(['pre-commit'], { cwd: d, readSettings: () => ON, stderr: err.stderr })).toBe(0)
+    expect(err.text).toBe('')
   })
 })
 
