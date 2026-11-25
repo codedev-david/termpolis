@@ -163,6 +163,35 @@ test.describe.serial('Workspaces', () => {
     await expect(wsEntry).toBeVisible()
   })
 
+  test('6a. in a short window the sidebar scrolls, and each terminal row\'s close button takes the click', async () => {
+    // The macOS runner's window is short enough that the sections above the terminal list (the
+    // Lumopolis hint, AI Agents, two workspaces, Workflows) once squeezed the list to 0px, so the
+    // Terminals header and the footer took the click aimed at a row's ✕. Pin it in every OS by
+    // making the window short on purpose, then hit-test each row the way a pointer would.
+    const before = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentBounds())
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 460))
+    try {
+      await expect.poll(() => page.evaluate(() => window.innerHeight)).toBeLessThanOrEqual(470)
+      for (const name of ['WS-Terminal-1', 'WS-Terminal-2']) {
+        const closeBtn = page.locator(`aside button[aria-label="Close ${name}"]`).first()
+        await closeBtn.scrollIntoViewIfNeeded()
+        const hit = await closeBtn.evaluate((btn) => {
+          const b = btn.getBoundingClientRect()
+          const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2)
+          return { ok: !!at && btn.contains(at), height: Math.round(b.height), at: at ? `${at.tagName} ${at.className}`.slice(0, 80) : null }
+        })
+        expect(hit, `the ✕ of ${name} must be the topmost element at its own centre`).toMatchObject({ ok: true })
+      }
+      // The footer stays pinned inside the window.
+      const add = await page.locator('aside button:has-text("+ Add Terminal")').first().boundingBox()
+      expect(add).not.toBeNull()
+      expect(add!.y + add!.height).toBeLessThanOrEqual(await page.evaluate(() => window.innerHeight))
+    } finally {
+      await app.evaluate(({ BrowserWindow }, b) => BrowserWindow.getAllWindows()[0].setContentBounds(b), before)
+      await expect.poll(async () => Math.abs((await page.evaluate(() => window.innerHeight)) - before.height)).toBeLessThanOrEqual(1)
+    }
+  })
+
   test('7. click a saved workspace: terminals from that workspace are restored', async () => {
     // Close all current terminals first
     await closeTerminalByName('WS-Terminal-1')
