@@ -2,12 +2,13 @@
  * The 3D map's frame times in CI (look spec §6.2, plan Task 2). Two worlds at 1920x1080: this repository (Termpolis
  * itself) and the generated one of 168 files in 12 folders (world-visual's big world, bigFiles(14)). For each:
  *   - the first frame is fast: the time from the first draw() to the frame that shows it (drawn().perf.firstFrameMs),
- *     after a warm-up open of a small world in the same launch (WARM_UP below says why);
- *   - ORBITS scripted orbits of 10 s each, a mouse drag of 360° round the city, timed by the app's own frame-time
+ *     held to a ratio of a small warm-up world's first frame in the same launch (FIRST_FRAME_RATIO says why);
+ *   - a warm-up orbit, then ORBITS counted scripted orbits of 10 s each, a mouse drag of 360° round the city, timed by the app's own frame-time
  *     sampler (window.__worldPerf, the counted frames between begin() and end()). The numbers (the orbit whose p95 is the
  *     median, and every orbit) are written to test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a
  *     `world-perf {...}` line;
- *   - in software, the median orbit's p95 stays at or under this system's floor for that world (SOFTWARE_FLOOR_P95_MS).
+ *   - in software on Linux and Windows, the median orbit's p95 stays at or under this system's floor for that world
+ *     (SOFTWARE_FLOOR_P95_MS).
  *
  * Metrics only: no screenshot here is a golden image.
  */
@@ -18,44 +19,54 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, paletteType, removeDirs } from './helpers/world'
 
 /**
- * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software, per system
- * and per world. Each is the WORST single-orbit p95 seen in that world on that system's hosted runner, over every soak
- * copy so far, x 1.3 and rounded up to 10 ms: SwiftShader at the High tier, as software has no Flat tier yet (Task 3
- * starts it at Flat, under these). Linux: 16 copies, 24 orbits a world (runs 45562373003, 45562384134, 45562403486,
- * 45564108979, 45567026241, 45568337544), Termpolis worst 603.6 ms, big 332.5. Windows: 10 copies, 18 orbits
- * (45562415525, 45564119886, 45567049201, 45568353314), 389.7 and 225.3. macOS: 9 copies, 15 orbits (45562426781,
- * 45564129694, 45567067499, 45568367623), 859.1 and 270.7; its runner draws on SwiftShader's LLVM backend, not Subzero, and its
- * Termpolis orbit swings 217-859 ms from one runner to the next. The gate compares the median of ORBITS orbits, which
- * is never over the worst of them, so a worst-single-orbit bound is the safe side.
+ * The CI guards below are regression guards for GPU-less hosted runners. They are not the spec's targets (look spec
+ * §5.2 and §6: 60 fps, a p95 of at most 16.7 ms on integrated graphics at 1080p in High, Low at 60 fps on a weak GPU,
+ * and a first frame of at most 400 ms on the reference iGPU and 3 s in software), which Task 20 measures on real
+ * machines (`npm run perf:world`, written to docs/perf/lumopolis/). Each guard is made so that a slower runner moves
+ * what it is compared with as well, not the bound: a bound taken as the slowest runner seen so far x 1.3 has to be
+ * raised each time a slower one turns up.
+ *
+ * The software floor (§6.2): the most the median orbit's p95 may reach when the map is drawn in software, per system and
+ * per world. Each is the worst counted orbit's p95 seen on that system's runner x 1.3, rounded up to 10 ms; SwiftShader
+ * at the High tier, as software has no Flat tier yet (Task 3 starts it at Flat, under these). Every world's first orbit
+ * is a warm-up and is not counted: it is the one that draws parts for the first time (their shaders compiled, their
+ * labels laid out) and was the slowest of three in 7 of 8 Termpolis copies on Linux and in every one on macOS.
+ * Asserted on Linux and Windows, where a person can draw in software (a virtual machine with no GPU, Windows' basic
+ * render driver) and the runners draw on SwiftShader's Subzero backend. Not asserted on macOS: a Mac draws Lumopolis in
+ * software only in a VM or with its GPU blocklisted, and the macOS runner's LLVM backend swings 2-5x from one runner to
+ * the next on one commit (the big world's median orbit 100-504 ms), so a bound there would track runners, not the app.
+ * The macOS numbers are still written to the JSON and the upload.
  */
 const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
-  linux: { termpolis: 790, big: 440 },
+  linux: { termpolis: 810, big: 440 },
   windows: { termpolis: 510, big: 300 },
-  macos: { termpolis: 1120, big: 360 },
 }
 /**
- * CI's first-frame guard is a regression guard for GPU-less runners, not the spec's fast first frame (look spec §5.2:
- * 400 ms on the reference iGPU, 3 s in software, which Task 20 measures on real machines). A runner with no GPU pays a
- * cold cost the first time anything is drawn in software: its GPU process takes 1.1-1.5 s for its first raster task
- * and the display compositor holds the swaps meanwhile (FLAKES, soak 45591853353), and SwiftShader compiles each shader
- * on first use. On the same commit (c81e0a7f) macOS's cold first frame of the Termpolis world ran 539 ms on one runner
- * and 5707 ms on another, then 4841 ms on that runner's retry: the runner's cost, not the app's. So the spec opens a
- * small world first (WARM_UP) and times each world's first frame after it: what is left is the app's own work for
- * that world (its geometry, upload and draw). The cold first frame of the warm-up world is logged and written to the
- * JSON (coldFirstFrameMs), and not asserted.
+ * The first frame (§5.2), in software: the spec opens a small world first (the warm-up, WARM_UP_FILES files in each of
+ * the 12 folders) and holds each world's first frame to FIRST_FRAME_RATIO x the warm-up's own first frame in the same
+ * launch. That cold first frame carries the runner's cost of drawing in software: the GPU process's first raster task
+ * (1.1-1.5 s on a fresh macOS runner, the compositor holding the swaps meanwhile: FLAKES, soak 45591853353) and
+ * SwiftShader compiling each shader, which its LLVM backend on macOS does again for every new view. On one commit
+ * (c81e0a7f) macOS's Termpolis first frame was 539 ms on one runner and 5707 ms on another. Timing each world after
+ * the warm-up open did not remove that spread (a287b581: 2.7-4.6 s on macOS; on Linux 1.1-2.4 s, where the same worlds
+ * took 0.4-1.6 s without it), so the time alone is not asserted. The ratio is: on one runner the warm-up's first frame
+ * and the worlds' move together (macOS 3.6-3.9 s and 2.7-4.6 s, Linux 1.1-1.9 s and 1.1-2.4 s, Windows 0.25-0.65 s and
+ * 0.25-0.39 s). The worst ratio seen is 1.53 (Windows, the big world, soak 45646568734) over 18 first frames on the
+ * three systems (soaks 45646550636, 45646568734, 45646589568); x 1.3 is 1.99, and the bound is 2.5 because 18 is a
+ * small sample and one world's ratio on one system spans 0.5-1.5. It grows when the app's first frame costs more for a
+ * bigger world (building, uploading and drawing it); a cost that every first frame pays alike is Task 20's to find on
+ * real hardware. Above it all, the first frame must come before
+ * the product's own software watchdog drops the map to 2D (FIRST_FRAME_MS_SW in createWorldViewer.ts). On a GPU the
+ * bound is FIRST_FRAME_HARDWARE_MS, wider than the 400 ms target that Task 20 times.
  */
 const WARM_UP_FILES = 2
-/**
- * The first frame's bound in CI, in software: the worst first frame seen on that system's runner over the same soak
- * copies, x 1.3 and rounded up to 100 ms (Linux 1465.7 ms, Windows 687.2, macOS 5706.7). These are runner bounds, not the
- * promise: the spec's 3 s in software and 400 ms on a GPU stay the real-hardware targets, which Task 20 times on real
- * machines. macOS's runner swings from 0.4 s to 5.7 s from one runner to the next (cold SwiftShader-LLVM: one slow
- * runner was slow on both tries, so a median of opens would not help), so it gets its own bound; 7.5 s is still half
- * the 15 s the software watchdog waits before it drops the map to 2D (FIRST_FRAME_MS_SW). On a GPU the bound is 1000 ms.
- */
-const FIRST_FRAME_SOFTWARE_MS: Record<string, number> = { linux: 2000, windows: 900, macos: 7500 }
+const FIRST_FRAME_RATIO = 2.5
+const FIRST_FRAME_WATCHDOG_MS = 15_000
 const FIRST_FRAME_HARDWARE_MS = 1000
-/** How many orbits each world's gate takes the median of: one slow orbit on a shared runner does not fail the gate. */
+/**
+ * How many counted orbits each world's gate takes the median of (after one warm-up orbit): one slow orbit on a shared
+ * runner does not fail the gate.
+ */
 const ORBITS = 3
 /** How long the scripted orbit takes, and how often the pointer moves during it. */
 const ORBIT_MS = 10_000
@@ -72,6 +83,7 @@ interface PerfProbe { begin(): void; end(): Stats }
 interface OrbitResult extends Stats {
   os: string
   coldFirstFrameMs: number | null
+  warmUpOrbit: Stats
   orbits: Stats[]
   fixture: string
   tier: string
@@ -110,7 +122,7 @@ test.beforeAll(async () => {
   // The warm-up: the runner's cold cost of drawing in software is paid here, on a small world of the same kinds.
   await openOn('warm-up', warmDir)
   coldFirstFrameMs = (await drawn()).perf.firstFrameMs
-  console.log(`world-perf cold first frame (warm-up world, not asserted): ${coldFirstFrameMs} ms`)
+  console.log(`world-perf cold first frame (warm-up world): ${coldFirstFrameMs} ms`)
 })
 
 test.afterAll(async () => {
@@ -216,15 +228,31 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       test.setTimeout(420_000)
       await openOn(fx.label, fx.dir())
       const d = await drawn()
-      const limit = d.software ? FIRST_FRAME_SOFTWARE_MS[OS_NAME] : FIRST_FRAME_HARDWARE_MS
-      console.log(`world-perf first frame ${fx.label}: ${d.perf.firstFrameMs} ms (${d.software ? 'software' : 'hardware'}, limit ${limit} ms)`)
-      expect(d.perf.firstFrameMs, 'no frame was ever drawn').not.toBeNull()
-      expect(d.perf.firstFrameMs as number, `${fx.label}: the first frame took too long`).toBeLessThanOrEqual(limit)
+      const ms = d.perf.firstFrameMs
+      const ratio = ms !== null && coldFirstFrameMs ? ms / coldFirstFrameMs : null
+      console.log(
+        `world-perf first frame ${fx.label}: ${ms} ms, ${ratio?.toFixed(2)} x the warm-up's ${coldFirstFrameMs} ms ` +
+          `(${d.software ? `software, limits ${FIRST_FRAME_RATIO} x and ${FIRST_FRAME_WATCHDOG_MS} ms` : `hardware, limit ${FIRST_FRAME_HARDWARE_MS} ms`})`,
+      )
+      expect(ms, 'no frame was ever drawn').not.toBeNull()
+      if (!d.software) {
+        expect(ms as number, `${fx.label}: the first frame took too long`).toBeLessThanOrEqual(FIRST_FRAME_HARDWARE_MS)
+        return
+      }
+      expect(ms as number, `${fx.label}: the first frame came after the software watchdog's wait`).toBeLessThan(FIRST_FRAME_WATCHDOG_MS)
+      expect(coldFirstFrameMs, 'the warm-up world drew no frame').not.toBeNull()
+      expect(ratio as number, `${fx.label}: the first frame took ${ratio?.toFixed(2)} x the warm-up world's`).toBeLessThanOrEqual(FIRST_FRAME_RATIO)
     })
 
-    test(`${ORBITS} scripted orbits of 10 s report frame times (${fx.label})`, async () => {
-      test.setTimeout(60_000 + ORBITS * 40_000)
+    test(`${ORBITS} scripted orbits of 10 s after a warm-up orbit report frame times (${fx.label})`, async () => {
+      test.setTimeout(60_000 + (ORBITS + 1) * 40_000)
       await expect(pane()).toBeVisible()
+      // The warm-up orbit: the parts it shows for the first time are drawn here, not in a counted orbit.
+      await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.begin())
+      await orbit()
+      const warmUp = await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.end())
+      console.log(`world-perf warm-up orbit ${fx.label} (not counted): ${JSON.stringify(warmUp)}`)
+      await page.waitForTimeout(500)
       const runs: Stats[] = []
       for (let i = 0; i < ORBITS; i++) {
         await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.begin())
@@ -239,6 +267,7 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       const result: OrbitResult = {
         os: OS_NAME,
         coldFirstFrameMs,
+        warmUpOrbit: warmUp,
         orbits: runs,
         fixture: fx.label,
         tier: d.perf.tier,
@@ -263,6 +292,7 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       const r = orbits.get(fx.label)
       expect(r, 'the orbit test did not run').toBeDefined()
       test.skip(!r!.software, 'drawn on a GPU: the floor is for software')
+      test.skip(!(OS_NAME in SOFTWARE_FLOOR_P95_MS), 'reported only on macOS: SOFTWARE_FLOOR_P95_MS says why')
       const floor = SOFTWARE_FLOOR_P95_MS[OS_NAME][fx.label]
       expect(r!.p95, `${fx.label}: the median orbit p95 ${r!.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
     })
