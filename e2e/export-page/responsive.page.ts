@@ -43,9 +43,15 @@ const emulated = new WeakMap<Page, { cdp: CDPSession; v: Viewport }>()
 const sizeNow = (page: Page, v: Viewport): Promise<string> =>
   page.evaluate(({ w, h, d }) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`, { w: v.width, h: v.height, d: v.dpr })
 
+/** How long the page may take to report a new size. Each look is a script run on the page's main thread, which waits
+ *  out whatever the page is doing: setViewport comes right after load, while the city is built and first drawn, and on a
+ *  macOS runner that first frame once held the main thread from 7 s to 15 s after load, so the size was never read
+ *  inside the 10 s this once had (soak run 45583072515, Electron at 1366x768). */
+const EMULATE_MS = 60_000
+
 async function emulate(page: Page, cdp: CDPSession, v: Viewport): Promise<void> {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
-  await expect.poll(() => sizeNow(page, v), { timeout: 10_000 }).toBe('ok')
+  await expect.poll(() => sizeNow(page, v), { message: `the window at ${v.name}`, timeout: EMULATE_MS }).toBe('ok')
 }
 
 async function setViewport(page: Page, v: Viewport): Promise<void> {
