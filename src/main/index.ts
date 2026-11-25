@@ -782,6 +782,7 @@ import { onFirstPrompt } from './primerSessionGuard'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
+  createAppPage,
   fileUrlOf,
   installDeviceRefusals,
   installPermissionPolicy,
@@ -846,9 +847,12 @@ function isWebUrl(url: string): boolean {
 /** The page the window loads in a build: out/renderer/index.html. */
 const rendererIndexFile = (): string => join(__dirname, '../renderer/index.html')
 
+/** The Termpolis page as the window committed it (createWindow tracks it); computed until then. */
+const appPage = createAppPage(() => process.env['ELECTRON_RENDERER_URL'] || fileUrlOf(rendererIndexFile()))
+
 /** What the permission policy (permissionPolicy.ts) grants against: the Termpolis page, in the Termpolis window. */
 const permissionDeps: PermissionPolicyDeps = {
-  appPageUrl: () => process.env['ELECTRON_RENDERER_URL'] || fileUrlOf(rendererIndexFile()),
+  appPageUrl: () => appPage.url(),
   isAppContents: (wc) => wc != null && wc === mainWindow?.webContents,
 }
 
@@ -900,6 +904,9 @@ function createWindow() {
   // entitlement (build config).
   installPermissionPolicy(mainWindow.webContents?.session, permissionDeps)
   installDeviceRefusals(mainWindow.webContents?.session)
+  // Grant against the page URL as Chromium commits it on the load below (a UNC install path is
+  // spelled differently from the computed one).
+  appPage.track(mainWindow.webContents)
 
   // The window only ever shows Termpolis itself. A link opened with window.open goes to the user's
   // browser, never into a second Electron window, which would be another page in the app. Nothing may navigate this window away either: a plain link, or a

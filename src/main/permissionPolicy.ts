@@ -16,17 +16,21 @@
 //   notifications  the usage-limit notice while the window is in the background (lib/limitWatch.ts).
 //   Most copy and paste goes through main's clipboard module over IPC and needs no permission.
 //
-// Never granted, by name: bluetooth, hid, serial and usb. installDeviceRefusals and refuseBluetooth
-// also refuse each device permission and cancel each device chooser, because Electron with no
-// select-bluetooth-device listener picks the first device it finds.
+// Never granted, by name: bluetooth, hid, serial and usb. installDeviceRefusals also says no to
+// every device permission and every Bluetooth pairing, and refuseBluetooth cancels the Bluetooth
+// chooser: with no select-bluetooth-device listener that prevents the default, Electron picks the
+// first device it finds. The HID, serial and USB choosers need no listener: with none, Electron
+// cancels the request.
 //
 // Screen capture: getDisplayMedia has no handler here, so Electron refuses it. The legacy
 // getUserMedia({ video: { mandatory: { chromeMediaSource: 'desktop' } } }) does reach the request
-// handler, and Electron's details do not say so: mediaTypes names only microphone and camera kinds,
-// so desktop video asked for with the microphone arrives as ['audio'] (and alone, as no kind at
-// all), with nothing in securityOrigin or the other details to tell it apart. The renderer's media
-// guard (renderer/src/lib/mediaGuard.ts) refuses any constraint naming chromeMediaSource before it
-// leaves the page.
+// handler, and nothing Electron gives main identifies it: mediaTypes names only microphone and
+// camera kinds, so desktop video asked for with the microphone arrives as ['audio'] (alone, as no
+// kind at all, which is refused), and securityOrigin and the other details are the page's own.
+// Main cannot tell it from a microphone request. The renderer's media guard
+// (renderer/src/lib/mediaGuard.ts) refuses that constraint when the page's code asks for it the
+// ordinary way. A script already running in the page can get around the guard, but such a script
+// has the preload API too, so the guard is no wall against it and adds it no new power.
 //
 // Everything else is refused, with one log line that names the permission and the reason, never a
 // URL (a requesting URL can carry a path or a query with the user's data in it).
@@ -120,6 +124,55 @@ function fileKey(u: URL, platform: NodeJS.Platform): string {
   return platform === 'win32' ? key.toLowerCase() : key
 }
 
+/** What createAppPage listens on: the window's WebContents. */
+export interface NavigatingContents {
+  once?(event: 'did-navigate', listener: () => void): unknown
+  getURL?(): string
+}
+
+export interface AppPage {
+  /** The page to grant against: the URL the window committed, or the computed one until it has. */
+  url(): string
+  /** Record the URL `wc` commits on its first navigation, which is the app page main loads into it. */
+  track(wc: NavigatingContents | null | undefined): void
+}
+
+/** Whether a committed URL is the kind of page main loads: a file, or the dev server's origin. */
+function sameKind(got: string, computed: () => string): boolean {
+  const g = parse(got)
+  let want: URL | null
+  try {
+    want = parse(computed())
+  } catch {
+    want = null
+  }
+  if (!g || !want) return g?.protocol === 'file:'
+  return isWeb(want) ? g.origin === want.origin : g.protocol === want.protocol
+}
+
+/**
+ * The Termpolis page as Chromium spells it. Main computes a file URL from the path it loads
+ * (fileUrlOf), but Chromium can spell the same file differently: a UNC install path
+ * \\server\share\... commits as file://server/share/..., where new URL gives an empty host. A
+ * check against the wrong spelling refuses every grant, so the URL the window commits on its first
+ * navigation is recorded and used, and the computed one only until then (no page has asked for
+ * anything before its first navigation). The window's navigation lock keeps any other page out.
+ */
+export function createAppPage(computed: () => string): AppPage {
+  let committed: string | null = null
+  return {
+    url: () => committed ?? computed(),
+    track(wc) {
+      if (!wc?.once) return
+      const contents = wc
+      contents.once?.('did-navigate', () => {
+        const got = contents.getURL?.()
+        if (got && sameKind(got, computed)) committed = got
+      })
+    },
+  }
+}
+
 /**
  * Whether `url` is the page main loaded. The dev server: the same origin. A file page: the same
  * file (any hash or query), because every local file shares the opaque file: origin.
@@ -148,7 +201,7 @@ function verdict(permission: string, mediaTypes: readonly string[] | undefined):
   if (permission !== 'media') return GRANTED.has(permission) ? null : 'not-allowed'
   // Microphone and camera capture name their kinds, and getDisplayMedia never reaches here. Legacy
   // chromeMediaSource capture names none of its own: alone it names nothing and is refused here;
-  // with the microphone it reads as ['audio'], which only the renderer's media guard can refuse.
+  // with the microphone it reads as ['audio'], which main cannot tell apart (see the header).
   if (!mediaTypes || mediaTypes.length === 0) return 'media-unknown'
   for (const kind of mediaTypes) {
     if (kind === 'audio') continue
@@ -249,34 +302,24 @@ export function installPermissionPolicy(ses: PermissionSession | null | undefine
 export interface DeviceSession {
   setDevicePermissionHandler?(handler: (details: { deviceType?: string }) => boolean): void
   setBluetoothPairingHandler?(handler: (details: unknown, callback: (response: { confirmed: boolean }) => void) => void): void
-  on?(event: string, listener: (event: { preventDefault(): void }, details: unknown, callback: (id?: string) => void) => void): unknown
 }
 
-/** The device choosers on a session, and the answer that cancels each (Electron's documented one). */
-const CHOOSERS: ReadonlyArray<readonly [event: string, name: string, cancel: string | undefined]> = [
-  ['select-hid-device', 'hid', undefined],
-  ['select-serial-port', 'serial', ''],
-  ['select-usb-device', 'usb', undefined],
-]
+/** Sessions and webContents already given their refusals: each gets them once. */
+const refusedSessions = new WeakSet<object>()
+const refusedContents = new WeakSet<object>()
 
 /**
- * Refuse every device a page could ask for: each device permission, Bluetooth pairing, and the HID,
- * serial and USB choosers (cancelled, so no device is picked).
+ * Refuse every device a page could ask for: each device permission, and each Bluetooth pairing.
+ * Once per session, however often a window is created on it.
  */
 export function installDeviceRefusals(ses: DeviceSession | null | undefined, log: (line: string) => void = defaultLog): void {
-  ses?.setDevicePermissionHandler?.((details) => {
+  if (!ses || refusedSessions.has(ses)) return
+  refusedSessions.add(ses)
+  ses.setDevicePermissionHandler?.((details) => {
     logDenial('device', details?.deviceType ?? 'unknown', 'device', log)
     return false
   })
-  ses?.setBluetoothPairingHandler?.((_details, callback) => callback({ confirmed: false }))
-  for (const [event, name, cancel] of CHOOSERS) {
-    ses?.on?.(event, (ev, _details, callback) => {
-      ev.preventDefault()
-      logDenial('chooser', name, 'device', log)
-      if (cancel === undefined) callback()
-      else callback(cancel)
-    })
-  }
+  ses.setBluetoothPairingHandler?.((_details, callback) => callback({ confirmed: false }))
 }
 
 /** What refuseBluetooth listens on: an Electron WebContents. */
@@ -284,9 +327,14 @@ export interface BluetoothContents {
   on?(event: 'select-bluetooth-device', listener: (event: { preventDefault(): void }, devices: unknown[], callback: (deviceId: string) => void) => void): unknown
 }
 
-/** Cancel every Bluetooth chooser. With no listener that prevents the default, Electron picks the first device. */
+/**
+ * Cancel every Bluetooth chooser, once per webContents. Electron's documented default: with no
+ * listener, or one that does not call event.preventDefault, the first available device is selected.
+ */
 export function refuseBluetooth(wc: BluetoothContents | null | undefined, log: (line: string) => void = defaultLog): void {
-  wc?.on?.('select-bluetooth-device', (event, _devices, callback) => {
+  if (!wc || refusedContents.has(wc)) return
+  refusedContents.add(wc)
+  wc.on?.('select-bluetooth-device', (event, _devices, callback) => {
     event.preventDefault()
     logDenial('chooser', 'bluetooth', 'device', log)
     callback('')

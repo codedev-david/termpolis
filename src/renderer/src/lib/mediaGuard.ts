@@ -1,16 +1,18 @@
 // The page's half of the media permission (main/permissionPolicy.ts has the other half).
 //
 // Main grants `media` when the request names only the microphone (and the camera while hand control
-// is on). Electron's request details cannot show the legacy screen capture,
+// is on). Nothing Electron gives main identifies the legacy screen capture,
 // getUserMedia({ video: { mandatory: { chromeMediaSource: 'desktop' } } }): its mediaTypes name only
 // microphone and camera kinds, so desktop video asked for with the microphone reads as ['audio'], and
 // Electron then hands over the whole screen. Nothing in Termpolis asks for chromeMediaSource, so this
-// refuses any constraint that names it, before the request leaves the page.
+// refuses any constraint that names it when the page asks for it the ordinary way,
+// navigator.mediaDevices.getUserMedia (or the old navigator.webkitGetUserMedia).
 //
-// installMediaGuard runs first in the renderer (installMediaGuard.ts, imported first by main.tsx), so
-// no other code holds the original getUserMedia. The wrapper it puts in its place cannot be replaced
-// or removed. A subframe has its own getUserMedia, but main refuses every request that is not from
-// the main frame.
+// What it does not do: stop a script already running in the page. Such a script can reach the
+// original getUserMedia another way (through another frame's, or by changing the built-ins this
+// calls), but it also has the preload API, so the guard gives it no power it did not have. It is
+// installed first in the renderer (installMediaGuard.ts, imported first by main.tsx), and its
+// wrapper cannot be replaced or removed.
 
 /** The constraint names Chromium reads a legacy screen, window or tab source from. */
 const SCREEN_KEYS = new Set(['chromeMediaSource', 'chromeMediaSourceId'])
@@ -47,12 +49,16 @@ export interface GuardWindow {
 /**
  * Put the guard on MediaDevices.prototype.getUserMedia, and refuse the prefixed callback-style
  * navigator.webkitGetUserMedia outright (nothing in Termpolis uses it). False when there is no
- * getUserMedia to guard.
+ * getUserMedia to guard. A second call is a no-op.
  */
 export function installMediaGuard(win: GuardWindow): boolean {
   const proto = win.MediaDevices?.prototype as { getUserMedia?: GetUserMedia } | undefined
   const original = proto?.getUserMedia
   if (!proto || typeof original !== 'function') return false
+  // Already guarded (the module evaluated again): Chromium's own getUserMedia can be replaced, and
+  // the guard's cannot, so the second call has nothing to do.
+  const current = Object.getOwnPropertyDescriptor(proto, 'getUserMedia')
+  if (current && !current.writable && !current.configurable) return true
   const Refusal = win.DOMException ?? DOMException
   const refuse = (): Error => {
     win.console?.warn('[permissions] refused a screen capture asked for through getUserMedia')

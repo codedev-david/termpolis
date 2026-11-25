@@ -185,10 +185,14 @@ test.describe.serial('Permission policy (real session handlers)', () => {
     }
   })
 
-  test('6. a frame inside the page is refused the microphone and the clipboard the page is granted', async () => {
+  // The frame is the app's own page (same file, plus a query), so main sees a request from the
+  // Termpolis window at the Termpolis page URL: only the main-frame rule refuses it. Framed, the
+  // page starts nothing (main.tsx), and without the preload it has no IPC.
+  test('6. a frame of the app page itself is refused the microphone and the clipboard the page is granted', async () => {
     const result = await page.evaluate(async () => {
       const frame = document.createElement('iframe')
-      frame.srcdoc = '<!doctype html><title>frame</title>'
+      const self = `${location.href.split('#')[0].split('?')[0]}?permission-frame`
+      frame.src = self
       frame.style.cssText = 'position:fixed;left:0;top:0;width:10px;height:10px;opacity:0'
       const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }))
       document.body.appendChild(frame)
@@ -197,6 +201,9 @@ test.describe.serial('Permission policy (real session handlers)', () => {
       const out: Record<string, string> = {}
       try {
         if (!win) throw new Error('no frame window')
+        // Same origin as the page, and at the page URL: what makes this the main-frame rule's test.
+        out.at = win.location.href === self ? 'app-page' : `elsewhere:${win.location.href}`
+        out.started = win.document.getElementById('root')?.childElementCount ? 'yes' : 'no'
         try {
           const stream = await win.navigator.mediaDevices.getUserMedia({ audio: true })
           stream.getTracks().forEach((t) => t.stop())
@@ -218,7 +225,7 @@ test.describe.serial('Permission policy (real session handlers)', () => {
       }
       return out
     })
-    expect(result).toEqual({ mic: 'error:NotAllowedError', microphone: 'denied', 'clipboard-read': 'denied' })
+    expect(result).toEqual({ at: 'app-page', started: 'no', mic: 'error:NotAllowedError', microphone: 'denied', 'clipboard-read': 'denied' })
     // The page itself still has them.
     expect(await queryPermission('microphone')).toBe('granted')
     expect(await queryPermission('clipboard-read')).toBe('granted')

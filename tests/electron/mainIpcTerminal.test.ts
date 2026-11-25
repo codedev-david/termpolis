@@ -97,14 +97,18 @@ const { mockFsPromisesReadFile, mockFsPromisesUnlink } = vi.hoisted(() => ({
 }))
 
 const wcOnHandlers = new Map<string, Function>()
+const wcOnceHandlers = new Map<string, Function>()
 const mockWebContents = {
   send: vi.fn(),
   executeJavaScript: vi.fn(),
   setWindowOpenHandler: vi.fn(),
   on: vi.fn((ev: string, h: Function) => { wcOnHandlers.set(ev, h) }),
+  once: vi.fn((ev: string, h: Function) => { wcOnceHandlers.set(ev, h) }),
   session: {
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
+    setDevicePermissionHandler: vi.fn(),
+    setBluetoothPairingHandler: vi.fn(),
   },
 }
 // Listener registrations must survive vi.clearAllMocks() — createWindow runs once at
@@ -1781,13 +1785,12 @@ describe('createWindow — renderer source + chrome', () => {
   })
 
   it('refuses every device on every session, and cancels the Bluetooth chooser on every webContents', () => {
-    const listeners = new Map<string, Function>()
     const ses = {
       setPermissionRequestHandler: vi.fn(),
       setPermissionCheckHandler: vi.fn(),
       setDevicePermissionHandler: vi.fn(),
       setBluetoothPairingHandler: vi.fn(),
-      on: vi.fn((ev: string, h: Function) => { listeners.set(ev, h) }),
+      on: vi.fn(),
     }
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
@@ -1796,15 +1799,18 @@ describe('createWindow — renderer source + chrome', () => {
       const pairing = vi.fn()
       ;(ses.setBluetoothPairingHandler.mock.calls[0][0] as Function)({}, pairing)
       expect(pairing).toHaveBeenCalledWith({ confirmed: false })
-      for (const ev of ['select-hid-device', 'select-serial-port', 'select-usb-device']) {
-        const event = { preventDefault: vi.fn() }
-        listeners.get(ev)!(event, {}, vi.fn())
-        expect(event.preventDefault).toHaveBeenCalled()
-      }
+      // No HID, serial or USB chooser listener: with none, Electron cancels the request.
+      expect(ses.on).not.toHaveBeenCalled()
+      // The same session handed over again (as createWindow does for the window's) changes nothing.
+      appOnHandlers.get('session-created')!(ses)
+      expect(ses.setDevicePermissionHandler).toHaveBeenCalledTimes(1)
+      expect(ses.setBluetoothPairingHandler).toHaveBeenCalledTimes(1)
 
       const wcListeners = new Map<string, Function>()
       const wc = { on: vi.fn((ev: string, h: Function) => { wcListeners.set(ev, h) }) }
       appOnHandlers.get('web-contents-created')!({}, wc)
+      appOnHandlers.get('web-contents-created')!({}, wc)
+      expect(wc.on).toHaveBeenCalledTimes(1)
       const event = { preventDefault: vi.fn() }
       const choose = vi.fn()
       wcListeners.get('select-bluetooth-device')!(event, [{ deviceId: 'b1' }], choose)
@@ -1812,6 +1818,44 @@ describe('createWindow — renderer source + chrome', () => {
       expect(choose).toHaveBeenCalledWith('')
     } finally {
       warn.mockRestore()
+    }
+  })
+
+  it('re-creating the window adds no device refusal to its session again', () => {
+    recreateWindow()
+    recreateWindow()
+    expect(mockWebContents.session.setDevicePermissionHandler).not.toHaveBeenCalled()
+    expect(mockWebContents.session.setBluetoothPairingHandler).not.toHaveBeenCalled()
+    // The permission handlers are plain setters, put back on each window.
+    expect(mockWebContents.session.setPermissionRequestHandler).toHaveBeenCalledTimes(2)
+  })
+
+  it('grants against the page URL the window committed, not only the computed one (a UNC install)', () => {
+    recreateWindow()
+    const computed = pathToFileURL(mockMainWindow.loadFile.mock.calls.at(-1)![0] as string).href
+    expect(mockWebContents.once).toHaveBeenCalledWith('did-navigate', expect.any(Function))
+    const committed = 'file://server/share/Termpolis/resources/app.asar/out/renderer/index.html'
+    const navigate = (url: string) => {
+      Object.assign(mockWebContents, { getURL: () => url })
+      wcOnceHandlers.get('did-navigate')!()
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      navigate(committed)
+      const grant = mockWebContents.session.setPermissionRequestHandler.mock.calls.at(-1)![0] as Function
+      const ask = (requestingUrl: string): boolean => {
+        const callback = vi.fn()
+        grant(mockWebContents, 'media', callback, { isMainFrame: true, requestingUrl, mediaTypes: ['audio'] })
+        return callback.mock.calls[0][0] as boolean
+      }
+      expect(ask(`${committed}#/world`)).toBe(true)
+      expect(ask('file://server/share/other.html')).toBe(false)
+    } finally {
+      warn.mockRestore()
+      // Put the computed page back for the tests after this one.
+      recreateWindow()
+      navigate(computed)
+      delete (mockWebContents as { getURL?: unknown }).getURL
     }
   })
 

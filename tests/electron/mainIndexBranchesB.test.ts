@@ -782,9 +782,20 @@ describe('the hand-control camera seam (__termpolisGestureCamera)', () => {
   it('is NOT set in a packaged build, even under NODE_ENV=test', async () => {
     // It turns the camera on from main. A shipped build started with NODE_ENV=test must not have it.
     delete g.__termpolisGestureCamera
-    await boot({ packaged: true })
-    expect(g.__termpolisGestureCamera).toBeUndefined()
-  })
+    // A packaged boot looks for the MCP adapter under resourcesPath, which vitest's process has not
+    // got: without one the boot's ready chain rejects after the test and fails the whole run.
+    const fakeResources = join(SANDBOX, 'resources-camera-seam')
+    mkdirSync(fakeResources, { recursive: true })
+    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+    Object.defineProperty(process, 'resourcesPath', { value: fakeResources, configurable: true })
+    try {
+      await boot({ packaged: true })
+      expect(g.__termpolisGestureCamera).toBeUndefined()
+    } finally {
+      if (original) Object.defineProperty(process, 'resourcesPath', original)
+      else delete (process as unknown as Record<string, unknown>).resourcesPath
+    }
+  }, 90_000)
 })
 
 describe('agentActivity:__test_publish', () => {

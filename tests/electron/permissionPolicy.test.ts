@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { win32 } from 'path'
 import { format as formatUrl, pathToFileURL } from 'url'
 import {
+  createAppPage,
   decideCheck,
   decideRequest,
   fileUrlOf,
@@ -119,6 +120,99 @@ describe('fileUrlOf: the page URL of the file main loads, as the window holds it
   it('takes a relative or slash-led path the same way', () => {
     expect(fileUrlOf('/a b/index.html')).toBe('file:///a%20b/index.html')
     expect(fileUrlOf('a b/index.html')).toBe('file:///a%20b/index.html')
+  })
+})
+
+describe('createAppPage: grant against the page URL Chromium committed', () => {
+  /** A webContents whose first navigation commits `url`: did-navigate fires once, as Electron's once does. */
+  function navigating(url: string | undefined) {
+    let listener: (() => void) | undefined
+    return {
+      once: vi.fn((event: string, l: () => void) => { if (event === 'did-navigate') listener = l }),
+      getURL: vi.fn(() => url),
+      navigate() { const l = listener; listener = undefined; l?.() },
+    }
+  }
+  const UNC = String.raw`\\server\share\Termpolis\resources\app.asar\out\renderer\index.html`
+  // What Chromium commits on Windows for loadFile(UNC): the server is the URL's host.
+  const UNC_COMMITTED = 'file://server/share/Termpolis/resources/app.asar/out/renderer/index.html'
+
+  it('a UNC install: the computed URL misses Chromium\'s spelling, the committed one matches', () => {
+    // new URL gives a UNC path an empty host, so the computed page alone refuses every grant.
+    expect(isAppPage(`${UNC_COMMITTED}#/world`, fileUrlOf(UNC), 'win32')).toBe(false)
+    const page = createAppPage(() => fileUrlOf(UNC))
+    const wc = navigating(UNC_COMMITTED)
+    page.track(wc)
+    expect(page.url()).toBe(fileUrlOf(UNC))
+    wc.navigate()
+    expect(page.url()).toBe(UNC_COMMITTED)
+    expect(isAppPage(`${UNC_COMMITTED}#/world`, page.url(), 'win32')).toBe(true)
+    const d = deps({ appPageUrl: () => page.url() })
+    expect(decideRequest(appWc, 'media', { isMainFrame: true, requestingUrl: `${UNC_COMMITTED}#/world`, mediaTypes: ['audio'] }, d)).toBeNull()
+    expect(decideCheck(appWc, 'clipboard-read', 'file:///', { isMainFrame: true, requestingUrl: UNC_COMMITTED }, d)).toBeNull()
+    // Another file on the share is still another page.
+    expect(decideRequest(appWc, 'media', { isMainFrame: true, requestingUrl: 'file://server/share/other.html', mediaTypes: ['audio'] }, d)).toBe('foreign')
+  })
+
+  it('records only the first navigation of a window, and a new window\'s first one', () => {
+    const page = createAppPage(() => PAGE)
+    const first = navigating(`${PAGE}#/`)
+    page.track(first)
+    expect(first.once).toHaveBeenCalledWith('did-navigate', expect.any(Function))
+    first.navigate()
+    expect(page.url()).toBe(`${PAGE}#/`)
+    first.getURL.mockReturnValue('file:///elsewhere.html')
+    first.navigate() // once: the listener is gone
+    expect(page.url()).toBe(`${PAGE}#/`)
+    const second = navigating(PAGE)
+    page.track(second)
+    second.navigate()
+    expect(page.url()).toBe(PAGE)
+  })
+
+  it('keeps the computed page when the window commits a page of another kind, or nothing', () => {
+    const dev = createAppPage(() => DEV)
+    for (const url of ['file:///x/index.html', 'http://localhost:9999/', 'https://evil.example/', 'not a url', '', undefined]) {
+      const wc = navigating(url)
+      dev.track(wc)
+      wc.navigate()
+      expect(dev.url()).toBe(DEV)
+    }
+    const devWc = navigating(`${DEV}/#/`)
+    dev.track(devWc)
+    devWc.navigate()
+    expect(dev.url()).toBe(`${DEV}/#/`)
+
+    const file = createAppPage(() => PAGE)
+    const web = navigating('https://evil.example/')
+    file.track(web)
+    web.navigate()
+    expect(file.url()).toBe(PAGE)
+    const noUrl = { once: (_e: string, l: () => void) => l() }
+    file.track(noUrl)
+    expect(file.url()).toBe(PAGE)
+  })
+
+  it('takes a committed file page even when the computed one cannot be built', () => {
+    let fail = true
+    const page = createAppPage(() => { if (fail) throw new Error('no path'); return PAGE })
+    const web = navigating('https://evil.example/')
+    page.track(web)
+    web.navigate()
+    expect(() => page.url()).toThrow('no path')
+    const wc = navigating(UNC_COMMITTED)
+    page.track(wc)
+    wc.navigate()
+    expect(page.url()).toBe(UNC_COMMITTED)
+    fail = false
+  })
+
+  it('tolerates a missing webContents or one without events', () => {
+    const page = createAppPage(() => PAGE)
+    expect(() => page.track(null)).not.toThrow()
+    expect(() => page.track(undefined)).not.toThrow()
+    expect(() => page.track({})).not.toThrow()
+    expect(page.url()).toBe(PAGE)
   })
 })
 
@@ -311,6 +405,26 @@ describe('installPermissionPolicy: the handlers it puts on a session', () => {
     expect(line).not.toMatch(/file:|http|index\.html|Users/)
   })
 
+  it('a subframe at the app page itself is refused by the main-frame rule alone, with one exact line each', () => {
+    // What e2e test 6 makes Chromium send: a frame whose committed URL is the app page plus a query,
+    // so isAppPage passes it and only `isMainFrame === true` can refuse it.
+    const framed = { isMainFrame: false, requestingUrl: `${PAGE}?permission-frame` }
+    expect(isAppPage(framed.requestingUrl, PAGE)).toBe(true)
+    expect(decideRequest(appWc, 'media', { ...framed, isMainFrame: true, mediaTypes: ['audio'] }, deps())).toBeNull()
+    expect(decideCheck(appWc, 'clipboard-read', 'file:///', { ...framed, isMainFrame: true }, deps())).toBeNull()
+    const { request, check, d } = handlers()
+    const cb = vi.fn()
+    request(appWc, 'media', cb, { ...framed, mediaTypes: ['audio'], securityOrigin: 'file:///' })
+    expect(cb).toHaveBeenCalledWith(false)
+    expect(check(appWc, 'clipboard-read', 'file:///', framed)).toBe(false)
+    const lines = d.log.mock.calls.map((c) => String(c[0]))
+    expect(lines).toEqual([
+      '[permissions] denied media request: not from the Termpolis window',
+      '[permissions] denied clipboard-read check: not from the Termpolis window',
+    ])
+    for (const line of lines) expect(line).not.toMatch(/file:|permission-frame|index\.html|Users|Applications/)
+  })
+
   it('logs each permission, kind and reason once, not on every check', () => {
     const { request, check, d } = handlers()
     for (let i = 0; i < 5; i++) {
@@ -426,23 +540,32 @@ describe('installDeviceRefusals and refuseBluetooth: no device is ever handed to
     expect(cb).toHaveBeenCalledWith({ confirmed: false })
   })
 
-  it('cancels the HID, serial and USB choosers, so no device is picked for the page', () => {
+  it('adds no HID, serial or USB chooser listener: with none, Electron cancels the request itself', () => {
     const ses = fakeSession()
-    const log = vi.fn()
-    installDeviceRefusals(ses, log)
-    for (const [event, cancel] of [['select-hid-device', undefined], ['select-serial-port', ''], ['select-usb-device', undefined]] as const) {
-      const ev = { preventDefault: vi.fn() }
-      const cb = vi.fn()
-      ses.listeners.get(event)!(ev, { deviceList: [{ deviceId: 'd1' }], portList: [{ portId: 'p1' }] }, cb)
-      expect(ev.preventDefault).toHaveBeenCalled()
-      expect(cb).toHaveBeenCalledTimes(1)
-      expect(cb.mock.calls[0]).toEqual(cancel === undefined ? [] : [cancel])
-    }
-    expect(log.mock.calls.map((c) => c[0])).toEqual([
-      '[permissions] denied hid chooser: a Bluetooth, HID, serial or USB device is never shared',
-      '[permissions] denied serial chooser: a Bluetooth, HID, serial or USB device is never shared',
-      '[permissions] denied usb chooser: a Bluetooth, HID, serial or USB device is never shared',
-    ])
+    installDeviceRefusals(ses, vi.fn())
+    expect(ses.on).not.toHaveBeenCalled()
+    expect(ses.listeners.size).toBe(0)
+  })
+
+  it('installs once per session, however often a window is created on it', () => {
+    const ses = fakeSession()
+    installDeviceRefusals(ses, vi.fn())
+    installDeviceRefusals(ses, vi.fn())
+    installDeviceRefusals(ses)
+    expect(ses.setDevicePermissionHandler).toHaveBeenCalledTimes(1)
+    expect(ses.setBluetoothPairingHandler).toHaveBeenCalledTimes(1)
+    const other = fakeSession()
+    installDeviceRefusals(other, vi.fn())
+    expect(other.setDevicePermissionHandler).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the Bluetooth chooser once per webContents, however often it is handed over', () => {
+    const wc = { on: vi.fn() }
+    refuseBluetooth(wc, vi.fn())
+    refuseBluetooth(wc, vi.fn())
+    refuseBluetooth(wc)
+    expect(wc.on).toHaveBeenCalledTimes(1)
+    expect(wc.on.mock.calls[0][0]).toBe('select-bluetooth-device')
   })
 
   it('cancels the Bluetooth chooser with an empty id (Electron would otherwise pick the first device)', () => {

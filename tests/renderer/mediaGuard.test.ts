@@ -98,6 +98,18 @@ describe('installMediaGuard: getUserMedia refuses a screen before it leaves the 
     expect((MediaDevices.prototype as { getUserMedia: unknown }).getUserMedia).toBe(guarded)
   })
 
+  it('a second install is a no-op: no throw, the same guard, still refusing screen capture', async () => {
+    const { win, real, devices, MediaDevices } = fakeWindow()
+    expect(installMediaGuard(win)).toBe(true)
+    const guarded = (MediaDevices.prototype as { getUserMedia: unknown }).getUserMedia
+    expect(() => installMediaGuard(win)).not.toThrow()
+    expect(installMediaGuard(win)).toBe(true)
+    expect((MediaDevices.prototype as { getUserMedia: unknown }).getUserMedia).toBe(guarded)
+    await expect(devices.getUserMedia({ audio: true, video: { mandatory: { chromeMediaSource: 'desktop' } } })).rejects.toMatchObject({ name: 'NotAllowedError' })
+    await devices.getUserMedia({ audio: true })
+    expect(real).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses the prefixed callback-style navigator.webkitGetUserMedia outright', () => {
     const { win, navigator, Navigator } = fakeWindow()
     installMediaGuard(win)
