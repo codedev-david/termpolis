@@ -6,7 +6,9 @@
 // (matchSensitiveFile) so .env / keys / cloud creds are NEVER embedded — the
 // indexer's skip-list is your security posture, not a separate guess. Binaries,
 // minified bundles, and oversized files are skipped too. Using `git ls-files`
-// means node_modules/dist/out are excluded for free (they're gitignored).
+// means node_modules/dist/out are excluded for free (they're gitignored), and
+// a committed dependency folder or virtual environment is dropped by the
+// listing too (repoFileList.ts inTrackedSkipPath).
 
 import * as crypto from 'crypto'
 import { promises as fsp, type Stats } from 'fs'
@@ -164,7 +166,8 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
   return stats
 }
 
-// The files a person sees in repoRoot: tracked ones plus untracked ones the ignore files allow (so node_modules and
+// The files a person sees in repoRoot: tracked ones (minus committed dependency, environment, cache and worktree
+// folders; committed build output stays) plus untracked ones the ignore files allow (so node_modules and
 // dist stay out), minus untracked dependency folders and virtual environments the ignore files miss (a root-only
 // /node_modules rule, a venv with no .gitignore inside: never read, never indexed), the tracked files of its
 // submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo; one git

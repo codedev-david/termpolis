@@ -25,6 +25,13 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   '.worktrees', '.nuxt', '.turbo', '.parcel-cache', '.svelte-kit', '.angular', '.gradle',
   '.pytest_cache', '.mypy_cache', '.ruff_cache', '.vs'
 ])
+/**
+ * Skip folders whose names a project also gives folders it fills by hand and commits: electron-builder's build
+ * resources, a published dist, vendored code it owns, a target or obj that is not build output. Their tracked files are
+ * kept (the code index reads what was committed); tracked files in every other skip folder are dropped, since a
+ * committed node_modules, virtual environment, cache or worktree is code no read needs (WP4a #63).
+ */
+export const OWN_OUTPUT_DIRS: ReadonlySet<string> = new Set(['build', 'out', 'dist', 'vendor', 'target', 'obj', 'coverage'])
 /** The file every Python virtual environment holds at its top (python -m venv, virtualenv, uv). */
 export const VENV_MARKER = 'pyvenv.cfg'
 /** The most files a map takes from one folder walk, or from all nested repositories together. Past it the world says so. */
@@ -59,6 +66,14 @@ export function skipsDir(name: string, parent: string | undefined): boolean {
 /** A path under a skip folder at any depth, or with an ignored suffix. A trailing `/` (a folder entry) counts its last name. */
 export function inSkippedPath(rel: string): boolean {
   return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg, i, all) => skipsDir(seg, i > 0 ? all[i - 1] : undefined))
+}
+
+/**
+ * A tracked path no listing keeps: an ignored suffix, or under a skip folder that is not one of OWN_OUTPUT_DIRS, at any
+ * depth. A trailing `/` (a folder entry) counts its last name, as in inSkippedPath.
+ */
+export function inTrackedSkipPath(rel: string): boolean {
+  return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg, i, all) => !OWN_OUTPUT_DIRS.has(seg) && skipsDir(seg, i > 0 ? all[i - 1] : undefined))
 }
 
 const onWindows = (): boolean => process.platform === 'win32'
@@ -327,9 +342,12 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
   const { deps } = ctx
   const depth = chain.length
   const listed = parseTaggedListing(stdout)
-  // A virtual environment is told by its pyvenv.cfg, whatever its folder is called (env, .env, py311...).
-  const venvs = listed.untracked.filter((n) => n.endsWith(`/${VENV_MARKER}`)).map((n) => n.slice(0, -VENV_MARKER.length))
-  const keep = (n: string): boolean => !inSkippedPath(n) && !venvs.some((v) => n.startsWith(v))
+  // A virtual environment is told by its pyvenv.cfg, whatever its folder is called (env, .env, py311...), committed or not.
+  const venvs = [...listed.untracked, ...listed.tracked].filter((n) => n.endsWith(`/${VENV_MARKER}`)).map((n) => n.slice(0, -VENV_MARKER.length))
+  const inVenv = (n: string): boolean => venvs.some((v) => n.startsWith(v))
+  const keep = (n: string): boolean => !inSkippedPath(n) && !inVenv(n)
+  // Tracked files are held to the skip folders too, but for the build-output names a project also fills by hand.
+  const keepTracked = (n: string): boolean => !inTrackedSkipPath(n) && !inVenv(n)
   const untracked = listed.untracked.filter(keep)
   const nested = untracked.filter((n) => n.endsWith('/'))
   let recursed: string[] = []
@@ -343,11 +361,13 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
       unreadableTracked = parsed.unreadable
     }
   }
-  let files = mergeListings([...listed.tracked, ...untracked.filter((n) => !n.endsWith('/'))], recursed)
-  // A submodule is a tracked entry (its gitlink) that the recursed listing holds files under.
+  // Merged before the tracked skip rule, so a submodule's gitlink goes with the files it holds, kept or not.
+  let files = mergeListings([...listed.tracked, ...untracked.filter((n) => !n.endsWith('/'))], recursed).filter(keepTracked)
+  // A submodule is a tracked entry (its gitlink) that the recursed listing holds files under; one in a skip folder is not
+  // followed.
   const inRecursed = new Set<string>()
   for (const r of recursed) for (let at = r.indexOf('/'); at !== -1; at = r.indexOf('/', at + 1)) inRecursed.add(r.slice(0, at))
-  const submodules = listed.tracked.filter((t) => inRecursed.has(t))
+  const submodules = listed.tracked.filter((t) => inRecursed.has(t) && keepTracked(`${t}/`))
   if (depth > 0) {
     if (files.length > ctx.left) {
       ctx.capped = true
@@ -355,7 +375,7 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
     }
     ctx.left -= files.length
   }
-  const unreadable = [...listed.unreadableUntracked.filter(keep), ...unreadableTracked]
+  const unreadable = [...listed.unreadableUntracked.filter(keep), ...unreadableTracked.filter(keepTracked)]
   const found: string[] = [...submodules]
   if (depth < NESTED_DEPTH) {
     for (const n of nested) {
@@ -391,8 +411,9 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
 }
 
 /**
- * Every file git lists for `root`: tracked files, untracked ones the ignore files allow (minus skip folders and virtual
- * environments, which are never read), submodules' tracked files (found from the repository top, so a subfolder gets
+ * Every file git lists for `root`: tracked files (minus those in skip folders other than OWN_OUTPUT_DIRS, and in
+ * virtual environments), untracked ones the ignore files allow (minus skip folders and virtual environments, which are
+ * never read), submodules' tracked files (found from the repository top, so a subfolder gets
  * them too), and the files of nested repositories that are not submodules, each listed by its own git under the same
  * rules (or walked, when git refuses one and a walk is given), NESTED_DEPTH deep and MAP_FILE_CAP files in all. A
  * nested worktree of the repository itself (its `.git` a file into the same git folder) is not listed: its files are

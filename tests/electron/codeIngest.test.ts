@@ -295,6 +295,30 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
     }
   })
 
+  it('WP4a #63: never lists or ingests a committed dependency folder or virtual environment; committed build output stays', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-committed-'))
+    try {
+      git(root, 'init', '-q')
+      write(root, 'src/app.ts')
+      write(root, 'node_modules/dep/index.js', 'export const DEPENDENCY_CODE = 1\n')
+      write(root, 'packages/x/node_modules/lib/index.js', 'export const DEPENDENCY_CODE = 2\n')
+      write(root, 'py/pyvenv.cfg', 'home = /usr/bin\n')
+      write(root, 'py/lib/site.py', 'VENV_CODE = 1\n')
+      write(root, 'web/jquery.min.js', 'var DEPENDENCY_CODE = 3\n')
+      write(root, 'build/linux/after-install.sh', 'echo BUILD_RESOURCE\n')
+      git(root, 'add', '-A', '-f')
+      git(root, 'commit', '-q', '-m', 'committed')
+      expect(relTo(root, await discoverRepoFiles(root))).toEqual(['build/linux/after-install.sh', 'src/app.ts'])
+
+      const writes: string[] = []
+      await runCodeIngest({ hasHash: () => false, write: async (i) => { writes.push(i.content); return undefined } }, { repoRoot: root })
+      expect(writes.some((w) => w.includes('BUILD_RESOURCE'))).toBe(true)
+      expect(writes.some((w) => w.includes('DEPENDENCY_CODE') || w.includes('VENV_CODE'))).toBe(false)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('lists a nested repository that is not a submodule with its own git, under the same rules', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-nested-'))
     try {

@@ -8,6 +8,8 @@ import {
   skipsDir,
   isIgnoredPath,
   inSkippedPath,
+  inTrackedSkipPath,
+  OWN_OUTPUT_DIRS,
   listRepo,
   lsFilesArgs,
   lsSubmoduleArgs,
@@ -154,6 +156,20 @@ describe('repoFileList: folders no map reads', () => {
     expect(inSkippedPath('bin/run.sh')).toBe(false)
   })
 
+  it('WP4a #63: a tracked file is dropped in every skip folder but the build-output names a project also gives its own folders', () => {
+    expect([...OWN_OUTPUT_DIRS].sort()).toEqual(['build', 'coverage', 'dist', 'obj', 'out', 'target', 'vendor'])
+    for (const d of OWN_OUTPUT_DIRS) expect(SKIP_DIRS.has(d), d).toBe(true)
+    for (const d of SKIP_DIRS) expect(inTrackedSkipPath(`a/${d}/x.ts`), d).toBe(!OWN_OUTPUT_DIRS.has(d))
+    expect(inTrackedSkipPath('.claude/worktrees/x/a.ts')).toBe(true)
+    expect(inTrackedSkipPath('.claude/worktrees/x/')).toBe(true)
+    expect(inTrackedSkipPath('worktrees/x/a.ts')).toBe(false)
+    expect(inTrackedSkipPath('build/vendor.min.js')).toBe(true)
+    expect(inTrackedSkipPath('build/node_modules/x.js')).toBe(true)
+    expect(inTrackedSkipPath('node_modules')).toBe(false)
+    expect(inTrackedSkipPath('node_modules/')).toBe(true)
+    expect(inTrackedSkipPath('src/a.ts')).toBe(false)
+  })
+
   it('the skip folders hold every folder name the file watcher skips: nested checkouts, caches, IDE files', () => {
     for (const d of WATCH_IGNORED_DIRS) expect(SKIP_DIRS.has(d), d).toBe(true)
     expect(inSkippedPath('.worktrees/feat/src/a.ts')).toBe(true)
@@ -199,9 +215,62 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     expect(await listRepo('/', { git: fakeGit({ 'ls /': null }), exists: existsIn([]) })).toBeNull()
   })
 
-  it('lists tracked and untracked files, sorted, and keeps a tracked file in a skip folder (the code index reads what was committed)', async () => {
+  it('lists tracked and untracked files, sorted, and keeps a tracked file in a build-output folder (the code index reads what was committed)', async () => {
     const git = fakeGit({ 'ls /r': z('? b.ts', 'H a.ts', 'H build/gen.ts') })
     expect(await listRepo('/r/', { git, exists: existsIn(['/r/.git']) })).toEqual({ files: ['a.ts', 'b.ts', 'build/gen.ts'], unreadable: [], nestedCapped: false, nested: [] })
+  })
+
+  it('WP4a #63: drops committed dependency, environment, cache, version-control and worktree files; keeps committed build output', async () => {
+    const git = fakeGit({
+      'ls /r': z(
+        'H src/a.ts',
+        'H node_modules/dep/index.js',
+        'H packages/x/node_modules/lib/index.js',
+        'H bower_components/b/b.js',
+        'H .venv/lib/site.py',
+        'H __pycache__/a.cpython-311.pyc',
+        'H env/pyvenv.cfg',
+        'H env/lib/y.py',
+        'H src/env/config.ts',
+        'H .tox/py/x.py',
+        'H .gradle/8.0/x.kt',
+        'H web/.next/server.js',
+        'H .worktrees/feat/a.ts',
+        'H .claude/worktrees/y/a.ts',
+        'H .claude/settings.json',
+        'H web/jquery.min.js',
+        'H src/app.bundle.js',
+        'H build/linux/after-install.sh',
+        'H out/main.js',
+        'H dist/index.js',
+        'H vendor/lib/v.go',
+        'H target/gen.rs',
+        'H app/obj/x.cs',
+        'H coverage/report.ts',
+        'H node_modules/x�.js',
+        'H src/q�.ts'
+      )
+    })
+    expect(await listRepo('/r', { git, exists: existsIn(['/r/.git']) })).toEqual({
+      files: ['.claude/settings.json', 'app/obj/x.cs', 'build/linux/after-install.sh', 'coverage/report.ts', 'dist/index.js', 'out/main.js', 'src/a.ts', 'src/env/config.ts', 'target/gen.rs', 'vendor/lib/v.go'],
+      unreadable: ['src/q�.ts'],
+      nestedCapped: false, nested: []
+    })
+  })
+
+  it('WP4a #63: a committed dependency folder does not come back through the submodule listing, nor is a submodule inside one followed', async () => {
+    const git = fakeGit({
+      'ls /r': z('H .gitmodules', 'H libs/shared', 'H node_modules/dep', 'H node_modules/top.js', 'H vendor/mod', 'H src/a.ts', 'H node_modules/n�.js'),
+      'sub /r': z(
+        '.gitmodules', 'libs/shared/x.ts', 'libs/shared/node_modules/d/i.js', 'node_modules/dep/i.js', 'node_modules/top.js',
+        'vendor/mod/m.go', 'src/a.ts', 'node_modules/n�.js', 'libs/shared/node_modules/w�.js', 'libs/shared/w�.ts'
+      )
+    })
+    expect(await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules']) })).toEqual({
+      files: ['.gitmodules', 'libs/shared/x.ts', 'src/a.ts', 'vendor/mod/m.go'],
+      unreadable: ['libs/shared/w�.ts'],
+      nestedCapped: false, nested: ['libs/shared', 'vendor/mod']
+    })
   })
 
   it('drops untracked files in skip folders and virtual environments before anything reads them', async () => {

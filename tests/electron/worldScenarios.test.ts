@@ -69,8 +69,9 @@ describe('world source discovery over the scenario fixtures (real git, real disk
   it('vendored: the dependency, environment, build and minified files never become parts of the world', async () => {
     const dir = await scenario('vendored')
     const listed = await mainFiles(dir)
-    // Git lists what was committed, vendored files too; the code index and the grouping leave them out.
-    expect(listed).toContain('node_modules/x/index.js')
+    // Of what was committed, the listing keeps a build folder's files and drops the dependency and environment
+    // folders and the minified and bundled names (WP4a #63); the grouping leaves the build output out of the world.
+    expect(listed).toEqual(['package.json', 'src/main.ts', 'src/util.ts', 'target/z.rs'])
     expect(listed.filter((f) => !isIgnored(f) && /\.(ts|js|py|rs|css)$/.test(f))).toEqual(['src/main.ts', 'src/util.ts'])
     // The world host never reads what the world leaves out, so its snapshot has only the two.
     expect(await snapshotFiles(dir)).toEqual(['src/main.ts', 'src/util.ts'])
