@@ -557,11 +557,35 @@ function hostOf(key: string): { ascii: string; name: string } {
   return { ascii, name: ascii }
 }
 
+/** Top-level names RFC 2606 / RFC 6761 keep for tests, documentation and the local machine: no real service lives there. */
+const RESERVED_TLDS = new Set(['test', 'example', 'invalid', 'localhost'])
+/** Second-level names RFC 2606 keeps for documentation. */
+const RESERVED_DOMAINS = ['example.com', 'example.net', 'example.org']
+/** Folders that hold tests, test helpers and fixtures, whatever their files are called. */
+const TEST_DIRS = new Set(['tests', 'test', 'e2e', '__tests__', 'fixtures'])
+
+/**
+ * True for a host no real service answers on (look spec §9.2): one under a reserved top-level name (`relay.test`,
+ * `svc.invalid`, `app.localhost`, the bare name too) or a documentation domain (`example.com`, `api.example.org`).
+ * Case and a trailing dot do not matter; a look-alike (`example.com.au`, `myexample.com`, `test.com`) is a real host.
+ */
+export function isReservedHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.+$/, '')
+  if (RESERVED_TLDS.has(h.slice(h.lastIndexOf('.') + 1))) return true
+  return RESERVED_DOMAINS.some((d) => h === d || h.endsWith(`.${d}`))
+}
+
+/** True for a test file, or any file under a folder of tests or fixtures: what it calls is the test's, not the app's. */
+function isTestSource(file: string): boolean {
+  return TEST_FILE.test(file) || file.split('/').slice(0, -1).some((dir) => TEST_DIRS.has(dir))
+}
+
 /** Two orbs are one when they are the same kind and the same agent or host (a host in punycode, so its two spellings are one). */
 const orbKey = (x: Pick<External, 'kind' | 'name'>): string => `${x.kind}\0${x.kind === 'service' ? hostOf(x.name).ascii : x.name}`
 
 /**
- * Agent CLIs and non-local web services the buildings reach, each with one conduit per building. An orb's id is
+ * Agent CLIs and non-local web services the buildings' source reaches (a host only tests call, or a reserved one, is
+ * none), each with one conduit per building. An orb's id is
  * `x-` plus the slug of its punycode form, so an ordinary host keeps the id it always had and a Unicode host gets
  * a readable one (`x-xn-wgv71a-jp`), never a bare `x-` (G10). Two orbs whose slugs collide (`api.foo.com` and
  * `api-foo.com`, or an agent and a host of one name) both take `--` plus a short hash of what they are, so they
@@ -576,8 +600,10 @@ function externalsOf(g: Grouping): { externals: External[]; edges: WorldEdge[] }
       if (bd.kind === 'spawn' && AGENT_CLIS.has(baseKey(bd.key).toLowerCase())) {
         const name = baseKey(bd.key).toLowerCase()
         hit = { kind: 'agent', name, ascii: name, tech: 'Spawn' }
-      } else if (bd.kind === 'http-out' && !LOCAL_HOSTS.has(bd.key.toLowerCase())) {
-        hit = { kind: 'service', ...hostOf(bd.key), tech: 'HTTP client' }
+      } else if (bd.kind === 'http-out' && !LOCAL_HOSTS.has(bd.key.toLowerCase()) && !isTestSource(bd.file)) {
+        // A call from a test or a fixture is no service the app reaches, and a reserved host is no service at all.
+        const host = hostOf(bd.key)
+        if (!isReservedHost(host.ascii)) hit = { kind: 'service', ...host, tech: 'HTTP client' }
       }
       if (!hit) continue
       const who = orbKey({ kind: hit.kind, name: hit.ascii })

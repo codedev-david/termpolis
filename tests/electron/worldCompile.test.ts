@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fill, linear, TIMED } from './_linearTime'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
-import type { WorldDoc } from '../../src/shared/world/types'
+import type { WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { applyDesignPatch, emptyDesignDoc } from '../../src/shared/world/designPatch'
 import {
@@ -12,6 +12,7 @@ import {
   compileWorldStaged,
   contentHash,
   createRecompileScheduler,
+  isReservedHost,
   manifestServiceNames,
   type CompileDeps,
   type CompileStage,
@@ -41,7 +42,7 @@ const FIXTURE: Record<string, string> = {
     "ipcMain.handle('checkout:run', async () => 1)",
     "spawn('claude', ['-p'])",
     "spawn('git', ['status'])",
-    "fetch('https://api.example.com/v1/orders')",
+    "fetch('https://api.shopco.dev/v1/orders')",
     "fetch('http://localhost:3000/health')",
     "const sdk = { serviceName: 'checkout' }"
   ].join('\n'),
@@ -149,7 +150,7 @@ describe('compileWorld', () => {
 
     // Externals: agent CLIs and non-local hosts only, each with a conduit from its building.
     expect(doc.externals).toEqual([
-      { id: 'x-api-example-com', name: 'api.example.com', kind: 'service', fog: false },
+      { id: 'x-api-shopco-dev', name: 'api.shopco.dev', kind: 'service', fog: false },
       { id: 'x-claude', name: 'claude', kind: 'agent', fog: false },
       { id: 'x-codex', name: 'codex', kind: 'agent', fog: false }
     ])
@@ -167,7 +168,7 @@ describe('compileWorld', () => {
       twoWay: false,
       claims: [{ text: 'Seen in code', state: 'observed', evidence: [{ kind: 'file', ref: 'src/main/index.ts:6' }] }]
     })
-    expect(doc.edges.find((e) => e.to === 'x-api-example-com')?.tech).toEqual(['HTTP client'])
+    expect(doc.edges.find((e) => e.to === 'x-api-shopco-dev')?.tech).toEqual(['HTTP client'])
 
     // Every node has a position; externals sit on a ring outside every district at y=12.
     for (const x of doc.externals) {
@@ -1808,5 +1809,86 @@ describe('tooling dot-folders are left out of the world (WP-LOOK Task 6)', () =>
     expectValid(doc)
     expect(doc.buildings.map((b) => b.members)).toEqual([['src/a.ts']])
     expect(doc.buildings[0].status).toBe('gap')
+  })
+})
+
+describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOOK Task 7)', () => {
+  const HOSTS: Record<string, string> = {
+    'tests/a.test.ts': "fetch('https://relay.test/x')\nfetch('https://t.example.com')\nfetch('https://api.github.com/repos')\n",
+    'e2e/b.spec.ts': "fetch('https://h.io/x')\n",
+    'src/c.ts': "export async function c(): Promise<unknown> {\n  return (await fetch('https://api.github.com/user')).json()\n}\n"
+  }
+  const compileHosts = (files: Record<string, string>, previous: WorldDoc | null = null, over: Partial<CompileDeps> = {}): Promise<WorldDoc> =>
+    compileWorld({ snap: snapOf(files, {}), projectKey: 'hosts', head: HEAD, previous }, mkDeps(files, { glob: async () => [], ...over }))
+  const orbNames = (doc: WorldDoc): string[] => doc.externals.map((x) => x.name).sort()
+
+  it('a host called only from test files is not an orb', async () => {
+    const doc = await compileHosts(HOSTS)
+    expectValid(doc)
+    expect(orbNames(doc)).toEqual(['api.github.com'])
+    // A test folder counts whatever the file is called: a helper under tests/, test/, __tests__/ or fixtures/.
+    const helpers = await compileHosts({
+      'test/helpers/net.ts': "fetch('https://one.io/x')\n",
+      'src/__tests__/util.ts': "fetch('https://two.io/x')\n",
+      'pkg/fixtures/server.ts': "fetch('https://three.io/x')\n",
+      'src/e2e.ts': "fetch('https://four.io/x')\n",
+      'src/testing/net.ts': "fetch('https://five.io/x')\n"
+    })
+    expectValid(helpers)
+    // A file named e2e, or a folder whose name only starts like one, is source.
+    expect(orbNames(helpers)).toEqual(['five.io', 'four.io'])
+  })
+
+  it('a host named like a fixture is still an orb when source code calls it', async () => {
+    const doc = await compileHosts({ ...HOSTS, 'src/d.ts': "fetch('https://h.io/live')\n" })
+    expect(orbNames(doc)).toEqual(['api.github.com', 'h.io'])
+    expect(doc.edges.filter((e) => e.to === 'x-h-io').map((e) => e.from)).toEqual(['b-src-d'])
+  })
+
+  it('a reserved host is never an orb, even from source', async () => {
+    const reserved = ['relay.test', 'test', 'a.b.example', 'svc.invalid', 'app.localhost', 'example.com', 'api.example.com', 'example.net',
+      'x.example.org', 'EXAMPLE.COM', 'example.com.']
+    const kept = ['example.com.au', 'myexample.com', 'test.com', 'testing.io', 'examples.org', 'invalid.dev']
+    const files = { 'src/r.ts': [...reserved, ...kept].map((h) => `fetch('https://${h}/x')`).join('\n') }
+    const doc = await compileHosts(files)
+    expectValid(doc)
+    expect(orbNames(doc)).toEqual([...kept].sort())
+    for (const h of reserved) expect(isReservedHost(h), h).toBe(true)
+    for (const h of kept) expect(isReservedHost(h), h).toBe(false)
+  })
+
+  it('a host called from source and from tests is one orb with only the source conduit', async () => {
+    const doc = await compileHosts(HOSTS)
+    const orb = doc.externals.find((x) => x.name === 'api.github.com') as WorldDoc['externals'][number]
+    const lines = doc.edges.filter((e) => e.to === orb.id)
+    expect(lines.map((e) => e.from)).toEqual(['b-src-c'])
+    expect(lines[0].claims[0].evidence).toEqual([{ kind: 'file', ref: 'src/c.ts:2' }])
+    // A building holding both a test and its source draws the line from the source's call.
+    const mixed = await compileHosts({
+      'src/net.test.ts': "import { c } from './net'\nfetch('https://api.github.com/a')\n",
+      'src/net.ts': "export const c = 1\nfetch('https://api.github.com/b')\n"
+    })
+    const toOrb = mixed.edges.filter((e) => e.to === 'x-api-github-com')
+    expect(toOrb.flatMap((e) => e.claims.flatMap((c) => c.evidence.map((ev) => ev.ref)))).toEqual(['src/net.ts:2'])
+  })
+
+  it('orb ids of the remaining hosts are unchanged (no idRenames churn)', async () => {
+    const doc = await compileHosts(HOSTS)
+    expect(doc.externals.map((x) => x.id)).toEqual(['x-api-github-com'])
+    // A world saved by the older compiler, with the test hosts as orbs and lines from the test buildings.
+    const tested = doc.buildings.find((b) => b.members.includes('tests/a.test.ts')) as WorldDoc['buildings'][number]
+    const old: WorldDoc = structuredClone(doc)
+    for (const [id, name] of [['x-relay-test', 'relay.test'], ['x-t-example-com', 't.example.com'], ['x-h-io', 'h.io']]) {
+      old.externals.push({ id, name, kind: 'service', fog: false })
+      old.edges.push({ ...doc.edges.find((e) => e.to === 'x-api-github-com') as WorldEdge, id: edgeId({ from: tested.id, to: id }), from: tested.id, to: id })
+      old.layout.positions[id] = [1, 12, 1]
+    }
+    const copy = vi.fn(async (_renames: Record<string, string>) => undefined)
+    const again = await compileHosts(HOSTS, old, { copyAnnotations: copy })
+    expectValid(again)
+    expect(copy).not.toHaveBeenCalled()
+    expect(again.externals.map((x) => x.id)).toEqual(['x-api-github-com'])
+    expect(again.layout.positions['x-api-github-com']).toEqual(doc.layout.positions['x-api-github-com'])
+    expect(again.edges.map((e) => e.id).sort()).toEqual(doc.edges.map((e) => e.id).sort())
   })
 })

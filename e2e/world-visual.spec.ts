@@ -116,7 +116,7 @@ const SMALL_FILES: Record<string, string> = {
 const MOTION_FILES = (): Record<string, string> => ({
   ...SMALL_FILES,
   'src/store/db.test.ts': "import { db } from './db'\nexport const seen = db.all().length === 0\n",
-  'src/api/remote.ts': "export async function remoteItems(): Promise<unknown> {\n  return (await fetch('https://api.example.com/items')).json()\n}\n",
+  'src/api/remote.ts': "export async function remoteItems(): Promise<unknown> {\n  return (await fetch('https://api.shopco.dev/items')).json()\n}\n",
   'vitest-report.json': JSON.stringify({ testResults: [{ name: 'src/store/db.test.ts', status: 'passed', endTime: Date.now() }] }),
 })
 
