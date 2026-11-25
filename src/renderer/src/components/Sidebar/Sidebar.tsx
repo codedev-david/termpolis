@@ -214,35 +214,43 @@ export function Sidebar() {
           className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
-      <LumopolisSidebarEntry />
-      <div className="border-t border-[#3c3c3c]"></div>
-      <AIProfiles availableShells={availableShells} />
-      <div className="border-t border-[#3c3c3c]"></div>
-      <WorkspaceList />
-      <div className="border-t border-[#3c3c3c]"></div>
-      <WorkflowSidebarSection
-        onCreate={() => setWorkflowView({ mode: 'new' })}
-        onOpen={(id, scope) => setWorkflowView({ mode: 'edit', id, scope })}
-      />
-      <div className="px-3 py-1.5 flex items-center justify-between">
-        <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">
-          <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
-          Terminals
-          <span className="text-[10px] normal-case tracking-normal">({terminals.filter(t => !t.hidden).length})</span>
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {!terminalsCollapsed && terminals.filter(t => !t.hidden).map((t, i) => (
-          <TerminalTab
-            key={t.id}
-            terminal={t}
-            index={i}
-            isActive={t.id === activeTerminalId && !showSettings}
-            onClick={() => setActiveTerminal(t.id)}
-            onClose={() => handleClose(t.id)}
-            onUpdate={patch => updateTerminal(t.id, patch)}
-          />
-        ))}
+      {/* Everything between the toolbar and "+ Add Terminal" scrolls as ONE region. The terminal
+          list used to be the only part that could shrink (flex-1 overflow-y-auto), so once the
+          sections above it were taller than the window (a short window, a few workspaces, the
+          Lumopolis hint) it shrank to 0px: the rows were still laid out, but clipped to nothing,
+          so the Terminals header and the footer took every click aimed at a row. One scroll
+          region keeps each row reachable at any height; min-h-0 lets it shrink below its content. */}
+      <div className="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-scroll">
+        <LumopolisSidebarEntry />
+        <div className="border-t border-[#3c3c3c]"></div>
+        <AIProfiles availableShells={availableShells} />
+        <div className="border-t border-[#3c3c3c]"></div>
+        <WorkspaceList />
+        <div className="border-t border-[#3c3c3c]"></div>
+        <WorkflowSidebarSection
+          onCreate={() => setWorkflowView({ mode: 'new' })}
+          onOpen={(id, scope) => setWorkflowView({ mode: 'edit', id, scope })}
+        />
+        <div className="px-3 py-1.5 flex items-center justify-between">
+          <button onClick={() => setTerminalsCollapsed(!terminalsCollapsed)} className="flex items-center gap-1.5 text-xs text-[#9ca3af] uppercase tracking-wider hover:text-[#d4d4d4]">
+            <i className={`fa-solid fa-chevron-${terminalsCollapsed ? 'right' : 'down'} text-[9px]`}></i>
+            Terminals
+            <span className="text-[10px] normal-case tracking-normal">({terminals.filter(t => !t.hidden).length})</span>
+          </button>
+        </div>
+        <div data-testid="sidebar-terminal-list">
+          {!terminalsCollapsed && terminals.filter(t => !t.hidden).map((t, i) => (
+            <TerminalTab
+              key={t.id}
+              terminal={t}
+              index={i}
+              isActive={t.id === activeTerminalId && !showSettings}
+              onClick={() => setActiveTerminal(t.id)}
+              onClose={() => handleClose(t.id)}
+              onUpdate={patch => updateTerminal(t.id, patch)}
+            />
+          ))}
+        </div>
       </div>
       <div className="p-2 border-t border-[#3c3c3c]">
         <button

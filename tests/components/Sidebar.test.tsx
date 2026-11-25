@@ -144,6 +144,34 @@ describe('Sidebar', () => {
     expect(screen.getByTitle('Collapse sidebar')).toBeInTheDocument()
   })
 
+  // The terminal list was once the only part of the sidebar that could shrink, so a short window
+  // squeezed it to 0px and the Terminals header and the footer took every click aimed at a row
+  // (macOS runner, workspaces.spec test 7). The sections and the rows now scroll as one region.
+  it('scrolls the sections and the terminal rows as one region, with + Add Terminal kept outside it', () => {
+    mockState = {
+      ...getDefaultState(),
+      terminals: [
+        { id: 't1', name: 'Terminal 1', color: '#fff', shellType: 'bash', cwd: '/', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+      ],
+    }
+    render(<Sidebar />)
+    const region = screen.getByTestId('sidebar-scroll')
+    for (const cls of ['flex-1', 'min-h-0', 'overflow-y-auto']) expect(region.classList).toContain(cls)
+    expect(region).toContainElement(screen.getByTestId('ai-profiles'))
+    expect(region).toContainElement(screen.getByTestId('workspace-list'))
+    expect(region).toContainElement(screen.getByText('Terminals'))
+    const row = screen.getByTestId('terminal-tab-t1')
+    expect(region).toContainElement(row)
+    // No scroller of its own between the rows and the region: a nested one is what collapsed.
+    for (let el = row.parentElement; el && el !== region; el = el.parentElement) {
+      expect(el.className).not.toMatch(/overflow-(y-)?(auto|scroll)|flex-1/)
+    }
+    // The footer stays pinned below the region, so "+ Add Terminal" is always on screen.
+    const add = screen.getByText('+ Add Terminal')
+    expect(region).not.toContainElement(add)
+    expect(region.parentElement).toContainElement(add)
+  })
+
   it('renders terminal list from store', () => {
     mockState = {
       ...getDefaultState(),
