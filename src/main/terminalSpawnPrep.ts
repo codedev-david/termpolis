@@ -97,20 +97,41 @@ async function throughFreshTemp(path: string, content: string, retries: number, 
 }
 
 /**
+ * Integration files known not to be whole: a direct write cut short left part of one, or a recorded one is no longer
+ * the size written. A refused rename keeps an old file because an old file is whole; one of these is not, so it is
+ * replaced like a missing one. Shared with writeWholeFileSync. In memory only: a file a crash cut short in an earlier run
+ * is rewritten by the first spawn of this one (nothing is recorded yet), and only a rename refused then could keep it.
+ */
+export const notWhole = new Set<string>()
+/** The size a whole integration file has on disk: its content as UTF-8 (how both writers write it). */
+export const byteLength = (content: string): number => Buffer.byteLength(content, 'utf8')
+/** The file at `path` was just written whole: 'written'. */
+export const wholeAgain = (path: string): WholeFileResult => { notWhole.delete(path); return 'written' }
+
+/**
  * Write `content` to `path` whole: to a temp file in the same folder, then renamed over it, so a shell starting while
  * another terminal rewrites the file reads the old one or the new one, never half of one. A refused rename is tried
- * again; still refused, it keeps a file that is there ('kept'). With none there (a fresh install) a second fresh temp
- * file is tried, and then the content is written straight to the file ('written'), so the first terminal still gets
+ * again; still refused, it keeps a whole file that is there ('kept'). With none there (a fresh install), or only part of
+ * one (notWhole), a second fresh temp file is tried, and then the content is written straight to the file ('written'), so the first terminal still gets
  * its integration. That direct write is only safe because the caller holds the file's integration lock: no other
- * spawn reads or writes it until this resolves. Any other failure rejects with that failure.
+ * spawn reads or writes it until this resolves; cut short, it removes what it wrote. Any other failure rejects with that
+ * failure.
  */
 export async function writeWholeFile(path: string, content: string, io: Partial<WholeFileIo> = {}): Promise<WholeFileResult> {
   const all: WholeFileIo = { ...realIo, ...io }
-  if (await throughFreshTemp(path, content, RENAME_RETRIES, all)) return 'written'
-  if (await all.exists(path)) return 'kept'
-  if (await throughFreshTemp(path, content, 0, all)) return 'written' // the first temp file may be the one a scanner holds
-  await all.writeFile(path, content) // first run, nothing to keep: a direct write beats a terminal with no integration
-  return 'written'
+  if (await throughFreshTemp(path, content, RENAME_RETRIES, all)) return wholeAgain(path)
+  if (!notWhole.has(path) && await all.exists(path)) return 'kept'
+  if (await throughFreshTemp(path, content, 0, all)) return wholeAgain(path) // the first temp file may be the one a scanner holds
+  try {
+    await all.writeFile(path, content) // first run, nothing to keep: a direct write beats a terminal with no integration
+  } catch (e) {
+    // Cut short (a full disk, EIO): what is there is part of a script. It goes, so no later spawn keeps it and sources
+    // it; one the scanner holds stays marked, so a refused rename never keeps it. The write's failure is the one reported.
+    notWhole.add(path)
+    try { await all.rm(path); notWhole.delete(path) } catch { /* still held: marked, and written again by the next spawn */ }
+    throw e
+  }
+  return wholeAgain(path)
 }
 
 const refusalsLogged = new Set<string>()
@@ -129,11 +150,12 @@ export function logRenameRefusal(path: string, log: (line: string) => void = (li
  * (ensureIntegrationScript in terminalManager.ts) cannot wait: it asks integrationFileBusy() and, while the lock is
  * held, opens its terminal without integration rather than read or write a file mid-write.
  *
- * Only the WAIT is time-limited, never the job. A spawn queued behind another prepare of the same file for
- * INTEGRATION_WAIT_MS gives up: it answers null (the terminal opens without integration) and its job is dropped. The
- * lock is not released then, because the write it waited behind may still land, and nothing may write beside it. While
- * the job running has outlasted a waiter like that, a spawn that arrives answers null at once rather than wait the whole
- * limit again; the next turn of the queue (the stuck job has settled) clears that.
+ * The job is never cut short, only the answers are. A spawn queued behind another prepare of the same file for
+ * INTEGRATION_WAIT_MS gives up: it answers null (the terminal opens without integration) and its job is dropped. A
+ * spawn whose own job runs past INTEGRATION_HOLD_MS answers null as well, so its terminal opens (#44). The lock is not
+ * released then, because the stuck write may still land, and nothing may write beside it. While the job running has
+ * outlasted a waiter, or its own hold, a spawn that arrives answers null at once rather than wait the whole limit
+ * again; the next turn of the queue (the stuck job has settled) clears that.
  */
 export interface IntegrationQueue {
   /** The last job queued for this file: the next one starts when it settles. */
@@ -160,10 +182,19 @@ export const integrationFileBusy = (name: string): boolean => integrationLocks.h
 export const INTEGRATION_WAIT_MS = 4_000
 
 /**
+ * How long the spawn whose own prepare is running waits for it before it opens without integration (#44). Longer than
+ * INTEGRATION_WAIT_MS: this spawn is the one doing the write, and a first PowerShell on a fresh install, with a cloud
+ * scan holding the brand-new .ps1 for several seconds, should still get its integration. Past it, the write is taken
+ * to be stuck. Like the wait timer it is unref'd, and cleared when the job settles, so a normal spawn never sees it.
+ */
+export const INTEGRATION_HOLD_MS = 15_000
+
+/**
  * Run `job` after every job queued before it for the same file, or answer `onWaitTooLong` if it has waited
- * INTEGRATION_WAIT_MS for them. A job that rejects rejects only its own caller: the next job runs all the same (`then(turn,
- * turn)`) and the lock is released either way (`then(release, release)`, which also handles the rejection, where a
- * `finally` would pass it on to a promise nobody awaits).
+ * INTEGRATION_WAIT_MS for them, or if the job itself has run for INTEGRATION_HOLD_MS. A job that rejects rejects only its
+ * own caller: the next job runs all the same (`then(turn, turn)`) and the lock is released either way (`then(settle,
+ * settle)`, which also handles the rejection, where a `finally` would pass it on to a promise nobody awaits). The timers
+ * are unref'd where the host's timers can be (`unref?.()`: some answer a plain number).
  */
 export function underIntegrationLock<T>(
   name: string,
@@ -174,21 +205,32 @@ export function underIntegrationLock<T>(
   if (ahead?.stalled) return Promise.resolve(onWaitTooLong)
   const queue: IntegrationQueue = ahead ?? { tail: Promise.resolve(), stalled: false }
   let timer: ReturnType<typeof setTimeout> | undefined
+  let hold: ReturnType<typeof setTimeout> | undefined
   let gaveUp = false
+  let answer!: (value: T) => void
   const turn = (): Promise<T> | undefined => {
     clearTimeout(timer)
     queue.stalled = false // whatever ran before this turn has settled
-    return gaveUp ? undefined : job(queue)
+    if (gaveUp) return undefined
+    hold = setTimeout(() => { queue.stalled = true; answer(onWaitTooLong) }, INTEGRATION_HOLD_MS)
+    hold.unref?.()
+    return job(queue)
   }
   const run = queue.tail.then(turn, turn)
   queue.tail = run
   integrationLocks.set(name, queue)
-  const release = (): void => { if (queue.tail === run) integrationLocks.delete(name) }
-  void run.then(release, release)
-  if (!ahead) return run as Promise<T> // a free lock: nothing to wait for, so no timer
+  // Attached before the caller's handlers below, so the hold is cleared before the caller hears the job's answer.
+  const settle = (): void => {
+    clearTimeout(hold)
+    if (queue.tail === run) integrationLocks.delete(name)
+  }
+  void run.then(settle, settle)
   return new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => { gaveUp = true; queue.stalled = true; resolve(onWaitTooLong) }, INTEGRATION_WAIT_MS)
-    timer.unref()
+    answer = resolve
+    if (ahead) { // a free lock has nothing to wait for, so no wait timer
+      timer = setTimeout(() => { gaveUp = true; queue.stalled = true; resolve(onWaitTooLong) }, INTEGRATION_WAIT_MS)
+      timer.unref?.()
+    }
     run.then((v) => resolve(v as T), reject)
   })
 }
@@ -259,7 +301,11 @@ export function ensureIntegrationScriptAsync(
       // together): checking it again would only add one more file call per terminal, one after another.
       if (known !== undefined && known === vouched) present = true
       else if (known !== undefined) {
-        try { await Promise.all(set.map((f) => fsp.access(f.path))); present = true } catch { /* cleaned up mid-session: written again below */ }
+        // Each file there and the size written: one cleaned up mid-session is written again below, and one cut short
+        // since (a full disk, another program) is not whole, so a refused rename does not keep it either.
+        const whole = await Promise.all(set.map((f) => fsp.stat(f.path).then((st) => st.size === byteLength(f.content), () => false)))
+        whole.forEach((ok, i) => { if (!ok) notWhole.add(set[i].path) })
+        present = whole.every(Boolean)
       }
       let kept = false
       if (!present) {
@@ -274,6 +320,9 @@ export function ensureIntegrationScriptAsync(
       else { integrationScriptState[file.name] = p; queue.recorded = p }
       return p
     } catch {
+      // Failed part way (a full disk, EIO): what the record said is no longer known to be true, so it goes, and the next
+      // spawn checks and writes the set again rather than take a half-written one as present.
+      delete integrationScriptState[file.name]
       return null
     }
   }, null)

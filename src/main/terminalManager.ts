@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import { homedir } from 'os'
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
@@ -10,8 +10,8 @@ import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import {
-  integrationFileBusy, integrationScriptState, isRenameRefused, logRenameRefusal, RENAME_RETRIES, RENAME_RETRY_MS, wholeFileTempName,
-  type SpawnPrep, type WholeFileResult,
+  byteLength, integrationFileBusy, integrationScriptState, isRenameRefused, logRenameRefusal, notWhole, RENAME_RETRIES, RENAME_RETRY_MS,
+  wholeAgain, wholeFileTempName, type SpawnPrep, type WholeFileResult,
 } from './terminalSpawnPrep'
 
 /** WholeFileIo (terminalSpawnPrep.ts) for the synchronous fallback: the same calls, none returning a promise. */
@@ -646,11 +646,18 @@ export function writeWholeFileSync(path: string, content: string, io: Partial<Sy
     exists: io.exists ?? existsSync,
     sleep: io.sleep ?? sleepSync,
   }
-  if (throughFreshTempSync(path, content, RENAME_RETRIES, all)) return 'written'
-  if (all.exists(path)) return 'kept'
-  if (throughFreshTempSync(path, content, 0, all)) return 'written'
-  all.writeFile(path, content)
-  return 'written'
+  if (throughFreshTempSync(path, content, RENAME_RETRIES, all)) return wholeAgain(path)
+  if (!notWhole.has(path) && all.exists(path)) return 'kept'
+  if (throughFreshTempSync(path, content, 0, all)) return wholeAgain(path)
+  try {
+    all.writeFile(path, content)
+  } catch (e) {
+    // As writeWholeFile: part of a script is removed, or, held, marked so no refused rename keeps it.
+    notWhole.add(path)
+    try { all.rm(path, { force: true }); notWhole.delete(path) } catch { /* still held: marked, and written again by the next spawn */ }
+    throw e
+  }
+  return wholeAgain(path)
 }
 
 /**
@@ -675,7 +682,14 @@ export function ensureIntegrationScript(file: IntegrationFile, io: Partial<SyncW
     const p = known ?? join(app.getPath('userData'), file.name)
     const set = integrationFileSet(file, p)
     let kept = false
-    if (known === undefined || !set.every((f) => existsSync(f.path))) {
+    // As ensureIntegrationScriptAsync: a recorded file must be there and the size written, or it is written again (and,
+    // not whole, never kept by a refused rename).
+    const whole = (f: { path: string; content: string }): boolean => {
+      if (statSync(f.path, { throwIfNoEntry: false })?.size === byteLength(f.content)) return true
+      notWhole.add(f.path)
+      return false
+    }
+    if (known === undefined || !set.map(whole).every(Boolean)) {
       mkdirSync(dirname(p), { recursive: true })
       for (const f of set) {
         if (writeWholeFileSync(f.path, f.content, io) === 'kept') { kept = true; logRenameRefusal(f.path) }
@@ -686,6 +700,7 @@ export function ensureIntegrationScript(file: IntegrationFile, io: Partial<SyncW
     else integrationScriptState[file.name] = p
     return p
   } catch {
+    delete integrationScriptState[file.name] // as ensureIntegrationScriptAsync: a failure part way drops the record
     return null
   }
 }

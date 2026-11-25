@@ -73,9 +73,14 @@ describe('prepareSpawn', () => {
     expect(a.integrationScript).toBe(scriptFile())
     expect(existsSync(scriptFile())).toBe(true)
     const first = readFileSync(scriptFile(), 'utf8')
+    const writes = vi.spyOn((await import('fs')).promises, 'writeFile')
+    try {
+      expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBe(scriptFile())
+      expect(writes).not.toHaveBeenCalled() // present and whole: not rewritten
+    } finally { writes.mockRestore() }
     writeFileSync(scriptFile(), 'edited by hand')
     expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBe(scriptFile())
-    expect(readFileSync(scriptFile(), 'utf8')).toBe('edited by hand') // present: not rewritten
+    expect(readFileSync(scriptFile(), 'utf8')).toBe(first) // not the size written (#28: it may be cut short): written again
     rmSync(scriptFile())
     expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBe(scriptFile())
     expect(readFileSync(scriptFile(), 'utf8')).toBe(first) // cleaned up mid-session: written again
@@ -342,6 +347,37 @@ describe('the integration files are written whole', () => {
       expect(readFileSync(target, 'utf8')).toBe('old')
       expect(tmpsIn(dir)).toEqual([])
     })
+
+    // #28. The direct write of a fresh install truncates the file and then writes it: cut short (a full disk, EIO), it
+    // must not leave half a script that a later spawn keeps (a refused rename keeps whatever file is there) and sources.
+    const cutShortIo = (target: string, code: string) => ({
+      rename: () => { throw refused('EPERM') },
+      sleep: () => {},
+      writeFile: (p: string, c: string) => { if (p === target) { writeFileSync(p, c.slice(0, 3)); throw refused(code) } writeFileSync(p, c) },
+    })
+    for (const code of ['ENOSPC', 'EIO']) {
+      it(`${name}: a direct write cut short (${code}) on a fresh install leaves no half file behind, and the failure is reported`, async () => {
+        const dir = mkdtempSync(join(H.root, 'cut-'))
+        const target = join(dir, 'f.ps1')
+        await expect(write(target, 'the whole script', cutShortIo(target, code))).rejects.toThrow(code)
+        expect(readdirSync(dir)).toEqual([])
+      })
+    }
+
+    it(`${name}: a half file that cannot be removed either (the scanner holds it) is never kept: the next write with renames still refused writes it whole`, async () => {
+      const dir = mkdtempSync(join(H.root, 'cutheld-'))
+      const target = join(dir, 'f.ps1')
+      const io = cutShortIo(target, 'ENOSPC')
+      const held = { ...io, rm: (p: string) => { if (p === target) throw refused('EBUSY'); rmSync(p, { force: true }) } }
+      await expect(write(target, 'the whole script', held)).rejects.toThrow('ENOSPC') // the write's failure, not the removal's
+      expect(readFileSync(target, 'utf8')).toBe('the')
+      const stillRefused = { rename: () => { throw refused('EPERM') }, sleep: () => {} }
+      await expect(write(target, 'the whole script', stillRefused)).resolves.toBe('written') // not 'kept': half a file is no old copy
+      expect(readFileSync(target, 'utf8')).toBe('the whole script')
+      await expect(write(target, 'a newer script', stillRefused)).resolves.toBe('kept') // whole again, so it is kept as before
+      expect(readFileSync(target, 'utf8')).toBe('the whole script')
+      expect(tmpsIn(dir)).toEqual([])
+    })
   }
 
   // A refusal that kept an old file must not count as written, or nothing tries again that run: a scanner that always
@@ -370,6 +406,45 @@ describe('the integration files are written whole', () => {
       const told = readAppLog(5000).slice(before).filter((e) => e.msg.includes('.zshrc') && e.msg.includes('could not be replaced'))
       expect(told.length).toBeLessThanOrEqual(1) // once per file per run: the other mode may have told it already
       expect(readAppLog(5000).filter((e) => e.msg.includes(zshFile('.zshrc')) && e.msg.includes('could not be replaced'))).toHaveLength(1)
+    })
+
+    // #28. A prepare that fails part way through the set (a full disk while it rewrites a file cleaned up mid-session)
+    // drops the record, so no later spawn takes the half-written set as present and sources it.
+    it(`${name}: a rewrite that fails part way drops the record, and the next spawn writes the set again, whole`, async () => {
+      const { INTEGRATION_FILES, integrationFileSet } = await import('../../src/main/shellIntegration')
+      const file = INTEGRATION_FILES.zsh
+      const p = join(H.userData, file.name)
+      const set = integrationFileSet(file, p)
+      expect(await ensure(file)).toBe(p)
+      expect(state[file.name]).toBe(p)
+      rmSync(zshFile('.zshrc')) // cleaned up mid-session
+      const zshrc = zshFile('.zshrc')
+      const failing = {
+        rename: () => { throw refused('EPERM') }, // a scanner holds every rename: the missing file is written directly
+        sleep: () => {},
+        rm: (x: string) => { if (x === zshrc) throw refused('EBUSY'); rmSync(x, { force: true }) }, // and the half file stays
+        writeFile: (x: string, c: string) => { if (x === zshrc) { writeFileSync(x, c.slice(0, 7)); throw refused('ENOSPC') } writeFileSync(x, c) },
+      }
+      expect(await ensure(file, failing)).toBeNull()
+      expect(state[file.name]).toBeUndefined() // the record goes with the failure
+      expect(await ensure(file)).toBe(p)
+      for (const f of set) expect(readFileSync(f.path, 'utf8'), f.path).toBe(f.content)
+      expect(state[file.name]).toBe(p)
+    })
+
+    it(`${name}: a recorded file found cut short since (not the size written) is written again before it is used, even with renames refused`, async () => {
+      const { INTEGRATION_FILES } = await import('../../src/main/shellIntegration')
+      const file = INTEGRATION_FILES.cmd
+      const target = join(H.userData, file.name)
+      expect(await ensure(file)).toBe(target)
+      expect(state[file.name]).toBe(target)
+      writeFileSync(target, file.content.slice(0, 12)) // cut short behind Termpolis's back
+      expect(await ensure(file)).toBe(target)
+      expect(readFileSync(target, 'utf8')).toBe(file.content)
+      writeFileSync(target, file.content.slice(0, 12))
+      expect(await ensure(file, { rename: () => { throw refused('EBUSY') }, sleep: () => {} })).toBe(target) // not kept: written directly
+      expect(readFileSync(target, 'utf8')).toBe(file.content)
+      expect(state[file.name]).toBe(target)
     })
   }
   it('gives every write its own temp name, so concurrent writers never share one', async () => {
@@ -564,7 +639,7 @@ describe('a write that never settles does not hold up later spawns', () => {
   const files = async () => (await import('../../src/main/shellIntegration')).INTEGRATION_FILES
   const lockApi = async () => {
     const m = await import('../../src/main/terminalSpawnPrep')
-    return { WAIT: m.INTEGRATION_WAIT_MS, busy: m.integrationFileBusy, underLock: m.underIntegrationLock }
+    return { WAIT: m.INTEGRATION_WAIT_MS, HOLD: (m as { INTEGRATION_HOLD_MS?: number }).INTEGRATION_HOLD_MS, busy: m.integrationFileBusy, underLock: m.underIntegrationLock }
   }
   /** Every file call a spawn makes through its io, so a test can say "this one touched nothing". */
   const recording = (calls: string[]) => ({
@@ -588,7 +663,7 @@ describe('a write that never settles does not hold up later spawns', () => {
       const writing = deferred()
       const a = ensureIntegrationScriptAsync(file, { writeFile: async (p, c) => { writing.resolve(); await stuck.promise; writeFileSync(p, c) } })
       await writing.promise // A's temp write is on the thread pool, and will not come back until the test says so
-      expect(vi.getTimerCount()).toBe(0) // A waited for nothing: no timer on a free lock
+      expect(vi.getTimerCount()).toBe(1) // A waited for nothing (no wait timer on a free lock): only its own hold cap (#44)
       const bCalls: string[] = []
       const b = ensureIntegrationScriptAsync(file, recording(bCalls))
       vi.advanceTimersByTime(WAIT - 1_000)
@@ -605,7 +680,7 @@ describe('a write that never settles does not hold up later spawns', () => {
       const d = ensureIntegrationScriptAsync(file, recording(dCalls))
       expect(await settlesWithin(d, 3)).toBe(true)
       expect(await d).toBeNull()
-      expect(vi.getTimerCount()).toBe(1) // only C's
+      expect(vi.getTimerCount()).toBe(2) // only C's wait, and A's hold cap
       expect(ensureIntegrationScript(file, recording(dCalls))).toBeNull() // the sync fallback too
       expect(dCalls).toEqual([])
       expect(await settlesWithin(c)).toBe(false)
@@ -613,7 +688,7 @@ describe('a write that never settles does not hold up later spawns', () => {
       expect(await a).toBe(target)
       expect(await c).toBe(target) // C was still in its wait: it runs now, normally, and needs to write nothing
       expect(cCalls).toEqual([])
-      expect(vi.getTimerCount()).toBe(0) // C's timer was cleared when its turn came
+      expect(vi.getTimerCount()).toBe(0) // C's wait timer was cleared when its turn came, and each hold cap as its job settled
       await turn()
       expect(busy(file.name)).toBe(false)
       const eCalls: string[] = []
@@ -623,6 +698,155 @@ describe('a write that never settles does not hold up later spawns', () => {
       expect(state[file.name]).toBe(target)
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  // #44. The wait above limits only the spawns queued behind a stuck write; the spawn whose own write is stuck would
+  // wait for ever, so its terminal never opened. It has its own, longer cap (a first PowerShell under a cloud scan must
+  // still get its integration): past it, that terminal opens without integration, and the lock is still held.
+  it('a prepare whose own write never settles answers null after INTEGRATION_HOLD_MS; later spawns answer null at once; once it lands, the next spawn is normal', async () => {
+    const { HOLD, WAIT, busy } = await lockApi()
+    expect(HOLD).toBe(15_000)
+    expect(HOLD!).toBeGreaterThan(WAIT)
+    const file = (await files()).powershell
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const stuck = deferred()
+      const writing = deferred()
+      const a = ensureIntegrationScriptAsync(file, { writeFile: async (p, c) => { writing.resolve(); await stuck.promise; writeFileSync(p, c) } })
+      await writing.promise
+      expect(vi.getTimerCount()).toBe(1) // its hold cap, started when its job did
+      vi.advanceTimersByTime(HOLD! - 1)
+      expect(await settlesWithin(a)).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(await settlesWithin(a)).toBe(true)
+      expect(await a).toBeNull() // this terminal opens without integration
+      expect(busy(file.name)).toBe(true) // not freed: the stuck write may still land, and nothing may write beside it
+      const dCalls: string[] = []
+      const d = ensureIntegrationScriptAsync(file, recording(dCalls))
+      expect(await settlesWithin(d, 3)).toBe(true)
+      expect(await d).toBeNull() // no wait behind a write known stuck
+      expect(ensureIntegrationScript(file, recording(dCalls))).toBeNull()
+      expect(dCalls).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+      stuck.resolve() // it lands at last, whole
+      for (const end = Date.now() + 10_000; busy(file.name) && Date.now() < end;) await turn() // its rename is real file IO
+      expect(busy(file.name)).toBe(false)
+      expect(readFileSync(target, 'utf8')).toBe(file.content)
+      const eCalls: string[] = []
+      expect(await ensureIntegrationScriptAsync(file, recording(eCalls))).toBe(target) // the next spawn: normal
+      expect(eCalls).toEqual([])
+      expect(vi.getTimerCount()).toBe(0) // its hold cap went with its job
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a job that settles in time clears its hold cap: no timer is left behind, and its answer is its own', async () => {
+    const { underLock, busy } = await lockApi()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const gate = deferred()
+      const a = underLock('hold-clears', async () => { await gate.promise; return 'a' }, null)
+      await turn()
+      expect(vi.getTimerCount()).toBe(1)
+      gate.resolve()
+      expect(await a).toBe('a')
+      await turn()
+      expect(vi.getTimerCount()).toBe(0)
+      expect(busy('hold-clears')).toBe(false)
+      // A job that rejects in time rejects its own caller, and clears its cap too.
+      await expect(underLock('hold-clears', async () => { throw new Error('boom') }, null)).rejects.toThrow('boom')
+      await turn()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a job that rejects after its hold cap answered null leaves nothing unhandled, and frees the lock', async () => {
+    const { HOLD, underLock, busy } = await lockApi()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const gate = deferred()
+      const a = underLock('hold-late-reject', async () => { await gate.promise; throw new Error('late') }, null)
+      await turn()
+      vi.advanceTimersByTime(HOLD!)
+      expect(await settlesWithin(a)).toBe(true)
+      expect(await a).toBeNull()
+      gate.resolve()
+      await turn()
+      await turn()
+      expect(busy('hold-late-reject')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // #73 pins. A waiter that gave up is dropped: its job never runs, even after the stuck job ahead of it settles.
+  it('a waiter that gave up never runs its job, even once the stuck job ahead of it settles', async () => {
+    const { WAIT, underLock, busy } = await lockApi()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const stuck = deferred()
+      const a = underLock('pin-gave-up', async () => { await stuck.promise; return 'a' }, null)
+      const bJob = vi.fn(async () => 'b')
+      const b = underLock('pin-gave-up', bJob, null)
+      vi.advanceTimersByTime(WAIT)
+      expect(await b).toBeNull()
+      stuck.resolve()
+      expect(await a).toBe('a')
+      await turn()
+      await turn()
+      expect(bJob).not.toHaveBeenCalled()
+      expect(busy('pin-gave-up')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The stall is cleared by the next turn of the queue: a spawn arriving while a waiter queued earlier runs its (slow)
+  // job waits its turn like any other, rather than answer null at once as if the old stuck write were still running.
+  it('once the stuck job settles, the stall is over: a spawn arriving during the next job queues behind it', async () => {
+    const { WAIT, underLock } = await lockApi()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const name = 'pin-stall-reset'
+      const stuck = deferred()
+      const a = underLock(name, async () => { await stuck.promise; return 'a' }, null)
+      const b = underLock(name, async () => 'b', null)
+      vi.advanceTimersByTime(WAIT - 1_000)
+      const cGate = deferred()
+      const cStarted = deferred()
+      const c = underLock(name, async () => { cStarted.resolve(); await cGate.promise; return 'c' }, null)
+      vi.advanceTimersByTime(1_000)
+      expect(await b).toBeNull() // B gave up: stalled
+      stuck.resolve()
+      expect(await a).toBe('a')
+      await cStarted.promise // C's turn came (B's was skipped)
+      const d = underLock(name, async () => 'd', null)
+      expect(await settlesWithin(d, 5)).toBe(false) // queued behind C, not turned away
+      cGate.resolve()
+      expect(await c).toBe('c')
+      expect(await d).toBe('d')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Timers without unref (a host whose setTimeout answers a number): the lock still works, and no spawn rejects.
+  it('works where setTimeout answers a plain number with no unref', async () => {
+    const { underLock } = await lockApi()
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((() => 7) as never)
+    try {
+      const a = underLock('pin-no-unref', async () => 'a', null)
+      const b = underLock('pin-no-unref', async () => 'b', null)
+      await expect(a).resolves.toBe('a')
+      await expect(b).resolves.toBe('b')
+    } finally {
+      spy.mockRestore()
     }
   })
 
@@ -702,7 +926,7 @@ describe('a write that never settles does not hold up later spawns', () => {
     const fs = await import('fs')
     const file = (await files()).powershell
     expect(await ensureIntegrationScriptAsync(file)).toBe(scriptFile()) // recorded and present
-    const access = vi.spyOn(fs.promises, 'access')
+    const access = vi.spyOn(fs.promises, 'stat') // the check: each file there, and the size written (#28)
     try {
       const answers = await Promise.all(Array.from({ length: 6 }, () => ensureIntegrationScriptAsync(file)))
       expect(answers.every((x) => x === scriptFile())).toBe(true)
@@ -714,9 +938,9 @@ describe('a write that never settles does not hold up later spawns', () => {
       const failing = { writeFile: () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } }
       rmSync(scriptFile(), { force: true })
       const [x, y] = await Promise.all([ensureIntegrationScriptAsync(file, failing), ensureIntegrationScriptAsync(file)])
-      expect(x).toBeNull() // checked (1), found it gone, failed to write
-      expect(y).toBe(scriptFile()) // checked (2) as well, found it gone, wrote it
-      expect(access).toHaveBeenCalledTimes(4)
+      expect(x).toBeNull() // checked (1), found it gone, failed to write, and dropped the record (#28)
+      expect(y).toBe(scriptFile()) // no record and no word from x: wrote it, with nothing to check
+      expect(access).toHaveBeenCalledTimes(3)
       expect(readFileSync(scriptFile(), 'utf8')).toBe(file.content)
     } finally {
       access.mockRestore()
