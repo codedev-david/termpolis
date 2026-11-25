@@ -17,6 +17,8 @@ import path from 'path'
 import { isSafeModelId } from './modelCatalog'
 import { REVIEW_POLICY } from '../shared/reviewPolicy'
 import { psQuote } from '../shared/shellQuote'
+// Types only: readOnlyIsolation imports this module, and a value import back would be a cycle.
+import type { IsolatedLaunch, McpListRun } from './readOnlyIsolation'
 
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
 
@@ -119,11 +121,13 @@ export function claudeReadOnlyArgs(model: string | undefined, tools: string): st
  * `--print-timeout` makes agy end its own turn at the same budget `deliver` enforces. That
  * covers a run Termpolis can't stop, such as one orphaned by a crash, where an agy stuck on an
  * approval it can never get would otherwise run on. `0s` is agy's own "no limit", used when
- * the caller set none. `extra` flags go after the mode; every flag precedes `-p <prompt>`. Pure.
+ * the caller set none. Every flag precedes `-p <prompt>`. Never `--disable-slash-commands`:
+ * with it agy ignores `--mode plan` ("--mode plan has no effect while slash command expansion
+ * is disabled") and runs in its default mode. Pure.
  */
-export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number, extra: readonly string[] = []): string[] {
+export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number): string[] {
   const secs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : 0
-  return ['--mode', 'plan', ...extra, '--print-timeout', `${secs}s`, ...modelArgs('gemini', model), '-p', PROMPT_TOKEN]
+  return ['--mode', 'plan', '--print-timeout', `${secs}s`, ...modelArgs('gemini', model), '-p', PROMPT_TOKEN]
 }
 
 /**
@@ -135,10 +139,12 @@ export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number, ex
  *  - codex:   `codex exec --sandbox read-only --skip-git-repo-check [-m <model>] <prompt>`  (`exec`
  *             is the non-interactive entry point; the OS sandbox means a review can't touch the
  *             repo; `-m`/`--model` must precede the positional prompt)
- *  - gemini:  `agy --mode plan --disable-slash-commands --print-timeout <secs>s [--model <model>]
- *             -p <prompt>`  (Gemini's headless access is now the Antigravity CLI `agy` — the old
- *             `gemini` free-tier headless client was deprecated; see agyReadOnlyArgs. Slash
- *             command and skill expansion is off because the prompt carries scraped text.)
+ *  - gemini:  `agy --mode plan --print-timeout <secs>s [--model <model>] -p <prompt>`  (Gemini's
+ *             headless access is now the Antigravity CLI `agy` — the old `gemini` free-tier
+ *             headless client was deprecated; see agyReadOnlyArgs. Plan mode is kept over
+ *             turning slash commands off, which would undo it: the review prompt opens with
+ *             Termpolis's own fixed text, so scraped text never starts it, and a review's own
+ *             agy home denies every command, write, edit and MCP call in any mode.)
  * `timeoutMs` only shapes agy's own time limit. Pure.
  */
 export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string, timeoutMs: number = SECOND_OPINION_TIMEOUT_MS): { bin: string; args: string[] } {
@@ -154,7 +160,7 @@ export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string, 
       return { bin: 'codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...modelArgs('codex', model), PROMPT_TOKEN] }
     case 'gemini':
       // Gemini is accessed through the Antigravity CLI (`agy`) now, not `gemini`.
-      return { bin: 'agy', args: agyReadOnlyArgs(model, timeoutMs, ['--disable-slash-commands']) }
+      return { bin: 'agy', args: agyReadOnlyArgs(model, timeoutMs) }
   }
 }
 
@@ -298,35 +304,70 @@ export function cleanReviewText(text: string): string {
 
 export interface SecondOpinionResult { ok: boolean; feedback?: string; error?: string }
 
-/** Run a second-opinion review: build the prompt, resolve the argv, spawn via the injected
- *  `deliver`, and return trimmed feedback — or a friendly error that surfaces the agent's
- *  own stderr (so e.g. an auth/eligibility failure is legible, not a bare exit code). Both
- *  are cleaned of terminal control sequences, since both are pasted into a terminal. Pure
- *  given `deliver`. */
-/** A review's argv: the read-only command, and for codex Termpolis's MCP server switched off,
- *  ahead of the prompt. A review needs no tools (a claude review gets none); codex keeps any other
- *  MCP servers of its own, as before. */
-export function reviewCommand(agent: SecondOpinionAgent, model?: string, timeoutMs?: number): { bin: string; args: string[] } {
+/** True when a failed run says the agent's program could not be found. */
+export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
+
+/** Sets up a review's read-only isolation: prepareIsolatedLaunch (readOnlyIsolation.ts) in the app. */
+export type ReviewIsolate = (agent: SecondOpinionAgent, cwd: string, runEnv: Readonly<Record<string, string>>, run: McpListRun) => Promise<IsolatedLaunch>
+
+/** What Second Opinion shows when a review can't be isolated. The reason goes to the log. */
+export const REVIEW_ISOLATION_FAILED = "Second Opinion couldn't set up a safe read-only review for this agent. Try again, or pick another agent."
+
+/** A review's argv: the read-only command, with the isolation's options placed with its others:
+ *  codex's ahead of the positional prompt, claude's ahead of `-p`. agy's isolation is its run's
+ *  own home, which goes in the environment, so it has none. Adds nothing of its own. Pure. */
+export function reviewCommand(agent: SecondOpinionAgent, model?: string, timeoutMs?: number, isolateArgs: readonly string[] = []): { bin: string; args: string[] } {
   const cmd = secondOpinionCommand(agent, model, timeoutMs)
-  if (agent !== 'codex') return cmd
   const args = [...cmd.args]
-  args.splice(args.indexOf(PROMPT_TOKEN), 0, ...CODEX_ISOLATE_MCP_ARGS)
+  args.splice(args.indexOf(agent === 'codex' ? PROMPT_TOKEN : '-p'), 0, ...isolateArgs)
   return { bin: cmd.bin, args }
 }
 
+/** Run a second-opinion review: build the prompt, isolate the reviewer, resolve the argv, spawn
+ *  via the injected `deliver`, and return trimmed feedback — or a friendly error that surfaces
+ *  the agent's own stderr (so e.g. an auth/eligibility failure is legible, not a bare exit
+ *  code). Both are cleaned of terminal control sequences, since both are pasted into a
+ *  terminal. The reviewer reads terminal output it must not act on, so it runs isolated as a
+ *  Lumopolis read-only run does: no MCP server of the person's, no command, no file write
+ *  (`isolate`, prepareIsolatedLaunch in the app). A review whose isolation can't be set up or
+ *  proved does not start. Pure given `deliver` and `isolate`. */
 export async function runSecondOpinion(
   opts: { agent: SecondOpinionAgent; model?: string; content: string; timeoutMs?: number; maxChars?: number },
   deliver: DeliverFn,
+  isolate: ReviewIsolate,
+  deps: { cwd?: string; log?: (msg: string) => void } = {},
 ): Promise<SecondOpinionResult> {
   const prompt = buildReviewPrompt(opts.content, { maxChars: opts.maxChars })
   const timeoutMs = opts.timeoutMs ?? SECOND_OPINION_TIMEOUT_MS
-  const { bin, args } = reviewCommand(opts.agent, opts.model, timeoutMs)
+  // A review has no folder of its own: deliver runs it in the app's, so that is the folder isolated.
+  const cwd = deps.cwd ?? process.cwd()
+  // The MCP list check is spawned as the review is: same deliver, and no cwd, so the same folder.
+  // A CLI that isn't installed fails here first, and says so as the review itself would.
+  const check: { missing: string | null } = { missing: null }
+  const run: McpListRun = async (bin, args, o) => {
+    const res = await deliverWithDeadline(deliver, bin, args, '', o.timeoutMs, DELIVER_GRACE_MS, { env: o.env })
+    const stderr = cleanReviewText(res.stderr ?? '').trim()
+    if (res.code !== 0 && isMissingCli(stderr)) {
+      check.missing = stderr
+      throw new Error(stderr)
+    }
+    return { stdout: res.stdout, code: res.code }
+  }
+  let launch: IsolatedLaunch
   try {
-    // The reviewer reads terminal output it must not act on. agy hands its environment to its MCP
-    // servers, so this marker narrows Termpolis's to the read-only tools: no memory writes from a
-    // review. codex doesn't pass it on, so its review runs with Termpolis's server switched off.
+    launch = await isolate(opts.agent, cwd, {}, run)
+  } catch (err) {
+    if (check.missing !== null) return { ok: false, error: check.missing.slice(0, 600) }
+    // The reason is for the log: a path or a config error means nothing in a review panel.
+    ;(deps.log ?? console.warn)(`[second-opinion] ${opts.agent} review not started: ${err instanceof Error ? err.message : String(err)}`)
+    return { ok: false, error: REVIEW_ISOLATION_FAILED }
+  }
+  const { bin, args } = reviewCommand(opts.agent, opts.model, timeoutMs, launch.args)
+  try {
+    // The isolation's environment carries the read-only marker, which narrows Termpolis's own MCP
+    // server to its read-only tools, and agy's run home.
     const { stdout, stderr, code } = await deliverWithDeadline(deliver, bin, args, prompt, timeoutMs, DELIVER_GRACE_MS, {
-      env: { TERMPOLIS_READ_ONLY_RUN: '1' },
+      env: launch.env,
     })
     const out = cleanReviewText(stdout || '').trim()
     if (code === 0 && out.length > 0) return { ok: true, feedback: out }
@@ -334,5 +375,7 @@ export async function runSecondOpinion(
     return { ok: false, error: errText ? errText.slice(0, 600) : `${bin} exited with code ${code} and produced no output` }
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || 'second opinion failed' }
+  } finally {
+    await launch.dispose()
   }
 }

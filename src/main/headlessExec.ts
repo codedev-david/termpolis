@@ -40,6 +40,7 @@ import {
   PROMPT_TOKEN,
   CLAUDE_MUTATING_TOOLS,
   CODEX_ISOLATE_MCP_ARGS,
+  isMissingCli,
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
@@ -68,8 +69,13 @@ export const EXEC_MAX_TIMEOUT_MS = 60 * 60_000
  *  deadline, with room to spare, so it can't belong to a live run. */
 export const AGY_HOME_STALE_MS = EXEC_MAX_TIMEOUT_MS + 10 * 60_000
 
-/** True when a failed run says the agent's program could not be found. */
-export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
+/** True when a failed run says the agent's program could not be found. Second Opinion's check needs it
+ *  too, and this module imports that one, so it lives there. */
+export { isMissingCli }
+
+/** What `termpolis exec` and `agent_exec` say when a read-only run can't be isolated, ahead of the
+ *  reason: their caller is a script or an agent, which reads the error itself. */
+export const EXEC_ISOLATION_FAILED = "Termpolis couldn't set up a safe read-only run for this agent, so it did not start:"
 
 /** The MCP list check found the agent's CLI isn't installed: the run answers as a run of a missing CLI does. */
 class MissingCli extends Error {}
@@ -117,6 +123,10 @@ export interface ExecRequest {
    *  command, no file write, whatever the agent (see readOnlyIsolation.ts). A run whose isolation
    *  can't be set up doesn't start. Ignored with `write`. */
   isolated?: boolean
+  /** With `isolated`: a run whose isolation can't be set up answers EXEC_ISOLATION_FAILED and the
+   *  reason, not the Lumopolis sentence (ISOLATION_SETUP_FAILED). For a caller that reads the
+   *  error itself. */
+  isolationReason?: boolean
 }
 
 /** The `agent_exec` verb's arguments, as executeTool passes them on. */
@@ -132,7 +142,9 @@ export interface ExecVerbArgs {
 /** The verb, checked and bounded at the edge. An unknown agent is refused rather than run as
  *  some other one, the timeout is clamped, and only the verb's own fields are copied, so no
  *  caller can set a linked job's options (linkedJob, env, noRemember). Fields are copied only
- *  when present: an explicit `agent: undefined` would override runHeadless's default. Throws a
+ *  when present: an explicit `agent: undefined` would override runHeadless's default. A
+ *  read-only run is always isolated (no MCP server of the person's, no command, no file write),
+ *  and says why when it can't be; a write run is what the caller asked for, as it was. Throws a
  *  message that starts with "Invalid", which the MCP server passes on rather than masking. */
 export function execRequestFromVerb(opts: ExecVerbArgs): ExecRequest {
   const agent = opts.agent || undefined
@@ -145,6 +157,7 @@ export function execRequestFromVerb(opts: ExecVerbArgs): ExecRequest {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     ...(opts.write !== undefined ? { write: opts.write } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(opts.write === true ? {} : { isolated: true, isolationReason: true }),
   }
 }
 
@@ -435,9 +448,12 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
       isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {}, run)
     } catch (err) {
       if (err instanceof MissingCli) return { ok: false, agent, output: '', error: err.message, code: -1, durationMs: now() - started, primerChars }
-      // The reason is for the log: a path or a Node error code means nothing on a map.
-      ;(deps.log ?? console.warn)(`[exec] isolated ${agent} run not started: ${err instanceof Error ? err.message : String(err)}`)
-      return { ok: false, agent, output: '', error: ISOLATION_SETUP_FAILED, code: -1, durationMs: now() - started, primerChars }
+      // The reason is for the log: a path or a Node error code means nothing on a map. A caller that
+      // reads the error itself (isolationReason) gets it as well.
+      const reason = err instanceof Error ? err.message : String(err)
+      ;(deps.log ?? console.warn)(`[exec] isolated ${agent} run not started: ${reason}`)
+      const error = req.isolationReason ? `${EXEC_ISOLATION_FAILED} ${reason}` : ISOLATION_SETUP_FAILED
+      return { ok: false, agent, output: '', error, code: -1, durationMs: now() - started, primerChars }
     }
   }
   // Asked before the job's MCP plumbing is made, so nothing is left to dispose of while it waits.

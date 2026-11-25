@@ -12,6 +12,7 @@ import {
   clampExecTimeout,
   execRequestFromVerb,
   EXEC_DEFAULT_TIMEOUT_MS,
+  EXEC_ISOLATION_FAILED,
   EXEC_MIN_TIMEOUT_MS,
   EXEC_MAX_TIMEOUT_MS,
   AGY_HOME_STALE_MS,
@@ -280,16 +281,26 @@ describe('headlessExec/the agent_exec verb', () => {
     for (const t of [undefined, null, Number.NaN, '5000', {}]) expect(clampExecTimeout(t)).toBeUndefined()
   })
 
+  // A read-only run is isolated (SEC-1): no MCP server of the person's, no command, no write. Its
+  // caller reads the error itself, so a run that can't be isolated says why.
+  const RO = { isolated: true, isolationReason: true } as const
+
   it('maps the verb to a request, omitting every field the caller left out', () => {
     // Spread-if-present: an explicit `agent: undefined` would override runHeadless's default.
-    expect(execRequestFromVerb({ prompt: 'summarise' })).toEqual({ task: 'summarise' })
-    expect(execRequestFromVerb({ prompt: 'p', agent: '', model: '', cwd: '' })).toEqual({ task: 'p' })
+    expect(execRequestFromVerb({ prompt: 'summarise' })).toEqual({ task: 'summarise', ...RO })
+    expect(execRequestFromVerb({ prompt: 'p', agent: '', model: '', cwd: '' })).toEqual({ task: 'p', ...RO })
   })
 
   it('forwards write:false, and clamps the timeout instead of dropping it', () => {
     expect(execRequestFromVerb({ prompt: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 0 }))
-      .toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 10_000 })
-    expect(execRequestFromVerb({ prompt: 'p', timeoutMs: 24 * 3_600_000 })).toEqual({ task: 'p', timeoutMs: 3_600_000 })
+      .toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 10_000, ...RO })
+    expect(execRequestFromVerb({ prompt: 'p', timeoutMs: 24 * 3_600_000 })).toEqual({ task: 'p', timeoutMs: 3_600_000, ...RO })
+  })
+
+  it('isolates every read-only run, and leaves a write run as it was (SEC-1)', () => {
+    expect(execRequestFromVerb({ prompt: 'p', agent: 'gemini' })).toEqual({ task: 'p', agent: 'gemini', ...RO })
+    expect(execRequestFromVerb({ prompt: 'p', agent: 'claude', write: false })).toEqual({ task: 'p', agent: 'claude', write: false, ...RO })
+    expect(execRequestFromVerb({ prompt: 'p', agent: 'codex', write: true })).toEqual({ task: 'p', agent: 'codex', write: true })
   })
 
   it('refuses an unknown agent rather than run some other one', () => {
@@ -298,8 +309,8 @@ describe('headlessExec/the agent_exec verb', () => {
   })
 
   it('never lets the verb set a linked job\'s options', () => {
-    const smuggled = { prompt: 'p', linkedJob: 'x', noRemember: true, env: { PATH: '/evil' }, noPrimer: true }
-    expect(execRequestFromVerb(smuggled as Parameters<typeof execRequestFromVerb>[0])).toEqual({ task: 'p' })
+    const smuggled = { prompt: 'p', linkedJob: 'x', noRemember: true, env: { PATH: '/evil' }, noPrimer: true, isolated: false, isolationReason: false }
+    expect(execRequestFromVerb(smuggled as Parameters<typeof execRequestFromVerb>[0])).toEqual({ task: 'p', ...RO })
   })
 })
 
@@ -744,6 +755,40 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     expect(odd.error).toBe(ISOLATION_SETUP_FAILED)
     expect(warn).toHaveBeenCalledWith('[exec] isolated gemini run not started: no temp folder')
     warn.mockRestore()
+  })
+
+  it('tells a caller that reads the error itself why the run did not start (isolationReason), and still logs it', async () => {
+    const deliver = okDeliver('ok')
+    const log = vi.fn()
+    const res = await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', isolated: true, isolationReason: true },
+      { deliver, log, isolation: async () => { throw new Error('codex mcp list did not show every MCP server off (exit 0)') }, isDirectory: anyDir, now: () => 0 },
+    )
+    expect(res).toEqual({
+      ok: false, agent: 'codex', output: '', code: -1, durationMs: 0, primerChars: 0,
+      error: `${EXEC_ISOLATION_FAILED} codex mcp list did not show every MCP server off (exit 0)`,
+    })
+    expect(EXEC_ISOLATION_FAILED).toBe("Termpolis couldn't set up a safe read-only run for this agent, so it did not start:")
+    expect(log).toHaveBeenCalledWith('[exec] isolated codex run not started: codex mcp list did not show every MCP server off (exit 0)')
+    expect(deliver).not.toHaveBeenCalled()
+    const odd = await runHeadless(
+      { task: 't', agent: 'gemini', cwd: '/r', isolated: true, isolationReason: true },
+      { deliver, log, isolation: async () => { throw 'no temp folder' }, isDirectory: anyDir },
+    )
+    expect(odd.error).toBe(`${EXEC_ISOLATION_FAILED} no temp folder`)
+  })
+
+  it('a termpolis exec read-only run goes through the isolation, in the app\'s folder when it names none', async () => {
+    for (const agent of ['claude', 'codex', 'gemini'] as const) {
+      const isolation = vi.fn(async () => launch())
+      const deliver = okDeliver('ok')
+      await runHeadless(execRequestFromVerb({ prompt: 'summarise', agent }), { deliver, isolation, isDirectory: anyDir })
+      expect(isolation).toHaveBeenCalledWith(agent, process.cwd(), {}, expect.any(Function))
+      expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
+    }
+    const isolation = vi.fn(async () => launch())
+    await runHeadless(execRequestFromVerb({ prompt: 'fix it', agent: 'codex', write: true }), { deliver: okDeliver('ok'), isolation, isDirectory: anyDir })
+    expect(isolation).not.toHaveBeenCalled()
   })
 
   it('spawns the MCP list check through deliver, in the run\'s folder with its environment, signal and deadline', async () => {

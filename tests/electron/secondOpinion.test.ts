@@ -17,7 +17,10 @@ import {
   DELIVER_GRACE_MS,
   PROMPT_TOKEN,
   SECOND_OPINION_TIMEOUT_MS,
+  REVIEW_ISOLATION_FAILED,
+  isMissingCli,
   type DeliverFn,
+  type ReviewIsolate,
   type SecondOpinionAgent,
 } from '../../src/main/secondOpinion'
 
@@ -116,8 +119,8 @@ describe('claudeReadOnlyArgs', () => {
 
 describe('agyReadOnlyArgs', () => {
   it('puts every flag before -p, whose value is the prompt', () => {
-    expect(agyReadOnlyArgs('gemini-3.8-flash-high', 30_000, ['--disable-slash-commands']))
-      .toEqual(['--mode', 'plan', '--disable-slash-commands', '--print-timeout', '30s', '--model', 'gemini-3.8-flash-high', '-p', PROMPT_TOKEN])
+    expect(agyReadOnlyArgs('gemini-3.8-flash-high', 30_000))
+      .toEqual(['--mode', 'plan', '--print-timeout', '30s', '--model', 'gemini-3.8-flash-high', '-p', PROMPT_TOKEN])
   })
   it("rounds agy's own time limit up to whole seconds, and maps no timeout to agy's 0s (none)", () => {
     const limit = (ms: number): string => {
@@ -156,11 +159,13 @@ describe('secondOpinionCommand', () => {
   it('gemini: routed through the Antigravity CLI (agy) in plan mode, bounded by the review timeout', () => {
     const { bin, args } = secondOpinionCommand('gemini')
     expect(bin).toBe('agy')
-    expect(args).toEqual(['--mode', 'plan', '--disable-slash-commands', '--print-timeout', '90s', '-p', PROMPT_TOKEN])
+    // No --disable-slash-commands: with it agy ignores --mode plan ("--mode plan has no effect
+    // while slash command expansion is disabled") and the review ran in agy's default mode (SEC-1).
+    expect(args).toEqual(['--mode', 'plan', '--print-timeout', '90s', '-p', PROMPT_TOKEN])
   })
   it('gemini: passes a discovered model with --model, and its time limit follows the timeout', () => {
     expect(secondOpinionCommand('gemini', 'gemini-3.8-flash-high', 1234).args)
-      .toEqual(['--mode', 'plan', '--disable-slash-commands', '--print-timeout', '2s', '--model', 'gemini-3.8-flash-high', '-p', PROMPT_TOKEN])
+      .toEqual(['--mode', 'plan', '--print-timeout', '2s', '--model', 'gemini-3.8-flash-high', '-p', PROMPT_TOKEN])
   })
   it('codex/gemini: drop a model that fails the shape gate rather than passing it through', () => {
     // These namespaces are discovered at runtime so there is no enum to match against —
@@ -451,10 +456,26 @@ describe('cleanReviewText', () => {
   })
 })
 
+// What prepareIsolatedLaunch adds to each review (readOnlyIsolation.test.ts proves the real one):
+// codex every MCP server off and its connectors off, claude only the person's own settings, agy a
+// throwaway home whose settings deny every command, write, edit and MCP call.
+const AGY_HOME = '/tmp/termpolis-agy-abc'
+const LAUNCH: Record<SecondOpinionAgent, { args: string[]; env: Record<string, string> }> = {
+  codex: { args: ['-c', 'mcp_servers.mine.enabled=false', ...CODEX_ISOLATE_MCP_ARGS, '-c', 'features.apps=false'], env: { TERMPOLIS_READ_ONLY_RUN: '1' } },
+  claude: { args: ['--setting-sources', 'user'], env: { TERMPOLIS_READ_ONLY_RUN: '1' } },
+  gemini: { args: [], env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: AGY_HOME, USERPROFILE: AGY_HOME } },
+}
+function fakeIsolate(): { isolate: ReturnType<typeof vi.fn<ReviewIsolate>>; dispose: ReturnType<typeof vi.fn<() => Promise<void>>> } {
+  const dispose = vi.fn(async () => undefined)
+  const isolate = vi.fn<ReviewIsolate>(async (agent) => ({ args: [...LAUNCH[agent].args], env: { ...LAUNCH[agent].env }, dispose }))
+  return { isolate, dispose }
+}
+const okIsolate: ReviewIsolate = async (agent) => ({ args: [...LAUNCH[agent].args], env: { ...LAUNCH[agent].env }, dispose: async () => undefined })
+
 describe('runSecondOpinion', () => {
   it('delivers the prompt out-of-band (argv carries only the placeholder) and returns feedback', async () => {
     const deliver: DeliverFn = vi.fn(async () => ({ stdout: '  Looks good, but check the edge case.  ', code: 0 }))
-    const r = await runSecondOpinion({ agent: 'codex', content: 'the answer' }, deliver)
+    const r = await runSecondOpinion({ agent: 'codex', content: 'the answer' }, deliver, okIsolate)
     expect(r.ok).toBe(true)
     expect(r.feedback).toBe('Looks good, but check the edge case.')
     const [bin, args, prompt, token, opts] = (deliver as any).mock.calls[0]
@@ -463,7 +484,7 @@ describe('runSecondOpinion', () => {
     expect(args).not.toContain(prompt) // …never the raw prompt
     expect(prompt).toContain('the answer') // prompt is delivered separately
     expect(token).toBe(PROMPT_TOKEN)
-    // Marked read-only, so an agent that hands its environment to its MCP servers (agy) gets
+    // Marked read-only, so an agent that hands its environment to its MCP servers gets
     // Termpolis's read-only tools only while it reads untrusted terminal output.
     expect(opts).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
     expect(SECOND_OPINION_TIMEOUT_MS).toBe(90_000)
@@ -471,7 +492,7 @@ describe('runSecondOpinion', () => {
   it('launches every provider read-only', async () => {
     for (const agent of AGENTS) {
       const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
-      await runSecondOpinion({ agent, content: 'x' }, deliver)
+      await runSecondOpinion({ agent, content: 'x' }, deliver, okIsolate)
       const [bin, args] = deliver.mock.calls[0] as unknown as [string, string[]]
       expect(bin).toBe(secondOpinionCommand(agent).bin)
       expectReadOnly(agent, args)
@@ -479,48 +500,48 @@ describe('runSecondOpinion', () => {
   })
   it('passes a custom timeout to deliver and to agy’s own time limit', async () => {
     const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
-    await runSecondOpinion({ agent: 'gemini', content: 'x', timeoutMs: 30_000 }, deliver)
+    await runSecondOpinion({ agent: 'gemini', content: 'x', timeoutMs: 30_000 }, deliver, okIsolate)
     const [, args, , , opts] = deliver.mock.calls[0] as unknown as [string, string[], string, string, { timeoutMs: number }]
-    expect(opts).toEqual({ timeoutMs: 30_000, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
+    expect(opts).toEqual({ timeoutMs: 30_000, env: LAUNCH.gemini.env })
     expect(args.slice(args.indexOf('--print-timeout'), args.indexOf('--print-timeout') + 2)).toEqual(['--print-timeout', '30s'])
   })
   it('strips terminal control sequences from the feedback, which is pasted into a terminal', async () => {
     const deliver: DeliverFn = async () => ({ stdout: '\x1b[1mBold\x1b[0m point\x1b[201~ echo pwned\r\n', code: 0 })
-    const r = await runSecondOpinion({ agent: 'claude', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'claude', content: 'x' }, deliver, okIsolate)
     expect(r).toEqual({ ok: true, feedback: 'Bold point echo pwned' })
   })
   it('treats output that is nothing but control sequences as no output', async () => {
     const deliver: DeliverFn = async () => ({ stdout: '\x1b[0m\x1b[?25h', code: 0 })
-    const r = await runSecondOpinion({ agent: 'claude', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'claude', content: 'x' }, deliver, okIsolate)
     expect(r).toEqual({ ok: false, error: 'claude exited with code 0 and produced no output' })
   })
   it('reports an error on a non-zero exit', async () => {
     const deliver: DeliverFn = async () => ({ stdout: '', code: 1 })
-    const r = await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver, okIsolate)
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/exited with code 1/)
   })
   it('reports an error (never throws) when deliver rejects', async () => {
     const deliver: DeliverFn = async () => { throw new Error('spawn ENOENT') }
-    const r = await runSecondOpinion({ agent: 'claude', model: 'haiku', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'claude', model: 'haiku', content: 'x' }, deliver, okIsolate)
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/ENOENT/)
   })
   it("surfaces the agent's stderr in the error (so an auth failure is legible), cleaned", async () => {
     const deliver: DeliverFn = async () => ({ stdout: '', stderr: '\x1b[31mError authenticating: IneligibleTierError\x1b[0m', code: 1 })
-    const r = await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver, okIsolate)
     expect(r).toEqual({ ok: false, error: 'Error authenticating: IneligibleTierError' })
   })
   it('falls back to a generic message when the thrown value has no .message', async () => {
     const deliver = (async () => { throw 'boom' }) as unknown as DeliverFn // non-Error throw
-    const r = await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver)
+    const r = await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver, okIsolate)
     expect(r.ok).toBe(false)
     expect(r.error).toBe('second opinion failed') // the `|| 'second opinion failed'` fallback
   })
   it('gives up on a reviewer that never returns (e.g. stuck on an approval prompt) at the deadline', async () => {
     vi.useFakeTimers()
     try {
-      const pending = runSecondOpinion({ agent: 'claude', content: 'x' }, never)
+      const pending = runSecondOpinion({ agent: 'claude', content: 'x' }, never, okIsolate)
       await vi.advanceTimersByTimeAsync(SECOND_OPINION_TIMEOUT_MS + DELIVER_GRACE_MS)
       await expect(pending).resolves.toEqual({ ok: false, error: 'claude did not finish within 90s' })
     } finally {
@@ -529,25 +550,180 @@ describe('runSecondOpinion', () => {
   })
 })
 
-describe('reviewCommand: what a Second Opinion review runs', () => {
-  it("switches Termpolis's MCP server off for a codex review, ahead of the prompt", () => {
-    const { bin, args } = reviewCommand('codex', 'gpt-5.6-sol')
-    expect(bin).toBe('codex')
-    expect(args).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_ISOLATE_MCP_ARGS, PROMPT_TOKEN])
+describe('isMissingCli', () => {
+  it('knows a program that is not installed, on Windows and elsewhere, and nothing else', () => {
+    expect(isMissingCli('spawn agy ENOENT')).toBe(true)
+    expect(isMissingCli("'codex' is not recognized as an internal or external command")).toBe(true)
+    expect(isMissingCli('invalid transport')).toBe(false)
+    expect(isMissingCli('')).toBe(false)
+    expect(isMissingCli(undefined)).toBe(false)
+  })
+})
+
+describe('runSecondOpinion: every review is isolated before it starts (SEC-1)', () => {
+  const ok = (): ReturnType<typeof vi.fn<DeliverFn>> => vi.fn<DeliverFn>(async () => ({ stdout: 'fine', code: 0 }))
+
+  it('codex: every MCP server and the connectors off, ahead of the prompt', async () => {
+    const deliver = ok()
+    await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver, fakeIsolate().isolate, { cwd: '/app' })
+    expect(deliver.mock.calls[0][0]).toBe('codex')
+    expect(deliver.mock.calls[0][1]).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...LAUNCH.codex.args, PROMPT_TOKEN])
+    expect(deliver.mock.calls[0][4]).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
   })
 
-  it('leaves claude (no MCP servers already) and agy (narrowed by the read-only marker) as they are', () => {
-    for (const agent of ['claude', 'gemini'] as const) {
-      expect(reviewCommand(agent, undefined, 30_000)).toEqual(secondOpinionCommand(agent, undefined, 30_000))
+  it('codex: a picked model stays ahead of the isolation and the prompt', async () => {
+    const deliver = ok()
+    await runSecondOpinion({ agent: 'codex', model: 'gpt-5.6-sol', content: 'x' }, deliver, fakeIsolate().isolate, { cwd: '/app' })
+    expect(deliver.mock.calls[0][1]).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...LAUNCH.codex.args, PROMPT_TOKEN])
+  })
+
+  it("claude: only the person's own settings, ahead of -p", async () => {
+    const deliver = ok()
+    await runSecondOpinion({ agent: 'claude', content: 'x' }, deliver, fakeIsolate().isolate, { cwd: '/app' })
+    expect(deliver.mock.calls[0][1]).toEqual([
+      '--permission-mode', 'plan', '--tools', '', '--disallowedTools', DENY, '--strict-mcp-config',
+      '--model', 'sonnet', '--effort', 'medium', '--setting-sources', 'user', '-p', PROMPT_TOKEN,
+    ])
+    expect(deliver.mock.calls[0][4]).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
+  })
+
+  it("agy: plan mode, which takes effect, in the run's own home", async () => {
+    const deliver = ok()
+    await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver, fakeIsolate().isolate, { cwd: '/app' })
+    expect(deliver.mock.calls[0][0]).toBe('agy')
+    expect(deliver.mock.calls[0][1]).toEqual(['--mode', 'plan', '--print-timeout', '90s', '-p', PROMPT_TOKEN])
+    expect(deliver.mock.calls[0][4]).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: LAUNCH.gemini.env })
+  })
+
+  it("isolates in the app's own folder with no extra environment, and its check is spawned as the review is", async () => {
+    for (const agent of AGENTS) {
+      const deliver = vi.fn<DeliverFn>(async (_bin, args) => (args.includes(PROMPT_TOKEN) ? { stdout: 'fine', code: 0 } : { stdout: 'No MCP servers configured.', code: 0 }))
+      const { isolate } = fakeIsolate()
+      isolate.mockImplementationOnce(async (a, _cwd, _env, run) => {
+        expect(await run(a === 'codex' ? 'codex' : 'agy', ['mcp', 'list'], { cwd: '/app', env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: AGY_HOME }, timeoutMs: 10_000 }))
+          .toEqual({ stdout: 'No MCP servers configured.', code: 0 })
+        return { ...LAUNCH[a], dispose: async () => undefined }
+      })
+      await runSecondOpinion({ agent, content: 'x' }, deliver, isolate, { cwd: '/app' })
+      expect(isolate).toHaveBeenCalledWith(agent, '/app', {}, expect.any(Function))
+      // No cwd, as the review has none: deliver then runs in the app's folder, the one checked.
+      expect(deliver.mock.calls[0]).toEqual([agent === 'codex' ? 'codex' : 'agy', ['mcp', 'list'], ' ', PROMPT_TOKEN, { timeoutMs: 10_000, env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: AGY_HOME } }])
+      expect(deliver).toHaveBeenCalledTimes(2)
     }
   })
 
-  it('runs every review through it, marked read-only', async () => {
-    const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
-    await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver)
-    const [, args, , , opts] = deliver.mock.calls[0] as unknown as [string, string[], string, string, { env: Record<string, string> }]
-    expect(args).toEqual(expect.arrayContaining([...CODEX_ISOLATE_MCP_ARGS]))
-    expect(opts.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
+  it("the app's folder is process.cwd() when none is given", async () => {
+    const { isolate } = fakeIsolate()
+    await runSecondOpinion({ agent: 'codex', content: 'x' }, ok(), isolate)
+    expect(isolate).toHaveBeenCalledWith('codex', process.cwd(), {}, expect.any(Function))
+  })
+
+  it('a review whose isolation cannot be set up does not start, says so, and logs why', async () => {
+    for (const agent of AGENTS) {
+      const deliver = ok()
+      const log = vi.fn()
+      const { isolate } = fakeIsolate()
+      isolate.mockRejectedValueOnce(new Error('codex mcp list did not show every MCP server off (exit 0)'))
+      expect(await runSecondOpinion({ agent, content: 'x' }, deliver, isolate, { cwd: '/app', log }))
+        .toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
+      expect(deliver).not.toHaveBeenCalled()
+      expect(log).toHaveBeenCalledWith(`[second-opinion] ${agent} review not started: codex mcp list did not show every MCP server off (exit 0)`)
+    }
+    expect(REVIEW_ISOLATION_FAILED).toBe("Second Opinion couldn't set up a safe read-only review for this agent. Try again, or pick another agent.")
+  })
+
+  it('logs a thrown value that is not an Error as it is, and logs to console.warn by default', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { isolate } = fakeIsolate()
+      isolate.mockRejectedValueOnce('no home')
+      expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, ok(), isolate, { cwd: '/app' }))
+        .toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
+      expect(warn).toHaveBeenCalledWith('[second-opinion] gemini review not started: no home')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("an agent that isn't installed says so, in its own words, as the review itself would", async () => {
+    const missing: Array<[string, DeliverFn]> = [
+      ["'codex' is not recognized as an internal or external command", async () => ({ stdout: '', stderr: "\x1b[31m'codex' is not recognized as an internal or external command\x1b[0m\n", code: 1 })],
+      ['spawn agy ENOENT', async () => ({ stdout: '', stderr: 'spawn agy ENOENT', code: -2 })],
+    ]
+    for (const [error, deliver] of missing) {
+      const log = vi.fn()
+      const { isolate } = fakeIsolate()
+      isolate.mockImplementationOnce(async (_a, cwd, env, run) => {
+        await run('codex', ['mcp', 'list', '--json'], { cwd, env: { ...env }, timeoutMs: 10_000 })
+        throw new Error('not reached by a missing CLI')
+      })
+      expect(await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver, isolate, { cwd: '/app', log })).toEqual({ ok: false, error })
+      expect(log).not.toHaveBeenCalled()
+    }
+  })
+
+  it('a check that fails for any other reason is an isolation failure, not the reason', async () => {
+    const checks: Array<[DeliverFn, string]> = [
+      [async () => ({ stdout: '', stderr: 'error: invalid transport in /home/me/.codex/config.toml', code: 1 }), 'codex mcp list did not show every MCP server off (exit 1)'],
+      [async () => { throw new Error('spawn EPERM') }, 'spawn EPERM'],
+      [(async () => { throw 'spawn ENOENT' }) as unknown as DeliverFn, 'spawn ENOENT'],
+    ]
+    for (const [deliver, reason] of checks) {
+      const log = vi.fn()
+      const { isolate } = fakeIsolate()
+      isolate.mockImplementationOnce(async (_a, cwd, env, run) => {
+        const res = await run('codex', ['mcp', 'list', '--json'], { cwd, env: { ...env }, timeoutMs: 10_000 })
+        throw new Error(`codex mcp list did not show every MCP server off (exit ${res.code})`)
+      })
+      expect(await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver, isolate, { cwd: '/app', log })).toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
+      expect(log).toHaveBeenCalledWith(`[second-opinion] codex review not started: ${reason}`)
+    }
+  })
+
+  it('disposes of the isolation once the review has settled, however it ended', async () => {
+    const ends: DeliverFn[] = [
+      async () => ({ stdout: 'fine', code: 0 }),
+      async () => ({ stdout: '', stderr: 'quota', code: 1 }),
+      async () => { throw new Error('spawn EPERM') },
+    ]
+    for (const deliver of ends) {
+      const { isolate, dispose } = fakeIsolate()
+      await runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver, isolate, { cwd: '/app' })
+      expect(dispose).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('disposes only after the review has finished with the home', async () => {
+    let finish: (v: { stdout: string; code: number }) => void = () => undefined
+    const deliver: DeliverFn = () => new Promise((resolve) => { finish = resolve })
+    const { isolate, dispose } = fakeIsolate()
+    const review = runSecondOpinion({ agent: 'gemini', content: 'x' }, deliver, isolate, { cwd: '/app' })
+    await vi.waitFor(() => expect(isolate).toHaveBeenCalled())
+    await Promise.resolve()
+    expect(dispose).not.toHaveBeenCalled()
+    finish({ stdout: 'fine', code: 0 })
+    expect(await review).toEqual({ ok: true, feedback: 'fine' })
+    expect(dispose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('reviewCommand: what a Second Opinion review runs', () => {
+  it("places codex's isolation ahead of the prompt", () => {
+    const { bin, args } = reviewCommand('codex', 'gpt-5.6-sol', undefined, LAUNCH.codex.args)
+    expect(bin).toBe('codex')
+    expect(args).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...LAUNCH.codex.args, PROMPT_TOKEN])
+  })
+
+  it("places claude's isolation ahead of -p", () => {
+    const { args } = reviewCommand('claude', undefined, undefined, LAUNCH.claude.args)
+    expect(args.slice(-4)).toEqual(['--setting-sources', 'user', '-p', PROMPT_TOKEN])
+  })
+
+  it('adds nothing of its own: with no isolation args it is the read-only command', () => {
+    for (const agent of AGENTS) {
+      expect(reviewCommand(agent, undefined, 30_000)).toEqual(secondOpinionCommand(agent, undefined, 30_000))
+      expect(reviewCommand(agent, undefined, 30_000, [])).toEqual(secondOpinionCommand(agent, undefined, 30_000))
+    }
   })
 })
 

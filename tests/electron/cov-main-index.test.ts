@@ -1572,7 +1572,8 @@ describe('MCP tool table — operator verbs', () => {
       const [req] = M.runHeadless.mock.calls.at(-1)!
       // Spread-if-present, not `agent: opts.agent`: an explicit `undefined` would override
       // runHeadless's own default agent.
-      expect(req).toEqual({ task: 'summarise the repo' })
+      // A read-only run is isolated, and says why when it can't be (SEC-1).
+      expect(req).toEqual({ task: 'summarise the repo', isolated: true, isolationReason: true })
     })
 
     it('forwards write:false, and clamps timeoutMs:0 up to the floor — falsy is not the same as absent', async () => {
@@ -1580,13 +1581,19 @@ describe('MCP tool table — operator verbs', () => {
       const [req] = M.runHeadless.mock.calls.at(-1)!
       // `!== undefined` rather than truthiness: dropping write:false would let a CI job commit.
       // And 0 is deliver's "no limit", so the verb may no longer start an unbounded run.
-      expect(req).toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 10_000 })
+      expect(req).toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 10_000, isolated: true, isolationReason: true })
     })
 
     it('clamps a timeout past an hour down to the ceiling', async () => {
       await mcp().agentExec({ prompt: 'p', timeoutMs: 24 * 3_600_000 })
       const [req] = M.runHeadless.mock.calls.at(-1)!
-      expect(req).toEqual({ task: 'p', timeoutMs: 3_600_000 })
+      expect(req).toEqual({ task: 'p', timeoutMs: 3_600_000, isolated: true, isolationReason: true })
+    })
+
+    it('leaves a write run unisolated, as the person asked for one that changes the repo', async () => {
+      await mcp().agentExec({ prompt: 'p', agent: 'codex', write: true })
+      const [req] = M.runHeadless.mock.calls.at(-1)!
+      expect(req).toEqual({ task: 'p', agent: 'codex', write: true })
     })
 
     it('refuses an unknown agent before anything runs', async () => {
@@ -2155,6 +2162,13 @@ describe('agent:second-opinion', () => {
     M.runSecondOpinion.mockResolvedValueOnce({ ok: false } as never)
     expect(await invoke('agent:second-opinion', { agent: 'codex', content: 'd' }))
       .toEqual({ success: false, error: 'second opinion failed' })
+  })
+
+  it('isolates every review with prepareIsolatedLaunch before it starts (SEC-1)', async () => {
+    M.runSecondOpinion.mockResolvedValueOnce({ ok: true, feedback: '' } as never)
+    await invoke('agent:second-opinion', { agent: 'codex', content: 'd' })
+    const { prepareIsolatedLaunch } = await import('../../src/main/readOnlyIsolation')
+    expect(M.runSecondOpinion.mock.calls.at(-1)![2]).toBe(prepareIsolatedLaunch)
   })
 
   it('defaults missing content to an empty string rather than sending undefined', async () => {

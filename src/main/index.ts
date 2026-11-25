@@ -285,7 +285,7 @@ import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './clau
 import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb, AGY_HOME_STALE_MS, type ExecAgent } from './headlessExec'
-import { READ_ONLY_RUN_ENV, sweepStaleAgyHomes } from './readOnlyIsolation'
+import { READ_ONLY_RUN_ENV, prepareIsolatedLaunch, sweepStaleAgyHomes } from './readOnlyIsolation'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
 import { buildProbes, runBench, checkRegression, baselineFrom, formatBench, type BenchMemory } from './recallBench'
@@ -4264,7 +4264,8 @@ ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?:
     // discovered for that provider. secondOpinionCommand applies a second, shape-only
     // gate; anything that fails either is dropped and the agent runs its own default.
     const model = isAllowedModel(agent, opts?.model, modelCatalog) ? opts?.model : undefined
-    const res = await runSecondOpinion({ agent, model, content: opts?.content || '' }, deliverSecondOpinion)
+    // Isolated as a Lumopolis read-only run is: no MCP server of the person's, no command, no write.
+    const res = await runSecondOpinion({ agent, model, content: opts?.content || '' }, deliverSecondOpinion, prepareIsolatedLaunch)
     return res.ok ? ok({ feedback: res.feedback }) : err(res.error || 'second opinion failed')
   } catch (e: any) { return err(e.message) }
 })

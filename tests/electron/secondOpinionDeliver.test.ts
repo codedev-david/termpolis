@@ -12,7 +12,7 @@ import {
   type SecondOpinionDeliverDeps,
 } from '../../src/main/secondOpinionDeliver'
 import { TREE_KILL_GRACE_MS, killProcessTree, type KillTreeOptions } from '../../src/main/processTree'
-import { DELIVER_GRACE_MS, PROMPT_TOKEN, SECOND_OPINION_TIMEOUT_MS, powershellPath, runSecondOpinion } from '../../src/main/secondOpinion'
+import { DELIVER_GRACE_MS, PROMPT_TOKEN, SECOND_OPINION_TIMEOUT_MS, powershellPath, runSecondOpinion, type ReviewIsolate } from '../../src/main/secondOpinion'
 import { runHeadless } from '../../src/main/headlessExec'
 
 // Every process here is a fake: spawn, kill, and the temp-file writes are all injected. What
@@ -536,11 +536,19 @@ describe('secondOpinionDeliver: defaults and timing', () => {
 })
 
 describe('secondOpinionDeliver through its callers', () => {
+  // The review's isolation is proved in secondOpinion.test.ts; here it adds nothing, so only the review spawns.
+  const isolate: ReviewIsolate = async () => ({ args: [], env: {}, dispose: async () => undefined })
+  /** Lets the review get past its isolation to its spawn: microtasks only, so no timer moves. */
+  async function spawned(h: { children: unknown[] }): Promise<void> {
+    for (let i = 0; i < 20 && h.children.length === 0; i++) await Promise.resolve()
+    expect(h.children).toHaveLength(1)
+  }
+
   it('a Second Opinion that runs out of time reports that it was stopped, not a bare timeout', async () => {
     vi.useFakeTimers()
     const h = harness({ platform: 'win32' })
-    const review = runSecondOpinion({ agent: 'claude', content: 'diff' }, h.deliver)
-    await Promise.resolve()
+    const review = runSecondOpinion({ agent: 'claude', content: 'diff' }, h.deliver, isolate)
+    await spawned(h)
     vi.advanceTimersByTime(SECOND_OPINION_TIMEOUT_MS)
     expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false, canRetry: expect.any(Function) })
     h.children[0].emit('close', 1)
@@ -550,8 +558,8 @@ describe('secondOpinionDeliver through its callers', () => {
   it('settles before deliverWithDeadline gives up, even when close never comes', async () => {
     vi.useFakeTimers()
     const h = harness({ platform: 'win32' })
-    const review = runSecondOpinion({ agent: 'codex', content: 'diff', timeoutMs: 20_000 }, h.deliver)
-    await Promise.resolve()
+    const review = runSecondOpinion({ agent: 'codex', content: 'diff', timeoutMs: 20_000 }, h.deliver, isolate)
+    await spawned(h)
     h.children[0].emit('exit', 0)
     vi.advanceTimersByTime(20_000 + STOP_SETTLE_MS)
     expect(await review).toEqual({ ok: false, error: 'codex did not finish within 20s and was stopped' })
