@@ -2,11 +2,11 @@
  * The 3D map's frame times in CI (look spec §6.2, plan Task 2). Two worlds at 1920x1080: this repository (Termpolis
  * itself) and the generated one of 168 files in 12 folders (world-visual's big world, bigFiles(14)). For each:
  *   - the first frame is fast: the time from the first draw() to the frame that shows it (drawn().perf.firstFrameMs);
- *   - a 10 s scripted orbit, a mouse drag of 360° round the city, timed by the app's own frame-time sampler
- *     (window.__worldPerf, the counted frames between begin() and end()). The numbers are written to
- *     test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a `world-perf {...}` line. Reported only: no
- *     assertion on the frame rate, which a hosted runner (no GPU, SwiftShader) cannot speak for;
- *   - in software, the orbit's p95 stays at or under that world's SOFTWARE_FLOOR_P95_MS, measured on ubuntu-24.04 (§6.2).
+ *   - ORBITS scripted orbits of 10 s each, a mouse drag of 360° round the city, timed by the app's own frame-time
+ *     sampler (window.__worldPerf, the counted frames between begin() and end()). The numbers (the orbit whose p95 is the
+ *     median, and every orbit) are written to test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a
+ *     `world-perf {...}` line;
+ *   - in software, the median orbit's p95 stays at or under this system's floor for that world (SOFTWARE_FLOOR_P95_MS).
  *
  * Metrics only: no screenshot here is a golden image.
  */
@@ -17,18 +17,30 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, paletteType, removeDirs } from './helpers/world'
 
 /**
- * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software, one per
- * world. Each is 1.5 x the median p95 of that world's baseline orbits: 3 soak runs x 3 copies on ubuntu-24.04 at
- * 17cea296 (runs 45562373003, 45562384134, 45562403486), SwiftShader at the High tier, as software had no Flat tier
- * yet: Termpolis median 456.9 ms (383.2-533.2), big 262.1 ms (229.5-288.7). One floor for both (1.5 x 335.9 ms, the
- * median of all 18) would sit under the Termpolis orbit's own spread. Task 3 starts software at Flat, under these.
- * Asserted on Linux, where it was measured: macOS's runner draws on another SwiftShader backend (LLVM, not Subzero) and
- * its Termpolis orbit's p95 ran 227-859 ms over three copies, so there it is reported only.
+ * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software, per system
+ * and per world. Each is the WORST single-orbit p95 seen in that world on that system's hosted runner, over every soak
+ * copy so far, x 1.3 and rounded up to 10 ms: SwiftShader at the High tier, as software has no Flat tier yet (Task 3
+ * starts it at Flat, under these). Linux: 12 copies (runs 45562373003, 45562384134, 45562403486, 45564108979),
+ * Termpolis worst 603.6 ms, big 288.7. Windows: 6 copies (45562415525, 45564119886), 389.7 and 209.9. macOS: 6 copies
+ * (45562426781, 45564129694), 859.1 and 270.7; its runner draws on SwiftShader's LLVM backend, not Subzero, and its
+ * Termpolis orbit swings 217-859 ms from one runner to the next. The gate compares the median of ORBITS orbits, which
+ * is never over the worst of them, so a worst-single-orbit bound is the safe side.
  */
-const SOFTWARE_FLOOR_P95_MS: Record<string, number> = { termpolis: 685, big: 393 }
-/** The first frame's bound: in software, and on a GPU (wider than the spec's 400 ms, which Task 20 proves on real GPUs). */
-const FIRST_FRAME_SOFTWARE_MS = 3000
+const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
+  linux: { termpolis: 790, big: 380 },
+  windows: { termpolis: 510, big: 280 },
+  macos: { termpolis: 1120, big: 360 },
+}
+/**
+ * The first frame's bound in CI, in software: the worst first frame seen on that system's runner over the same soak
+ * copies, x 1.3 and rounded up to 100 ms (Linux 1160 ms, Windows 687, macOS 2658). These are runner bounds, not the
+ * promise: the spec's 3 s in software and 400 ms on a GPU stay the real-hardware targets, which Task 20 times on real
+ * machines. macOS's runner is the one over 3 s, so it gets its own bound. On a GPU the bound is 1000 ms, wider than 400.
+ */
+const FIRST_FRAME_SOFTWARE_MS: Record<string, number> = { linux: 1600, windows: 900, macos: 3500 }
 const FIRST_FRAME_HARDWARE_MS = 1000
+/** How many orbits each world's gate takes the median of: one slow orbit on a shared runner does not fail the gate. */
+const ORBITS = 3
 /** How long the scripted orbit takes, and how often the pointer moves during it. */
 const ORBIT_MS = 10_000
 const MOVE_EVERY_MS = 16
@@ -43,6 +55,7 @@ interface Probe { drawn(): Drawn }
 interface PerfProbe { begin(): void; end(): Stats }
 interface OrbitResult extends Stats {
   os: string
+  orbits: Stats[]
   fixture: string
   tier: string
   auto: boolean
@@ -178,21 +191,29 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       test.setTimeout(420_000)
       await openOn(fx.label, fx.dir())
       const d = await drawn()
-      const limit = d.software ? FIRST_FRAME_SOFTWARE_MS : FIRST_FRAME_HARDWARE_MS
+      const limit = d.software ? FIRST_FRAME_SOFTWARE_MS[OS_NAME] : FIRST_FRAME_HARDWARE_MS
       console.log(`world-perf first frame ${fx.label}: ${d.perf.firstFrameMs} ms (${d.software ? 'software' : 'hardware'}, limit ${limit} ms)`)
       expect(d.perf.firstFrameMs, 'no frame was ever drawn').not.toBeNull()
       expect(d.perf.firstFrameMs as number, `${fx.label}: the first frame took too long`).toBeLessThanOrEqual(limit)
     })
 
-    test(`a 10 s scripted orbit reports frame times (${fx.label})`, async () => {
-      test.setTimeout(120_000)
+    test(`${ORBITS} scripted orbits of 10 s report frame times (${fx.label})`, async () => {
+      test.setTimeout(60_000 + ORBITS * 40_000)
       await expect(pane()).toBeVisible()
-      await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.begin())
-      await orbit()
-      const stats = await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.end())
+      const runs: Stats[] = []
+      for (let i = 0; i < ORBITS; i++) {
+        await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.begin())
+        await orbit()
+        runs.push(await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.end()))
+        console.log(`world-perf orbit ${i + 1} ${fx.label}: ${JSON.stringify(runs[i])}`)
+        await page.waitForTimeout(500)
+      }
+      // The orbit whose p95 is the median: its own numbers, so p50/p95/p99 come from one orbit.
+      const stats = [...runs].sort((a, b) => a.p95 - b.p95)[Math.floor(runs.length / 2)]
       const d = await drawn()
       const result: OrbitResult = {
         os: OS_NAME,
+        orbits: runs,
         fixture: fx.label,
         tier: d.perf.tier,
         auto: d.perf.auto,
@@ -208,17 +229,16 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       orbits.set(fx.label, result)
       fs.writeFileSync(path.join(OUT, `${OS_NAME}-${fx.label}-${d.perf.tier}.json`), `${JSON.stringify(result, null, 2)}\n`)
       console.log(`world-perf ${JSON.stringify(result)}`)
-      expect(stats.frames, `${fx.label}: the orbit counted no frames`).toBeGreaterThan(0)
+      for (const r of runs) expect(r.frames, `${fx.label}: an orbit counted no frames`).toBeGreaterThan(0)
     })
 
     // The floor only, for now: that software starts at Flat is asserted here once Task 3 gives it a Flat tier.
-    test(`in software the orbit stays within the floor (${fx.label})`, async () => {
+    test(`in software the median orbit stays within the floor (${fx.label})`, async () => {
       const r = orbits.get(fx.label)
       expect(r, 'the orbit test did not run').toBeDefined()
       test.skip(!r!.software, 'drawn on a GPU: the floor is for software')
-      test.skip(OS_NAME !== 'linux', 'the floor was measured on ubuntu-24.04: reported only on this system')
-      const floor = SOFTWARE_FLOOR_P95_MS[fx.label]
-      expect(r!.p95, `${fx.label}: the orbit p95 ${r!.p95} ms is over the software floor ${floor} ms`).toBeLessThanOrEqual(floor)
+      const floor = SOFTWARE_FLOOR_P95_MS[OS_NAME][fx.label]
+      expect(r!.p95, `${fx.label}: the median orbit p95 ${r!.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
     })
   }
 
