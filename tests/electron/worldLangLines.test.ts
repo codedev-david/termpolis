@@ -131,6 +131,62 @@ describe('compile: Rust, Java and Kotlin lines', () => {
     )
   })
 
+  it('links Java and Kotlin across several source roots: main and test, java and kotlin, in each module (WP7 #103)', async () => {
+    const files = {
+      'core/src/main/java/com/acme/core/Engine.java': 'package com.acme.core;\nimport com.acme.util.Strings;\npublic class Engine {}\n',
+      'core/src/test/java/com/acme/core/EngineTest.java': 'package com.acme.core;\nimport com.acme.util.Strings;\nimport org.junit.Test;\nclass EngineTest {}\n',
+      'util/src/main/java/com/acme/util/Strings.java': 'package com.acme.util;\npublic final class Strings {}\n',
+      'util/src/main/kotlin/com/acme/util/Text.kt': 'package com.acme.util\nfun slug(s: String) = s\n',
+      'app/src/main/kotlin/com/acme/app/Main.kt': 'package com.acme.app\nimport com.acme.core.Engine\nimport com.acme.util.slug\nfun main() {}\n',
+      'cli/src/test/kotlin/com/acme/cli/CliTest.kt': 'package com.acme.cli\nimport com.acme.app.main\nclass CliTest\n'
+    }
+    const doc = await compileMem(files)
+    expectValid(doc)
+    const at = (f: string): string => home(doc, f) as string
+    for (const f of Object.keys(files)) expect(at(f), f).toBeDefined()
+    expect(pairs(doc)).toEqual(
+      [
+        `${at('core/src/main/java/com/acme/core/Engine.java')} -> ${at('util/src/main/java/com/acme/util/Strings.java')}`,
+        `${at('core/src/test/java/com/acme/core/EngineTest.java')} -> ${at('util/src/main/java/com/acme/util/Strings.java')}`,
+        `${at('app/src/main/kotlin/com/acme/app/Main.kt')} -> ${at('core/src/main/java/com/acme/core/Engine.java')}`,
+        `${at('app/src/main/kotlin/com/acme/app/Main.kt')} -> ${at('util/src/main/kotlin/com/acme/util/Text.kt')}`,
+        `${at('cli/src/test/kotlin/com/acme/cli/CliTest.kt')} -> ${at('app/src/main/kotlin/com/acme/app/Main.kt')}`
+      ].sort()
+    )
+    // Every file is drawn from its own source root; the JUnit import names no file in the project, so it draws nothing.
+    expect(new Set(Object.keys(files).map(at)).size).toBe(Object.keys(files).length)
+  })
+
+  it('links the imports under `if TYPE_CHECKING:` as any other Python import (WP7 #103)', async () => {
+    const files = {
+      'app/__init__.py': '',
+      'app/svc/__init__.py': '',
+      'app/svc/service.py': [
+        'from __future__ import annotations',
+        'from typing import TYPE_CHECKING',
+        '',
+        'if TYPE_CHECKING:',
+        '    from ..models.user import User',
+        '    import app.store.db as db',
+        '',
+        'def run(u: "User", d: "db.Db") -> None: ...',
+        ''
+      ].join('\n'),
+      'app/models/__init__.py': '',
+      'app/models/user.py': 'class User: ...\n',
+      'app/store/__init__.py': '',
+      'app/store/db.py': 'class Db: ...\n'
+    }
+    const doc = await compileMem(files)
+    expectValid(doc)
+    const at = (f: string): string => home(doc, f) as string
+    const from = at('app/svc/service.py')
+    expect(from).toBeDefined()
+    expect(from).not.toBe(at('app/models/user.py'))
+    expect(from).not.toBe(at('app/store/db.py'))
+    expect(pairs(doc)).toEqual(expect.arrayContaining([`${from} -> ${at('app/models/user.py')}`, `${from} -> ${at('app/store/db.py')}`]))
+  })
+
   it('an import of the standard library or a third-party package draws no line and makes no part', async () => {
     const files = { 'a/one.py': 'import os\nimport requests\nfrom django.db import models\n', 'b/two.py': 'import json\n' }
     const doc = await compileMem(files)
