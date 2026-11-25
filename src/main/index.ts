@@ -237,7 +237,7 @@ import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { depthOfferFor } from './headroom/depthOffer'
-import { fileURLToPath, pathToFileURL } from 'url'
+import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
 import { getGroqKey, setGroqKey, getGroqKeyStatus, clearGroqKey } from './groqKeyStore'
@@ -781,7 +781,14 @@ import { relaunchLockReason, locks as relaunchLocks } from './accountSwitch'
 import { onFirstPrompt } from './primerSessionGuard'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
-import { installPermissionPolicy, setGestureCamera, type PermissionPolicyDeps } from './permissionPolicy'
+import {
+  fileUrlOf,
+  installDeviceRefusals,
+  installPermissionPolicy,
+  refuseBluetooth,
+  setGestureCamera,
+  type PermissionPolicyDeps,
+} from './permissionPolicy'
 import {
   repairWindowsShortcuts,
   defaultShortcutPaths,
@@ -841,7 +848,7 @@ const rendererIndexFile = (): string => join(__dirname, '../renderer/index.html'
 
 /** What the permission policy (permissionPolicy.ts) grants against: the Termpolis page, in the Termpolis window. */
 const permissionDeps: PermissionPolicyDeps = {
-  appPageUrl: () => process.env['ELECTRON_RENDERER_URL'] || pathToFileURL(rendererIndexFile()).href,
+  appPageUrl: () => process.env['ELECTRON_RENDERER_URL'] || fileUrlOf(rendererIndexFile()),
   isAppContents: (wc) => wc != null && wc === mainWindow?.webContents,
 }
 
@@ -892,6 +899,7 @@ function createWindow() {
   // NOTE: packaged macOS builds also need NSMicrophoneUsageDescription + the audio-input
   // entitlement (build config).
   installPermissionPolicy(mainWindow.webContents?.session, permissionDeps)
+  installDeviceRefusals(mainWindow.webContents?.session)
 
   // The window only ever shows Termpolis itself. A link opened with window.open goes to the user's
   // browser, never into a second Electron window, which would be another page in the app. Nothing may navigate this window away either: a plain link, or a
@@ -4279,7 +4287,8 @@ ipcMain.handle('agentActivity:stats', async () => {
 if (process.env.NODE_ENV === 'test') {
   // The camera's main-side flag (permissionPolicy.ts), for e2e: a spec turns hand control's camera
   // on from the main process (electronApp.evaluate) the way WP-GESTURE will.
-  Object.assign(globalThis, { __termpolisGestureCamera: setGestureCamera })
+  // Never in a packaged build, even one started with NODE_ENV=test.
+  if (!app.isPackaged) Object.assign(globalThis, { __termpolisGestureCamera: setGestureCamera })
   ipcMain.handle('agentActivity:__test_publish', async (_, { event }: { event?: Partial<AgentEvent> } = {}) => {
     try {
       if (!event || typeof event !== 'object') return err('event required')
@@ -4368,7 +4377,12 @@ if (!gotTheLock) {
   void introGate.start()
   // Every session the app creates gets the permission policy, the default one (created at ready,
   // after this line) included. Only the Termpolis window's page is ever granted anything.
-  app.on('session-created', (ses) => installPermissionPolicy(ses, permissionDeps))
+  app.on('session-created', (ses) => {
+    installPermissionPolicy(ses, permissionDeps)
+    installDeviceRefusals(ses)
+  })
+  // Electron hands a page the first Bluetooth device it finds unless a listener cancels the chooser.
+  app.on('web-contents-created', (_event, wc) => refuseBluetooth(wc))
   // When a second instance tries to launch, focus the existing window
   app.on('second-instance', () => {
     if (mainWindow) {

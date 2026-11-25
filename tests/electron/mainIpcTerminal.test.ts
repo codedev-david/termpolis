@@ -1780,6 +1780,41 @@ describe('createWindow — renderer source + chrome', () => {
     }
   })
 
+  it('refuses every device on every session, and cancels the Bluetooth chooser on every webContents', () => {
+    const listeners = new Map<string, Function>()
+    const ses = {
+      setPermissionRequestHandler: vi.fn(),
+      setPermissionCheckHandler: vi.fn(),
+      setDevicePermissionHandler: vi.fn(),
+      setBluetoothPairingHandler: vi.fn(),
+      on: vi.fn((ev: string, h: Function) => { listeners.set(ev, h) }),
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      appOnHandlers.get('session-created')!(ses)
+      expect((ses.setDevicePermissionHandler.mock.calls[0][0] as Function)({ deviceType: 'hid' })).toBe(false)
+      const pairing = vi.fn()
+      ;(ses.setBluetoothPairingHandler.mock.calls[0][0] as Function)({}, pairing)
+      expect(pairing).toHaveBeenCalledWith({ confirmed: false })
+      for (const ev of ['select-hid-device', 'select-serial-port', 'select-usb-device']) {
+        const event = { preventDefault: vi.fn() }
+        listeners.get(ev)!(event, {}, vi.fn())
+        expect(event.preventDefault).toHaveBeenCalled()
+      }
+
+      const wcListeners = new Map<string, Function>()
+      const wc = { on: vi.fn((ev: string, h: Function) => { wcListeners.set(ev, h) }) }
+      appOnHandlers.get('web-contents-created')!({}, wc)
+      const event = { preventDefault: vi.fn() }
+      const choose = vi.fn()
+      wcListeners.get('select-bluetooth-device')!(event, [{ deviceId: 'b1' }], choose)
+      expect(event.preventDefault).toHaveBeenCalled()
+      expect(choose).toHaveBeenCalledWith('')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('sends window.open links to the browser and never opens a second Electron window', () => {
     recreateWindow()
     mockOpenExternal.mockClear()

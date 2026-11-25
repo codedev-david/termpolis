@@ -770,6 +770,23 @@ describe('agent:second-opinion', () => {
 // ===========================================================================
 // Test-only event-injection seam.
 // ===========================================================================
+describe('the hand-control camera seam (__termpolisGestureCamera)', () => {
+  const g = globalThis as unknown as { __termpolisGestureCamera?: unknown }
+
+  it('is set for an unpackaged run under NODE_ENV=test', async () => {
+    delete g.__termpolisGestureCamera
+    await boot()
+    expect(typeof g.__termpolisGestureCamera).toBe('function')
+  })
+
+  it('is NOT set in a packaged build, even under NODE_ENV=test', async () => {
+    // It turns the camera on from main. A shipped build started with NODE_ENV=test must not have it.
+    delete g.__termpolisGestureCamera
+    await boot({ packaged: true })
+    expect(g.__termpolisGestureCamera).toBeUndefined()
+  })
+})
+
 describe('agentActivity:__test_publish', () => {
   it('is registered under NODE_ENV=test', async () => {
     await boot()

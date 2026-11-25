@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { pathToFileURL } from 'url'
+import { win32 } from 'path'
+import { format as formatUrl, pathToFileURL } from 'url'
 import {
   decideCheck,
   decideRequest,
+  fileUrlOf,
   gestureCamera,
+  installDeviceRefusals,
   installPermissionPolicy,
   isAppOrigin,
+  refuseBluetooth,
   isAppPage,
   resetPermissionLog,
   setGestureCamera,
@@ -70,9 +74,51 @@ describe('isAppPage: the requesting URL is the page main loaded', () => {
     expect(isAppPage('data:text/html,hi', 'data:text/html,hi')).toBe(false)
   })
 
-  it('refuses a file URL whose escapes cannot be decoded (never treats two bad paths as equal)', () => {
-    expect(isAppPage('file:///a/%E0%A4%A', 'file:///a/%E0%A4%A')).toBe(false)
+  it('compares a file URL whose escapes cannot be decoded as it is, without throwing', () => {
+    expect(isAppPage('file:///a/%E0%A4%A', 'file:///a/%E0%A4%A')).toBe(true)
+    expect(isAppPage('file:///a/%E0%A4%A#/x', 'file:///a/%E0%A4%A')).toBe(true)
+    expect(isAppPage('file:///b/%E0%A4%A', 'file:///a/%E0%A4%A')).toBe(false)
     expect(isAppPage(PAGE, 'file:///a/%E0%A4%A')).toBe(false)
+    // A lone % is not an escape: it stands for itself, so %25 matches it.
+    expect(isAppPage('file:///a%/index.html', 'file:///a%25/index.html')).toBe(true)
+    expect(isAppPage('file:///a%zz/index.html', 'file:///a%25zz/index.html')).toBe(true)
+    expect(isAppPage('file:///a%/index.html', 'file:///b%25/index.html')).toBe(false)
+  })
+})
+
+// What the window's address bar really holds after loadFile(path): Electron formats the path the way
+// url.format does (escaping only ? and #) and Chromium parses it (encoding spaces and non-ASCII, keeping
+// a % that starts no escape, turning a backslash into /).
+const loaded = (path: string): string => new URL(formatUrl({ protocol: 'file', slashes: true, pathname: path })).href
+
+describe('fileUrlOf: the page URL of the file main loads, as the window holds it', () => {
+  // Windows paths are written with / here and given their backslashes below, as path.resolve gives them.
+  const dirs = process.platform === 'win32'
+    ? ['C:/Program Files/Termpolis', 'C:/Users/Dav%id/100%', 'C:/Users/a #b/c?d', 'C:/Users/Jos\u00e9 M\u00fcller/\u65e5\u672c', 'C:/Users/x/%41%2', 'D:/%E0%A4%A']
+    : ['/opt/Termpolis App', '/home/dav%id/100%', '/home/a #b/c?d', '/home/jos\u00e9 m\u00fcller/\u65e5\u672c', '/home/x/%41%2', '/srv/%E0%A4%A']
+  const files = dirs.map((d) => process.platform === 'win32' ? win32.normalize(`${d}/index.html`) : `${d}/index.html`)
+
+  it.each(files)('matches the loaded page for %s', (file) => {
+    expect(fileUrlOf(file)).toBe(loaded(file))
+    expect(isAppPage(`${loaded(file)}#/world`, fileUrlOf(file))).toBe(true)
+    expect(isAppPage(`${loaded(file)}?q=1`, fileUrlOf(file))).toBe(true)
+  })
+
+  it.each(files)('never throws, and tells another file from %s', (file) => {
+    expect(() => isAppPage(loaded(file), pathToFileURL(file).href)).not.toThrow()
+    expect(isAppPage(loaded(`${file}.bak`), fileUrlOf(file))).toBe(false)
+    expect(isAppPage(loaded(file.replace('index.html', 'other.html')), fileUrlOf(file))).toBe(false)
+  })
+
+  it('agrees with pathToFileURL wherever the path holds no % (spaces, #, ? and non-ASCII)', () => {
+    for (const file of files.filter((f) => !f.includes('%'))) {
+      expect(isAppPage(`${loaded(file)}#/world`, pathToFileURL(file).href)).toBe(true)
+    }
+  })
+
+  it('takes a relative or slash-led path the same way', () => {
+    expect(fileUrlOf('/a b/index.html')).toBe('file:///a%20b/index.html')
+    expect(fileUrlOf('a b/index.html')).toBe('file:///a%20b/index.html')
   })
 })
 
@@ -115,7 +161,7 @@ describe('decideRequest: the allow and deny table', () => {
   const denied = [
     'geolocation', 'fullscreen', 'pointerLock', 'keyboardLock', 'openExternal', 'display-capture',
     'midi', 'midiSysex', 'mediaKeySystem', 'idle-detection', 'speaker-selection', 'storage-access',
-    'top-level-storage-access', 'window-management', 'fileSystem', 'unknown', 'hid', 'usb', 'serial',
+    'top-level-storage-access', 'window-management', 'fileSystem', 'unknown',
     'some-permission-a-later-electron-adds',
   ]
   for (const permission of denied) {
@@ -123,6 +169,12 @@ describe('decideRequest: the allow and deny table', () => {
       expect(decideRequest(appWc, permission, fromPage(), deps())).toBe('not-allowed')
     })
   }
+
+  it('denies Bluetooth, HID, serial and USB devices by name, even from the app page', () => {
+    for (const permission of ['bluetooth', 'hid', 'serial', 'usb']) {
+      expect(decideRequest(appWc, permission, fromPage(), deps())).toBe('device')
+    }
+  })
 
   it('denies the camera while hand control is off, and allows it once it is on', () => {
     expect(decideRequest(appWc, 'media', fromPage({ mediaTypes: ['video'] }), deps())).toBe('camera-off')
@@ -158,6 +210,12 @@ describe('decideRequest: the allow and deny table', () => {
     expect(decideRequest(appWc, 'notifications', undefined, d)).toBe('foreign')
   })
 
+  it('denies a request that does not say it comes from the main frame', () => {
+    const d = deps()
+    expect(decideRequest(appWc, 'media', { requestingUrl: PAGE, mediaTypes: ['audio'] }, d)).toBe('foreign')
+    expect(decideRequest(appWc, 'notifications', { isMainFrame: undefined, requestingUrl: PAGE }, d)).toBe('foreign')
+  })
+
   it('follows the dev server page when that is what main loaded', () => {
     const d = deps({ appPageUrl: () => DEV })
     expect(decideRequest(appWc, 'media', { isMainFrame: true, requestingUrl: `${DEV}/`, mediaTypes: ['audio'] }, d)).toBeNull()
@@ -184,8 +242,11 @@ describe('decideCheck: the check handler', () => {
   })
 
   it('denies what is not on the list', () => {
-    for (const permission of ['geolocation', 'fullscreen', 'pointerLock', 'hid', 'serial', 'usb', 'midi', 'openExternal', 'storage-access']) {
+    for (const permission of ['geolocation', 'fullscreen', 'pointerLock', 'midi', 'openExternal', 'storage-access']) {
       expect(decideCheck(appWc, permission, 'file:///', fromPageCheck(), deps())).toBe('not-allowed')
+    }
+    for (const permission of ['bluetooth', 'hid', 'serial', 'usb']) {
+      expect(decideCheck(appWc, permission, 'file:///', fromPageCheck(), deps())).toBe('device')
     }
   })
 
@@ -206,10 +267,14 @@ describe('decideCheck: the check handler', () => {
     expect(decideCheck(appWc, 'notifications', 'file:///', fromPageCheck({ embeddingOrigin: 'file:///' }), d)).toBeNull()
   })
 
-  it('without a requesting URL, the origin alone decides', () => {
-    expect(decideCheck(appWc, 'notifications', 'file:///', { isMainFrame: true }, deps())).toBeNull()
-    expect(decideCheck(appWc, 'notifications', 'file:///', undefined, deps())).toBeNull()
+  it('is as strict as a request: no requesting URL or no main-frame flag is refused', () => {
+    // Electron 43 passes both for every check from a frame (the soak's notifications, clipboard and
+    // microphone checks all carry them), and only a cross-origin subframe goes without the URL.
+    expect(decideCheck(appWc, 'notifications', 'file:///', { isMainFrame: true }, deps())).toBe('foreign')
+    expect(decideCheck(appWc, 'notifications', 'file:///', undefined, deps())).toBe('foreign')
+    expect(decideCheck(appWc, 'notifications', 'file:///', { requestingUrl: PAGE }, deps())).toBe('foreign')
     expect(decideCheck(appWc, 'notifications', 'https://evil.example', { isMainFrame: true }, deps())).toBe('foreign')
+    expect(decideCheck(appWc, 'notifications', 'file:///', { isMainFrame: true, requestingUrl: '' }, deps())).toBe('foreign')
   })
 })
 
@@ -264,10 +329,19 @@ describe('installPermissionPolicy: the handlers it puts on a session', () => {
     ])
   })
 
-  it('stops logging once it has logged 64 distinct denials (a hostile page cannot flood the log)', () => {
+  it('stops logging once it has logged 64 distinct denials, and says so once (a hostile page cannot flood the log)', () => {
     const { check, d } = handlers()
     for (let i = 0; i < 100; i++) check(appWc, `made-up-${i}`, 'file:///', { isMainFrame: true, requestingUrl: PAGE })
-    expect(d.log).toHaveBeenCalledTimes(64)
+    expect(d.log).toHaveBeenCalledTimes(65)
+    expect(d.log.mock.calls[63][0]).toBe('[permissions] denied made-up-63 check: not on the allowlist')
+    expect(d.log.mock.calls[64][0]).toBe('[permissions] 64 denials logged; further denials are not logged')
+    // Still answering, still quiet.
+    expect(check(appWc, 'geolocation', 'file:///', { isMainFrame: true, requestingUrl: PAGE })).toBe(false)
+    expect(d.log).toHaveBeenCalledTimes(65)
+    // A reset (a test) starts the count again.
+    resetPermissionLog()
+    check(appWc, 'geolocation', 'file:///', { isMainFrame: true, requestingUrl: PAGE })
+    expect(d.log).toHaveBeenCalledTimes(66)
   })
 
   it('names the permission with safe characters only, and briefly', () => {
@@ -314,5 +388,93 @@ describe('installPermissionPolicy: the handlers it puts on a session', () => {
     expect(() => installPermissionPolicy(null, deps())).not.toThrow()
     expect(() => installPermissionPolicy(undefined, deps())).not.toThrow()
     expect(() => installPermissionPolicy({}, deps())).not.toThrow()
+  })
+})
+
+describe('installDeviceRefusals and refuseBluetooth: no device is ever handed to the page', () => {
+  function fakeSession() {
+    const listeners = new Map<string, (...a: unknown[]) => void>()
+    return {
+      listeners,
+      setDevicePermissionHandler: vi.fn(),
+      setBluetoothPairingHandler: vi.fn(),
+      on: vi.fn((event: string, listener: (...a: unknown[]) => void) => { listeners.set(event, listener) }),
+    }
+  }
+
+  it('refuses every device permission, and logs the kind once', () => {
+    const ses = fakeSession()
+    const log = vi.fn()
+    installDeviceRefusals(ses, log)
+    const handler = ses.setDevicePermissionHandler.mock.calls[0][0] as (d: unknown) => boolean
+    for (const deviceType of ['hid', 'serial', 'usb', 'hid']) expect(handler({ deviceType, origin: 'file:///' })).toBe(false)
+    expect(handler(undefined)).toBe(false)
+    expect(log.mock.calls.map((c) => c[0])).toEqual([
+      '[permissions] denied hid device: a Bluetooth, HID, serial or USB device is never shared',
+      '[permissions] denied serial device: a Bluetooth, HID, serial or USB device is never shared',
+      '[permissions] denied usb device: a Bluetooth, HID, serial or USB device is never shared',
+      '[permissions] denied unknown device: a Bluetooth, HID, serial or USB device is never shared',
+    ])
+  })
+
+  it('refuses Bluetooth pairing', () => {
+    const ses = fakeSession()
+    installDeviceRefusals(ses, vi.fn())
+    const pair = ses.setBluetoothPairingHandler.mock.calls[0][0] as (d: unknown, cb: (r: unknown) => void) => void
+    const cb = vi.fn()
+    pair({ deviceId: 'x', pairingKind: 'confirm' }, cb)
+    expect(cb).toHaveBeenCalledWith({ confirmed: false })
+  })
+
+  it('cancels the HID, serial and USB choosers, so no device is picked for the page', () => {
+    const ses = fakeSession()
+    const log = vi.fn()
+    installDeviceRefusals(ses, log)
+    for (const [event, cancel] of [['select-hid-device', undefined], ['select-serial-port', ''], ['select-usb-device', undefined]] as const) {
+      const ev = { preventDefault: vi.fn() }
+      const cb = vi.fn()
+      ses.listeners.get(event)!(ev, { deviceList: [{ deviceId: 'd1' }], portList: [{ portId: 'p1' }] }, cb)
+      expect(ev.preventDefault).toHaveBeenCalled()
+      expect(cb).toHaveBeenCalledTimes(1)
+      expect(cb.mock.calls[0]).toEqual(cancel === undefined ? [] : [cancel])
+    }
+    expect(log.mock.calls.map((c) => c[0])).toEqual([
+      '[permissions] denied hid chooser: a Bluetooth, HID, serial or USB device is never shared',
+      '[permissions] denied serial chooser: a Bluetooth, HID, serial or USB device is never shared',
+      '[permissions] denied usb chooser: a Bluetooth, HID, serial or USB device is never shared',
+    ])
+  })
+
+  it('cancels the Bluetooth chooser with an empty id (Electron would otherwise pick the first device)', () => {
+    const listeners = new Map<string, (...a: unknown[]) => void>()
+    const wc = { on: vi.fn((event: string, listener: (...a: unknown[]) => void) => { listeners.set(event, listener) }) }
+    const log = vi.fn()
+    refuseBluetooth(wc, log)
+    const ev = { preventDefault: vi.fn() }
+    const cb = vi.fn()
+    listeners.get('select-bluetooth-device')!(ev, [{ deviceId: 'b1', deviceName: 'Headset' }], cb)
+    expect(ev.preventDefault).toHaveBeenCalled()
+    expect(cb).toHaveBeenCalledWith('')
+    expect(log).toHaveBeenCalledWith('[permissions] denied bluetooth chooser: a Bluetooth, HID, serial or USB device is never shared')
+  })
+
+  it('logs to console.warn by default, and copes with a session or webContents that has none of it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const ses = fakeSession()
+      installDeviceRefusals(ses)
+      ;(ses.setDevicePermissionHandler.mock.calls[0][0] as (d: unknown) => boolean)({ deviceType: 'usb' })
+      expect(warn).toHaveBeenCalledWith('[permissions] denied usb device: a Bluetooth, HID, serial or USB device is never shared')
+      const listeners = new Map<string, (...a: unknown[]) => void>()
+      refuseBluetooth({ on: (event: string, l: (...a: unknown[]) => void) => { listeners.set(event, l) } })
+      listeners.get('select-bluetooth-device')!({ preventDefault: () => undefined }, [], () => undefined)
+      expect(warn).toHaveBeenCalledWith('[permissions] denied bluetooth chooser: a Bluetooth, HID, serial or USB device is never shared')
+    } finally {
+      warn.mockRestore()
+    }
+    expect(() => installDeviceRefusals(null)).not.toThrow()
+    expect(() => installDeviceRefusals({})).not.toThrow()
+    expect(() => refuseBluetooth(null)).not.toThrow()
+    expect(() => refuseBluetooth({})).not.toThrow()
   })
 })

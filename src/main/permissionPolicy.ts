@@ -16,11 +16,23 @@
 //   notifications  the usage-limit notice while the window is in the background (lib/limitWatch.ts).
 //   Most copy and paste goes through main's clipboard module over IPC and needs no permission.
 //
+// Never granted, by name: bluetooth, hid, serial and usb. installDeviceRefusals and refuseBluetooth
+// also refuse each device permission and cancel each device chooser, because Electron with no
+// select-bluetooth-device listener picks the first device it finds.
+//
+// Screen capture: getDisplayMedia has no handler here, so Electron refuses it. The legacy
+// getUserMedia({ video: { mandatory: { chromeMediaSource: 'desktop' } } }) does reach the request
+// handler, and Electron's details do not say so: mediaTypes names only microphone and camera kinds,
+// so desktop video asked for with the microphone arrives as ['audio'] (and alone, as no kind at
+// all), with nothing in securityOrigin or the other details to tell it apart. The renderer's media
+// guard (renderer/src/lib/mediaGuard.ts) refuses any constraint naming chromeMediaSource before it
+// leaves the page.
+//
 // Everything else is refused, with one log line that names the permission and the reason, never a
 // URL (a requesting URL can carry a path or a query with the user's data in it).
 
 /** Why a permission was refused. null (from the decide functions) means it was granted. */
-export type PermissionDenial = 'foreign' | 'not-allowed' | 'camera-off' | 'media-unknown'
+export type PermissionDenial = 'foreign' | 'not-allowed' | 'camera-off' | 'media-unknown' | 'device'
 
 export interface PermissionPolicyDeps {
   /** The page main loads into the window: the dev server URL, or the file URL of index.html. */
@@ -57,6 +69,9 @@ export interface PermissionSession {
 /** Granted from the app's page whatever the details. `media` is decided by its device kinds. */
 const GRANTED = new Set(['clipboard-read', 'clipboard-sanitized-write', 'notifications'])
 
+/** Never granted, and named so a denial says why. */
+const DEVICES = new Set(['bluetooth', 'hid', 'serial', 'usb'])
+
 let cameraForGestures = false
 
 /** Hand control (WP-GESTURE) turns the camera on while it runs, and off again. Off by default. */
@@ -79,14 +94,30 @@ function parse(url: string | undefined): URL | null {
 
 const isWeb = (u: URL): boolean => u.protocol === 'http:' || u.protocol === 'https:'
 
-/** A file URL as one comparable string: host and decoded path, case-folded on Windows. */
-function fileKey(u: URL, platform: NodeJS.Platform): string | null {
+/**
+ * The page URL of the file main loads with loadFile(absPath), as the window then holds it. Electron
+ * formats the path as url.format does (escaping only ? and #) and Chromium parses that; new URL
+ * parses the same way. pathToFileURL differs: it also escapes %, which Chromium keeps as it is.
+ */
+export function fileUrlOf(absPath: string): string {
+  const path = absPath.replace(/[?#]/g, encodeURIComponent)
+  return new URL(`file://${path.startsWith('/') ? '' : '/'}${path}`).href
+}
+
+/** A path decoded where it can be: a % that starts no escape stands for itself, and bad UTF-8 stays as it is. */
+function decodePath(pathname: string): string {
+  const escaped = pathname.replace(/%(?![0-9A-Fa-f]{2})/g, '%25')
   try {
-    const key = `${u.host}${decodeURIComponent(u.pathname)}`
-    return platform === 'win32' ? key.toLowerCase() : key
+    return decodeURIComponent(escaped)
   } catch {
-    return null
+    return escaped
   }
+}
+
+/** A file URL as one comparable string: host and decoded path, case-folded on Windows. */
+function fileKey(u: URL, platform: NodeJS.Platform): string {
+  const key = `${u.host}${decodePath(u.pathname)}`
+  return platform === 'win32' ? key.toLowerCase() : key
 }
 
 /**
@@ -99,8 +130,7 @@ export function isAppPage(url: string | undefined, appPageUrl: string, platform:
   if (!got || !want || got.protocol !== want.protocol) return false
   if (isWeb(want)) return got.origin === want.origin
   if (want.protocol !== 'file:') return false
-  const a = fileKey(got, platform)
-  return a !== null && a === fileKey(want, platform)
+  return fileKey(got, platform) === fileKey(want, platform)
 }
 
 /** Whether an origin is the app page's. A file page's origin is opaque, so it is any file: origin. */
@@ -114,8 +144,11 @@ export function isAppOrigin(origin: string | undefined, appPageUrl: string): boo
 
 /** The verdict on a permission from the app's own page. */
 function verdict(permission: string, mediaTypes: readonly string[] | undefined): PermissionDenial | null {
+  if (DEVICES.has(permission)) return 'device'
   if (permission !== 'media') return GRANTED.has(permission) ? null : 'not-allowed'
-  // Device capture names its kinds; screen and tab capture name none, so they are refused here.
+  // Microphone and camera capture name their kinds, and getDisplayMedia never reaches here. Legacy
+  // chromeMediaSource capture names none of its own: alone it names nothing and is refused here;
+  // with the microphone it reads as ['audio'], which only the renderer's media guard can refuse.
   if (!mediaTypes || mediaTypes.length === 0) return 'media-unknown'
   for (const kind of mediaTypes) {
     if (kind === 'audio') continue
@@ -125,26 +158,30 @@ function verdict(permission: string, mediaTypes: readonly string[] | undefined):
   return null
 }
 
-/** The request handler's decision: null grants it. */
+/** The request handler's decision: null grants it. Only the app's main frame, saying so, at the app's page. */
 export function decideRequest(wc: unknown, permission: string, details: RequestDetails | undefined, deps: PermissionPolicyDeps): PermissionDenial | null {
   const page = deps.appPageUrl()
   const fromApp = deps.isAppContents(wc)
-    && details?.isMainFrame !== false
-    && isAppPage(details?.requestingUrl, page)
-    && (details?.securityOrigin === undefined || isAppOrigin(details.securityOrigin, page))
-  return fromApp ? verdict(permission, details?.mediaTypes) : 'foreign'
+    && details?.isMainFrame === true
+    && isAppPage(details.requestingUrl, page)
+    && (details.securityOrigin === undefined || isAppOrigin(details.securityOrigin, page))
+  return fromApp ? verdict(permission, details.mediaTypes) : 'foreign'
 }
 
-/** The check handler's decision: null grants it. A check with no webContents (a worker) is refused. */
+/**
+ * The check handler's decision: null grants it. As strict as a request: the app's main frame, saying
+ * so, at the app's page. Electron 43 passes isMainFrame and requestingUrl for every check from a
+ * frame; a check with no webContents (a worker) or no URL (a cross-origin subframe) is refused.
+ */
 export function decideCheck(wc: unknown, permission: string, requestingOrigin: string, details: CheckDetails | undefined, deps: PermissionPolicyDeps): PermissionDenial | null {
   const page = deps.appPageUrl()
   const fromApp = deps.isAppContents(wc)
-    && details?.isMainFrame !== false
+    && details?.isMainFrame === true
     && isAppOrigin(requestingOrigin, page)
-    && (details?.requestingUrl === undefined || isAppPage(details.requestingUrl, page))
-    && (details?.securityOrigin === undefined || isAppOrigin(details.securityOrigin, page))
-    && (details?.embeddingOrigin === undefined || isAppOrigin(details.embeddingOrigin, page))
-  return fromApp ? verdict(permission, details?.mediaType === undefined ? undefined : [details.mediaType]) : 'foreign'
+    && isAppPage(details.requestingUrl, page)
+    && (details.securityOrigin === undefined || isAppOrigin(details.securityOrigin, page))
+    && (details.embeddingOrigin === undefined || isAppOrigin(details.embeddingOrigin, page))
+  return fromApp ? verdict(permission, details.mediaType === undefined ? undefined : [details.mediaType]) : 'foreign'
 }
 
 const REASON: Record<PermissionDenial, string> = {
@@ -152,28 +189,40 @@ const REASON: Record<PermissionDenial, string> = {
   'not-allowed': 'not on the allowlist',
   'camera-off': 'the camera is only for hand control, which is off',
   'media-unknown': 'not a microphone or camera',
+  device: 'a Bluetooth, HID, serial or USB device is never shared',
 }
 
-/** Each permission, kind and reason is logged once; past this many the log stays quiet. */
+/** Each permission, kind and reason is logged once; past this many the log says so once and stays quiet. */
 const MAX_LOGGED = 64
 const logged = new Set<string>()
+let capNoted = false
 
 /** Tests: forget what has been logged. */
 export function resetPermissionLog(): void {
   logged.clear()
+  capNoted = false
 }
 
-function logDenial(kind: 'request' | 'check', permission: string, denial: PermissionDenial, log: (line: string) => void): void {
+const defaultLog = (line: string): void => console.warn(line)
+
+type LogKind = 'request' | 'check' | 'device' | 'chooser'
+
+function logDenial(kind: LogKind, permission: string, denial: PermissionDenial, log: (line: string) => void): void {
   const name = permission.replace(/[^A-Za-z0-9-]/g, '').slice(0, 48)
   const key = `${kind}:${name}:${denial}`
-  if (logged.has(key) || logged.size >= MAX_LOGGED) return
+  if (logged.has(key)) return
+  if (logged.size >= MAX_LOGGED) {
+    if (!capNoted) log(`[permissions] ${MAX_LOGGED} denials logged; further denials are not logged`)
+    capNoted = true
+    return
+  }
   logged.add(key)
   log(`[permissions] denied ${name} ${kind}: ${REASON[denial]}`)
 }
 
 /** Put the policy on a session, as both its request and its check handler. */
 export function installPermissionPolicy(ses: PermissionSession | null | undefined, deps: PermissionPolicyDeps): void {
-  const log = deps.log ?? ((line: string) => console.warn(line))
+  const log = deps.log ?? defaultLog
   ses?.setPermissionRequestHandler?.((wc, permission, callback, details) => {
     let denial: PermissionDenial | null
     try {
@@ -193,5 +242,53 @@ export function installPermissionPolicy(ses: PermissionSession | null | undefine
     }
     if (denial) logDenial('check', permission, denial, log)
     return denial === null
+  })
+}
+
+/** What installDeviceRefusals sets on an Electron Session. Optional so a minimal test mock passes. */
+export interface DeviceSession {
+  setDevicePermissionHandler?(handler: (details: { deviceType?: string }) => boolean): void
+  setBluetoothPairingHandler?(handler: (details: unknown, callback: (response: { confirmed: boolean }) => void) => void): void
+  on?(event: string, listener: (event: { preventDefault(): void }, details: unknown, callback: (id?: string) => void) => void): unknown
+}
+
+/** The device choosers on a session, and the answer that cancels each (Electron's documented one). */
+const CHOOSERS: ReadonlyArray<readonly [event: string, name: string, cancel: string | undefined]> = [
+  ['select-hid-device', 'hid', undefined],
+  ['select-serial-port', 'serial', ''],
+  ['select-usb-device', 'usb', undefined],
+]
+
+/**
+ * Refuse every device a page could ask for: each device permission, Bluetooth pairing, and the HID,
+ * serial and USB choosers (cancelled, so no device is picked).
+ */
+export function installDeviceRefusals(ses: DeviceSession | null | undefined, log: (line: string) => void = defaultLog): void {
+  ses?.setDevicePermissionHandler?.((details) => {
+    logDenial('device', details?.deviceType ?? 'unknown', 'device', log)
+    return false
+  })
+  ses?.setBluetoothPairingHandler?.((_details, callback) => callback({ confirmed: false }))
+  for (const [event, name, cancel] of CHOOSERS) {
+    ses?.on?.(event, (ev, _details, callback) => {
+      ev.preventDefault()
+      logDenial('chooser', name, 'device', log)
+      if (cancel === undefined) callback()
+      else callback(cancel)
+    })
+  }
+}
+
+/** What refuseBluetooth listens on: an Electron WebContents. */
+export interface BluetoothContents {
+  on?(event: 'select-bluetooth-device', listener: (event: { preventDefault(): void }, devices: unknown[], callback: (deviceId: string) => void) => void): unknown
+}
+
+/** Cancel every Bluetooth chooser. With no listener that prevents the default, Electron picks the first device. */
+export function refuseBluetooth(wc: BluetoothContents | null | undefined, log: (line: string) => void = defaultLog): void {
+  wc?.on?.('select-bluetooth-device', (event, _devices, callback) => {
+    event.preventDefault()
+    logDenial('chooser', 'bluetooth', 'device', log)
+    callback('')
   })
 }

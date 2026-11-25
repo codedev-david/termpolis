@@ -1,3 +1,5 @@
+// First: refuse legacy screen capture through getUserMedia before any other module runs (lib/mediaGuard.ts).
+import './installMediaGuard'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './index.css'

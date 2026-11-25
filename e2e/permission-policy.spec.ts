@@ -5,7 +5,9 @@
  * The unit suite proves the allow and deny tables against mocks. This proves Chromium routes the
  * page's real requests and checks through them: the microphone is granted (and voice capture
  * works), the camera is refused until hand control turns it on, the clipboard and notifications
- * are granted, and location is refused.
+ * are granted (and the clipboard really round-trips), location is refused, a frame inside the page
+ * is refused what the page itself is granted, the legacy screen capture is refused in the page, and
+ * the microphone tester names the microphones.
  *
  * Unlike voice-capture.spec.ts this launches WITHOUT --use-fake-ui-for-media-stream. That switch
  * answers media requests itself and never asks the session's permission handler, so a spec run
@@ -156,5 +158,103 @@ test.describe.serial('Permission policy (real session handlers)', () => {
     }
     expect(await openMedia({ video: true })).toBe('error:NotAllowedError')
     expect(await openMedia({ audio: true })).toBe('ok:audio')
+  })
+
+  test('5. the clipboard round-trips through navigator.clipboard', async () => {
+    // The clipboard API needs a focused document. Focus emulation gives the page that without taking
+    // the keyboard from anything else on the machine; main's clipboard is saved and put back.
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    const saved = await app.evaluate(({ clipboard }) => clipboard.readText())
+    const text = `termpolis-permission-e2e ${Date.now()} é日`
+    try {
+      const result = await page.evaluate(async (t) => {
+        try {
+          await navigator.clipboard.writeText(t)
+          return `read:${await navigator.clipboard.readText()}`
+        } catch (e) {
+          return `error:${(e as Error).name}:${(e as Error).message} focus ${document.hasFocus()}`
+        }
+      }, text)
+      expect(result).toBe(`read:${text}`)
+      expect(await app.evaluate(({ clipboard }) => clipboard.readText()), 'the system clipboard holds what the page wrote').toBe(text)
+    } finally {
+      await app.evaluate(({ clipboard }, t) => clipboard.writeText(t), saved)
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
+      await cdp.detach().catch(() => {})
+    }
+  })
+
+  test('6. a frame inside the page is refused the microphone and the clipboard the page is granted', async () => {
+    const result = await page.evaluate(async () => {
+      const frame = document.createElement('iframe')
+      frame.srcdoc = '<!doctype html><title>frame</title>'
+      frame.style.cssText = 'position:fixed;left:0;top:0;width:10px;height:10px;opacity:0'
+      const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }))
+      document.body.appendChild(frame)
+      await loaded
+      const win = frame.contentWindow as (Window & typeof globalThis) | null
+      const out: Record<string, string> = {}
+      try {
+        if (!win) throw new Error('no frame window')
+        try {
+          const stream = await win.navigator.mediaDevices.getUserMedia({ audio: true })
+          stream.getTracks().forEach((t) => t.stop())
+          out.mic = 'ok'
+        } catch (e) {
+          out.mic = `error:${(e as Error).name}`
+        }
+        for (const name of ['microphone', 'clipboard-read']) {
+          try {
+            out[name] = (await win.navigator.permissions.query({ name: name as PermissionName })).state
+          } catch (e) {
+            out[name] = `error:${(e as Error).name}`
+          }
+        }
+      } catch (e) {
+        out.frame = `error:${(e as Error).message}`
+      } finally {
+        frame.remove()
+      }
+      return out
+    })
+    expect(result).toEqual({ mic: 'error:NotAllowedError', microphone: 'denied', 'clipboard-read': 'denied' })
+    // The page itself still has them.
+    expect(await queryPermission('microphone')).toBe('granted')
+    expect(await queryPermission('clipboard-read')).toBe('granted')
+  })
+
+  test('7. the legacy screen capture is refused in the page, with or without the microphone', async () => {
+    const ask = (constraints: unknown): Promise<string> => page.evaluate(async (c) => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(c as MediaStreamConstraints)
+        stream.getTracks().forEach((t) => t.stop())
+        return 'ok'
+      } catch (e) {
+        return `error:${(e as Error).name}:${(e as Error).message}`
+      }
+    }, constraints)
+    const refused = 'error:NotAllowedError:Screen capture is not allowed in Termpolis'
+    expect(await ask({ audio: true, video: { mandatory: { chromeMediaSource: 'desktop' } } })).toBe(refused)
+    expect(await ask({ video: { mandatory: { chromeMediaSource: 'screen', chromeMediaSourceId: 'screen:0:0' } } })).toBe(refused)
+    expect(await ask({ audio: { mandatory: { chromeMediaSource: 'desktop' } } })).toBe(refused)
+    // The guard cannot be taken off.
+    expect(await page.evaluate(() => {
+      const d = Object.getOwnPropertyDescriptor(MediaDevices.prototype, 'getUserMedia')
+      return `${d?.writable} ${d?.configurable}`
+    })).toBe('false false')
+    expect(await openMedia({ audio: true })).toBe('ok:audio')
+  })
+
+  test('8. the microphone tester names the microphones (the media check lets enumerateDevices label them)', async () => {
+    await page.locator('button[title="Settings"]').click()
+    await page.locator('[data-testid="settings-tab-voice"]').click()
+    const select = page.locator('[data-testid="voice-device-select"]')
+    await expect(select).toBeVisible({ timeout: 10000 })
+    await expect.poll(async () => (await select.locator('option').allTextContents()).length, { timeout: 10000 }).toBeGreaterThan(1)
+    const labels = (await select.locator('option').allTextContents()).slice(1)
+    // An unnamed device shows as "Microphone N": every one here has its own name.
+    expect(labels.length, `labels: ${JSON.stringify(labels)}`).toBeGreaterThan(0)
+    for (const label of labels) expect(label, `labels: ${JSON.stringify(labels)}`).not.toMatch(/^(Microphone \d+)?$/)
   })
 })
