@@ -1163,7 +1163,12 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     }
     // The first step is slow off the mark only when it was seen: a slow runner's first frame of the
     // flight can come well into it (macOS CI's first sample was at t=0.56, already slowing down).
-    if (pts[0].t < 0.25) expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
+    // And only when that step ends before the middle. In software only one frame is in flight, and the
+    // macOS soak's second drawn frame of a flight came at t=0.71 and t=0.92. A step from 0 to there
+    // averages eased(t)/t, which for an ease in and out is above 1 once t is past the middle (the check
+    // above holds eased(t) > t there). The step after it, near the end, is slowing down, so that
+    // comparison fails for a correct ease. The ease itself is still checked at every point by the loop above.
+    if (pts[0].t < 0.25 && pts[1].t <= 0.5) expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
     await toOverview()
   })
 
