@@ -566,8 +566,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+  // What the open card measures it needs for its first heading and two items (WorldCard onNeed), in its own pixels.
+  const [cardNeed, setCardNeed] = useState(0)
   // The cap is a length on the zoomed card: worked out in its pixels.
-  const cardCap = cardMaxHeight(stageSize[0] / scale, stageSize[1] / scale, rightInset(stageSize[0], reserve, reserveFrom) / scale, below / scale)
+  const cardCap = cardMaxHeight(stageSize[0] / scale, stageSize[1] / scale, rightInset(stageSize[0], reserve, reserveFrom) / scale, below / scale, cardNeed)
   useEffect(() => { viewer?.setCardReserve(cardW, cardH) }, [viewer, cardW, cardH])
   // Where the open card would reach the legend (a narrow pane), the legend steps aside until it closes.
   const legendAside = card !== null && cardMeetsLegend(stageSize[0] / scale, legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE)
@@ -1129,7 +1131,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         {repoUpdate && tokenOpen && (
           <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={() => setTokenOpen(false)} />
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} solid={solid} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onNeed={setCardNeed} solid={solid} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 'min(360px, calc(100% - 24px))', ...zoom }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />

@@ -292,6 +292,40 @@ describe('cardMaxHeight', () => {
     expect(cardMaxHeight(416, 900, 0, 164)).toBe(444)
   })
 
+  it('gives a card whose first heading and two items need more than its readable height what they need, while the city keeps its least room (a floor name over two lines)', () => {
+    // 423 x 640 with the answer's ask bar reserve 217: the card's reserve may reach 640 - 217 - 120 = 303, 296 on a
+    // step, so the card up to 276. The first floor of the answer's card wraps over two lines and needs 250.
+    expect(cardMaxHeight(423, 640, 0, 217, 250)).toBe(250)
+    expect(cardMaxHeight(423, 640, 0, 217, 249.2)).toBe(250)
+    // Never past the city's least room.
+    expect(cardMaxHeight(423, 640, 0, 217, 400)).toBe(276)
+    expect(640 - 217 - cardReserve(CARD_WIDTH_PX, 276)[1]).toBeGreaterThanOrEqual(CARD_MIN_FREE_PX)
+    // A card that needs less keeps its readable height, and one that needs nothing measured is as before.
+    expect(cardMaxHeight(423, 640, 0, 217, 100)).toBe(CARD_READABLE_PX)
+    expect(cardMaxHeight(423, 640, 0, 217, 0)).toBe(CARD_READABLE_PX)
+    // The share holds where it leaves the card more; a wide pane stops the card only above the ask bar.
+    expect(cardMaxHeight(416, 900, 0, 164, 300)).toBe(444)
+    expect(cardMaxHeight(1000, 586, 0, 164, 500)).toBe(402)
+    // A stage too short for both keeps the card's minimum.
+    expect(cardMaxHeight(416, 300, 0, 164, 400)).toBe(CARD_MIN_HEIGHT_PX)
+  })
+
+  it('whatever the card needs, a narrow pane leaves the city its least room wherever the card is past its minimum', () => {
+    for (let h = 300; h <= 1400; h += 7) {
+      for (const ask of [0, 80, 164, 217]) {
+        for (const need of [240, 300, 520, 2000]) {
+          const cap = cardMaxHeight(416, h, 0, ask, need) as number
+          expect(cap).toBeGreaterThanOrEqual(cardMaxHeight(416, h, 0, ask) as number)
+          const free = h - ask - cardReserve(CARD_WIDTH_PX, cap)[1]
+          if (cap > (cardMaxHeight(416, h, 0, ask) as number)) {
+            expect(cap).toBeLessThanOrEqual(Math.ceil(need))
+            expect(free).toBeGreaterThanOrEqual(CARD_MIN_FREE_PX)
+          }
+        }
+      }
+    }
+  })
+
   it('always leaves the city its least room (or its share, on a stage too short for that) when there is room for a usable card, the share once the card is readable, and never goes under its minimum', () => {
     for (let h = 300; h <= 1400; h += 7) {
       for (const ask of [0, 80, 164, 217]) {

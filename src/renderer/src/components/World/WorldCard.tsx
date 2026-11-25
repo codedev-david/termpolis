@@ -46,6 +46,12 @@ export interface WorldCardProps {
   clickThrough?: boolean
   /** The map is drawn in software (WorldDrawn.software): the card is opaque, with no blur of the map behind it. */
   solid?: boolean
+  /**
+   * Told the card's height in its own pixels that shows its first heading and the first two items under it without a
+   * scroll (readableNeed), each time the card is measured: cardMaxHeight gives a narrow pane's card that much where
+   * the city keeps its least room.
+   */
+  onNeed?: (px: number) => void
 }
 
 /**
@@ -57,6 +63,27 @@ export interface WorldCardProps {
  * 1.45, a 16 px title, a chip row of about 22 px), so a line the edge cuts lies wholly in the fade. Gone at the end.
  */
 export const CARD_FADE_PX = 24
+
+/**
+ * The height, in the card's own pixels, at which the card shows its first heading and the first two items after it
+ * (a claim, a sentence or a list entry; a later heading is passed over) without a scroll: from the card's top to the
+ * second item's end as laid out with the body at its top, the fade under it (CARD_FADE_PX), and what lies under the
+ * body (its padding and border). 0 where there is no heading, nothing under it, or the card is not laid out. Screen
+ * pixels are taken back to the card's own through its measured height, since the pane may draw it zoomed.
+ */
+function readableNeed(body: HTMLElement): number {
+  const card = body.parentElement as HTMLElement
+  const items: Element[] = []
+  for (let el = body.querySelector('h4')?.nextElementSibling ?? null; el && items.length < 2; el = el.nextElementSibling) {
+    if (el.tagName === 'H4') continue
+    items.push(...(/^[OU]L$/.test(el.tagName) ? Array.from(el.children).slice(0, 2 - items.length) : [el]))
+  }
+  const box = card.getBoundingClientRect()
+  if (items.length === 0 || !(box.height > 0)) return 0
+  const own = card.offsetHeight / box.height
+  const end = items[items.length - 1].getBoundingClientRect().bottom
+  return Math.ceil((end - box.top) * own + body.scrollTop + CARD_FADE_PX + (box.bottom - body.getBoundingClientRect().bottom) * own)
+}
 
 /**
  * The prototype's inspector look (world-relationships.html): a dark glass panel, the name large, section
@@ -118,7 +145,7 @@ const CARD_CSS = `
  */
 export const CARD_CLICK_GRACE_MS = 500
 
-export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null, clickThrough = false, solid = false }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, onNeed, boxRef, maxHeight = null, clickThrough = false, solid = false }: WorldCardProps): JSX.Element {
   const zoom = useUiZoom()
   // Only how the card opened counts: a later card shown in it takes clicks at once.
   const [opening, setOpening] = useState(clickThrough)
@@ -133,6 +160,9 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   // A capped card's scrollbar takes the body's right edge, where the close button sits: the button moves left by the
   // scrollbar's measured width (0 with an overlay scrollbar or none), so it is never drawn over the scrollbar.
   const bodyRef = useRef<HTMLDivElement>(null)
+  // The latest onNeed, so a parent's new callback does not set the card's watchers up again.
+  const needRef = useRef(onNeed)
+  needRef.current = onNeed
   const [gutter, setGutter] = useState(0)
   // Whether more lies below what the body shows: its bottom edge then fades (CARD_FADE_PX), never the scrollbar.
   const [more, setMore] = useState(false)
@@ -145,6 +175,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     const measure = (): void => {
       setGutter(body.offsetWidth - body.clientWidth)
       readMore()
+      needRef.current?.(readableNeed(body))
     }
     measure()
     // The scrollbar comes and goes as the card meets its cap; its width is taken from the body's content box.

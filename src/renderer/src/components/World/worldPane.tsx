@@ -105,7 +105,8 @@ export const CARD_MIN_HEIGHT_PX = 168
  * The height a card needs for a typical answer to read without a scroll: its title, technology and status, its
  * first heading and the first two items under it. In a narrow pane the card gets this before the city gets its
  * CARD_FREE_SHARE, the city giving way down to CARD_MIN_FREE_PX. (At 1366x768 with an answer open the card was
- * held at CARD_MIN_HEIGHT_PX and its first items scrolled.)
+ * held at CARD_MIN_HEIGHT_PX and its first items scrolled.) A card whose first items need more (a floor named by
+ * its first and last files, over two lines) gets what it measures it needs (WorldCard onNeed), on the same terms.
  */
 export const CARD_READABLE_PX = 232
 
@@ -119,9 +120,10 @@ export const CARD_READABLE_PX = 232
  * kept short enough that CARD_FREE_SHARE of the height stays free between its reserve
  * (cardReserve, which this lands on a step of) and the ask bar's, and its body scrolls; but it always gets
  * CARD_READABLE_PX first where that still leaves the city CARD_MIN_FREE_PX (an answer's tall ask bar on a short
- * screen).
+ * screen), or the `need` the card measured for its title, its first heading and the first two items under it where
+ * that is more (WorldCard onNeed; 0 when not measured).
  */
-export function cardMaxHeight(width: number, height: number, right: number, ask: number): number | null {
+export function cardMaxHeight(width: number, height: number, right: number, ask: number, need = 0): number | null {
   if (!(width > 0) || !(height > 0)) return null
   if (width - right - cardReserve(CARD_WIDTH_PX, 1)[0] >= CARD_MIN_FREE_PX) {
     return ask > 0 ? Math.max(CARD_MIN_HEIGHT_PX, Math.floor(height - ask - CARD_INSET_PX - CARD_CLEARANCE_PX)) : null
@@ -129,7 +131,7 @@ export function cardMaxHeight(width: number, height: number, right: number, ask:
   // The card's height whose reserve (on a step) fits in `room`.
   const fit = (room: number): number => Math.floor(room / CARD_STEP_PX) * CARD_STEP_PX - CARD_INSET_PX - CARD_CLEARANCE_PX
   const shared = fit(height - ask - Math.ceil(height * CARD_FREE_SHARE))
-  const readable = Math.min(fit(height - ask - CARD_MIN_FREE_PX), CARD_READABLE_PX)
+  const readable = Math.min(fit(height - ask - CARD_MIN_FREE_PX), Math.max(CARD_READABLE_PX, Math.ceil(need)))
   return Math.max(CARD_MIN_HEIGHT_PX, shared, readable)
 }
 

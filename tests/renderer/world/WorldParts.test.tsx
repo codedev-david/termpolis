@@ -154,6 +154,57 @@ describe('WorldCard', () => {
     }
   })
 
+  it('reports the height its first heading and first two items need, in its own pixels, with the fade and its padding under them (the answer card at 1366x768)', () => {
+    let fire = (): void => undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { fire = cb }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    // The pane drawn at 1.5: the card is 300 px on screen and 200 of its own.
+    const rects: Record<string, { top: number; bottom: number }> = { card: { top: 100, bottom: 400 }, body: { top: 113, bottom: 388 }, a: { top: 0, bottom: 0 }, b: { top: 0, bottom: 0 }, l1: { top: 230, bottom: 262 }, l2: { top: 262, bottom: 280 }, x: { top: 0, bottom: 0 } }
+    const spyR = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const el = this as HTMLElement
+      const key = el.dataset.testid === 'world-card' ? 'card' : el.dataset.testid === 'world-card-body' ? 'body' : el.dataset.r ?? 'x'
+      const r = rects[key]
+      return { top: r.top, bottom: r.bottom, height: r.bottom - r.top, left: 0, right: 0, width: 0, x: 0, y: r.top, toJSON: () => ({}) } as DOMRect
+    })
+    const spyH = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-card' ? 200 : 0
+    })
+    const onNeed = vi.fn()
+    try {
+      const html = (list: string): string => `<h3>Store</h3><p data-r="a">Config</p><h4>What it does</h4><p data-r="b">Not described yet.</p><h4>What's inside</h4>${list}<p>More</p>`
+      const { rerender } = render(<WorldCard html={html('<ul><li data-r="l1">a.spec – c.spec</li><li data-r="l2">d.spec</li></ul>')} onClose={() => {}} onOpen={() => {}} onNeed={onNeed} {...noop} />)
+      // The first heading's two items are its sentence and the first floor (the second heading is passed over):
+      // (262 - 100) / 1.5 = 108 to the floor's end, the 24 px fade, then (400 - 388) / 1.5 = 8 of padding and border.
+      expect(onNeed).toHaveBeenLastCalledWith(140)
+      // Scrolled, the items are measured from the body's top all the same.
+      const body = screen.getByTestId('world-card-body')
+      body.scrollTop = 30
+      rects.l1 = { top: 185, bottom: 217 }
+      act(() => fire())
+      expect(onNeed).toHaveBeenLastCalledWith(140)
+      body.scrollTop = 0
+      rects.l1 = { top: 230, bottom: 262 }
+      // An ordered list counts as a list; a heading with nothing under it, or no heading at all, needs nothing.
+      rerender(<WorldCard html={html('<ol><li data-r="l1">a.spec – c.spec</li></ol>')} onClose={() => {}} onOpen={() => {}} onNeed={onNeed} {...noop} />)
+      expect(onNeed).toHaveBeenLastCalledWith(140)
+      rerender(<WorldCard html="<h3>Store</h3><h4>What it does</h4>" onClose={() => {}} onOpen={() => {}} onNeed={onNeed} {...noop} />)
+      expect(onNeed).toHaveBeenLastCalledWith(0)
+      rerender(<WorldCard html="<h3>Store</h3><p data-r='a'>Config</p>" onClose={() => {}} onOpen={() => {}} onNeed={onNeed} {...noop} />)
+      expect(onNeed).toHaveBeenLastCalledWith(0)
+      // A card not laid out yet (no height on screen) needs nothing either.
+      rects.card = { top: 0, bottom: 0 }
+      rerender(<WorldCard html={html('<ul><li data-r="l1">x</li></ul>')} onClose={() => {}} onOpen={() => {}} onNeed={onNeed} {...noop} />)
+      expect(onNeed).toHaveBeenLastCalledWith(0)
+    } finally {
+      spyR.mockRestore()
+      spyH.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a chip calls onTech, Confirm calls onConfirm with the part and the claim text, evidence calls onEvidence', () => {
     const onTech = vi.fn()
     const onConfirm = vi.fn()

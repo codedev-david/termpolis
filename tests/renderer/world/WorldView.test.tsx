@@ -709,6 +709,46 @@ describe('WorldView', () => {
       }
     })
 
+    it('in a narrow pane gives the card the height its first heading and two items need, past the city\'s share but not its least room', async () => {
+      const seen: Array<() => void> = []
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { seen.push(cb) }
+        observe(): void {}
+        disconnect(): void {}
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 416 : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 586 : 0
+      })
+      cardBox({ w: 330, h: 300 })
+      const item = { bottom: 396 }
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const id = (this as HTMLElement).dataset.testid
+        const [top, bottom] = id === 'world-card' ? [0, 300] : id === 'world-card-body' ? [12, 290] : [0, item.bottom]
+        return { top, bottom, height: bottom - top, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+      })
+      try {
+        bridge()
+        await mount()
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        // Its items end 396 px down: with the 24 px fade and the 10 px under the body it needs 430, more than the
+        // share's 388, and the city keeps its least room (586 - 120 = 466, 464 on a step, less 20 = 444).
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(430px, calc(100% - 110px))')
+        item.bottom = 900
+        act(() => { for (const cb of seen) cb() })
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(444px, calc(100% - 110px))')
+        // A card that needs less is held at the share, as before.
+        item.bottom = 100
+        act(() => { for (const cb of seen) cb() })
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(388px, calc(100% - 110px))')
+      } finally {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+      }
+    })
+
     it('in a pane too narrow for both, puts the legend away while the card is open, and keeps a measured ask bar clear', async () => {
       vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
         return this.dataset.testid === 'world-stage' ? 180 : 0
