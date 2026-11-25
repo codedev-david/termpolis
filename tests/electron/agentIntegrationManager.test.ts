@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join, parse } from 'path'
 import {
-  agentMemoryHookAsync, bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationGranted, isFolderTrustAllowed,
+  agentMemoryHookAsync, bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationGranted, isAgentIntegrationGrantedAsync, isFolderTrustAllowed,
   prepareCodexLaunch, removeCodexHomeTrust, resolveAgentIntegrationPaths, setAgentIntegration,
   trustFolderForAgents,
 } from '../../src/main/agentIntegrationManager'
@@ -358,6 +358,21 @@ describe('agentMemoryHookAsync', () => {
   it('says not connected, never a throw, when the paths are unusable', async () => {
     expect((await agentMemoryHookAsync({ ...sb.paths, userData: undefined as never })).connected).toBe(false)
     expect((await agentMemoryHookAsync(undefined as never)).connected).toBe(false)
+  })
+})
+
+// It shares agentMemoryHookAsync's ledger read: the same answers as the synchronous one, and false, never a throw, on
+// unusable paths.
+describe('isAgentIntegrationGrantedAsync', () => {
+  it.each<[string, Record<string, unknown> | null]>([
+    ['granted', { consent: 'granted' }], ['declined', { consent: 'declined' }], ['not asked', { consent: null }], ['no ledger yet', null],
+  ])('answers as isAgentIntegrationGranted does: %s', async (_label, fields) => {
+    if (fields) writeLedger(sb, fields)
+    const asyncAnswer = await isAgentIntegrationGrantedAsync(sb.paths)
+    expect(asyncAnswer).toBe(isAgentIntegrationGranted(sb.paths))
+  })
+  it('is false, never a throw, when the paths are unusable', async () => {
+    expect(await isAgentIntegrationGrantedAsync({ ...sb.paths, userData: undefined as never })).toBe(false)
   })
 })
 
