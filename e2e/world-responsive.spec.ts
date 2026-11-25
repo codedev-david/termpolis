@@ -395,6 +395,19 @@ async function intoDistrict(): Promise<boolean> {
   return true
 }
 
+/**
+ * Opens a building's card as a person would: a building found from the overview, or else a district stepped into
+ * first (a click on its slab frames its buildings). A big city in a tall, narrow pane shows its districts as slabs
+ * with no building the grid can hit: at 3840x2160 with the pane at 640 or 480 the termpolis repository's overview
+ * opened only the orb of t.example.com, a reserved test host, which Lumopolis no longer draws as an outside service.
+ */
+async function openCardInCity(where: string): Promise<boolean> {
+  if (await openCard()) return true
+  if (!(await intoDistrict())) return false
+  await glideDone(`district at ${where}`)
+  return openCard()
+}
+
 async function closeCard(): Promise<void> {
   const card = page.locator('[data-testid="world-card"]')
   if (await card.isVisible()) {
@@ -980,7 +993,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
         await expect(toggle).toHaveAttribute('aria-expanded', before ?? '')
       }
 
-      expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
+      expect.soft(await openCardInCity(tag), `a building's card opened at ${tag}`).toBe(true)
       // The card never lies on the legend (at 1280x800 on Linux it once covered most of the Legend button).
       expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
       expect.soft(await cardShowsFirstLine(), `the card shows its first heading and the line under it at ${tag}`).toBe(true)
@@ -1208,20 +1221,14 @@ test.describe.serial('Lumopolis at every screen size', () => {
         }
         // A card open over the city, with the legend as it opens by default: the notice clears both. A city this big
         // shows its districts as slabs from the overview, so a district is stepped into (a click on its slab) first.
-        const cardOpen = async (where: string): Promise<boolean> => {
-          if (await openCard()) return true
-          if (!(await intoDistrict())) return false
-          await glideDone(`district at ${where}`)
-          return openCard()
-        }
-        let opened = await cardOpen(tag)
+        let opened = await openCardInCity(tag)
         if (!opened) {
           // At 5K a frame drawn in software can outlast the camera's flight to the building, so the card is opened at
           // the laptop size and the window taken back to this size with it still open: it is measured here all the same.
           const laptop = VIEWPORTS.find((x) => x.name === '1280x800@2x') as Viewport
           await layoutAt(laptop, null)
           await settled()
-          if (await cardOpen(`${tag}, opened at the laptop size`)) {
+          if (await openCardInCity(`${tag}, opened at the laptop size`)) {
             await layoutAt(v, width)
             await settled()
             opened = await page.locator('[data-testid="world-card"]').isVisible()
