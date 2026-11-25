@@ -2531,6 +2531,38 @@ describe('ASK #67 N3: a reply that described nothing is held, not asked again ev
       await labelWorld(twoDistricts(), deps)
       expect(deps.store.size).toBe(0)
     }
+    // A call that ran LABEL_SLOW_FAIL_MS and came back empty timed out: asked later, never held.
+    let clock = 0
+    const slow = vi.fn(async (_p: string): Promise<string | null> => {
+      clock += LABEL_SLOW_FAIL_MS
+      return null
+    })
+    const timed = mkDeps({ llm: slow, now: () => clock })
+    await labelWorld(twoDistricts(), timed)
+    expect(slow).toHaveBeenCalled()
+    expect(timed.store.size).toBe(0)
+  })
+
+  it('a reply held from one agent or model never stops another from being asked; the same one is still answered by it (review I1)', async () => {
+    const a = vi.fn(async (_p: string) => '{}')
+    const deps = mkDeps({ llm: a, heldBy: 'codex/gpt-5-mini' })
+    await labelWorld(twoDistricts(), deps)
+    expect(a).toHaveBeenCalledTimes(4)
+    // Another model (the person switched the Lumopolis agent): every prompt is asked, and its answers are used.
+    const b = vi.fn(async (p: string) => goodFor(p))
+    const other = await labelWorld(twoDistricts(), { ...deps, llm: b, heldBy: 'claude/haiku' })
+    expect(b).toHaveBeenCalledTimes(2)
+    expect(other.buildings.a.name).toBe('Alpha Hub')
+    // The first model, back on a fresh cache that holds only its own '{}': still answered by the held reply.
+    const held = new Map([...deps.store].filter(([, v]) => isHeld(v)))
+    a.mockClear()
+    await labelWorld(twoDistricts(), { ...deps, cache: { get: async (h) => held.get(h) ?? null, set: async (h, v) => void held.set(h, v) } })
+    expect(a).not.toHaveBeenCalled()
+    // A labeller named the same way twice shares its held replies; one never named (a test, a caller with no agent)
+    // is a labeller of its own.
+    const none = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), { ...deps, llm: none, heldBy: undefined, cache: { get: async (h) => held.get(h) ?? null, set: async (h, v) => void held.set(h, v) } })
+    expect(none).toHaveBeenCalledTimes(4)
   })
 
   it('the pass log says how many batches a held reply answered', async () => {
@@ -2539,10 +2571,12 @@ describe('ASK #67 N3: a reply that described nothing is held, not asked again ev
       const deps = mkDeps({ llm: async () => '{}' })
       await labelWorld(twoDistricts(), deps)
       // c alone is d2's prompt again: within the pass, it takes the reply d2's ask just held.
-      expect(info.mock.calls[0][0]).toContain('(3 batches asked a second time; 1 answered by a held reply that described nothing)')
+      // a and b alone were asked again; c alone was not sent (review m1).
+      expect(info.mock.calls[0][0]).toContain('(2 batches asked a second time; 1 answered by a held reply that described nothing)')
       info.mockClear()
       await labelWorld(twoDistricts(), deps)
-      expect(info.mock.calls[0][0]).toContain('(3 batches asked a second time; 5 answered by a held reply that described nothing)')
+      // Nothing was sent at all.
+      expect(info.mock.calls[0][0]).toContain('(0 batches asked a second time; 5 answered by a held reply that described nothing)')
     } finally {
       info.mockRestore()
     }

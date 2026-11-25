@@ -1031,6 +1031,34 @@ describe('createWorldHost', () => {
     await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
   })
 
+  it('the labeller init and settings name reaches labelling as heldBy; settings without one, or a non-string, clears it (review I1)', async () => {
+    const heldBy: (string | undefined)[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      heldBy.push(deps.label.heldBy)
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile }, memStore({ k1: doc() }))
+    await h.send({ kind: 'init', userDataPath: '/ud', labelling: false, labeller: 'codex/gpt-5-mini' })
+    const run = async (id: number): Promise<string | undefined> => {
+      const before = compile.mock.calls.length
+      await h.send({ kind: 'call', id, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await vi.waitFor(() => expect(compile.mock.calls.length).toBeGreaterThan(before))
+      return heldBy[heldBy.length - 1]
+    }
+    expect(await run(1)).toBe('codex/gpt-5-mini')
+    await h.send({ kind: 'settings', labelling: false, labeller: 'claude/haiku' })
+    expect(await run(2)).toBe('claude/haiku')
+    expect('heldBy' in (compile.mock.calls[1][1] as CompileDeps).label).toBe(true)
+    await h.send({ kind: 'settings', labelling: false })
+    expect(await run(3)).toBeUndefined()
+    expect('heldBy' in (compile.mock.calls[2][1] as CompileDeps).label).toBe(false)
+    await h.send({ kind: 'settings', labelling: false, labeller: 7 as unknown as string })
+    expect(await run(4)).toBeUndefined()
+    // An init without one names none.
+    await h.send({ kind: 'init', userDataPath: '/ud', labelling: false, labeller: '' })
+    expect(await run(5)).toBeUndefined()
+  })
+
   describe('save before labelling', () => {
     type Llm = (p: string) => Promise<string | null>
 

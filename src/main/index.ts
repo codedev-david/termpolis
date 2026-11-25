@@ -2802,6 +2802,12 @@ const worldClient = createWorldClient(undefined, {
     return design ? worldDesignStore.load(design) : null
   },
   labelling: () => worldSettings.get().worldLabelling,
+  // Who labels: the Lumopolis agent and the model llm below picks for it. The host holds a reply that described
+  // nothing under this name, so a new agent or cheap model is asked again (review I1).
+  labeller: () => {
+    const agent = worldSettings.get().worldAgent
+    return `${agent}/${cheapModelFor(agent, modelCatalog) ?? ''}`
+  },
   // The cheapest model of the Lumopolis agent (worldAgent): Haiku for Claude, a mini or flash model for the
   // others. Claude goes through worldClaudeExec; Codex and Gemini through runHeadless, read-only, with the
   // same run environment (Codex's proxy URL) a question gets.
@@ -4016,7 +4022,10 @@ async function primeModelCatalog(force = false): Promise<void> {
     try {
       stored = parseStoredCatalog(readFileSync(modelCatalogPath(), 'utf-8'))
     } catch { /* absent or unreadable — fall through to a probe */ }
-    if (stored) modelCatalog = stored
+    if (stored) {
+      modelCatalog = stored
+      void worldSettings.ready().then(tellWorldHostSettings)
+    }
     if (!force && !catalogIsStale(stored, Date.now())) return
     const fresh = await refreshModelCatalog(
       {
@@ -4029,6 +4038,8 @@ async function primeModelCatalog(force = false): Promise<void> {
       stored,
     )
     modelCatalog = fresh
+    // The Lumopolis labeller's cheap model comes from the catalog: a running world host is told its new name.
+    void worldSettings.ready().then(tellWorldHostSettings)
     try { writeFileSync(modelCatalogPath(), JSON.stringify(fresh, null, 2), 'utf-8') } catch { /* cache is best-effort */ }
     try { mainWindow?.webContents.send('models:catalog-updated', fresh) } catch { /* window may be gone */ }
   } catch { /* never block startup on a model list */ }

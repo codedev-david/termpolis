@@ -47,6 +47,9 @@ export interface WorldClientOptions {
   /** The `worldLabelling` setting, read when a host starts, when `applySettings` runs, and again on every
    *  labelling request (off: the request is answered null without asking the model). Default: on. */
   labelling?: () => boolean
+  /** Who `llm` asks (the Lumopolis agent and its model), read with `labelling`: the host holds a reply that described
+   *  nothing under this name, so another agent or model is asked again. Absent or '': unnamed. */
+  labeller?: () => string
   /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. `signal` is
    *  aborted when nobody waits for the answer any more (its limit passed, its compile ended, its world was removed). */
   llm?: (root: string, prompt: string, signal: AbortSignal) => Promise<string | null>
@@ -158,6 +161,10 @@ export function createWorldClient(
     return typeof v === 'string' ? v : ''
   }
   const labelling = opts.labelling ?? (() => true)
+  const labellerOf = (): { labeller?: string } => {
+    const name = opts.labeller?.()
+    return name ? { labeller: name } : {}
+  }
   const headOf = opts.head ?? (async () => ({ head: '', dirty: false }))
   const snapshotOf = opts.snapshot ?? ((root: string) => graphSnapshot(graphKeyForRoot(root), root, { structureOnly: true }))
   const hasStoredWorld =
@@ -380,7 +387,7 @@ export function createWorldClient(
       tr.onMessage((m) => onMessage(tr, m))
       tr.onExit((code) => reset(tr, shownError(`Lumopolis host exited (code ${code})`)))
       const askpassPath = askpassOf()
-      tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...(askpassPath ? { askpassPath } : {}) })
+      tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...labellerOf(), ...(askpassPath ? { askpassPath } : {}) })
       // A host started after a world was removed (a restart, or a first start by a call for another world) is told at
       // once, before any call, so a label run it starts for that world asks nothing.
       if (removed.size > 0) tellRemoved()
@@ -643,7 +650,7 @@ export function createWorldClient(
       const tr = current
       if (!tr) return
       try {
-        tr.postMessage({ kind: 'settings', labelling: labelling() !== false })
+        tr.postMessage({ kind: 'settings', labelling: labelling() !== false, ...labellerOf() })
       } catch {
         // the host is going away; the next one reads the setting in its init
       }

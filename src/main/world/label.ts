@@ -75,6 +75,9 @@ export interface LabelDeps {
   now?: () => number
   /** The date, in ms since the epoch (default Date.now): how long ago a held reply was given (NOTHING_HOLD_MS). */
   wallNow?: () => number
+  /** Who `llm` asks: the agent and model, from main. A held reply is one model's answer, so it is held under this
+   *  name and never stops another agent or model from being asked. Optional; unnamed is a labeller of its own. */
+  heldBy?: string
   /** True once the world was removed: the pass asks nothing more, and a call cut short by the removal is neither a
    *  quick failure nor asked again. Optional (never stopped). */
   stopped?: () => boolean
@@ -1017,6 +1020,8 @@ interface Pass {
   repeats: number
   /** Batches a held reply answered (NOTHING_HOLD_MS): not sent. */
   held: number
+  /** Of those, the second-chance batches: not asked a second time. */
+  heldAgain: number
   /** The world was removed (LabelDeps.stopped). */
   stopped: () => boolean
 }
@@ -1091,9 +1096,9 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
     applyReply(into, reply, batch, buildings, evidence, named) > 0 &&
     (buildings.length + p.edges.length === 0 || Object.keys(into.buildings).length + Object.keys(into.edges).length > 0)
 
-  // A reply that described nothing is held under its own key, so the cache's replies stay replies.
-  const heldKey = sha(`held
-${key}`)
+  // A reply that described nothing is held under its own key, so the cache's replies stay replies, and under the
+  // agent and model that gave it: what one model left undescribed another may describe (review I1).
+  const heldKey = deps.heldBy === undefined ? sha(`held\n${key}`) : sha(`held\n${deps.heldBy}\n${key}`)
   const wallNow = deps.wallNow ?? Date.now
   try {
     const hit = await deps.cache.get(key)
@@ -1103,6 +1108,7 @@ ${key}`)
     const held = heldReply(await deps.cache.get(heldKey), wallNow())
     if (held) {
       pass.held++
+      if (second) pass.heldAgain++
       const fromHeld = emptyLabels()
       counts(fromHeld, held)
       return fromHeld
@@ -1271,7 +1277,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const only = deps.firstBatchOf
   const plan = planBatches(g).filter((p) => !only || (p.first && only.has(p.district.id)))
   const isStopped = deps.stopped
-  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, held: 0, stopped: () => isStopped?.() === true }
+  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, held: 0, heldAgain: 0, stopped: () => isStopped?.() === true }
   const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, pass))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
@@ -1292,7 +1298,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const stopped = pass.stopped() ? '; the world was removed, the rest was not asked' : noModel(pass) ? '; no model reachable, the rest was not asked' : ''
   const held = pass.held > 0 ? `; ${pass.held} answered by a held reply that described nothing` : ''
   console.info(
-    `[world label] left undescribed: ${left} of ${buildings.length} buildings, ${leftLines} of ${edges.length} lines (${again.length - pass.repeats} batches asked a second time${held}${stopped})`
+    `[world label] left undescribed: ${left} of ${buildings.length} buildings, ${leftLines} of ${edges.length} lines (${again.length - pass.repeats - pass.heldAgain} batches asked a second time${held}${stopped})`
   )
   return labels
 }

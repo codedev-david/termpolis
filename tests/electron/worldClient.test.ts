@@ -858,6 +858,20 @@ describe('createWorldClient', () => {
     expect(spawn).toHaveBeenCalledTimes(1)
   })
 
+  it('init and applySettings name the labeller when it has a name, so the host holds a "{}" under it (review I1)', async () => {
+    let who = 'codex/gpt-5-mini'
+    const { client, spawned } = setup({ labeller: () => who })
+    await client.compile(ROOT)
+    expect(spawned[0].posted[0]).toEqual({ kind: 'init', userDataPath: '/ud', labelling: true, labeller: 'codex/gpt-5-mini' })
+    who = 'claude/haiku'
+    client.applySettings()
+    expect(spawned[0].posted[spawned[0].posted.length - 1]).toEqual({ kind: 'settings', labelling: true, labeller: 'claude/haiku' })
+    // An empty name is no name.
+    who = ''
+    client.applySettings()
+    expect(spawned[0].posted[spawned[0].posted.length - 1]).toEqual({ kind: 'settings', labelling: true })
+  })
+
   describe('clone', () => {
     it('clone and cancelClone call the host fns, with and without a ref; clone progress has root ""', async () => {
       const { client, spawned } = setup({}, (t) => {

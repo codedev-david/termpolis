@@ -68,6 +68,8 @@ export interface WorldInitMsg {
   userDataPath: string
   /** The `worldLabelling` setting. False: the host labels from the code alone (`llm: null`). */
   labelling: boolean
+  /** Who labels (the Lumopolis agent and its model): a reply that described nothing is held under it (LabelDeps.heldBy). */
+  labeller?: string
   /** The askpass Termpolis ships (resources/git-askpass/askpass.sh); a token run needs it. */
   askpassPath?: string
 }
@@ -96,6 +98,8 @@ export interface WorldLabellingStoppedMsg {
 export interface WorldSettingsMsg {
   kind: 'settings'
   labelling: boolean
+  /** As in init; absent: unnamed. */
+  labeller?: string
 }
 /** Main's answer to a `context` request: the evidence it found for the building (empty when it found none). */
 export interface WorldContextResultMsg {
@@ -320,6 +324,9 @@ export const MAX_READ_LIMIT = 200
 
 type Item = WorldReadResult['items'][number]
 const isStr = (v: unknown): v is string => typeof v === 'string'
+/** The labeller an init or settings message names: a non-empty string, else none. */
+const labellerIn = (msg: { labeller?: unknown }): { labeller?: string } =>
+  isStr(msg.labeller) && msg.labeller !== '' ? { labeller: msg.labeller } : {}
 
 function claimsOf(item: Item): Claim[] {
   const rec = item as unknown as Record<string, unknown>
@@ -523,6 +530,8 @@ interface HostState {
   annotations: AnnotationStore
   userDataPath: string
   labelling: boolean
+  /** From init and settings: who labels (LabelDeps.heldBy). Absent: unnamed. */
+  labeller?: string
   /** From init: the shipped askpass, handed to every clone run (a token run is refused without it). */
   askpassPath?: string
   /**
@@ -838,6 +847,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       llm,
       ...(stopped ? { stopped } : {}),
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
+      ...(st.labeller === undefined ? {} : { heldBy: st.labeller }),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
         const text = await rs(`${root}/${file}`)
@@ -1259,6 +1269,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             annotations,
             userDataPath: msg.userDataPath,
             labelling: msg.labelling !== false,
+            ...labellerIn(msg),
             ...(isStr(msg.askpassPath) && msg.askpassPath !== '' ? { askpassPath: msg.askpassPath } : {}),
             checked: new Set(),
             carried: new Map()
@@ -1275,7 +1286,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       }
       if (msg.kind === 'settings') {
         // Before init there is nothing to switch: init carries the setting itself.
-        if (state) state.labelling = msg.labelling !== false
+        if (state) {
+          state.labelling = msg.labelling !== false
+          const { labeller } = labellerIn(msg)
+          state.labeller = labeller
+        }
         return
       }
       if (msg.kind === 'context-result') {

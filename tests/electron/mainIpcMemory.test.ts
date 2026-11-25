@@ -4118,7 +4118,8 @@ describe('router IPC', () => {
 describe('Lumopolis world wiring in index.ts', () => {
   it('once the world settings have loaded at startup, a running world host is told them', () => {
     // Settings load off the main thread; a host that started on the defaults must not keep labelling on.
-    expect(settingsAppliedAtStart).toBe(1)
+    // At least once: the model catalog's first load at startup tells it again (its labeller's cheap model, review I1).
+    expect(settingsAppliedAtStart).toBeGreaterThanOrEqual(1)
   })
 
   it('registers world:get / world:compile / world:relayout over the world client', async () => {
@@ -4200,6 +4201,10 @@ describe('Lumopolis world wiring in index.ts', () => {
   it('names userData, reads the labelling setting, and stamps the git head with a dirty flag', async () => {
     expect(world.opts.userDataPath()).toBe(USER_DATA)
     expect(world.opts.labelling()).toBe(true) // no settings file: labelling stays on
+    // Who labels: the agent and its cheap model (review I1); a catalog with no cheap model names the agent alone.
+    expect(world.opts.labeller()).toBe('claude/haiku')
+    world.cheapModelFor.mockReturnValueOnce(undefined)
+    expect(world.opts.labeller()).toBe('claude/')
     gitMock.safeGitAsync.mockResolvedValueOnce('abc123\n').mockResolvedValueOnce(' M src/a.ts\n')
     expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: true })
     expect(gitMock.safeGitAsync).toHaveBeenNthCalledWith(1, ['rev-parse', 'HEAD'], expect.objectContaining({ cwd: '/repos/x' }))
@@ -4437,6 +4442,7 @@ describe('Lumopolis world wiring in index.ts', () => {
         await world.opts.llm('/repos/x', 'name these')
         const [lAgent, , deps] = world.makeWorldLlm.mock.calls.at(-1) as [string, string, any]
         expect(lAgent).toBe(agent)
+        expect(world.opts.labeller()).toBe(`${agent}/haiku`)
         await deps.run({ task: 't', agent, write: false })
         expect(world.runHeadless).toHaveBeenLastCalledWith(expect.objectContaining({ agent, cwd: '/repos/x', env: {} }), { deliver: expect.any(Function) })
       }
@@ -4451,6 +4457,12 @@ describe('Lumopolis world wiring in index.ts', () => {
       world.proxyEnv = null
       await invoke('world:settings-set', { worldAgent: 'claude' })
     }
+  })
+
+  it('a refreshed model catalog tells the world host its labeller again (the cheap model may have changed)', async () => {
+    const before = world.client.applySettings.mock.calls.length
+    await invoke('models:refresh-catalog')
+    await vi.waitFor(() => expect(world.client.applySettings.mock.calls.length).toBeGreaterThan(before))
   })
 
   it('labelling turned off while the launch env is being built sends nothing (consent at the last moment)', async () => {
