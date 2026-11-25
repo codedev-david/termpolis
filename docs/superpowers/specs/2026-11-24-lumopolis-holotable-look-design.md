@@ -239,8 +239,8 @@ The renderer feeds it each drawn frame's rAF gap. `drawnCounts().perf` exposes `
 
 CI runners have no real GPU: Linux runs SwiftShader, Windows usually WARP, and macOS a paravirtual GPU. So the **blocking** assertions test behaviour, and have wide margins:
 - **Auto-drop works on real slow frames.** Force High in software at 1080p. The governor must reach Flat within 8 s, through Low, with no rise during the run.
-- **Software floor.** At Flat in software, the 1080p interaction frames (the orbit) have a p95 at or under the floor written in this spec. The gate takes the median p95 of three orbits in one run, so one slow orbit on a shared runner does not fail it. Task 2 measured the floor per system and per world as the **worst** single-orbit p95 seen over every soak copy on that system's runner, × 1.3, rounded up to 10 ms (the plan's 1.5 × median left an 11-12% margin on the worst copies, which flakes on shared runners): `SOFTWARE_FLOOR_P95_MS = { linux: { termpolis: 790, big: 440 }, windows: { termpolis: 510, big: 290 }, macos: { termpolis: 1120, big: 360 } }`. Asserted on all three systems.
-- **First frame:** the product target is `firstFrameMs` ≤ 3 s in software (and 400 ms on a GPU), which Task 20 times on real hardware. The CI gate uses each runner's measured bound instead, the worst first frame seen on it × 1.3, rounded up to 100 ms: Linux 2000 ms, Windows 900 ms, **macOS 4100 ms**. The macOS runner's first frame reached 3097 ms, past 3 s, so it gets its own bound; the 3 s promise is unchanged.
+- **Software floor.** At Flat in software, the 1080p interaction frames (the orbit) have a p95 at or under the floor written in this spec. The gate takes the median p95 of three orbits in one run, so one slow orbit on a shared runner does not fail it. Task 2 measured the floor per system and per world as the **worst** single-orbit p95 seen over every soak copy on that system's runner, × 1.3, rounded up to 10 ms (the plan's 1.5 × median left an 11-12% margin on the worst copies, which flakes on shared runners): `SOFTWARE_FLOOR_P95_MS = { linux: { termpolis: 790, big: 440 }, windows: { termpolis: 510, big: 300 }, macos: { termpolis: 1120, big: 360 } }`. Asserted on all three systems.
+- **First frame:** the product target is `firstFrameMs` ≤ 3 s in software (and 400 ms on a GPU), which Task 20 times on real hardware. The CI gate uses each runner's measured bound instead, the worst first frame seen on it × 1.3, rounded up to 100 ms: Linux 2000 ms, Windows 900 ms, **macOS 7500 ms**. The macOS runner's cold first frame (SwiftShader's LLVM backend) swings from 0.4 s to 5.7 s from one runner to the next, and a slow runner is slow on every try, so a median of opens would not help; it gets its own bound, still half of the 15 s the software watchdog waits before it drops the map to 2D. The 3 s promise is unchanged.
 - **No blank map**, as in §5.3.
 
 **Baseline (Task 2, 2026-11-25, commit 17cea296).** The orbit at 1920x1080, in software at the **High** tier: the renderer had no Flat tier yet (Task 3 adds it), so the floor is measured at High and bounds Flat from above until Task 3 re-measures it. Each row is the median over its copies; the p95 range is the lowest and highest copy.
@@ -254,13 +254,13 @@ CI runners have no real GPU: Linux runs SwiftShader, Windows usually WARP, and m
 | macos-latest (45562426781) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver) | Termpolis | 3 | 337.0 | 483.3 | 227.0-859.1 | 26 | 728 | 566,822 | 1328 (1546) |
 | macos-latest | same | big | 3 | 104.6 | 226.5 | 110.8-257.5 | 88 | 110 | 53,654 | 2160 (2334) |
 
-**Bounds (Task 2, from the baseline above, a proof soak at 7c9a4cfd: ubuntu 45564108979, windows 45564119886, macOS 45564129694, 3 copies of one orbit each, and a soak at 42a57997: ubuntu 45567026241, windows 45567049201, macOS 45567067499, 2 copies of 3 orbits each).** Each bound is the worst value over every copy and every orbit on that system × 1.3:
+**Bounds (Task 2, from the baseline above, a proof soak at 7c9a4cfd: ubuntu 45564108979, windows 45564119886, macOS 45564129694, 3 copies of one orbit each, and soaks at 42a57997 (ubuntu 45567026241, windows 45567049201, macOS 45567067499) and c81e0a7f (ubuntu 45568337544, windows 45568353314, macOS 45568367623), 2 copies of 3 orbits each; the c81e0a7f macOS copy 2 failed its first frame at 5707 ms, then 4841 ms on retry, against 4100).** Each bound is the worst value over every copy and every orbit on that system × 1.3:
 
 | System | Copies | Termpolis worst p95 → floor | big worst p95 → floor | Worst first frame → CI bound |
 |---|---|---|---|---|
-| ubuntu-24.04 | 14 (18 orbits a world) | 603.6 → **790 ms** | 332.5 → **440 ms** | 1466 → **2000 ms** |
-| windows-latest | 8 (12) | 389.7 → **510 ms** | 222.0 → **290 ms** | 687 → **900 ms** |
-| macos-latest | 8 (12) | 859.1 → **1120 ms** | 270.7 → **360 ms** | 3097 → **4100 ms** |
+| ubuntu-24.04 | 16 (24 orbits a world) | 603.6 → **790 ms** | 332.5 → **440 ms** | 1466 → **2000 ms** |
+| windows-latest | 10 (18) | 389.7 → **510 ms** | 225.3 → **300 ms** | 687 → **900 ms** |
+| macos-latest | 10 (15) | 859.1 → **1120 ms** | 270.7 → **360 ms** | 5707 → **7500 ms** |
 
 - The floors are per world: the Termpolis world draws 727 draw calls and about 564K triangles, the big world 110 and about 54K, so one floor for both would sit under the Termpolis orbit's own spread.
 - They are per system: every runner draws on SwiftShader, because the e2e launch forces `--use-angle=swiftshader` (so Windows is not on WARP here), but macOS uses the LLVM backend, not Subzero, and its Termpolis p95 swings from 217 to 859 ms from one runner to the next.

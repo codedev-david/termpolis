@@ -20,25 +20,27 @@ import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, pa
  * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software, per system
  * and per world. Each is the WORST single-orbit p95 seen in that world on that system's hosted runner, over every soak
  * copy so far, x 1.3 and rounded up to 10 ms: SwiftShader at the High tier, as software has no Flat tier yet (Task 3
- * starts it at Flat, under these). Linux: 14 copies, 18 orbits a world (runs 45562373003, 45562384134, 45562403486,
- * 45564108979, 45567026241), Termpolis worst 603.6 ms, big 332.5. Windows: 8 copies, 12 orbits (45562415525,
- * 45564119886, 45567049201), 389.7 and 222.0. macOS: 8 copies, 12 orbits (45562426781, 45564129694, 45567067499), 859.1
- * and 270.7; its runner draws on SwiftShader's LLVM backend, not Subzero, and its
+ * starts it at Flat, under these). Linux: 16 copies, 24 orbits a world (runs 45562373003, 45562384134, 45562403486,
+ * 45564108979, 45567026241, 45568337544), Termpolis worst 603.6 ms, big 332.5. Windows: 10 copies, 18 orbits
+ * (45562415525, 45564119886, 45567049201, 45568353314), 389.7 and 225.3. macOS: 9 copies, 15 orbits (45562426781,
+ * 45564129694, 45567067499, 45568367623), 859.1 and 270.7; its runner draws on SwiftShader's LLVM backend, not Subzero, and its
  * Termpolis orbit swings 217-859 ms from one runner to the next. The gate compares the median of ORBITS orbits, which
  * is never over the worst of them, so a worst-single-orbit bound is the safe side.
  */
 const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
   linux: { termpolis: 790, big: 440 },
-  windows: { termpolis: 510, big: 290 },
+  windows: { termpolis: 510, big: 300 },
   macos: { termpolis: 1120, big: 360 },
 }
 /**
  * The first frame's bound in CI, in software: the worst first frame seen on that system's runner over the same soak
- * copies, x 1.3 and rounded up to 100 ms (Linux 1465.7 ms, Windows 687.2, macOS 3096.5). These are runner bounds, not the
+ * copies, x 1.3 and rounded up to 100 ms (Linux 1465.7 ms, Windows 687.2, macOS 5706.7). These are runner bounds, not the
  * promise: the spec's 3 s in software and 400 ms on a GPU stay the real-hardware targets, which Task 20 times on real
- * machines. macOS's runner reaches past 3 s, so it gets its own bound. On a GPU the bound is 1000 ms, wider than 400.
+ * machines. macOS's runner swings from 0.4 s to 5.7 s from one runner to the next (cold SwiftShader-LLVM: one slow
+ * runner was slow on both tries, so a median of opens would not help), so it gets its own bound; 7.5 s is still half
+ * the 15 s the software watchdog waits before it drops the map to 2D (FIRST_FRAME_MS_SW). On a GPU the bound is 1000 ms.
  */
-const FIRST_FRAME_SOFTWARE_MS: Record<string, number> = { linux: 2000, windows: 900, macos: 4100 }
+const FIRST_FRAME_SOFTWARE_MS: Record<string, number> = { linux: 2000, windows: 900, macos: 7500 }
 const FIRST_FRAME_HARDWARE_MS = 1000
 /** How many orbits each world's gate takes the median of: one slow orbit on a shared runner does not fail the gate. */
 const ORBITS = 3
