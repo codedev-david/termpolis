@@ -18,7 +18,7 @@ import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
 import { listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
 import { isIgnored, isToolingPath, toolingFolderCount } from './group'
-import { access, readFile, stat } from 'node:fs/promises'
+import { access, opendir, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
 import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder } from './readCap'
@@ -159,6 +159,38 @@ export async function listSourceFiles(root: string, deps: ListSourceDeps = {}): 
   return walk(root)
 }
 
+/** Why a folder gives no file to map (WP4b F-R9), asked only once its listing found none. */
+export type NoFilesReason = NonNullable<GraphSnapshot['noFiles']>
+
+export interface WhyNoFilesDeps {
+  /** Any file the folder holds (default: firstFile). */
+  walk?: (root: string) => Promise<WalkResult>
+}
+
+/** A dot-name (.git, .gitignore, .vscode) is the folder's housekeeping, not one of its files. */
+const housekeeping = (rel: string): boolean => rel.split('/').some((part) => part.startsWith('.'))
+
+/** The first file a person would call one of the folder's: not one the map always skips, the folder's .gitignore
+ *  leaves out, or housekeeping. */
+async function firstFile(root: string): Promise<WalkResult> {
+  const ignored = await readRootIgnore(root)
+  return walkFolder(root, { keep: (rel) => !isIgnored(rel) && !housekeeping(rel), cap: 1, ...(ignored ? { ignored } : {}) })
+}
+
+/**
+ * Why `root` lists no file to map: 'unreadable' when it does not open as a folder (gone, an unmounted drive, a file,
+ * no permission), 'unsupported' when it holds files in no language Lumopolis maps, else 'empty'.
+ */
+export async function whyNoFiles(root: string, deps: WhyNoFilesDeps = {}): Promise<NoFilesReason> {
+  try {
+    await (await opendir(root)).close()
+  } catch {
+    return 'unreadable'
+  }
+  const any = await (deps.walk ?? firstFile)(root)
+  return any.files.length > 0 || any.unreadable.length > 0 ? 'unsupported' : 'empty'
+}
+
 /**
  * A listing: plain names, or a listing that says whether it stopped at its cap (or only the nested repositories
  * did) and which names it could not read.
@@ -181,6 +213,8 @@ export interface FileSnapshotDeps {
   onText?: (rel: string, text: string) => void
   /** Reads done out of the reads there are, after each read. */
   onRead?: (done: number, total: number) => void
+  /** Why a folder with no file to map has none (default: whyNoFiles). */
+  whyNoFiles?: (root: string) => Promise<NoFilesReason>
 }
 
 /** A relative path that stays inside the folder: no absolute path, drive, `..` or empty segment. */
@@ -274,6 +308,15 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     }
   }
   files.sort()
+  // Nothing to map (WP4b F-R9): files listed that none maps, or files to map none of which could be read, say so at
+  // once; an empty listing (or one that failed) looks at the folder itself.
+  const noFiles: NoFilesReason | null = files.length > 0
+    ? null
+    : candidates.length > 0
+      ? 'unreadable'
+      : listing.files.length > 0
+        ? 'unsupported'
+        : await (deps.whyNoFiles ?? whyNoFiles)(root)
   return {
     root: base,
     files,
@@ -281,6 +324,7 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     callEdges: [],
     fileImports,
     ...(listing.capped ? { filesCapped: files.length } : {}),
-    ...notes
+    ...notes,
+    ...(noFiles !== null ? { noFiles } : {})
   }
 }

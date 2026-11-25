@@ -693,6 +693,8 @@ export interface GraphSnapshot {
   unreadable?: string[]
   /** How many top-level dot-folders held source files the world leaves out as tooling (world/group.ts isToolingPath). */
   toolingFolders?: number
+  /** Set on a listing with no file to map: why (WP4b F-R9), so the pane says it in its own words. */
+  noFiles?: 'empty' | 'unsupported' | 'unreadable'
 }
 
 const slashed = (p: string): string => p.replace(/\\/g, '/')

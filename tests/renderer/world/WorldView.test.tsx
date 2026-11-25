@@ -45,6 +45,7 @@ import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
 import { GRAPHICS_FLAT, GRAPHICS_LOST } from '../../../src/renderer/src/components/World/WorldView'
 import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { savedByNewerNotice } from '../../../src/renderer/src/components/World/worldNotes'
+import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE } from '../../../src/shared/world/types'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -129,6 +130,53 @@ describe('WorldView', () => {
       expect(b.api.worldCompile).toHaveBeenCalledTimes(1)
       cleanup()
     }
+  })
+
+  // WP4b F-R9: a folder with nothing to map says why, and the person goes on from there.
+  it('a folder with nothing to map: Choose another folder opens the picker on the home, once, and opens what is picked', async () => {
+    const picked: WorldEntry = { key: 'k-p', source: { kind: 'folder', root: '/picked' }, title: 'picked', lastOpened: 1 } as WorldEntry
+    const b = bridge({
+      worldGet: vi.fn(async () => ok(null)),
+      worldCompile: vi.fn(async (root: string) => (root === '/repo' ? fail(FOLDER_EMPTY_MESSAGE) : ok(minimal()))),
+      worldOpenFolder: vi.fn(async () => ok(picked)),
+    })
+    await mount()
+    await settle()
+    expect(screen.getByTestId('world-error')).toHaveTextContent(FOLDER_EMPTY_MESSAGE)
+    expect(screen.queryByTestId('world-retry')).toBeNull()
+    const lists = b.api.worldSourcesList.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Choose another folder' }))
+    await settle()
+    expect(b.api.worldOpenFolder).toHaveBeenCalledTimes(1)
+    expect(b.api.worldCompile).toHaveBeenLastCalledWith('/picked')
+    expect(b.api.worldSourcesList.mock.calls.length).toBeGreaterThan(lists)
+    // Home again later: the picker does not open by itself a second time.
+    fireEvent.change(screen.getByTestId('world-switcher'), { target: { value: '__home' } })
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(b.api.worldOpenFolder).toHaveBeenCalledTimes(1)
+  })
+
+  it('a folder the picker refuses is said on the home; Back to Home goes home and opens no picker', async () => {
+    const b = bridge({
+      worldGet: vi.fn(async () => ok(null)),
+      worldCompile: vi.fn(async () => fail(FOLDER_UNREADABLE_MESSAGE)),
+      worldOpenFolder: vi.fn(async () => fail("Lumopolis can't map your home folder.")),
+    })
+    await mount()
+    await settle()
+    expect(screen.getByTestId('world-retry')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Choose another folder' }))
+    await settle()
+    expect(within(screen.getByTestId('world-home')).getByRole('alert')).toHaveTextContent("Lumopolis can't map your home folder.")
+    cleanup()
+    const c = bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(async () => fail(FOLDER_EMPTY_MESSAGE)), worldOpenFolder: vi.fn(async () => ok(null)) })
+    await mount()
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Home' }))
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(c.api.worldOpenFolder).not.toHaveBeenCalled()
   })
 
   it('shows "Mapping your project…" with progress while worldGet returns null and progress events arrive', async () => {

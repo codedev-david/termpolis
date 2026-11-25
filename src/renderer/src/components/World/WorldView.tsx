@@ -926,6 +926,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     window.termpolis.worldCompileCancel(at).catch(() => undefined)
     goHome()
   }
+  // Choose another folder (WP4b F-R9), on a folder with nothing to map: the home opens the picker as it mounts, so a
+  // folder picked opens as from the home, and one refused is said there. Cancelled, the person is on the home.
+  const pickOnHome = useRef(false)
+  const chooseAnotherFolder = (): void => {
+    pickOnHome.current = true
+    goHome()
+  }
   const recompileShown = recompileError !== null && recompileError.at === worldRoot ? recompileError : null
   if (home) empty = null
   else if (error !== null) empty = 'error'
@@ -1074,7 +1081,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName, { planned: layers.planned, proposal }) }}
           />
         )}
-        {home && <WorldHome entries={entries} listError={listError} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} ticket={ticket} onDialog={setHomeDialog} escRef={homeEscRef} />}
+        {home && <WorldHome entries={entries} listError={listError} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} ticket={ticket} onDialog={setHomeDialog} escRef={homeEscRef} pickFolder={pickOnHome} />}
         {empty && (
           <WorldEmptyState
             mode={empty}
@@ -1082,6 +1089,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             error={error}
             onRetry={() => setAttempt((n) => n + 1)}
             {...(empty === 'mapping' && worldRoot !== null ? { onCancel: () => stopMapping(worldRoot) } : {})}
+            onChooseFolder={chooseAnotherFolder}
+            onHome={goHome}
           />
         )}
         {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}

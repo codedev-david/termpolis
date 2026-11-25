@@ -17,7 +17,9 @@
  *      and the change toast says "+1 part". A second file in that part makes the world draw it with
  *      an outline (changed since the last reconcile). Back in the design, "remove Payments" (the
  *      design's removePart) and the folder's world draws that built part fading.
- *   5. The renderer logged no console error and threw no page error.
+ *   5. A folder with nothing to map says why in its own words (WP4b F-R9): an empty one, then (Choose another
+ *      folder) one of only notes, with no Try again; Back to Home goes home.
+ *   6. The renderer logged no console error and threw no page error.
  *
  * Labelling is off: its hidden run is spawned without a shell and cannot launch a Windows shim.
  * The map probe (window.__termpolis_world, TERMPOLIS_TEST_WORLD_PROBE) says which buildings are
@@ -39,6 +41,8 @@ let project: string
 let buildDir: string
 let shimDir: string
 let pickFile: string
+let emptyDir: string
+let notesDir: string
 const consoleErrors: string[] = []
 const DESCRIPTION = 'A small pet shop'
 
@@ -65,6 +69,9 @@ test.beforeAll(async () => {
   ensureE2eBuild()
   project = makeRepo('sources', PROJECT_FILES)
   buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-build-'))
+  emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-empty-'))
+  notesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-notes-'))
+  fs.writeFileSync(path.join(notesDir, 'notes.txt'), 'shopping list')
 
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-sources-ud-'))
   fs.writeFileSync(
@@ -130,7 +137,7 @@ exit $LASTEXITCODE
 
 test.afterAll(async () => {
   await quitApp(app)
-  for (const d of [userDataDir, project, buildDir, shimDir]) {
+  for (const d of [userDataDir, project, buildDir, shimDir, emptyDir, notesDir]) {
     try {
       if (d) fs.rmSync(d, { recursive: true, force: true })
     } catch {
@@ -314,7 +321,28 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect.poll(async () => (await drawnLists()).fading, { timeout: 60_000 }).toEqual([part])
   })
 
-  test('5. the renderer logged no console errors and threw no page errors', async () => {
+  test('5. a folder with nothing to map says why, and the person goes on from there', async () => {
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption('__home')
+    await expect(home()).toBeVisible()
+    const error = page.locator('[data-testid="world-error"]')
+    fs.writeFileSync(pickFile, emptyDir)
+    await home().getByRole('button', { name: /^Open a folder/ }).click()
+    await expect(error).toHaveText('This folder has no files Lumopolis can map yet.', { timeout: 60_000 })
+    await expect(pane()).not.toContainText('could not map')
+    await expect(page.locator('[data-testid="world-retry"]')).toHaveCount(0)
+
+    fs.writeFileSync(pickFile, notesDir)
+    await page.getByRole('button', { name: 'Choose another folder' }).click()
+    await expect(projectName()).toHaveText(path.basename(notesDir), { timeout: 30_000 })
+    await expect(error).toHaveText('Lumopolis found files here, but none in a language it maps yet.', { timeout: 60_000 })
+    await expect(page.locator('[data-testid="world-retry"]')).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Back to Home' }).click()
+    await expect(home()).toBeVisible()
+    await expect(error).toHaveCount(0)
+  })
+
+  test('6. the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
 })

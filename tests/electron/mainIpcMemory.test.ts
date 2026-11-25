@@ -4359,13 +4359,22 @@ describe('Lumopolis world wiring in index.ts', () => {
     const empty = { root: '/mnt/gone', files: [], symbols: [], callEdges: [], fileImports: {} }
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
     world.client.snapshotFromFiles.mockResolvedValueOnce(empty)
-    await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow('no source files found')
+    // In its own plain words (WP4b F-R9): a snapshot with no reason reads as an empty folder.
+    await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow('This folder has no files Lumopolis can map yet.')
     expect(world.client.snapshotFromFiles).toHaveBeenCalledWith('/mnt/gone') // it did look first
     // Through the real ipc handler: a rejected compile is answered err(message), never a saved world.
     world.client.compile.mockImplementationOnce(async (root: string) => world.opts.snapshot(root))
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
     world.client.snapshotFromFiles.mockResolvedValueOnce(empty)
-    expect(await invoke('world:compile', { root: '/mnt/gone' })).toEqual({ success: false, error: 'no source files found' })
+    expect(await invoke('world:compile', { root: '/mnt/gone' })).toEqual({ success: false, error: 'This folder has no files Lumopolis can map yet.' })
+    for (const [noFiles, words] of [
+      ['unsupported', 'Lumopolis found files here, but none in a language it maps yet.'],
+      ['unreadable', "Lumopolis can't read this folder. Check that it still exists and that you can open it."]
+    ] as const) {
+      cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+      world.client.snapshotFromFiles.mockResolvedValueOnce({ ...empty, noFiles })
+      await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow(words)
+    }
   })
 
   it('labels with the cheapest Claude model, through claude -p on the proc host with the launch env, or runHeadless in the root', async () => {

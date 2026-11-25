@@ -1,7 +1,7 @@
 // The Lumopolis home: shown when no world is open. Four ways in (this project, a folder, a git
 // repository, a new design) and the recent worlds below them. A world whose folder or design is gone
 // shows "missing" and can only be removed (its files, if any, are left alone).
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, MutableRefObject } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
@@ -31,6 +31,9 @@ export interface WorldHomeProps {
   ticket?: () => () => boolean
   /** A dialog opened (true) or closed (false): the pane makes its toolbar inert meanwhile (F-R13). */
   onDialog?: (open: boolean) => void
+  /** Set when the person pressed Choose another folder on a folder with nothing to map (WP4b F-R9): the home opens the
+   *  folder picker as it mounts, once (it clears the mark), so what is picked, refused or cancelled is the home's own. */
+  pickFolder?: MutableRefObject<boolean>
 }
 
 export const LIST_FAILED = "Lumopolis couldn't load your recent worlds."
@@ -57,7 +60,7 @@ export function agoText(at: number, now: number): string {
 const CHOICE_GRID: CSSProperties = { gridTemplateColumns: 'repeat(auto-fit, minmax(min(15rem, 100%), 1fr))' }
 const choiceCls = 'flex flex-col items-start gap-1 rounded-lg border border-[#3c3c3c] bg-[#1b2236] hover:bg-[#222b44] hover:border-[#4fc1ff]/60 px-4 py-3 text-left disabled:opacity-50 disabled:hover:bg-[#1b2236] disabled:hover:border-[#3c3c3c]'
 
-export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef, listError = false, ticket = always, onDialog }: WorldHomeProps): JSX.Element {
+export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef, listError = false, ticket = always, onDialog, pickFolder }: WorldHomeProps): JSX.Element {
   const zoom = useUiZoom()
   const [dialog, setDialog] = useState<'clone' | 'design' | null>(null)
   /** What the clone dialog starts with: a missing repository's address and branch, from its Clone again. */
@@ -164,6 +167,14 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
     onOpen(targetOf(res.data))
     return null
   })
+
+  useEffect(() => {
+    if (!pickFolder?.current) return
+    pickFolder.current = false
+    openFolder()
+    // Once, as the home mounts: the mark is what asks, not a render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const remove = (key: string): void => run(async () => {
     const res = await window.termpolis.worldRemoveSource(key)

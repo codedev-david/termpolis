@@ -137,6 +137,24 @@ export interface WorldUpdatedEvent { root: string; projectKey: string; error?: s
 /** PENDING SIGN-OFF (WP4b F-R6): what a mapping the person stopped (world:compile-cancel) answers. */
 export const COMPILE_STOPPED_MESSAGE = 'Lumopolis stopped mapping this project.'
 
+/** Why a folder lists no file to map (WP4b F-R9): it holds no file Lumopolis looks at, only files in languages it does
+ *  not map, or it cannot be opened (gone, an unmounted drive, no permission). */
+export type NoFilesReason = 'empty' | 'unsupported' | 'unreadable'
+/** PENDING SIGN-OFF (WP4b F-R9): what the pane says for each, in place of a raw reason. */
+export const FOLDER_EMPTY_MESSAGE = 'This folder has no files Lumopolis can map yet.'
+export const FOLDER_UNSUPPORTED_MESSAGE = 'Lumopolis found files here, but none in a language it maps yet.'
+export const FOLDER_UNREADABLE_MESSAGE = "Lumopolis can't read this folder. Check that it still exists and that you can open it."
+const NO_FILES_MESSAGES: Record<NoFilesReason, string> = {
+  empty: FOLDER_EMPTY_MESSAGE,
+  unsupported: FOLDER_UNSUPPORTED_MESSAGE,
+  unreadable: FOLDER_UNREADABLE_MESSAGE
+}
+/** The words for a folder with nothing to map; a reason not known reads as an empty folder. */
+export const noFilesMessage = (reason: NoFilesReason | undefined): string => NO_FILES_MESSAGES[reason ?? 'empty']
+/** The reason a failure's words say, when they are a folder's with nothing to map; null for any other failure. */
+export const noFilesReasonOf = (message: string | null | undefined): NoFilesReason | null =>
+  message === FOLDER_EMPTY_MESSAGE ? 'empty' : message === FOLDER_UNSUPPORTED_MESSAGE ? 'unsupported' : message === FOLDER_UNREADABLE_MESSAGE ? 'unreadable' : null
+
 // ---- Lumopolis ask (renderer <-> main): one question about the world, answered by the user's agent ----
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string; /** The model id for the Lumopolis agent; absent means the CLI's own default. */ model?: string; /** The design proposal on show (an id in doc.layers.plan); main looks it up and adds it to the question. */ proposalId?: string }
 /** Evidence an answer cites, with the ids of the buildings and lines it points at. */

@@ -333,6 +333,7 @@ import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeE
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { shownError } from './world/windowError'
+import { noFilesMessage } from '../shared/world/types'
 import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
 import { registerWorldIpc } from './world/ipc'
 import { registerWorldExportIpc } from './world/exportIpc'
@@ -2865,7 +2866,8 @@ const worldClient = createWorldClient(undefined, {
   // background once the world's compile has finished (WP4a Ruling R3: its reads never compete with the
   // first map), for the next compile and the code tools. Still nothing (an unmounted
   // drive, an emptied folder) is an error, never an empty world saved over the stored one: that would
-  // throw away every stored position. The ipc handler answers err(message).
+  // throw away every stored position. The ipc handler answers err(message), in the words for why the folder has
+  // nothing to map (WP4b F-R9: empty, no language Lumopolis maps, or it cannot be read).
   snapshot: async (root): Promise<GraphSnapshot> => {
     const key = graphKeyForRoot(root)
     // graphSnapshot reads the in-memory graph only: no file or database access on this path. While a sweep of
@@ -2878,7 +2880,9 @@ const worldClient = createWorldClient(undefined, {
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
     if (built.files.length === 0) {
       const source = (await worldSources.get(key))?.source
-      if (!source || source.kind === 'design' || !source.linkedDesign) throw shownError('no source files found')
+      if (!source || source.kind === 'design' || !source.linkedDesign) throw shownError(noFilesMessage(built.noFiles))
+      // A linked Build it folder starting empty is no failure: its world never hears why the folder is empty.
+      delete built.noFiles
     }
     return built
   },

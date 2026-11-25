@@ -4,6 +4,7 @@ import { CARD_CLICK_GRACE_MS, CARD_FADE_PX, WorldCard } from '../../../src/rende
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
+import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE, FOLDER_UNSUPPORTED_MESSAGE } from '../../../src/shared/world/types'
 import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
 import { SOLID_PANEL, UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
@@ -393,6 +394,62 @@ describe('WorldEmptyState', () => {
     expect(screen.queryByRole('button', { name: 'Stop mapping' })).toBeNull()
     rerender(<WorldEmptyState mode="loading" onCancel={onCancel} />)
     expect(screen.queryByRole('button', { name: 'Stop mapping' })).toBeNull()
+  })
+})
+
+// WP4b F-R9: a folder that gives no map says why in its own words, and offers a way on.
+describe('WorldEmptyState for a folder with nothing to map', () => {
+  const folder = (error: string) => {
+    const h = { onRetry: vi.fn(), onChooseFolder: vi.fn(), onHome: vi.fn() }
+    const r = render(<WorldEmptyState mode="error" error={error} {...h} />)
+    return { ...h, ...r }
+  }
+
+  for (const [name, message] of [['empty', FOLDER_EMPTY_MESSAGE], ['unsupported', FOLDER_UNSUPPORTED_MESSAGE]] as const) {
+    it(`an ${name} folder says so alone, offers Choose another folder and Back to Home, and no Try again`, () => {
+      const h = folder(message)
+      expect(screen.getByTestId('world-empty')).toHaveTextContent(message)
+      expect(screen.queryByText('Lumopolis could not map this project.')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Choose another folder' }))
+      expect(h.onChooseFolder).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByRole('button', { name: 'Back to Home' }))
+      expect(h.onHome).toHaveBeenCalledTimes(1)
+      h.unmount()
+    })
+  }
+
+  it('an unreadable folder keeps Try again (a drive can come back), beside the other two', () => {
+    const h = folder(FOLDER_UNREADABLE_MESSAGE)
+    expect(screen.getByTestId('world-empty')).toHaveTextContent(FOLDER_UNREADABLE_MESSAGE)
+    expect(screen.queryByText('Lumopolis could not map this project.')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(h.onRetry).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Choose another folder' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back to Home' })).toBeInTheDocument()
+  })
+
+  it('any other failure keeps its words under "could not map" and offers only Try again', () => {
+    folder('Lumopolis could not start git.')
+    expect(screen.getByText('Lumopolis could not map this project.')).toBeInTheDocument()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('Lumopolis could not start git.')
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Choose another folder' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Back to Home' })).toBeNull()
+  })
+
+  it('opening and mapping offer no Try again and no folder choices, whatever handlers are given', () => {
+    for (const mode of ['loading', 'mapping'] as const) {
+      const r = render(<WorldEmptyState mode={mode} error={FOLDER_UNREADABLE_MESSAGE} onRetry={vi.fn()} onChooseFolder={vi.fn()} onHome={vi.fn()} />)
+      expect(screen.queryByRole('button')).toBeNull()
+      expect(screen.queryByTestId('world-error')).toBeNull()
+      r.unmount()
+    }
+  })
+
+  it('a folder failure with no handlers offers no buttons', () => {
+    render(<WorldEmptyState mode="error" error={FOLDER_EMPTY_MESSAGE} />)
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })
 

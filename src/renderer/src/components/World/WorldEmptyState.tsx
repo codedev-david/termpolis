@@ -1,8 +1,11 @@
 // What the Lumopolis pane shows while a world is not drawn yet: opening, mapping (with the
 // compile's progress, and Stop mapping), or a failure the user can retry. With no world open the pane shows the home.
+// A folder with nothing to map (WP4b F-R9) says why in its own words and offers Choose another folder and Back to
+// Home; Try again only where it can help, a folder that could not be read.
 
 import { useUiZoom } from './worldPane'
 import { UI_FAILED } from './worldTargets'
+import { noFilesReasonOf } from '../../../../shared/world/types'
 
 export type WorldEmptyMode = 'loading' | 'mapping' | 'error'
 
@@ -16,10 +19,19 @@ export interface WorldEmptyStateProps {
   onRetry?: () => void
   /** Stop mapping, in mapping mode (WP4b F-R6): absent, the mapping cannot be stopped from here. */
   onCancel?: () => void
+  /** Choose another folder and Back to Home, for a folder with nothing to map (WP4b F-R9). */
+  onChooseFolder?: () => void
+  onHome?: () => void
 }
 
-export function WorldEmptyState({ mode, progress, error, onRetry, onCancel }: WorldEmptyStateProps): JSX.Element {
+const quietBtn = 'text-xs px-3 py-1.5 rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#cccccc]'
+const mainBtn = 'text-xs px-3 py-1.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white'
+
+export function WorldEmptyState({ mode, progress, error, onRetry, onCancel, onChooseFolder, onHome }: WorldEmptyStateProps): JSX.Element {
   const zoom = useUiZoom()
+  const noFiles = mode === 'error' ? noFilesReasonOf(error) : null
+  // Mapping an empty folder or one of other languages again finds the same; a folder that could not be read may be back.
+  const retry = mode === 'error' && onRetry && noFiles !== 'empty' && noFiles !== 'unsupported' ? onRetry : undefined
   return (
     <div className="flex items-center justify-center p-6" style={{ position: 'absolute', inset: 0 }} data-testid="world-empty">
       <div className="max-w-md text-center flex flex-col items-center gap-3 text-[#cccccc]" style={zoom}>
@@ -31,23 +43,26 @@ export function WorldEmptyState({ mode, progress, error, onRetry, onCancel }: Wo
             type="button"
             onClick={onCancel}
             data-testid="world-mapping-cancel"
-            className="text-xs px-3 py-1.5 rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#cccccc]"
+            className={quietBtn}
           >Stop mapping</button>
         )}
-        {mode === 'error' && (
+        {mode === 'error' && noFiles === null && (
           <>
             <p className="text-sm">Lumopolis could not map this project.</p>
             {/* M3: the fixed words for a call that threw would only say "couldn't" twice. */}
             {error !== UI_FAILED && <p className="text-xs text-[#f48771] break-words" data-testid="world-error">{error}</p>}
-            {onRetry && (
-              <button
-                type="button"
-                onClick={onRetry}
-                data-testid="world-retry"
-                className="text-xs px-3 py-1.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
-              >Try again</button>
-            )}
           </>
+        )}
+        {/* The folder's own words say it all; "could not map" over them would only say it twice. */}
+        {noFiles !== null && <p className="text-sm break-words" data-testid="world-error">{error}</p>}
+        {(retry || noFiles !== null) && (
+          <div className="flex flex-wrap justify-center gap-2">
+            {retry && <button type="button" onClick={retry} data-testid="world-retry" className={mainBtn}>Try again</button>}
+            {noFiles !== null && onChooseFolder && (
+              <button type="button" onClick={onChooseFolder} data-testid="world-choose-folder" className={retry ? quietBtn : mainBtn}>Choose another folder</button>
+            )}
+            {noFiles !== null && onHome && <button type="button" onClick={onHome} data-testid="world-back-home" className={quietBtn}>Back to Home</button>}
+          </div>
         )}
       </div>
     </div>
