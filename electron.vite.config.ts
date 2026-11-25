@@ -139,6 +139,8 @@ export default defineConfig({
     worker: {
       format: 'es'
     },
+    // THROWAWAY PROBE: readable page-error stacks.
+    build: { minify: false },
     plugins: [react()]
   }
 })

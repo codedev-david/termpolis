@@ -78,7 +78,7 @@ test.beforeAll(async () => {
     env: { TERMPOLIS_TEST_WORLD_PICK_FILE: pickFile },
     onPage: (p) => {
       p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
-      p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
+      p.on('pageerror', (e) => { consoleErrors.push(`pageerror: ${e.message}`); console.log(`[probe-pageerror] ${e.stack ?? e.message}`) })
     },
   })
   app = launched.app

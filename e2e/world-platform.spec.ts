@@ -128,7 +128,7 @@ test.beforeAll(async () => {
     },
     onPage: (p) => {
       p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); if (m.text().startsWith('[probe]')) console.log(`${m.text()} seen=${Date.now()}`) })
-      p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
+      p.on('pageerror', (e) => { consoleErrors.push(`pageerror: ${e.message}`); console.log(`[probe-pageerror] ${e.stack ?? e.message}`) })
     },
   })
   app = launched.app
