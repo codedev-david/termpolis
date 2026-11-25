@@ -1034,6 +1034,7 @@ export default function App() {
         setShowMemory(v => !v)
         break
       case 'show_world':
+        console.info(`[probe] show_world wall=${Date.now()}`)
         worldPane.open()
         break
       case 'world_export':

@@ -127,7 +127,7 @@ test.beforeAll(async () => {
       MOCK_CLAUDE_WORLD_ANSWER: '1',
     },
     onPage: (p) => {
-      p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
+      p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); if (m.text().startsWith('[probe]')) console.log(`${m.text()} seen=${Date.now()}`) })
       p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
     },
   })
@@ -234,6 +234,7 @@ async function expectNoBackslash(where: string): Promise<void> {
 }
 
 test.describe.serial('Lumopolis on this platform', () => {
+  test.beforeEach(async ({}, ti) => { console.log(`[probe-spec] start ${ti.title.slice(0, 50)} retry=${ti.retry} wall=${Date.now()}`) })
   test.setTimeout(60_000)
 
   test('1. the palette opens a project under a path with spaces, on WebGL or the 2D list, and the pane works', async () => {

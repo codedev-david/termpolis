@@ -144,7 +144,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
-  const [webglFound, setWebglFound] = useState(() => hasWebGL())
+  const [webglFound, setWebglFound] = useState(() => { const t0 = performance.now(); console.info(`[probe] WorldView render-start wall=${Date.now()}`); const r = hasWebGL(); console.info(`[probe] WorldView hasWebGL ms=${Math.round(performance.now() - t0)} r=${r} wall=${Date.now()}`); return r })
+  useEffect(() => { console.info(`[probe] WorldView mounted wall=${Date.now()}`) }, [])
   /** The graphics were lost twice while open: the 2D map shows from then on. */
   const [glGone, setGlGone] = useState(false)
   const webgl = webglFound && !glGone

@@ -276,7 +276,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let r3: ThreeRenderer | null = null
   /** WebGL contexts lost so far: the first is waited out, the second drops to the 2D map. */
   let losses = 0
-  if (hasWebGL()) {
+  const pv0 = performance.now()
+  const pvHas = hasWebGL()
+  console.info(`[probe] viewer hasWebGL ms=${Math.round(performance.now() - pv0)} wall=${Date.now()}`)
+  if (pvHas) {
     const before = new Set(Array.from(container.children))
     try {
       r3 = createThreeRenderer(container, {
@@ -289,6 +292,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
+      console.info(`[probe] viewer createThreeRenderer done ms=${Math.round(performance.now() - pv0)} wall=${Date.now()}`)
     } catch {
       // createThreeRenderer frees what it made before rethrowing; this also covers a throw from
       // setTheme after it returned. Whatever it appended (canvas, label layer) goes before the 2D list.
