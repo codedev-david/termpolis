@@ -1034,7 +1034,7 @@ describe('createWorldHost', () => {
   it('the labeller init and settings name reaches labelling as heldBy; settings without one, or a non-string, clears it (review I1)', async () => {
     const heldBy: (string | undefined)[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
-      heldBy.push(deps.label.heldBy)
+      heldBy.push(deps.label.heldBy?.())
       return doc(input.projectKey)
     })
     const h = harness({ compile }, memStore({ k1: doc() }))
@@ -1048,10 +1048,13 @@ describe('createWorldHost', () => {
     expect(await run(1)).toBe('codex/gpt-5-mini')
     await h.send({ kind: 'settings', labelling: false, labeller: 'claude/haiku' })
     expect(await run(2)).toBe('claude/haiku')
-    expect('heldBy' in (compile.mock.calls[1][1] as CompileDeps).label).toBe(true)
+    // Read live, by each batch: a run's deps follow a switch made while it runs (re-review N1).
+    const running = (compile.mock.calls[1][1] as CompileDeps).label
+    await h.send({ kind: 'settings', labelling: false, labeller: 'gemini/flash' })
+    expect(running.heldBy?.()).toBe('gemini/flash')
     await h.send({ kind: 'settings', labelling: false })
     expect(await run(3)).toBeUndefined()
-    expect('heldBy' in (compile.mock.calls[2][1] as CompileDeps).label).toBe(false)
+    expect(running.heldBy?.()).toBeUndefined()
     await h.send({ kind: 'settings', labelling: false, labeller: 7 as unknown as string })
     expect(await run(4)).toBeUndefined()
     // An init without one names none.

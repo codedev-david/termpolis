@@ -847,7 +847,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       llm,
       ...(stopped ? { stopped } : {}),
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
-      ...(st.labeller === undefined ? {} : { heldBy: st.labeller }),
+      // Read by each batch, not once per run: a switch of agent or model mid-pass applies to the next batch (N1).
+      heldBy: () => st.labeller,
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
         const text = await rs(`${root}/${file}`)

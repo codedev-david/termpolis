@@ -2545,12 +2545,12 @@ describe('ASK #67 N3: a reply that described nothing is held, not asked again ev
 
   it('a reply held from one agent or model never stops another from being asked; the same one is still answered by it (review I1)', async () => {
     const a = vi.fn(async (_p: string) => '{}')
-    const deps = mkDeps({ llm: a, heldBy: 'codex/gpt-5-mini' })
+    const deps = mkDeps({ llm: a, heldBy: () => 'codex/gpt-5-mini' })
     await labelWorld(twoDistricts(), deps)
     expect(a).toHaveBeenCalledTimes(4)
     // Another model (the person switched the Lumopolis agent): every prompt is asked, and its answers are used.
     const b = vi.fn(async (p: string) => goodFor(p))
-    const other = await labelWorld(twoDistricts(), { ...deps, llm: b, heldBy: 'claude/haiku' })
+    const other = await labelWorld(twoDistricts(), { ...deps, llm: b, heldBy: () => 'claude/haiku' })
     expect(b).toHaveBeenCalledTimes(2)
     expect(other.buildings.a.name).toBe('Alpha Hub')
     // The first model, back on a fresh cache that holds only its own '{}': still answered by the held reply.
@@ -2563,6 +2563,49 @@ describe('ASK #67 N3: a reply that described nothing is held, not asked again ev
     const none = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), { ...deps, llm: none, heldBy: undefined, cache: { get: async (h) => held.get(h) ?? null, set: async (h, v) => void held.set(h, v) } })
     expect(none).toHaveBeenCalledTimes(4)
+  })
+
+  it('each batch reads who labels as it starts: a switch between two batches of one run files and serves the next under the new name (re-review N1)', async () => {
+    // The first pass's two batches are asked under A; the person switches the Lumopolis agent before the second chance.
+    let name = 'A'
+    const asked: [string, string][] = []
+    const llm = vi.fn(async (p: string) => {
+      asked.push([name, p])
+      if (asked.length === 2) name = 'B'
+      return '{}'
+    })
+    const deps = mkDeps({ llm, heldBy: () => name })
+    await labelWorld(twoDistricts(), deps)
+    expect(asked.map(([n]) => n)).toEqual(['A', 'A', 'B', 'B'])
+    const firstPass = asked.slice(0, 2).map(([, p]) => p).sort()
+    const held = new Map([...deps.store].filter(([, v]) => isHeld(v)))
+    const onHeld = { get: async (h: string) => held.get(h) ?? null, set: async (h: string, v: string) => void held.set(h, v) }
+    // The second batches were held under B: B is asked only the first pass's prompts, which were held under A.
+    const b = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), { ...deps, llm: b, heldBy: () => 'B', cache: onHeld })
+    expect(b.mock.calls.map(([p]) => p).sort()).toEqual(firstPass)
+
+    // Every prompt held under A; the switch to B comes once the first pass's two batches were answered by A's.
+    const all = mkDeps({ llm: async () => '{}', heldBy: () => 'A' })
+    await labelWorld(twoDistricts(), all)
+    const allHeld = new Map([...all.store].filter(([, v]) => isHeld(v)))
+    let who = 'A'
+    let hits = 0
+    const switching = {
+      get: async (h: string) => {
+        const v = allHeld.get(h) ?? null
+        if (v !== null && ++hits === 2) who = 'B'
+        return v
+      },
+      set: async () => undefined
+    }
+    const second = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), { ...all, llm: second, heldBy: () => who, cache: switching })
+    // A's held replies do not answer the second-chance batches: B is asked all three. One of them has a first-pass
+    // prompt, which this run never sent (A's held reply answered it), so it is no repeat here.
+    const prompts = second.mock.calls.map(([p]) => p)
+    expect(prompts).toHaveLength(3)
+    expect(prompts.filter((p) => firstPass.includes(p))).toHaveLength(1)
   })
 
   it('the pass log says how many batches a held reply answered', async () => {

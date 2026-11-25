@@ -76,8 +76,10 @@ export interface LabelDeps {
   /** The date, in ms since the epoch (default Date.now): how long ago a held reply was given (NOTHING_HOLD_MS). */
   wallNow?: () => number
   /** Who `llm` asks: the agent and model, from main. A held reply is one model's answer, so it is held under this
-   *  name and never stops another agent or model from being asked. Optional; unnamed is a labeller of its own. */
-  heldBy?: string
+   *  name and never stops another agent or model from being asked. Read by each batch as it starts, so a switch made
+   *  during a pass holds and serves its later batches under the new name (re-review N1). Optional, or answering
+   *  undefined: unnamed, a labeller of its own. */
+  heldBy?: () => string | undefined
   /** True once the world was removed: the pass asks nothing more, and a call cut short by the removal is neither a
    *  quick failure nor asked again. Optional (never stopped). */
   stopped?: () => boolean
@@ -1098,7 +1100,8 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
 
   // A reply that described nothing is held under its own key, so the cache's replies stay replies, and under the
   // agent and model that gave it: what one model left undescribed another may describe (review I1).
-  const heldKey = deps.heldBy === undefined ? sha(`held\n${key}`) : sha(`held\n${deps.heldBy}\n${key}`)
+  const by = deps.heldBy?.()
+  const heldKey = by === undefined ? sha(`held\n${key}`) : sha(`held\n${by}\n${key}`)
   const wallNow = deps.wallNow ?? Date.now
   try {
     const hit = await deps.cache.get(key)
