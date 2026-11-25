@@ -409,3 +409,44 @@ export async function cityClip(page: Page): Promise<{ x: number; y: number; widt
   if (!box) throw new Error('no 3D view on the page')
   return { x: box.x + 370, y: box.y + 60, width: Math.max(100, box.width - 370 - 350), height: Math.max(100, box.height - 60 - 90) }
 }
+
+/**
+ * Watches the city's frames through its canvas's WebGL context, the one the page drew with (getContext hands back the
+ * same object): each frame drawn clears the canvas, so `clear` counts frames, and drawn in software each frame ends
+ * with a fence that the page waits on before it draws the next (threeRenderer's lastDrawn), so the newest fence not
+ * yet deleted is kept. Nothing the page does changes: the wrappers call the context's own methods. False without a
+ * WebGL context (the 2D map).
+ */
+export async function watchFrames(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('.wx-view canvas') as HTMLCanvasElement | null
+    const gl = canvas && ((canvas.getContext('webgl2') as WebGL2RenderingContext | null) ?? (canvas.getContext('webgl') as WebGL2RenderingContext | null))
+    if (!gl) return false
+    const seen: { gl: WebGL2RenderingContext; frames: number; fence: WebGLSync | null } = { gl, frames: 0, fence: null }
+    ;(window as unknown as { __frames: typeof seen }).__frames = seen
+    const clear = gl.clear.bind(gl)
+    gl.clear = (mask: number): void => { seen.frames++; clear(mask) }
+    if (typeof gl.fenceSync === 'function') {
+      const fenceSync = gl.fenceSync.bind(gl)
+      const deleteSync = gl.deleteSync.bind(gl)
+      gl.fenceSync = (condition: number, flags: number): WebGLSync | null => (seen.fence = fenceSync(condition, flags))
+      gl.deleteSync = (sync: WebGLSync | null): void => { if (sync === seen.fence) seen.fence = null; deleteSync(sync) }
+    }
+    return true
+  })
+}
+
+
+/**
+ * Waits, in real time, until the GPU has finished the last frame the page drew: its fence is signalled (or there is
+ * none: drawn on a GPU, no frame waits on one). Drawn in software the page draws no frame while the last is still
+ * being drawn, however far its clock is moved, so a step of the stopped clock taken sooner draws nothing: on a CI
+ * runner every step of the flight below came within a few milliseconds of the last, and the camera never moved.
+ * Each look is a task of its own, so the context can update the fence's state between looks.
+ */
+export async function gpuIdle(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const { gl, fence } = (window as unknown as { __frames: { gl: WebGL2RenderingContext; fence: WebGLSync | null } }).__frames
+    return fence === null || gl.isContextLost() || gl.getSyncParameter(fence, gl.SYNC_STATUS) === gl.SIGNALED
+  }), { message: 'the GPU finished the last frame the page drew', timeout: 60_000, intervals: [5, 10, 20, 50, 100] }).toBe(true)
+}

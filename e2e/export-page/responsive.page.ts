@@ -18,10 +18,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { CDPSession, Page } from '@playwright/test'
-import { ask, askReady, expect, test } from './helpers'
+import { ask, askReady, expect, test, watchFrames } from './helpers'
 import { DOCUMENT_HTML, KEYWORD_HTML, SMART_HTML } from './paths'
 import { auditProblems, layoutAudit, medianFont, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from '../helpers/layoutAudit'
 import { uiScale } from '../../src/shared/world/uiScale'
+import { SOFTWARE_FENCE_MAX_MS } from '../../src/renderer/src/world/engine/viewMath'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
 const PANELS = ['.wx-card', '.wx-ask-host', '.wx-legend', '.wx-toolbar', '.wx-header']
@@ -61,6 +62,40 @@ async function setViewport(page: Page, v: Viewport): Promise<void> {
   await emulate(page, cdp, v)
 }
 
+/** How many frames each page's city had drawn at its last settle sample, once its frames are watched (watchFrames). */
+const framesAtSample = new WeakMap<Page, number>()
+/** Watches the city's frames once, once it has a WebGL canvas; false while it has none (the document page never does). */
+async function watchCity(page: Page): Promise<boolean> {
+  if (framesAtSample.has(page)) return true
+  if ((await page.locator('.wx-view canvas').count()) === 0) return false
+  if (!(await watchFrames(page))) return false
+  framesAtSample.set(page, -1)
+  return true
+}
+
+/**
+ * Waits until the page could have drawn what changed since the last sample: it has drawn a frame since then, or the
+ * GPU has finished the last frame it drew, so nothing holds the next one back. While the city is still moving, a new
+ * fence is put with nearly every frame, so a look seldom finds the GPU idle (at 768x1024, DPR 2, it found it idle in
+ * no look for 60 s); a frame drawn shows the page is drawing all the same. The page itself draws once a fence is
+ * SOFTWARE_FENCE_MAX_MS old, so a wait longer than that (and a little) means the page has nothing to draw.
+ */
+async function drawable(page: Page): Promise<void> {
+  const before = framesAtSample.get(page) ?? -1
+  const end = Date.now() + SOFTWARE_FENCE_MAX_MS + 2_000
+  for (;;) {
+    const now = await page.evaluate(() => {
+      const { gl, frames, fence } = (window as unknown as { __frames: { gl: WebGL2RenderingContext; frames: number; fence: WebGLSync | null } }).__frames
+      return { frames, idle: fence === null || gl.isContextLost() || gl.getSyncParameter(fence, gl.SYNC_STATUS) === gl.SIGNALED }
+    })
+    if (now.idle || now.frames > before || Date.now() > end) {
+      framesAtSample.set(page, now.frames)
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
 /** When the test started, for settleBudget. */
 let testStarted = Date.now()
 test.beforeEach(() => { testStarted = Date.now() })
@@ -76,7 +111,13 @@ async function settle(page: Page, state: string): Promise<void> {
   const log: string[] = []
   const [w, h, dpr] = await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio])
   const slowness = Math.max(1, (w * h * dpr * dpr) / (1920 * 1080))
-  const settled = await steady(page, null, settleBudget(15_000 * slowness, test.info().timeout, testStarted), log)
+  // The city is drawn in software here, and the page draws no frame while the GPU is still drawing the last (up to
+  // 10 s): frames keep coming, so samples taken meanwhile matched and the page read as settled with the picture
+  // still to move beside a card just opened (macOS soak 45609857183: four equal samples within 0.9 s after a 2.8 s
+  // frame, then no frame drawn for 3.3 s, and the audit found district names where the card's box was not yet
+  // known). Each sample now waits until the page could have drawn (drawable), so it follows a frame the page drew.
+  const watched = await watchCity(page)
+  const settled = await steady(page, null, settleBudget(15_000 * slowness, test.info().timeout, testStarted), log, watched ? () => drawable(page) : undefined)
   expect.soft(settled, `${state}: the page settled${settled ? '' : ` (samples: ${log.join(', ')}; still moving: ${await stillMoving(page)})`}`).toBe(true)
 }
 

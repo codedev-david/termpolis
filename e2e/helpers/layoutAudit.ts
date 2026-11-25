@@ -472,17 +472,22 @@ export function settleBudget(want: number, timeout: number, startedAt: number, n
 /**
  * Waits, instead of a fixed time, until the layout under `root` has stayed the same for STEADY_SAMPLES samples
  * STEADY_EVERY_MS apart; false when it was still moving after `timeout` ms. `log`, when given, gets each sample's time
- * and whether it moved, and what was moving at the third sample that moved.
+ * and whether it moved, and what was moving at the third sample that moved. `beforeSample`, when given, is awaited
+ * before each sample: for a page that can hold its next frame back while frames still come (a city drawn in software
+ * waits for the GPU to finish the last one), it waits until the page can draw again, so samples taken while the page
+ * held a frame back do not read as settled.
  */
 const STEADY_EVERY_MS = 250
 const STEADY_SAMPLES = 4
-export async function steady(page: Evaluates, root: string | null = null, timeout = 15_000, log?: string[]): Promise<boolean> {
+export async function steady(page: Evaluates, root: string | null = null, timeout = 15_000, log?: string[], beforeSample?: () => Promise<void>): Promise<boolean> {
   const start = Date.now()
   const end = start + timeout
+  await beforeSample?.()
   let last = await page.evaluate(layoutSignature, root)
   let same = 0
   while (Date.now() < end) {
     await new Promise((resolve) => setTimeout(resolve, STEADY_EVERY_MS))
+    await beforeSample?.()
     const now = await page.evaluate(layoutSignature, root)
     log?.push(`${Date.now() - start}ms ${now.startsWith('no frame') ? 'no frame' : now === last ? 'same' : 'moved'}`)
     if (log && now !== last && log.length === 3) log.push(`moving then: ${(await page.evaluate(movers, root)).join('; ') || 'nothing'}`)
