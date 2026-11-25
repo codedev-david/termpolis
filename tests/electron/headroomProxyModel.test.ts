@@ -88,14 +88,18 @@ describe('the model of every request', () => {
     expect(modelFamily('claude-fable-5-1')).toBe('fable')
     expect(modelFamily('mystery')).toBe('other')
     expect(modelFamily(42)).toBe('other')
-    expect(MODEL_WEIGHTS).toEqual({ opus: 1, sonnet: 0.5, haiku: 0.1, fable: 1, other: 1 })
+    // Input rate over Opus's, at Anthropic's first-party rates of 2026-11-03 (Opus 4, Sonnet 2, Haiku 0.10, Fable 8).
+    expect(MODEL_WEIGHTS).toEqual({ opus: 1, sonnet: 0.5, haiku: 0.025, fable: 2, other: 1 })
     expect(MODEL_WEIGHT_NOTE).toBe('API-price weighting; subscription weights unpublished')
-    const t = { cacheReadTokens: 1000, cacheCreationTokens: 100, inputTokens: 10, outputTokens: 20 } // 100 + 125 + 10 + 100 = 335
-    expect(modelUnits(t, 'opus')).toBe(335)
-    expect(modelUnits(t, 'sonnet')).toBe(167.5)
-    expect(modelUnits(t, 'haiku')).toBeCloseTo(33.5)
-    expect(modelUnits(t, 'claude-haiku-5-5')).toBeCloseTo(33.5)
-    expect(modelUnits(t, 'unknown')).toBe(335)
+    // Cache reads at each family's own share: Opus and Sonnet 0.05x, Haiku 0.1x, Fable 0.025x.
+    const t = { cacheReadTokens: 1000, cacheCreationTokens: 100, inputTokens: 10, outputTokens: 20 } // 50 + 125 + 10 + 100 = 285 on Opus
+    expect(modelUnits(t, 'opus')).toBe(285)
+    expect(modelUnits(t, 'sonnet')).toBe(142.5)
+    expect(modelUnits(t, 'haiku')).toBeCloseTo(8.375) // (100 + 125 + 10 + 100) x 0.025
+    expect(modelUnits(t, 'claude-haiku-5-5')).toBeCloseTo(8.375)
+    expect(modelUnits(t, 'fable')).toBe(520) // (25 + 125 + 10 + 100) x 2
+    expect(modelUnits(t, 'unknown')).toBe(285)
+    expect(modelUnits(t, 'constructor')).toBe(285) // an object key that is not a family
   })
 })
 

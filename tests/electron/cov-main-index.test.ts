@@ -1415,11 +1415,6 @@ describe('headroom proxy wiring', () => {
     onTask({ terminal: 'nope', key: 3, task: 'find the callers', asked: 'opus' })
     await vi.waitFor(() => expect(M.setProxyAgentRoute).toHaveBeenCalledWith('nope', 3, null, null, false))
     const mr = await import('../../src/main/messageRouter')
-    // a pin stops routing the pane: the proxy is told so
-    M.setProxyRoute.mockClear()
-    mr.pinTerminal('pin-1')
-    expect(M.setProxyRoute).toHaveBeenCalledWith('pin-1', null, null, false, false)
-    mr.forgetTerminal('pin-1')
     // MODELHOME: a step down from a terminal's home reaches the proxy flagged as one (setRoute's down).
     mr.registerTerminal('home-1', false)
     mr.setTerminalHome('home-1', 'opus')

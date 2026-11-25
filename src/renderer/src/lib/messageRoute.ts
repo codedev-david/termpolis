@@ -7,9 +7,10 @@ import { effortOrDefault } from '../../../shared/effortLevels'
 
 // MODELHOME (2.0): one mode routes every Claude terminal Termpolis starts. One on Auto routes freely; any
 // other starts on its own model (its home) and the router only moves simple messages down to cheaper ones.
+// A Codex terminal is routed the same way by effort: freely on Auto, down from its command's own effort.
 export type RouterMode = 'every' | 'off'
 export type RouteLabel = 'keep' | 'haiku' | 'sonnet' | 'opus'
-export type RouteModel = 'haiku' | 'sonnet' | 'opus'
+export type RouteModel = 'haiku' | 'sonnet' | 'opus' | 'fable'
 
 /** What main sends on 'router:message'. */
 export type { RouteEvent }
@@ -17,13 +18,13 @@ export type { RouteEvent }
 export const ROUTER_MODE_KEY = 'termpolis.agent.messageRouting'
 export const DEFAULT_ROUTER_MODE: RouterMode = 'every'
 export const ROUTER_MODES: ReadonlyArray<{ value: RouterMode; label: string }> = [
-  { value: 'every', label: 'Every Claude terminal (steps down from its start model) and Codex' },
+  { value: 'every', label: 'Every Claude terminal (steps down from its start model; Auto terminals route freely) and Codex' },
   { value: 'off', label: 'Off' },
 ]
 /** The modes saved before 2.0 ('auto-panes', 'all'): both are the one default now. */
 const OLD_MODES = ['auto-panes', 'all']
 
-const MODEL_NAME: Readonly<Record<RouteModel, string>> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus' }
+const MODEL_NAME: Readonly<Record<RouteModel, string>> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
 
 function isMode(v: unknown): v is RouterMode {
   return v === 'every' || v === 'off'
@@ -82,8 +83,7 @@ export function routeChipText(e: RouteEvent): string {
 
 /** The name of a model the router cannot place, as the chip shows it. */
 function unplacedName(name: string | undefined): string {
-  if (!name || name === 'other') return 'This model'
-  return name === 'fable' ? 'Fable' : name
+  return !name || name === 'other' ? 'This model' : name
 }
 
 const REASON: Readonly<Record<string, string>> = {
@@ -95,7 +95,6 @@ const REASON: Readonly<Record<string, string>> = {
   'needs-stronger': 'this message needs a stronger model',
   'not-sure-enough': 'a stronger model might fit, but not surely enough to pay for the switch',
   'context-too-big': 'a stronger model might fit, but re-reading this long a conversation costs too much',
-  'too-big-for-haiku': 'Haiku would fit, but the conversation is too long for it',
   lighter: 'this message needs less thought, and the lower effort costs less even after re-reading the conversation',
   'more-thought': 'this message needs more thought on the same model',
   agent: "a subagent's task, routed on its own: its conversation is new, so nothing cached is lost",
@@ -132,12 +131,5 @@ export function teachRoute(e: RouteEvent, label: RouteLabel): void {
 export function setRouteHome(terminalId: string, model: string): void {
   try {
     void window.termpolis.routerHome?.({ terminalId, model })?.catch(() => { /* main learns it from the session */ })
-  } catch { /* API unavailable */ }
-}
-
-/** The user picked this pane's model by hand: the router leaves it alone from now on. */
-export function pinRoute(terminalId: string): void {
-  try {
-    void window.termpolis.routerPin?.({ terminalId, pinned: true })?.catch(() => { /* main routes on */ })
   } catch { /* API unavailable */ }
 }

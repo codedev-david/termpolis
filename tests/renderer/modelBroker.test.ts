@@ -46,14 +46,15 @@ describe('modelBroker', () => {
   describe('cost + savings', () => {
     it('reports each tier as a fraction of premium cost', () => {
       expect(tierCostRatio('claude', 'premium')).toBe(1)
-      expect(tierCostRatio('claude', 'standard')).toBe(0.6)
-      expect(tierCostRatio('claude', 'economy')).toBe(0.2)
+      // Anthropic's first-party output rates, 2026-11-03: Sonnet 10, Haiku 0.50, Opus 20 per MTok.
+      expect(tierCostRatio('claude', 'standard')).toBe(0.5)
+      expect(tierCostRatio('claude', 'economy')).toBe(0.025)
       expect(tierCostRatio('gemini', 'economy')).toBe(1) // unknown → assume full cost
     })
     it('estimates whole-percent savings vs always running premium', () => {
       expect(estimateSavingsPct('claude', 'premium')).toBe(0)
-      expect(estimateSavingsPct('claude', 'standard')).toBe(40)
-      expect(estimateSavingsPct('claude', 'economy')).toBe(80)
+      expect(estimateSavingsPct('claude', 'standard')).toBe(50)
+      expect(estimateSavingsPct('claude', 'economy')).toBe(98)
     })
   })
 
@@ -62,7 +63,7 @@ describe('modelBroker', () => {
       expect(brokerModel('claude', { complexity: 1, tokenIntensity: 'low' })).toEqual({
         tier: 'economy',
         modelFlag: '--model haiku',
-        savingsPct: 80,
+        savingsPct: 98,
       })
     })
     it('keeps the premium model (no savings) for hard work', () => {
@@ -90,8 +91,8 @@ describe('modelBroker', () => {
       expect(CLAUDE_MODEL_OPTIONS).toEqual([
         { alias: 'fable', label: 'Fable', savingsPct: 0, note: 'most capable' },
         { alias: 'opus', label: 'Opus', savingsPct: 0 },
-        { alias: 'sonnet', label: 'Sonnet', savingsPct: 40 },
-        { alias: 'haiku', label: 'Haiku', savingsPct: 80 },
+        { alias: 'sonnet', label: 'Sonnet', savingsPct: 50 },
+        { alias: 'haiku', label: 'Haiku', savingsPct: 98 },
       ])
     })
     it('claudeModelArg appends only a validated alias for launch', () => {

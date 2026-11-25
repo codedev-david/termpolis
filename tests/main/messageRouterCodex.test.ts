@@ -1,7 +1,7 @@
 // v1.58.0 Codex effort per message: main's half (messageRouter.routeCodexTurn).
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
-  _resetMessageRouterForTests, configureRouter, registerTerminal, forgetTerminal, pinTerminal, setRouterMode, routeCodexTurn, routePrompt,
+  _resetMessageRouterForTests, configureRouter, registerTerminal, forgetTerminal, setRouterMode, routeCodexTurn, routePrompt,
   CODEX_EFFORT_OF, type RouterDeps,
 } from '../../src/main/messageRouter'
 import type { ClassifyResult } from '../../src/main/routerModel'
@@ -44,7 +44,7 @@ describe('routeCodexTurn', () => {
     expect(d.setCodexRoute).not.toHaveBeenCalled()
   })
 
-  it('answers null for an unknown, Claude, pinned or empty-message terminal, and with the router off', async () => {
+  it('answers null for an unknown, Claude or empty-message terminal, and with the router off', async () => {
     const d = deps()
     expect(await turn()).toBeNull()
     registerTerminal('c1', true) // a Claude terminal
@@ -52,9 +52,6 @@ describe('routeCodexTurn', () => {
     registerTerminal('c1', true, true)
     expect(await turn('   ')).toBeNull()
     expect(await turn(7)).toBeNull()
-    pinTerminal('c1')
-    expect(await turn()).toBeNull()
-    registerTerminal('c1', true, true)
     setRouterMode('off')
     expect(await turn()).toBeNull()
     expect(d.setCodexRoute.mock.calls.every((c) => c[2] === null)).toBe(true)
@@ -88,14 +85,15 @@ describe('routeCodexTurn', () => {
     expect(kept?.switched).toBe(true) // asked was not an effort Codex knows
   })
 
-  it('a Codex command that set its own effort is left as it is (MODELHOME: Codex routes on Auto only)', async () => {
-    const d = deps()
+  it('a Codex command that set its own effort is routed down from it, never up (MODELHOME)', async () => {
+    const d = deps() // a sure sonnet vote: medium or high on Auto
     registerTerminal('c1', false, true)
-    expect(await turn()).toBeNull()
+    // From medium, a building message stays at medium: the request goes as Codex sent it.
+    expect(await turn()).toMatchObject({ codex: { effort: 'medium' }, reason: 'at-home', switched: false })
     setRouterMode('all') // the old "every terminal" value: now the one default mode
-    expect(await turn()).toBeNull()
-    expect(d.setCodexRoute).toHaveBeenCalledTimes(2)
-    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c1', expect.any(Number), null)
+    d.classify.mockResolvedValueOnce(vote('haiku'))
+    expect(await turn('what does this flag do?', { asked: 'xhigh' })).toMatchObject({ codex: { effort: 'low', from: 'medium' }, reason: 'codex', switched: true })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c1', 1, 'low')
   })
 
   it('a vote it is not sure enough of runs as Codex asked', async () => {

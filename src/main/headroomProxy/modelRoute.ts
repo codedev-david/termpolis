@@ -7,7 +7,7 @@
 // proxy then rewrites the `model` of that session's main requests until the next message. What it
 // leaves alone:
 //   * requests with no tools: Claude Code's own small calls (titles, summaries) on its fast model;
-//   * fable, and anything it does not recognise.
+//   * anything it does not recognise (Fable is routed since MODELHOME: a home like the others).
 // A rewritten request the API refuses (400/404: the model is not on this account, a beta it lacks) is
 // sent again as it came, and that model is not tried again for that terminal.
 //
@@ -57,9 +57,10 @@ export const DEFAULT_MODEL_IDS: Readonly<Record<RouteFamily, string>> = {
   opus: 'claude-opus-5-5',
   sonnet: 'claude-sonnet-5-5',
   haiku: 'claude-haiku-5-5',
+  fable: 'claude-fable-5-2',
 }
 
-const ROUTE_FAMILIES: readonly ModelFamily[] = ['opus', 'sonnet', 'haiku']
+const ROUTE_FAMILIES: readonly ModelFamily[] = ['opus', 'sonnet', 'haiku', 'fable']
 
 /** What a terminal's (or a subagent's) requests run on. null fields leave the request's own. */
 export interface RouteTarget {

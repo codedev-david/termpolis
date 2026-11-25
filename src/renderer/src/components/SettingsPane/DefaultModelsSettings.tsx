@@ -95,7 +95,7 @@ export function DefaultModelsSettings() {
                 data-testid={`settings-default-model-${provider}`}
                 value={saved}
                 onChange={(e) => setDefaults(setAgentModelDefault(provider, e.target.value))}
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden min-w-[16rem]"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden w-[16rem] min-w-0 max-w-full"
               >
                 <option value="">{OWN_DEFAULT}</option>
                 {auto && <option value={AUTO_MODEL}>Auto (best for the task)</option>}
@@ -114,7 +114,14 @@ export function DefaultModelsSettings() {
                 then runs on whichever model it needs.
               </span>
             )}
-            {auto && saved !== AUTO_MODEL && (
+            {auto && saved === '' && (
+              <span className={HINT} data-testid="settings-default-model-claude-home-hint">
+                Each new Claude terminal starts on Claude Code&rsquo;s own default model. With Model per message
+                on (below), that model is where it starts from: a simple message moves to a cheaper one to save
+                tokens, and the next one comes back.
+              </span>
+            )}
+            {auto && saved !== AUTO_MODEL && saved !== '' && (
               <span className={HINT} data-testid="settings-default-model-claude-home-hint">
                 You pick the model each new Claude terminal starts on. With Model per message on (below), a
                 simple message moves to a cheaper model to save tokens, and the next one comes back.
@@ -146,7 +153,8 @@ export function DefaultModelsSettings() {
           tokens; the next one that isn&rsquo;t goes back to where you started, and it never goes above
           that. On Auto it picks freely. Nothing is sent anywhere to decide. The terminal header shows each
           pick; tell it what a message should have been and it learns. Applies to Claude terminals Termpolis
-          opens with token compression on. In Codex terminals it picks the reasoning effort instead.
+          opens with token compression on. In Codex terminals it picks the reasoning effort instead: down
+          from the effort the terminal&rsquo;s command sets, or freely on Auto.
         </span>
       </div>
       <div className="flex items-center gap-3">

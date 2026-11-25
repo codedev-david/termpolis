@@ -140,8 +140,11 @@ async function launchAgentProfileSteps(
     && !carriesModelOrEffort(resolvedCommand)
   // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
   const terminalArgs = launchTerminalArgs(accountId, profile.command)
-  // v1.58.0: a Codex launch may run through the proxy, which picks each message's effort. A command that
-  // sets its own effort is routed only when Settings routes every terminal.
+  // v1.58.0: a Codex launch may run through the proxy, which picks each message's effort. A command with
+  // no effort of its own is an Auto terminal (routed freely); one that sets `model_reasoning_effort` is
+  // routed down from that effort and never above it (MODELHOME). One that picks its own endpoint, provider
+  // or profile (codexCommandRoutes) bypasses the proxy and is launched as it is. Claude terminals are
+  // routed from their home in main (messageRouter.ts), not here.
   const codexRoute = isCodex && !isClaude && !codexCommandRoutes(resolvedCommand)
   const res = auto
     ? await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, terminalArgs[0], terminalArgs[1], true)

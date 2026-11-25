@@ -210,7 +210,7 @@ describe('planRequest: subagents', () => {
     setAgentRoute('t', 1.5, 'haiku', null)
     setAgentRoute('t', '1', 'haiku', null)
     expect(agentRouteOf('t', 1)).toBeUndefined()
-    setAgentRoute('t', 1, 'fable', 'huge')
+    setAgentRoute('t', 1, 'claude-nova-1', 'huge')
     expect(agentRouteOf('t', 1)).toEqual({ family: null, effort: null })
   })
 

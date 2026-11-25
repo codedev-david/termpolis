@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   _resetMessageRouterForTests, configureRouter, isRouterMode, setRouterMode, getRouterMode, registerTerminal,
-  forgetTerminal, pinTerminal, noteProxyResult, routePrompt, routeAgentTask, FIRST_MIN_CONFIDENCE, AGENT_BUDGET_MS, type RouterDeps,
+  forgetTerminal, noteProxyResult, routePrompt, routeAgentTask, FIRST_MIN_CONFIDENCE, AGENT_BUDGET_MS, type RouterDeps,
 } from '../../src/main/messageRouter'
 import type { ClassifyResult } from '../../src/main/routerModel'
-import { HAIKU_MAX_CTX } from '../../src/shared/switchEconomics'
 
 const vote = (label: ClassifyResult['cls'] extends infer C ? C extends { label: infer L } ? L : never : never, confidence = 0.9, topSim = 0.9, ms = 3): ClassifyResult =>
   ({ cls: { label, confidence, topSim }, ms }) as ClassifyResult
@@ -58,30 +57,23 @@ describe('messageRouter', () => {
     expect(await routePrompt({ terminalId: 'unknown', prompt: BUILD })).toBeNull()
   })
 
-  it('register/forget/pin ignore bad ids', () => {
+  it('register/forget ignore bad ids', () => {
     const d = deps()
     registerTerminal(42, true)
     registerTerminal('bad id!', true)
-    pinTerminal(42)
-    pinTerminal('bad id!')
     forgetTerminal(42)
     forgetTerminal('never-seen')
     expect(d.setRoute).not.toHaveBeenCalled()
   })
 
-  it('every pane routes (MODELHOME: one not on Auto from its home); none when pinned', async () => {
-    const d = deps()
+  it('every pane routes (MODELHOME: one not on Auto from its home); none with the router off', async () => {
+    deps()
     registerTerminal('auto', true)
     registerTerminal('manual', false)
     expect(await routePrompt({ terminalId: 'auto', prompt: BUILD })).not.toBeNull()
     expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).not.toBeNull()
-    pinTerminal('manual')
-    expect(d.setRoute).toHaveBeenLastCalledWith('manual', null)
-    expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).toBeNull()
-    pinTerminal('manual', false)
-    expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).not.toBeNull()
-    registerTerminal('manual', false) // a relaunch unpins
     setRouterMode('off')
+    expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).toBeNull()
     expect(await routePrompt({ terminalId: 'auto', prompt: BUILD })).toBeNull()
   })
 
@@ -125,9 +117,10 @@ describe('messageRouter', () => {
     expect(e).toMatchObject({ model: 'haiku', from: 'opus', switched: true, reason: 'cheaper' })
     expect(e!.saving).toBeGreaterThan(0)
     expect(d.setRoute).toHaveBeenCalledWith('t', { family: 'haiku', effort: 'low' })
-    // a huge conversation: haiku is out
-    main('t', 'opus', { input_tokens: HAIKU_MAX_CTX + 1, cache_read_input_tokens: 0 })
-    expect(await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })).toMatchObject({ model: 'opus', switched: false, reason: 'too-big-for-haiku' })
+    // a big conversation on a warm Opus: re-reading it on a cold Haiku, at Haiku's long-prompt rates,
+    // costs more than the cheaper model saves (Haiku has no size limit; the price stops it)
+    main('t', 'opus', { input_tokens: 0, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 } as never)
+    expect(await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })).toMatchObject({ model: 'opus', switched: false, reason: 'switch-costs-more' })
   })
 
   it('noteProxyResult: tracks context, warm caches, ttl and refusals; ignores the rest', async () => {
@@ -135,7 +128,7 @@ describe('messageRouter', () => {
     noteProxyResult(undefined as never)
     noteProxyResult({ terminal: 'bad id!', main: true, model: 'opus' })
     noteProxyResult({ terminal: 't', main: false, model: 'opus' }) // not main: no current
-    noteProxyResult({ terminal: 't', main: true, model: 'fable' }) // not a family
+    noteProxyResult({ terminal: 't', main: true, model: 'other' }) // not a family (Fable is one, since MODELHOME)
     registerTerminal('t', true)
     let e = await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })
     expect(e!.reason).toBe('first') // still no current model
@@ -185,7 +178,7 @@ describe('messageRouter', () => {
     expect(await p).toBeNull()
 
     const p2 = routePrompt({ terminalId: 't', prompt: BUILD })
-    pinTerminal('t')
+    setRouterMode('off')
     release(vote('opus'))
     expect(await p2).toBeNull()
   })
@@ -236,8 +229,8 @@ describe('messageRouter', () => {
     expect(d.notify).toHaveBeenCalledTimes(1)
     main('t', 'sonnet', undefined, { effort: 'max', escalated: 2 })
     expect(d.notify).toHaveBeenCalledTimes(2)
-    // pinned: not shown
-    pinTerminal('t')
+    // the router off: not shown
+    setRouterMode('off')
     main('t', 'sonnet', undefined, { effort: 'max', escalated: 3 })
     expect(d.notify).toHaveBeenCalledTimes(2)
   })
@@ -291,7 +284,7 @@ describe('messageRouter', () => {
     registerTerminal('t', true)
     expect(await routeAgentTask({ terminal: 't', key: 2, task: '   ', asked: 'opus' })).toBeNull()
     expect(await routeAgentTask({ terminal: 't', key: 3, task: 42, asked: 'opus' })).toBeNull()
-    expect(await routeAgentTask({ terminal: 't', key: 4, task: BUILD, asked: 'fable' })).toBeNull()
+    expect(await routeAgentTask({ terminal: 't', key: 4, task: BUILD, asked: 'other' })).toBeNull()
     expect(setAgentRoute.mock.calls).toEqual([['nope', 1, null], ['t', 2, null], ['t', 3, null], ['t', 4, null]])
   })
 
@@ -309,7 +302,7 @@ describe('messageRouter', () => {
       await vi.advanceTimersByTimeAsync(AGENT_BUDGET_MS)
       expect(await p).toMatchObject({ source: 'rules', agent: true })
       const p2 = routeAgentTask({ terminal: 't', key: 2, task: BUILD, asked: 'opus' })
-      pinTerminal('t')
+      setRouterMode('off')
       await vi.advanceTimersByTimeAsync(AGENT_BUDGET_MS)
       expect(await p2).toBeNull()
       expect(setAgentRoute).toHaveBeenLastCalledWith('t', 2, null)

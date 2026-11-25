@@ -9,6 +9,12 @@
 // Editing this list re-embeds it once on the next start (the cache is keyed by a hash of the texts).
 
 export type SeedLabel = 'keep' | 'haiku' | 'sonnet' | 'opus'
+export const SEED_LABELS: readonly SeedLabel[] = ['keep', 'haiku', 'sonnet', 'opus']
+
+/** A label the classifier learns and votes. Fable is never one: it is only ever a home. */
+export function isSeedLabel(v: unknown): v is SeedLabel {
+  return typeof v === 'string' && (SEED_LABELS as readonly string[]).includes(v)
+}
 
 export const ROUTER_SEEDS: Readonly<Record<SeedLabel, readonly string[]>> = {
   keep: [

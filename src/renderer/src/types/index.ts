@@ -532,7 +532,6 @@ export interface TermpolisAPI {
   /** v1.56.0 per-message routing (lib/messageRoute.ts). */
   onRouterMessage?: (cb: (e: import('../../../shared/smartRoute').RouteEvent) => void) => () => void
   routerConfigure?: (opts: { mode?: string; tuning?: unknown }) => Promise<IpcResponse<string>>
-  routerPin?: (opts: { terminalId: string; pinned?: boolean }) => Promise<IpcResponse>
   routerHome?: (opts: { terminalId: string; model: string }) => Promise<IpcResponse>
   routerLearn?: (opts: { prompt: string; label: string }) => Promise<IpcResponse<boolean>>
   /** Counters of that routing, numbers and one boolean only: for an e2e spec to read what the real bridge did. */

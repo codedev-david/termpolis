@@ -18,11 +18,15 @@
 //
 // MODELHOME (2.0): every Claude terminal Termpolis starts is routed. One launched on Auto routes freely,
 // as before. Any other starts on its home model (the Default Models pick, the pane's Model menu, or what
-// the session itself asks for) and only steps down from it, to a cheaper model by list price, when the
-// message is surely simple; the next message that is not goes straight back home. A home the router
-// cannot rank by price (Fable, a model it does not know) is not routed at all.
+// the session's first request asks for) and only steps down from it, to a cheaper model by list price,
+// when the message is surely simple; the next message that is not goes straight back home. Fable is
+// ranked like the others: from a Fable home a message the classifier puts in its top class (Opus) stays
+// on Fable. A home the router cannot rank by price (a model it does not know) is not routed at all.
+//
+// A Codex terminal whose command sets its own reasoning effort is routed the same way: that effort is its
+// home, and a turn's effort only steps down from it.
 
-import { routeMessage, routeSubagent, fromHome, clampEffort, type RouteEvent } from '../shared/smartRoute'
+import { routeMessage, routeSubagent, fromHome, clampEffort, DOWN_MIN_CONFIDENCE, TOP_LABEL, type RouteEvent } from '../shared/smartRoute'
 import { decideSwitch, emptyEconomy, warmKey, cheaper, priceRank, BY_PRICE, TTL_1H, TTL_5M, type Economy, type RouteFamily } from '../shared/switchEconomics'
 import { modelFamily } from './headroom/effectiveUnits'
 import { effortOrDefault, isEffort, type EffortLevel } from '../shared/effortLevels'
@@ -74,7 +78,6 @@ interface TerminalState {
   current: RouteFamily | null
   refused: Set<RouteFamily>
   auto: boolean
-  pinned: boolean
   /** v1.57.0: the effort the main requests last ran at; null = the model's default. */
   effort: EffortLevel | null
   /** A route has been sent since the pane was last unrouted. */
@@ -89,6 +92,8 @@ interface TerminalState {
   codexEffort: CodexEffort | null
   /** MODELHOME, a terminal not on Auto: the model it starts on and comes back to; null = not known yet. */
   home: RouteFamily | null
+  /** The home was picked (the launch model, the Model menu), not learned: requests never change it. */
+  explicit: boolean
   /** Its home is a model the router cannot rank by price (its name): it is not routed. */
   unplaced: string | null
   /** The cheaper model it has been stepped down to, while it is. */
@@ -97,7 +102,10 @@ interface TerminalState {
 
 /** Codex's efforts for the router's: it has no max, so max asks for its highest. */
 export const CODEX_EFFORT_OF: Readonly<Record<EffortLevel, CodexEffort>> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' }
-const CODEX_ASKED = new Set<string>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+/** Codex's efforts, lightest first. */
+const CODEX_EFFORTS: readonly CodexEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+const isCodexEffort = (v: unknown): v is CodexEffort => typeof v === 'string' && (CODEX_EFFORTS as readonly string[]).includes(v)
+const lighterCodex = (a: CodexEffort, b: CodexEffort): boolean => CODEX_EFFORTS.indexOf(a) < CODEX_EFFORTS.indexOf(b)
 
 let deps: RouterDeps | null = null
 let mode: RouterMode = 'every'
@@ -123,13 +131,13 @@ export function setRouterMode(m: unknown): RouterMode {
 export function getRouterMode(): RouterMode { return mode }
 
 function isFamily(v: unknown): v is RouteFamily {
-  return v === 'opus' || v === 'sonnet' || v === 'haiku'
+  return typeof v === 'string' && (BY_PRICE as readonly string[]).includes(v)
 }
 
 function stateOf(id: string): TerminalState {
   let s = terminals.get(id)
   if (!s) {
-    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, pinned: false, effort: null, sent: false, escalated: 0, last: null, codex: false, codexEffort: null, home: null, unplaced: null, routed: null }
+    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, effort: null, sent: false, escalated: 0, last: null, codex: false, codexEffort: null, home: null, explicit: false, unplaced: null, routed: null }
     terminals.set(id, s)
   }
   return s
@@ -137,15 +145,15 @@ function stateOf(id: string): TerminalState {
 
 /** A terminal was created; auto = it was launched on Auto (the router routes it freely); otherwise it
  *  routes from its home model (MODELHOME). codex = a Codex terminal pointed at the proxy (v1.58.0): its
- *  turns' effort is routed, on Auto only. */
+ *  turns' effort is routed: freely on Auto, down from the command's own effort otherwise. */
 export function registerTerminal(id: unknown, auto: boolean, codex = false): void {
   if (typeof id !== 'string' || !TERMINAL_RE.test(id)) return
   const s = stateOf(id)
   s.auto = auto
-  s.pinned = false
   s.codex = codex
   s.codexEffort = null
   s.home = null
+  s.explicit = false
   s.unplaced = null
   s.routed = null
 }
@@ -154,7 +162,6 @@ export function registerTerminal(id: unknown, auto: boolean, codex = false): voi
 function placeOf(model: string): { home: RouteFamily } | { unplaced: string } {
   const f = modelFamily(model)
   if (isFamily(f)) return { home: f }
-  if (f === 'fable') return { unplaced: 'fable' }
   return { unplaced: NAME_RE.test(model) ? model : 'other' }
 }
 
@@ -167,16 +174,17 @@ function unroute(id: string, s: TerminalState, always: boolean): void {
 /**
  * MODELHOME: the model this Claude terminal starts on and comes back to, set when it launches on a model
  * of the user's choosing or the user picks one in the pane's Model menu. A model id or alias ('opus',
- * 'claude-sonnet-5-5', 'opusplan'); '' = the agent's own default, learned from the session's first
- * request. Routing carries on from the new home: a step down in force ends.
+ * 'claude-sonnet-5-5', 'opusplan', which is an Opus home); '' = the agent's own default, learned from the
+ * session's first request. A picked home stays until the next pick: what the session's requests ask for
+ * later never moves it. Routing carries on from the new home: a step down in force ends.
  */
 export function setTerminalHome(id: unknown, model: unknown): void {
   if (typeof id !== 'string' || !TERMINAL_RE.test(id) || typeof model !== 'string') return
   const s = terminals.get(id)
   if (!s) return
   s.auto = false
-  s.pinned = false
   const name = model.trim()
+  s.explicit = name !== ''
   if (!name) { s.home = null; s.unplaced = null }
   else {
     const p = placeOf(name)
@@ -186,15 +194,17 @@ export function setTerminalHome(id: unknown, model: unknown): void {
   if (s.routed) { s.routed = null; s.sent = true; deps?.setRoute(id, { family: null, effort: null }) }
 }
 
-/** What a home terminal's own request says it asked for: that is its home from now on. */
+/** What a home terminal's own request asked for. The first one is an "Agent's own default" home; a
+ *  picked home, or one learned already, stays. Either way a step down the proxy will not apply (the
+ *  session asks for that model or a cheaper one) is not one. */
 function learnHome(id: string, s: TerminalState, asked: unknown): void {
   if (typeof asked !== 'string' || !asked) return
   const p = placeOf(asked)
-  if ('unplaced' in p) { s.home = null; s.unplaced = p.unplaced; unroute(id, s, false); return }
-  s.home = p.home
-  s.unplaced = null
-  // A step down the proxy will not apply (the session asks for that model or a cheaper one) is not one.
-  if (s.routed && !cheaper(s.routed, p.home)) s.routed = null
+  if (!s.explicit && s.home === null && s.unplaced === null) {
+    if ('unplaced' in p) { s.unplaced = p.unplaced; unroute(id, s, false); return }
+    s.home = p.home
+  }
+  if ('home' in p && s.routed && !cheaper(s.routed, p.home)) s.routed = null
 }
 
 export function forgetTerminal(id: unknown): void {
@@ -204,14 +214,6 @@ export function forgetTerminal(id: unknown): void {
   terminals.delete(id)
   deps?.setRoute(id, null)
   if (s.codex) deps?.forgetCodex?.(id)
-}
-
-/** The user picked a model by hand for this pane: stop routing it until it is unpinned. */
-export function pinTerminal(id: unknown, pinned = true): void {
-  if (typeof id !== 'string' || !TERMINAL_RE.test(id)) return
-  const s = stateOf(id)
-  s.pinned = pinned
-  if (pinned) { s.sent = false; s.routed = null; deps?.setRoute(id, null) }
 }
 
 export interface ProxyResultLike {
@@ -266,16 +268,17 @@ export function noteProxyResult(r: ProxyResultLike, now = Date.now()): void {
   }
 }
 
+/** Every terminal is routed while the router is on: freely on Auto, from its home otherwise (a Codex
+ *  terminal whose command sets its own effort is registered as a home one, aiProfiles.ts). */
 function eligible(s: TerminalState | undefined): s is TerminalState {
-  if (!s || s.pinned || mode === 'off') return false
-  // A Codex terminal is registered auto unless its command sets its own effort (aiProfiles.ts): that one
-  // is left as it is. Every other terminal is routed: freely on Auto, from its home otherwise.
-  return s.auto || !s.codex
+  return !!s && mode !== 'off'
 }
 
-/** The first model up from `f` the API has not refused this pane; f itself when it is fine. */
-function allowed(f: RouteFamily, refused: Set<RouteFamily>): RouteFamily | null {
-  for (let r = priceRank(f); r < BY_PRICE.length; r++) if (!refused.has(BY_PRICE[r])) return BY_PRICE[r]
+/** The first model up from `f` (no higher than `ceiling`) the API has not refused this pane; f itself
+ *  when it is fine. A climb past a refused model never reaches above the ceiling: an Auto pane's is Opus,
+ *  the classifier's top class, so nothing is ever routed up to Fable. */
+function allowed(f: RouteFamily, refused: Set<RouteFamily>, ceiling: RouteFamily): RouteFamily | null {
+  for (let r = Math.min(priceRank(f), priceRank(ceiling)); r <= priceRank(ceiling); r++) if (!refused.has(BY_PRICE[r])) return BY_PRICE[r]
   return null
 }
 
@@ -301,7 +304,7 @@ export async function routePrompt(input: { terminalId?: unknown; prompt?: unknow
   if (!s.auto && s.unplaced) return unplacedEvent(id, s, s.unplaced, prompt)
   const started = (deps.now ?? Date.now)()
   const res = await classifyWithin(prompt, deps.budgetMs ?? DEFAULT_BUDGET_MS)
-  // Settings may have changed, the pane been pinned or closed, while the vote ran.
+  // Settings may have changed, or the pane been closed, while the vote ran.
   if (!eligible(s) || terminals.get(id) !== s) return null
   const now = (deps.now ?? Date.now)()
   if (!s.auto) return routeFromHome(deps, id, s, prompt, res, started, now)
@@ -320,7 +323,7 @@ export async function routePrompt(input: { terminalId?: unknown; prompt?: unknow
     deps.notify(e)
     return e
   }
-  const want = allowed(route.label, s.refused)
+  const want = allowed(route.label, s.refused, TOP_LABEL)
   // A first message the rules alone call "probably sonnet" stays on the model the pane launched with.
   if (!want || (!s.current && route.confidence < FIRST_MIN_CONFIDENCE)) { stay(); return null }
   let model: RouteFamily
@@ -381,7 +384,7 @@ function routeFromHome(d: RouterDeps, id: string, s: TerminalState, prompt: stri
     if (!s.home) return null
     return done({ ...base, model: home, effort: null, switched, reason, saving })
   }
-  let want = route.label === home ? null : allowed(route.label, s.refused)
+  let want = route.label === home ? null : allowed(route.label, s.refused, home)
   if (want && !cheaper(want, home)) want = null
   if (!want) return back(s.routed ? 'home' : 'at-home', s.routed !== null)
   let model: RouteFamily
@@ -422,12 +425,13 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
   if (!eligible(s) || terminals.get(id) !== s || (!s.auto && s.unplaced)) { set(id, key, null); return null }
   const route = routeSubagent(task, res?.cls ?? null, asked, deps.tuning?.())
   if (route.label === 'keep') { set(id, key, { family: null, effort: null }); return null }
-  let model = allowed(route.label, s.refused) ?? asked
+  // MODELHOME: a home terminal's subagent never runs above its home, or above what it asked for: the
+  // ceiling is the cheaper of the two. An Auto pane's may go up, as far as Opus (or Fable, if it asked
+  // for Fable).
+  const ceiling = s.auto ? (cheaper(asked, TOP_LABEL) ? TOP_LABEL : asked) : (s.home && cheaper(s.home, asked) ? s.home : asked)
+  const model = allowed(route.label, s.refused, ceiling) ?? asked
   const askedEffort = isEffort(q.effort) ? q.effort : null
-  let effort = route.effort
-  // MODELHOME: a home terminal's subagent never runs above its home, or above what it asked for.
-  const cap = !s.auto && s.home && cheaper(asked, s.home) ? s.home : asked
-  if (!s.auto && cheaper(cap, model)) { model = cap; effort = clampEffort(cap, effort) }
+  const effort = model === route.label ? route.effort : clampEffort(model, route.effort)
   set(id, key, { family: model, effort })
   const e: RouteEvent = {
     terminalId: id, prompt: task.slice(0, 2000), model, from: asked, effort, fromEffort: askedEffort, agent: true,
@@ -443,6 +447,8 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
  * v1.58.0: a Codex terminal's user typed a new message, and its first request is waiting at the proxy:
  * the effort the turn runs at. Always answers (null = as Codex asked). There is no cost gate: OpenAI's
  * prompt cache is keyed on the input, so an effort change re-reads nothing, and the model never changes.
+ * MODELHOME: a terminal whose command sets its own effort has that effort as its home; a turn only steps
+ * down from it, and only when the classifier is sure (DOWN_MIN_CONFIDENCE), as a Claude home does.
  */
 export async function routeCodexTurn(q: { terminal?: unknown; key?: unknown; task?: unknown; asked?: unknown }): Promise<RouteEvent | null> {
   const id = q?.terminal
@@ -451,24 +457,33 @@ export async function routeCodexTurn(q: { terminal?: unknown; key?: unknown; tas
   const set = deps.setCodexRoute
   const task = typeof q.task === 'string' ? q.task.trim() : ''
   const s = terminals.get(id)
-  if (!eligible(s) || !s.codex || !task) { set(id, key, null); return null }
-  const asked = typeof q.asked === 'string' && CODEX_ASKED.has(q.asked) ? q.asked : null
+  const asked = isCodexEffort(q.asked) ? q.asked : null
+  // A home effort the router cannot read: nothing to measure a step down against.
+  if (!eligible(s) || !s.codex || !task || (!s.auto && !asked)) { set(id, key, null); return null }
   const started = (deps.now ?? Date.now)()
   const res = await classifyWithin(task, deps.budgetMs ?? DEFAULT_BUDGET_MS)
   if (!eligible(s) || terminals.get(id) !== s) { set(id, key, null); return null }
   const route = routeMessage(task, res?.cls ?? null, deps.tuning?.())
   let effort: CodexEffort | null
   let reason: string
+  const home = s.auto ? null : asked
+  // The effort the message would run at on Auto.
+  const routed = (): CodexEffort => (route.label === 'haiku' ? 'low' : CODEX_EFFORT_OF[route.effort])
   if (route.label === 'keep') {
-    // A confirmation carries on at the effort the work was running at.
-    effort = s.codexEffort; reason = 'keep'
+    // A confirmation carries on at the effort the work was running at, never above home.
+    effort = s.codexEffort && home && !lighterCodex(s.codexEffort, home) ? home : s.codexEffort; reason = 'keep'
+  } else if (home) {
+    const down = routed()
+    effort = route.confidence >= DOWN_MIN_CONFIDENCE && lighterCodex(down, home) ? down : home
+    reason = effort === home ? 'at-home' : 'codex'
   } else if (route.confidence < FIRST_MIN_CONFIDENCE) {
     effort = null; reason = 'not-sure-enough'
   } else {
-    effort = route.label === 'haiku' ? 'low' : CODEX_EFFORT_OF[route.effort]
+    effort = routed()
     reason = 'codex'
   }
-  set(id, key, effort)
+  // A home terminal at its home effort: the request goes as Codex sent it.
+  set(id, key, home && effort === home ? null : effort)
   if (!effort) return null
   const from = s.codexEffort ?? asked
   s.codexEffort = effort

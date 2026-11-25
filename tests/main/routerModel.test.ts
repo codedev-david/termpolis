@@ -89,6 +89,13 @@ describe('routerModel seeds', () => {
     expect(emb.batchCalls).toBe(1)
   })
 
+  it('returns null when the embedder throws, and tries again later', async () => {
+    const { embedBatch } = await import('../../src/main/localEmbedder')
+    vi.mocked(embedBatch).mockRejectedValueOnce(new Error('onnx failed'))
+    expect(await loadSeeds(dir)).toBeNull()
+    expect(await loadSeeds(dir)).not.toBeNull()
+  })
+
   it('returns null while the embedder is down, and tries again later', async () => {
     emb.down = true
     expect(await loadSeeds(dir)).toBeNull()

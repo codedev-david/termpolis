@@ -26,10 +26,10 @@ export interface AgentModelTiers {
 }
 
 // Per-agent model tiers. Claude only, for now — aliases match Claude Code's
-// --model (opus = claude-opus-4-8 ≈ $5/$25 per MTok, sonnet = claude-sonnet-4-6
-// ≈ $3/$15, haiku = claude-haiku-4-5 ≈ $1/$5). Cost weights use the output price
-// ratio to Opus, the dominant cost in agentic coding, read from the router's own price list
-// (switchEconomics.PRICE), so a price change moves both. Keep the alias strings in
+// --model (opus = claude-opus-5-5, sonnet = claude-sonnet-5-5, haiku = claude-haiku-5-5;
+// Anthropic published first-party rates, 2026-11-03, are in switchEconomics.PRICE). Cost
+// weights use the output price ratio to Opus, the dominant cost in agentic coding, read from
+// that one price list, so a price change moves both. Keep the alias strings in
 // sync with the sanitizer's AGENT_MODEL_ALIASES (the authoritative allowlist).
 export const AGENT_MODEL_TIERS: Record<string, AgentModelTiers> = {
   claude: {
@@ -110,7 +110,8 @@ export interface ModelOption {
 
 // Fable 5 — Anthropic's most capable model, a rung ABOVE the premium (Opus) tier.
 // Deliberately NOT part of AGENT_MODEL_TIERS: the swarm broker downshifts to save
-// tokens and must never auto-pick a model that costs MORE than Opus (~2×). Fable is
+// tokens and must never auto-pick a model that costs MORE than Opus (PRICE.fable.out /
+// PRICE.opus.out, 2× at the 2026-11-03 rates). Fable is
 // offered only as a manual pick (the launch + hot-swap picker) for when maximum
 // capability is worth the price. Claude Code resolves the `fable` alias to the
 // latest Fable 5, so this needs no update when a newer Fable ships.

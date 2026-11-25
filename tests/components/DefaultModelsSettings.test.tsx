@@ -206,8 +206,15 @@ describe('DefaultModelsSettings', () => {
   })
   it('MODELHOME: the Claude row says where it starts and that simple messages step down', () => {
     render(<DefaultModelsSettings />)
+    // "Agent's own default": nothing was picked, so the hint says the agent's own model is where it starts.
+    const own = screen.getByTestId('settings-default-model-claude-home-hint').textContent ?? ''
+    expect(own).toContain('starts on Claude Code’s own default model')
+    expect(own).not.toContain('You pick')
+    expect(own).toContain('cheaper one')
+    expect(own).toContain('comes back')
+    fireEvent.change(select('claude'), { target: { value: 'sonnet' } })
     const home = screen.getByTestId('settings-default-model-claude-home-hint').textContent ?? ''
-    expect(home).toContain('starts on')
+    expect(home).toContain('You pick the model each new Claude terminal starts on')
     expect(home).toContain('cheaper model')
     expect(home).toContain('comes back')
     fireEvent.change(select('claude'), { target: { value: 'auto' } })
@@ -215,6 +222,7 @@ describe('DefaultModelsSettings', () => {
     const routing = screen.getByTestId('settings-message-routing-hint').textContent ?? ''
     expect(routing).toContain('never goes above')
     expect(routing).not.toContain('turns this off')
+    expect(routing).toContain('down from the effort the terminal’s command sets, or freely on Auto')
   })
 
   it('MODELHOME: the hints wrap inside the panel at any width', () => {
@@ -228,6 +236,10 @@ describe('DefaultModelsSettings', () => {
     const sel = screen.getByTestId('settings-message-routing')
     expect(sel.className).not.toContain('min-w-[16rem]')
     expect(Array.from(sel.classList)).toEqual(expect.arrayContaining(['min-w-0', 'max-w-full']))
+    // The default-model select too (review M-4): a fixed 16rem width that may still shrink with the panel.
+    const model = select('claude')
+    expect(model.className).not.toContain('min-w-[16rem]')
+    expect(Array.from(model.classList)).toEqual(expect.arrayContaining(['w-[16rem]', 'min-w-0', 'max-w-full']))
     expect(Array.from(screen.getByTestId('settings-default-models').classList)).toContain('min-w-0')
   })
 

@@ -12,7 +12,11 @@
  * produces is denominated in those units rather than in raw tokens.
  */
 
-/** Cache reads bill at 0.1x a fresh input token. */
+import { PRICE, type RouteFamily } from '../../shared/switchEconomics'
+
+/** Cache reads, as a share of a fresh input token, for a bill whose model is not known: Haiku's 0.1x, the
+ *  dearest share any family has. Opus and Sonnet read at 0.05x and Fable at 0.025x (Anthropic published
+ *  first-party rates, 2026-11-03, in switchEconomics.PRICE); modelUnits uses the family's own. */
 export const W_CACHE_READ = 0.1
 /** Writing a cache entry bills at 1.25x — you pay a quarter extra now to pay a tenth later. */
 export const W_CACHE_WRITE = 1.25
@@ -144,14 +148,26 @@ export function modelFamily(id: unknown): ModelFamily {
   return 'other'
 }
 
-/** Per-family weight against opus, from the API list-price ratio. Anthropic publishes no subscription weights, so
+/** The price card a family bills at; an unknown one is billed as Opus. */
+function cardOf(f: ModelFamily): (typeof PRICE)[RouteFamily] {
+  return f === 'other' ? PRICE.opus : PRICE[f]
+}
+
+/** Per-family weight against opus: its input rate over Opus's, read from the router's one price list
+ *  (switchEconomics.PRICE), so a price change moves both. Anthropic publishes no subscription weights, so
  *  wherever these are shown they carry MODEL_WEIGHT_NOTE. Unknown families weigh as opus: never under-count. */
-export const MODEL_WEIGHTS: Readonly<Record<ModelFamily, number>> = { opus: 1, sonnet: 0.5, haiku: 0.1, fable: 1, other: 1 }
+export const MODEL_WEIGHTS: Readonly<Record<ModelFamily, number>> = {
+  opus: 1,
+  sonnet: PRICE.sonnet.in / PRICE.opus.in,
+  haiku: PRICE.haiku.in / PRICE.opus.in,
+  fable: PRICE.fable.in / PRICE.opus.in,
+  other: 1,
+}
 export const MODEL_WEIGHT_NOTE = 'API-price weighting; subscription weights unpublished'
 
 /** Effective units of a set of billed tokens, weighted for the model family that billed them. */
 export function modelUnits(t: BillableTokens, model: string): number {
-  const units = t.cacheReadTokens * W_CACHE_READ + t.cacheCreationTokens * W_CACHE_WRITE + t.inputTokens * W_INPUT + t.outputTokens * W_OUTPUT
-  const w = MODEL_WEIGHTS[model as ModelFamily] ?? MODEL_WEIGHTS[modelFamily(model)]
-  return units * w
+  const f: ModelFamily = Object.prototype.hasOwnProperty.call(MODEL_WEIGHTS, model) ? (model as ModelFamily) : modelFamily(model)
+  const units = t.cacheReadTokens * cardOf(f).cacheRead + t.cacheCreationTokens * W_CACHE_WRITE + t.inputTokens * W_INPUT + t.outputTokens * W_OUTPUT
+  return units * MODEL_WEIGHTS[f]
 }

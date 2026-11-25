@@ -13,7 +13,7 @@ export type { EffortLevel }
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 /** What a 5.5 model runs at when the request names no effort. */
-export const DEFAULT_EFFORT: Readonly<Record<RouteFamily, EffortLevel>> = { opus: 'medium', sonnet: 'high', haiku: 'medium' }
+export const DEFAULT_EFFORT: Readonly<Record<RouteFamily, EffortLevel>> = { fable: 'high', opus: 'medium', sonnet: 'high', haiku: 'medium' }
 
 /** Output tokens at each level, relative to high: thinking and tool depth grow with effort. A rough
  *  shape for the cost gate, not a measurement of any one task. */

@@ -2484,13 +2484,19 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               if (!alias) return
               setReroute(null)
               // MODELHOME: a model picked by hand is this pane's new home. Routing carries on from it: simple
-              // messages still step down to a cheaper model, and nothing goes above it.
-              if (provider === 'claude') { setRouteHome(terminalId, alias); setRouteEvent(null) }
+              // messages still step down to a cheaper model, and nothing goes above it. The home moves only
+              // once the terminal runs the picked model (review M-2): a refused, reverted or failed switch
+              // leaves the router starting from the model the terminal still runs. The switch claim below is
+              // held until a pick's outcome is in, so no other pick can run meanwhile: each outcome belongs
+              // to the one switch that ran, and no older one can land on top of a newer pick.
+              const homeHere = (): void => { if (provider === 'claude') setRouteHome(terminalId, alias) }
+              if (provider === 'claude') setRouteEvent(null)
               if (authoritativeProvider === provider) {
                 // Claim the terminal first: one call both checks and takes it, so two picks
                 // cannot both pass, and a pane remounted mid-switch is refused too.
                 if (!beginModelSwitch(terminalId, alias)) return
                 const previous = liveModel
+                const back = (): void => setLiveModel(previous)
                 setLiveModel(alias)
                 const target = options.find((o) => o.alias === alias)?.label ?? alias
                 // Under the terminal's relaunch lock: nothing else types into it meanwhile, and a lock an
@@ -2508,20 +2514,25 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   io: terminalRelaunchIo(terminalId),
                 }).then((result) => {
                   if ('refused' in result) {
-                    setLiveModel(previous)
+                    back()
                     setMemoryNotice?.(`⚠️ Termpolis didn't change the model: ${result.refused}.`)
                     return
                   }
                   const { text, reverted } = relaunchNotice(result.outcome, { provider, label, target, agentCommand })
                   // Nothing was started: do not leave the picker claiming a model that is not running.
-                  if (reverted) setLiveModel(previous)
-                  else if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
+                  if (reverted) back()
+                  else {
+                    homeHere()
+                    if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
+                  }
                   if (text) setMemoryNotice?.(text)
                 }).catch(() => {
-                  setLiveModel(previous)
+                  back()
                   setMemoryNotice?.(`⚠️ Switching ${label} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
                 }).finally(() => endModelSwitch(terminalId))
               } else if (provider === 'claude') {
+                // A /model typed into the session: it takes effect at once, so the home moves with it.
+                homeHere()
                 setLiveModel(alias)
                 const cmd = modelSwitchCommand(alias)
                 if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')

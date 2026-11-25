@@ -4076,12 +4076,6 @@ describe('router IPC', () => {
     expect(await invoke('router:configure', { mode: 'auto-panes' })).toEqual({ success: true, data: 'every' })
   })
 
-  it('pin and unpin a pane', async () => {
-    expect(await invoke('router:pin', { terminalId: 't1' })).toEqual({ success: true })
-    expect(await invoke('router:pin', { terminalId: 't1', pinned: false })).toEqual({ success: true })
-    expect(await invoke('router:pin')).toEqual({ success: true })
-  })
-
   it('MODELHOME: home sets the model a pane starts on, and ignores what is not one', async () => {
     const mr = await import('../../src/main/messageRouter')
     mr.registerTerminal('home-ipc', true)

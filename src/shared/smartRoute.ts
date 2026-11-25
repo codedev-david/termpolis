@@ -86,8 +86,9 @@ export function knnClassify(q: ArrayLike<number>, examples: readonly LabeledVec[
 }
 
 export interface MessageRoute {
-  /** 'keep' = stay on the session's model. */
-  label: SeedLabel
+  /** 'keep' = stay on the session's model. The classifier and the rules only ever pick 'haiku', 'sonnet'
+   *  or 'opus'; a home route (fromHome) or a subagent's (routeSubagent) may name a dearer home, Fable. */
+  label: 'keep' | RouteFamily
   effort: EffortLevel
   confidence: number
   /** Who decided: rules, local-model, or both (they agreed). */
@@ -96,7 +97,11 @@ export interface MessageRoute {
   rule?: string
 }
 
-const EFFORT_OF: Readonly<Record<Exclude<SeedLabel, 'keep'>, EffortLevel>> = { haiku: 'low', sonnet: 'medium', opus: 'high' }
+const EFFORT_OF: Readonly<Record<RouteFamily, EffortLevel>> = { haiku: 'low', sonnet: 'medium', opus: 'high', fable: 'high' }
+
+/** The classifier's top class: the hardest work it knows. A message or task it puts there never steps down
+ *  from a model above it (Fable), only a surely simple one does. */
+export const TOP_LABEL: RouteFamily = 'opus'
 
 function ruleLabel(d: RouteDecision): SeedLabel {
   return d.model === 'opusplan' ? 'opus' : d.model
@@ -108,6 +113,7 @@ export const EFFORT_RANGE: Readonly<Record<RouteFamily, readonly [EffortLevel, E
   haiku: ['low', 'medium'],
   sonnet: ['low', 'xhigh'],
   opus: ['medium', 'max'],
+  fable: ['medium', 'max'],
 }
 /** A message longer than this is a spec, not a question: one level more. */
 export const LONG_PROMPT_WORDS = 200
@@ -156,10 +162,11 @@ export function homeRoute(prompt: string, cls: Classification | null, home: Rout
   return fromHome(routeMessage(prompt, cls, tune), home)
 }
 
-/** homeRoute's rule, on a route already made. */
+/** homeRoute's rule, on a route already made. From a Fable home a message labelled Opus (TOP_LABEL, the
+ *  hardest work) stays on Fable: only the Haiku and Sonnet labels step down. */
 export function fromHome(r: MessageRoute, home: RouteFamily): MessageRoute {
   if (r.label === 'keep') return r
-  if (cheaper(r.label, home) && r.confidence >= DOWN_MIN_CONFIDENCE) return r
+  if (cheaper(r.label, home) && r.label !== TOP_LABEL && r.confidence >= DOWN_MIN_CONFIDENCE) return r
   return { ...r, label: home }
 }
 
@@ -167,14 +174,15 @@ export function fromHome(r: MessageRoute, home: RouteFamily): MessageRoute {
  *  on. A subagent starts with an empty context, so moving it costs nothing yet, but whoever launched it
  *  on a model had a reason: it moves up only from UP_MIN_CONFIDENCE, down only from OVERRIDE_CONFIDENCE,
  *  and to Haiku only on a clear vote for it (a task is long by nature, so quickQuestion does not apply,
- *  and neither does the length rule for effort). 'keep' leaves the model as launched. */
+ *  and neither does the length rule for effort). A task labelled Opus (TOP_LABEL) launched on Fable
+ *  stays on Fable. 'keep' leaves the model as launched. */
 export function routeSubagent(task: string, cls: Classification | null, asked: RouteFamily, tune?: RouterTuning): MessageRoute {
   const r = decideRoute(task, cls, tune)
   if (r.label === 'keep') return r
   let label: RouteFamily = r.label
   if (label === 'haiku' && !(cls && cls.label === 'haiku' && cls.topSim >= MIN_TOP_SIM && cls.confidence >= HAIKU_MIN_CONFIDENCE)) label = 'sonnet'
   if (priceRank(label) > priceRank(asked) && r.confidence < UP_MIN_CONFIDENCE) label = asked
-  if (cheaper(label, asked) && r.confidence < OVERRIDE_CONFIDENCE) label = asked
+  if (cheaper(label, asked) && (r.confidence < OVERRIDE_CONFIDENCE || label === TOP_LABEL)) label = asked
   const base: MessageRoute = { ...r, label, effort: label === r.label ? r.effort : EFFORT_OF[label] }
   return { ...base, effort: chooseEffort(task, base, { countLength: false }) }
 }
@@ -208,9 +216,9 @@ export interface RouteEvent {
   /** The message (first 2000 characters), for the pane's "should have been" menu to teach the classifier. */
   prompt: string
   /** The model the message runs on. */
-  model: 'opus' | 'sonnet' | 'haiku'
+  model: RouteFamily
   /** The model the session was on before it; null for a session's first message. */
-  from: 'opus' | 'sonnet' | 'haiku' | null
+  from: RouteFamily | null
   /** v1.57.0: the effort the message runs at; null = the session's own (nothing changed). */
   effort?: EffortLevel | null
   /** The effort the session ran at before it, when known. */
@@ -222,7 +230,7 @@ export interface RouteEvent {
   codex?: { effort: CodexEffort; from: string | null }
   switched: boolean
   /** Why: first, keep, same, cheaper, lighter, switch-costs-more, needs-stronger, more-thought,
-   *  not-sure-enough, context-too-big, too-big-for-haiku; agent (a subagent's task); struggling (tool
+   *  not-sure-enough, context-too-big; agent (a subagent's task); struggling (tool
    *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort).
    *  MODELHOME: home (back on the home model after a step-down), at-home (stayed on it), unplaced (the
    *  home is a model the router cannot rank by price, so nothing is routed). */
@@ -230,8 +238,8 @@ export interface RouteEvent {
   /** MODELHOME: the home model the router could not place (its family or a short name); the model
    *  field is then just a placeholder. */
   unplaced?: string
-  /** What the message looked like. */
-  label: SeedLabel
+  /** What the message looked like: the route's label (a home route's may be the home, Fable). */
+  label: 'keep' | RouteFamily
   source: MessageRoute['source']
   confidence: number
   /** Milliseconds the decision took, embedding included. */

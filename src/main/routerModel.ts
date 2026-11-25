@@ -7,7 +7,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { createHash } from 'crypto'
 import { embedBatch, embedText } from './localEmbedder'
-import { flatSeeds, type SeedLabel } from '../shared/routerSeeds'
+import { flatSeeds, isSeedLabel, type SeedLabel } from '../shared/routerSeeds'
 import { knnClassify, USER_WEIGHT, type LabeledVec, type Classification } from '../shared/smartRoute'
 
 export const SEED_FILE = 'router-seeds.json'
@@ -15,7 +15,6 @@ export const USER_FILE = 'router-examples.json'
 /** The user's picks kept, newest first wins: past this the oldest go. */
 export const MAX_USER_EXAMPLES = 300
 const EMBED_MODEL = 'bge-small-en-v1.5'
-const LABELS: readonly SeedLabel[] = ['keep', 'haiku', 'sonnet', 'opus']
 
 let seeds: LabeledVec[] | null = null
 let seedsDir = ''
@@ -44,17 +43,13 @@ export function unit(v: ArrayLike<number> | null | undefined): number[] | null {
   return out
 }
 
-function isLabel(v: unknown): v is SeedLabel {
-  return typeof v === 'string' && (LABELS as readonly string[]).includes(v)
-}
-
 /** Items read from a cache file, keeping only well-formed ones. */
 export function parseItems(raw: unknown): LabeledVec[] {
   if (!Array.isArray(raw)) return []
   const out: LabeledVec[] = []
   for (const it of raw) {
     const o = it as { label?: unknown; vec?: unknown }
-    if (o && isLabel(o.label) && Array.isArray(o.vec) && o.vec.length > 0 && o.vec.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+    if (o && isSeedLabel(o.label) && Array.isArray(o.vec) && o.vec.length > 0 && o.vec.every((x) => typeof x === 'number' && Number.isFinite(x))) {
       out.push({ label: o.label, vec: o.vec as number[] })
     }
   }
@@ -144,7 +139,7 @@ export async function routerClassify(dir: string, text: string): Promise<Classif
 /** The user moved a message to `label`: keep its vector (never its text) as an example that counts double. */
 export async function routerLearn(dir: string, text: string, label: string): Promise<boolean> {
   const file = dataFile(String(dir ?? ''), USER_FILE)
-  if (!isLabel(label) || !file) return false
+  if (!isSeedLabel(label) || !file) return false
   const q = unit(await embedText(String(text ?? '').slice(0, 2000)))
   if (!q) return false
   const list = [...(await loadUser(String(dir))), { label, vec: q, weight: USER_WEIGHT }].slice(-MAX_USER_EXAMPLES)

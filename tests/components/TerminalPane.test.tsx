@@ -1695,11 +1695,10 @@ describe('TerminalPane', () => {
       exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
       const feed: { send?: (e: unknown) => void } = {}
       const routerLearn = vi.fn(async () => ({ success: true, data: true }))
-      const routerPin = vi.fn(async () => ({ success: true }))
       const routerHome = vi.fn(async () => ({ success: true }))
       Object.assign((window as any).termpolis, {
         onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }),
-        routerLearn, routerPin, routerHome,
+        routerLearn, routerHome,
       })
       withClaudeTerminal(`${FLAGS} --model opus`)
       render(<TerminalPane {...defaultProps} />)
@@ -1719,12 +1718,15 @@ describe('TerminalPane', () => {
       expect(routerLearn).toHaveBeenCalledWith({ prompt: 'what branch am I on', label: 'sonnet' })
       expect(mockSetMemoryNotice).toHaveBeenLastCalledWith(expect.stringContaining('The router will send messages like that one'))
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
-      // MODELHOME: the pick is where this pane starts from now on; routing carries on, so nothing is pinned.
-      expect(routerHome).toHaveBeenCalledWith({ terminalId: 'term-1', model: 'sonnet' })
-      expect(routerPin).not.toHaveBeenCalled()
       expect(screen.queryByTestId('model-route-chip')).toBeNull()
+      // MODELHOME: the home moves once the terminal runs the pick, not before (review M-2).
+      expect(routerHome).not.toHaveBeenCalled()
+      // A second pick while the first switch runs is refused, and does not void the first one's outcome.
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'haiku' } })
       await vi.runAllTimersAsync()
-      for (const k of ['onRouterMessage', 'routerLearn', 'routerPin', 'routerHome']) delete (window as any).termpolis[k]
+      // The pick is where this pane starts from now on; routing carries on from it.
+      expect(routerHome.mock.calls).toEqual([[{ terminalId: 'term-1', model: 'sonnet' }]])
+      for (const k of ['onRouterMessage', 'routerLearn', 'routerHome']) delete (window as any).termpolis[k]
       vi.useRealTimers()
     })
 
@@ -1733,8 +1735,8 @@ describe('TerminalPane', () => {
       Object.assign((window as any).termpolis, { onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }) })
       withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
-      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'x', model: 'opus', from: null, switched: false, reason: 'unplaced', unplaced: 'fable', label: 'keep', source: 'rules', confidence: 0, ms: 0, saving: 0 }))
-      expect(screen.getByTestId('model-route-chip').textContent).toBe('Fable · not routed')
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'x', model: 'opus', from: null, switched: false, reason: 'unplaced', unplaced: 'claude-nova-1', label: 'keep', source: 'rules', confidence: 0, ms: 0, saving: 0 }))
+      expect(screen.getByTestId('model-route-chip').textContent).toBe('claude-nova-1 · not routed')
       expect(screen.getByTestId('model-route-chip').getAttribute('title')).toContain('can rank by price')
       expect(screen.queryByTestId('model-route-teach')).toBeNull()
       delete (window as any).termpolis.onRouterMessage
@@ -2175,6 +2177,22 @@ describe('TerminalPane', () => {
       // The picker is back at "Model…", not showing a model it never changed to, and takes a pick again.
       expect(picker.value).toBe('')
       await waitFor(() => expect(picker).not.toBeDisabled())
+    })
+
+    it('a refused switch puts the router\'s home back on the model the terminal still runs (MODELHOME, review M-2)', async () => {
+      const setMemoryNotice = vi.fn()
+      const routerHome = vi.fn(async () => ({ success: true }))
+      ;(window as any).termpolis.routerHome = routerHome
+      try {
+        withClaudeTerminal('claude --dangerously-skip-permissions --model opus', { beginRelaunch: vi.fn(() => false), setMemoryNotice })
+        render(<TerminalPane {...defaultProps} />)
+        fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+        await waitFor(() => expect(setMemoryNotice).toHaveBeenCalledWith(expect.stringContaining("didn't change the model")))
+        // The refused pick never reaches the router: its home stays on Opus.
+        expect(routerHome).not.toHaveBeenCalledWith({ terminalId: 'term-1', model: 'sonnet' })
+      } finally {
+        delete (window as any).termpolis.routerHome
+      }
     })
 
     it('types with the key of main\'s hold, and lets it go after (R7: MCP and the phone are refused meanwhile)', async () => {

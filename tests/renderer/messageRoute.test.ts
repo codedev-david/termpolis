@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  getRouterMode, setRouterMode, applyRouterSettings, modelName, routeChipText, routeChipTitle, teachRoute, pinRoute, setRouteHome,
+  getRouterMode, setRouterMode, applyRouterSettings, modelName, routeChipText, routeChipTitle, teachRoute, setRouteHome,
   ROUTER_MODE_KEY, DEFAULT_ROUTER_MODE, ROUTER_MODES, type RouteEvent,
 } from '../../src/renderer/src/lib/messageRoute'
 
@@ -23,7 +23,7 @@ describe('message routing setting', () => {
   it('defaults, reads and validates the stored mode', () => {
     expect(ROUTER_MODES.map((m) => m.value)).toEqual(['every', 'off'])
     expect(DEFAULT_ROUTER_MODE).toBe('every')
-    expect(ROUTER_MODES[0].label).toBe('Every Claude terminal (steps down from its start model) and Codex')
+    expect(ROUTER_MODES[0].label).toBe('Every Claude terminal (steps down from its start model; Auto terminals route freely) and Codex')
     expect(getRouterMode()).toBe(DEFAULT_ROUTER_MODE)
     localStorage.setItem(ROUTER_MODE_KEY, 'off')
     expect(getRouterMode()).toBe('off')
@@ -122,11 +122,16 @@ describe('MODELHOME: the chip of a terminal with a home model', () => {
 
   it('names a home it cannot place, and says why nothing is routed', () => {
     const e = (unplaced?: string) => ev({ reason: 'unplaced', unplaced, label: 'keep', switched: false, source: 'rules', confidence: 0, ms: 0, saving: 0 })
-    expect(routeChipText(e('fable'))).toBe('Fable · not routed')
     expect(routeChipText(e('claude-nova-1'))).toBe('claude-nova-1 · not routed')
     expect(routeChipText(e('other'))).toBe('This model · not routed')
     expect(routeChipText(e())).toBe('This model · not routed')
-    expect(routeChipTitle(e('fable'))).toBe("Fable is not one the router can rank by price, so this terminal's messages all run on it. Pick another model in the Model menu to have simple messages moved to cheaper ones.")
+    expect(routeChipTitle(e('claude-nova-1'))).toBe("claude-nova-1 is not one the router can rank by price, so this terminal's messages all run on it. Pick another model in the Model menu to have simple messages moved to cheaper ones.")
+  })
+
+  it('names Fable like the others: a Fable home is routed', () => {
+    const e = ev({ model: 'haiku', from: 'fable', effort: 'low', switched: true, reason: 'cheaper', label: 'haiku' })
+    expect(routeChipText(e)).toBe('Fable → Haiku · low · 4 ms')
+    expect(routeChipTitle(ev({ model: 'fable', from: 'fable', effort: null, switched: false, reason: 'at-home', label: 'opus' }))).toContain('This message runs on Fable:')
   })
 
   it('setRouteHome tells main the new home, and survives a missing or failing API', async () => {
@@ -144,24 +149,17 @@ describe('MODELHOME: the chip of a terminal with a home model', () => {
   })
 })
 
-describe('teaching and pinning', () => {
-  it('sends the correction and the pin to main, best effort', () => {
+describe('teaching', () => {
+  it('sends the correction to main, best effort', () => {
     const learn = vi.fn(async () => ({ success: true, data: true }))
-    const pin = vi.fn(async () => ({ success: true }))
     api.routerLearn = learn
-    api.routerPin = pin
     teachRoute(ev(), 'opus')
     expect(learn).toHaveBeenCalledWith({ prompt: 'what branch am I on', label: 'opus' })
-    pinRoute('t1')
-    expect(pin).toHaveBeenCalledWith({ terminalId: 't1', pinned: true })
     api.routerLearn = vi.fn(async () => { throw new Error('x') })
-    api.routerPin = vi.fn(async () => { throw new Error('x') })
-    expect(() => { teachRoute(ev(), 'keep'); pinRoute('t1') }).not.toThrow()
+    expect(() => teachRoute(ev(), 'keep')).not.toThrow()
     api.routerLearn = () => { throw new Error('sync') }
-    api.routerPin = () => { throw new Error('sync') }
-    expect(() => { teachRoute(ev(), 'keep'); pinRoute('t1') }).not.toThrow()
+    expect(() => teachRoute(ev(), 'keep')).not.toThrow()
     api.routerLearn = undefined
-    api.routerPin = undefined
-    expect(() => { teachRoute(ev(), 'keep'); pinRoute('t1') }).not.toThrow()
+    expect(() => teachRoute(ev(), 'keep')).not.toThrow()
   })
 })

@@ -2,8 +2,8 @@
 //
 // A switch is not free. Anthropic's prompt cache is kept per model, so the first request on a model the
 // session has not used lately reads the whole conversation again at the cache-WRITE price (1.25x)
-// instead of the cache-READ price (0.1x). On a 100k-token conversation that one re-read costs more than
-// Sonnet saves over Opus on a small answer. So a cheaper model only wins when its price gap pays for the
+// instead of the cache-READ price (0.05x on Opus and Sonnet). On a 100k-token conversation that one
+// re-read costs more than Sonnet saves over Opus on a small answer. So a cheaper model only wins when its price gap pays for the
 // re-read, and the gate prices both sides of that trade for the message's likely shape.
 //
 // v1.57.0: the same holds for effort. Changing `output_config.effort` between requests empties the
@@ -12,17 +12,37 @@
 
 import { effortOrDefault, effortRank, EFFORT_OUT, type EffortLevel } from './effortLevels'
 
-export type RouteFamily = 'opus' | 'sonnet' | 'haiku'
+export type RouteFamily = 'haiku' | 'sonnet' | 'opus' | 'fable'
 
-/** List prices, dollars per million tokens. */
-export const PRICE: Readonly<Record<RouteFamily, { in: number; out: number }>> = {
-  opus: { in: 5, out: 25 },
-  sonnet: { in: 3, out: 15 },
-  haiku: { in: 1, out: 5 },
+/** One rate card, dollars per million tokens. */
+export interface Rates { in: number; out: number }
+export interface PriceCard extends Rates {
+  /** A cache read, as a share of the input rate. It differs by family. */
+  cacheRead: number
+  /** The rates a request is billed at, all of it, once its prompt passes `above` tokens. */
+  long?: Rates & { above: number }
 }
 
-export const CACHE_READ = 0.1
+/** Anthropic published first-party rates, 2026-11-03: USD per million tokens, for claude-haiku-5-5,
+ *  claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-2. Haiku's first 100K of prompt is billed at
+ *  0.10 / 0.50; a longer prompt is billed at 0.50 / 2.50 for every token of it. The cache shares are
+ *  assumed to apply to whichever card is in force. */
+export const PRICE: Readonly<Record<RouteFamily, PriceCard>> = {
+  haiku: { in: 0.1, out: 0.5, cacheRead: 0.1, long: { above: 100_000, in: 0.5, out: 2.5 } },
+  sonnet: { in: 2, out: 10, cacheRead: 0.05 },
+  opus: { in: 4, out: 20, cacheRead: 0.05 },
+  fable: { in: 8, out: 40, cacheRead: 0.025 },
+}
+
+/** A cache write (5-minute lifetime) bills at 1.25x the input rate on every family. */
 export const CACHE_WRITE = 1.25
+
+/** The card a request on `f` with a `prompt`-token prompt is billed at. */
+export function ratesAt(f: RouteFamily, prompt: number): Rates {
+  const card = PRICE[f]
+  const r = card.long && prompt > card.long.above ? card.long : card
+  return { in: r.in, out: r.out }
+}
 
 /** The likely shape of a message the classifier put in a class: model calls it takes, output tokens it
  *  writes, and context it adds. A Haiku-class message is a quick answer; the others run a tool loop. */
@@ -31,11 +51,12 @@ export const PROFILES: Readonly<Record<RouteFamily, MessageProfile>> = {
   haiku: { turns: 2, out: 800, grow: 1_500 },
   sonnet: { turns: 8, out: 4_000, grow: 12_000 },
   opus: { turns: 8, out: 5_000, grow: 12_000 },
+  fable: { turns: 8, out: 5_000, grow: 12_000 },
 }
 
-/** Past this much context Haiku is never picked: its window is the smallest, and a re-read this big
- *  never pays for itself on a quick answer. */
-export const HAIKU_MAX_CTX = 180_000
+// There is no size limit on Haiku: Haiku 5.5 holds 1M tokens like the others. A big conversation stays
+// off a cold Haiku on price alone, because past 100K of prompt its re-read is billed at the long card
+// (0.50 in, 1.25x to write it), which costs more than Opus reading the same context warm at 0.05x.
 /** A move UP to a stronger model re-reads the conversation too; past this size it needs the stronger
  *  model's cache to be warm already. */
 export const UP_SWITCH_MAX_COLD_CTX = 150_000
@@ -94,13 +115,17 @@ export function isWarm(e: Economy, f: RouteFamily, now: number, effort?: EffortL
 /** Dollars one message is expected to cost on `model`: the first call reads `cached` tokens from cache
  *  and writes the rest, every later call re-reads the context from cache, the context it adds is
  *  written once, and the output is paid at the output price. The profile's output is at high effort;
- *  another `effort` scales it (EFFORT_OUT). */
+ *  another `effort` scales it (EFFORT_OUT). The card is the one its largest prompt (the context plus
+ *  what the message adds) is billed at, so a message near Haiku's 100K line is priced on the dearer
+ *  side. */
 export function messageCost(model: RouteFamily, ctx: number, cached: number, p: MessageProfile, effort?: EffortLevel | null): number {
   const c = Math.max(0, ctx)
   const hit = Math.min(Math.max(0, cached), c)
-  const input = hit * CACHE_READ + (c - hit) * CACHE_WRITE + Math.max(0, p.turns - 1) * c * CACHE_READ + p.grow * CACHE_WRITE
+  const read = PRICE[model].cacheRead
+  const input = hit * read + (c - hit) * CACHE_WRITE + Math.max(0, p.turns - 1) * c * read + p.grow * CACHE_WRITE
   const out = p.out * (effort ? EFFORT_OUT[effort] : 1)
-  return (PRICE[model].in * input + PRICE[model].out * out) / 1e6
+  const r = ratesAt(model, c + Math.max(0, p.grow))
+  return (r.in * input + r.out * out) / 1e6
 }
 
 export interface SwitchInput {
@@ -125,7 +150,7 @@ export interface SwitchDecision {
   effort: EffortLevel | null
   switched: boolean
   /** same, cheaper, lighter, switch-costs-more, needs-stronger, more-thought, not-sure-enough,
-   *  context-too-big, too-big-for-haiku. */
+   *  context-too-big. */
   reason: string
   /** Dollars the pick is expected to save over staying (negative = it costs more, for a stronger model). */
   saving: number
@@ -138,12 +163,8 @@ export interface SwitchDecision {
 export function decideSwitch(i: SwitchInput): SwitchDecision {
   const { current, confidence, economy: e, now } = i
   const have = i.currentEffort ?? null
-  let want = i.want
+  const want = i.want
   const stay = (reason: string): SwitchDecision => ({ model: current, effort: have, switched: false, reason, saving: 0 })
-  if (want === 'haiku' && e.ctx > HAIKU_MAX_CTX) {
-    if (current !== 'haiku') return stay('too-big-for-haiku')
-    want = 'sonnet'
-  }
   const ce = effortOrDefault(current, have)
   // No effort asked for: the same one on the same model, the target's default on another.
   const we = i.wantEffort ?? (want === current ? ce : effortOrDefault(want, null))

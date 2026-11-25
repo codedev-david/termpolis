@@ -128,27 +128,64 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(d.setRoute).toHaveBeenCalledTimes(1)
   })
 
-  it('learns home from what the session asks for, and stops routing a model it cannot place', async () => {
+  it("learns an Agent's-own-default home once, from the session's first own request", async () => {
     const d = deps({ classify: vi.fn(async () => vote('opus', 0.95)) })
     registerTerminal('t', false) // "Agent's own default": home unknown until the first request
-    main('t', 'sonnet', 'sonnet')
-    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'sonnet', reason: 'at-home' })
-    noteProxyResult({ terminal: 't', main: true, model: 'fable', asked: 'fable' }, 1_000_000)
-    expect(d.setRoute).toHaveBeenLastCalledWith('t', null)
-    d.classify.mockClear()
-    const e = await routePrompt({ terminalId: 't', prompt: QUICK })
-    expect(e).toMatchObject({ unplaced: 'fable', switched: false, reason: 'unplaced', effort: null })
-    expect(d.classify).not.toHaveBeenCalled()
     // A subagent's request, or one that is not the session's own, teaches nothing.
     noteProxyResult({ terminal: 't', main: true, agent: true, model: 'opus', asked: 'opus' }, 1_000_000)
     noteProxyResult({ terminal: 't', model: 'opus', asked: 'opus' }, 1_000_000)
     noteProxyResult({ terminal: 't', main: true }, 1_000_000)
-    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ reason: 'unplaced' })
-    // Back on a model it can place.
+    main('t', 'sonnet', 'sonnet')
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'sonnet', reason: 'at-home' })
+    // Later requests that ask for another model (opusplan's planning turns, /model in the session) do
+    // not move the home: the first one set it.
     main('t', 'opus', 'opus')
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'sonnet', reason: 'at-home' })
     d.classify.mockResolvedValueOnce(vote('haiku', 0.9))
+    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku', reason: 'cheaper' })
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', expect.objectContaining({ family: 'haiku', down: true }))
+  })
+
+  it('a learned home the router cannot place stops routing the pane', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('haiku', 0.9)) })
+    registerTerminal('t', false)
+    // The proxy reports a model it cannot name a family for as 'other'.
+    noteProxyResult({ terminal: 't', main: true, model: 'other', asked: 'other' }, 1_000_000)
+    const e = await routePrompt({ terminalId: 't', prompt: QUICK })
+    expect(e).toMatchObject({ unplaced: 'other', switched: false, reason: 'unplaced', effort: null })
+    expect(d.classify).not.toHaveBeenCalled()
+    // Learned once: a later request does not route it again; a pick in the Model menu does.
+    main('t', 'opus', 'opus')
+    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ reason: 'unplaced' })
+    setTerminalHome('t', 'opus')
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku', from: 'opus', reason: 'cheaper' })
-    expect(d.classify).toHaveBeenCalled()
+  })
+
+  it('a Fable home steps down like any other, and a message labelled Opus stays on Fable', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('opus', 0.95)) })
+    registerTerminal('t', false)
+    main('t', 'fable', 'fable') // learned from the session's first request
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'fable', reason: 'at-home', switched: false })
+    d.classify.mockResolvedValueOnce(vote('haiku', 0.9))
+    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku', from: 'fable', reason: 'cheaper' })
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', { family: 'haiku', effort: 'low', down: true })
+    main('t', 'haiku', 'fable')
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.9))
+    expect(await routePrompt({ terminalId: 't', prompt: BUILD })).toMatchObject({ model: 'sonnet', from: 'haiku', reason: 'needs-stronger' })
+    main('t', 'sonnet', 'fable')
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'fable', from: 'sonnet', reason: 'home', switched: true })
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', { family: null, effort: null })
+  })
+
+  it('an Auto pane never climbs to Fable past a refused Opus', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('opus', 0.95)) })
+    registerTerminal('a', true)
+    noteProxyResult({ terminal: 'a', refused: 'opus' })
+    main('a', 'sonnet', 'sonnet', { input_tokens: 100 })
+    expect(await routePrompt({ terminalId: 'a', prompt: DEEP })).toBeNull()
+    await routeAgentTask({ terminal: 'a', key: 1, task: DEEP, asked: 'sonnet', effort: null })
+    for (const [, pick] of d.setRoute.mock.calls) expect(pick?.family ?? null).not.toBe('fable')
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('a', 1, expect.objectContaining({ family: 'sonnet' }))
   })
 
   it('home unknown: a sure step-down is sent for the proxy to apply only below what the session asks', async () => {
@@ -177,10 +214,11 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(d.setRoute).toHaveBeenLastCalledWith('t', expect.objectContaining({ family: 'haiku', down: true }))
     setTerminalHome('t', 'sonnet')
     expect(d.setRoute).toHaveBeenLastCalledWith('t', { family: null, effort: null })
-    setTerminalHome('t', 'fable')
-    expect(d.setRoute).toHaveBeenLastCalledWith('t', null)
-    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ reason: 'unplaced', unplaced: 'fable' })
+    // Fable is a family the router ranks by price: a home like the others.
+    setTerminalHome('t', 'claude-fable-5-2')
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'fable', reason: 'at-home' })
     setTerminalHome('t', 'some-new-model-9')
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', null)
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ unplaced: 'some-new-model-9' })
     setTerminalHome('t', 'x'.repeat(200))
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ unplaced: 'other' })
@@ -189,7 +227,7 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku', reason: 'first' })
     setTerminalHome('t', undefined)
     // A relaunch (terminal:create again) forgets the home.
-    setTerminalHome('t', 'fable')
+    setTerminalHome('t', 'some-new-model-9')
     registerTerminal('t', false)
     d.classify.mockResolvedValueOnce(vote('haiku', 0.9))
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku' })
@@ -208,11 +246,51 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toBeNull()
   })
 
-  it('a Codex terminal that sets its own effort is still left as it is', async () => {
+  it('a Codex terminal that sets its own effort steps down from it, never above it', async () => {
     const d = deps({ setCodexRoute: vi.fn() })
     registerTerminal('c', false, true)
-    expect(await routeCodexTurn({ terminal: 'c', key: 1, task: QUICK, asked: 'high' })).toBeNull()
+    // A quick question: down from the command's high to low.
+    expect(await routeCodexTurn({ terminal: 'c', key: 1, task: QUICK, asked: 'high' }))
+      .toMatchObject({ codex: { effort: 'low', from: 'high' }, switched: true, reason: 'codex' })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 1, 'low')
+    // A hard one would run at high on Auto; launched at medium, it stays at medium.
+    d.classify.mockResolvedValueOnce(vote('opus', 0.9))
+    expect(await routeCodexTurn({ terminal: 'c', key: 2, task: DEEP, asked: 'medium' }))
+      .toMatchObject({ codex: { effort: 'medium', from: 'low' }, switched: false, reason: 'at-home' })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 2, null)
+    // Unsure: it runs at its own effort.
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.5, 0.9))
+    expect(await routeCodexTurn({ terminal: 'c', key: 3, task: GUESS, asked: 'xhigh' })).toMatchObject({ codex: { effort: 'xhigh' }, reason: 'at-home' })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 3, null)
+    // A sure build message runs lighter than xhigh.
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.9))
+    const build = await routeCodexTurn({ terminal: 'c', key: 4, task: BUILD, asked: 'xhigh' })
+    expect(build).toMatchObject({ reason: 'codex', switched: true })
+    expect(['low', 'medium', 'high']).toContain(build?.codex?.effort)
+    // An effort the router cannot read is not stepped down from: nothing to measure "down" against.
+    d.classify.mockClear()
+    expect(await routeCodexTurn({ terminal: 'c', key: 5, task: QUICK, asked: 'turbo' })).toBeNull()
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 5, null)
+    expect(d.classify).not.toHaveBeenCalled()
+    // Off is off.
+    setRouterMode('off')
+    expect(await routeCodexTurn({ terminal: 'c', key: 6, task: QUICK, asked: 'high' })).toBeNull()
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 6, null)
+  })
+
+  it("a confirmation on an own-effort Codex terminal carries on at the effort the work ran at, capped at the command's", async () => {
+    const d = deps({ setCodexRoute: vi.fn() })
+    registerTerminal('c', false, true)
+    d.classify.mockResolvedValueOnce(vote('keep', 0.95))
+    expect(await routeCodexTurn({ terminal: 'c', key: 1, task: 'yes go ahead', asked: 'high' })).toBeNull()
     expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 1, null)
+    await routeCodexTurn({ terminal: 'c', key: 2, task: QUICK, asked: 'high' }) // low
+    d.classify.mockResolvedValueOnce(vote('keep', 0.95))
+    expect(await routeCodexTurn({ terminal: 'c', key: 3, task: 'yes go ahead', asked: 'high' })).toMatchObject({ codex: { effort: 'low' }, reason: 'keep' })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 3, 'low')
+    d.classify.mockResolvedValueOnce(vote('keep', 0.95))
+    expect(await routeCodexTurn({ terminal: 'c', key: 4, task: 'yes go ahead', asked: 'minimal' })).toMatchObject({ codex: { effort: 'minimal' }, reason: 'keep' })
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c', 4, null)
   })
 
   it('setTerminalHome on a terminal it does not know does nothing', () => {
@@ -221,16 +299,20 @@ describe('messageRouter: home model (MODELHOME)', () => {
     expect(d.setRoute).not.toHaveBeenCalled()
   })
 
-  it('a session that asks for the model it was stepped down to is no longer stepped down', async () => {
+  it('an explicit home stays when the session asks for another model; a step down it no longer needs ends', async () => {
     const d = deps()
     registerTerminal('t', false)
     setTerminalHome('t', 'opus')
+    // The old session's last result, or /model inside the session, does not move a home the user picked.
+    main('t', 'sonnet', 'sonnet')
+    d.classify.mockResolvedValueOnce(vote('opus', 0.9))
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'opus', reason: 'at-home' })
     await routePrompt({ terminalId: 't', prompt: QUICK }) // haiku, down from opus
-    // The user switched the session itself to Haiku (/model): home is Haiku now, nothing to step down.
+    // The session itself asks for Haiku now: the proxy will not apply the step down, so it is not one.
     main('t', 'haiku', 'haiku')
     d.setRoute.mockClear()
     d.classify.mockResolvedValueOnce(vote('opus', 0.9))
-    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'haiku', reason: 'at-home', switched: false })
+    expect(await routePrompt({ terminalId: 't', prompt: DEEP })).toMatchObject({ model: 'opus', reason: 'at-home', switched: false })
     expect(d.setRoute).not.toHaveBeenCalled()
   })
 
@@ -252,9 +334,9 @@ describe('messageRouter: home model (MODELHOME)', () => {
     registerTerminal('t', false)
     setTerminalHome('t', 'opus')
     const p = routePrompt({ terminalId: 't', prompt: QUICK })
-    setTerminalHome('t', 'claude-fable-1')
+    setTerminalHome('t', 'some-new-model-9')
     answer(vote('haiku'))
-    expect(await p).toMatchObject({ reason: 'unplaced', unplaced: 'fable', switched: false })
+    expect(await p).toMatchObject({ reason: 'unplaced', unplaced: 'some-new-model-9', switched: false })
     expect(d.setRoute).toHaveBeenLastCalledWith('t', null)
   })
 
@@ -262,14 +344,29 @@ describe('messageRouter: home model (MODELHOME)', () => {
     const d = deps({ classify: vi.fn(async () => vote('opus', 0.95)) })
     registerTerminal('t', false)
     setTerminalHome('t', 'sonnet')
+    // The ceiling is the lower of the two: a subagent that asked for Haiku stays on Haiku, however hard
+    // its task looks.
     const e = await routeAgentTask({ terminal: 't', key: 1, task: DEEP, asked: 'haiku', effort: null })
-    expect(e).toMatchObject({ model: 'sonnet', agent: true })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('t', 1, expect.objectContaining({ family: 'sonnet' }))
-    // Asked above home by Claude Code itself: it may stay where it asked.
-    await routeAgentTask({ terminal: 't', key: 2, task: DEEP, asked: 'opus', effort: null })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('t', 2, expect.objectContaining({ family: 'opus' }))
+    expect(e).toMatchObject({ model: 'haiku', agent: true })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('t', 1, expect.objectContaining({ family: 'haiku' }))
+    // Asked above home by Claude Code itself: it comes down to home.
+    const up = await routeAgentTask({ terminal: 't', key: 2, task: DEEP, asked: 'opus', effort: null })
+    expect(up).toMatchObject({ model: 'sonnet', from: 'opus', switched: true })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('t', 2, expect.objectContaining({ family: 'sonnet' }))
+    // An Auto pane's subagent may still go up to what its task needs.
+    registerTerminal('a', true)
+    await routeAgentTask({ terminal: 'a', key: 4, task: DEEP, asked: 'haiku', effort: null })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('a', 4, expect.objectContaining({ family: 'opus' }))
+    // A Fable home's subagent asked for Fable keeps it for a hard task, and steps down for a simple one.
+    registerTerminal('f', false)
+    setTerminalHome('f', 'fable')
+    await routeAgentTask({ terminal: 'f', key: 5, task: DEEP, asked: 'fable', effort: null })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('f', 5, expect.objectContaining({ family: 'fable' }))
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.95))
+    await routeAgentTask({ terminal: 'f', key: 6, task: BUILD, asked: 'fable', effort: null })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('f', 6, expect.objectContaining({ family: 'sonnet' }))
     // An unplaced pane's subagents are left alone.
-    setTerminalHome('t', 'fable')
+    setTerminalHome('t', 'some-new-model-9')
     expect(await routeAgentTask({ terminal: 't', key: 3, task: DEEP, asked: 'sonnet', effort: null })).toBeNull()
     expect(d.setAgentRoute).toHaveBeenLastCalledWith('t', 3, null)
   })

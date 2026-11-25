@@ -81,7 +81,6 @@ const api: TermpolisAPI = {
     return () => ipcRenderer.removeListener('router:message', handler)
   },
   routerConfigure: (opts: { mode?: string; tuning?: unknown }) => ipcRenderer.invoke('router:configure', opts),
-  routerPin: (opts: { terminalId: string; pinned?: boolean }) => ipcRenderer.invoke('router:pin', opts),
   routerHome: (opts: { terminalId: string; model: string }) => ipcRenderer.invoke('router:home', opts),
   routerLearn: (opts: { prompt: string; label: string }) => ipcRenderer.invoke('router:learn', opts),
 

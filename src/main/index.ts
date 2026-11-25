@@ -230,8 +230,8 @@ import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setPro
 import { codexHomeRoutes } from './codexLaunch'
 import { readJsonObject } from './agentConfigIO'
 import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent, withRouteHeader } from './headroom/shapingEnv'
-import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, setTerminalHome, noteProxyResult, routePrompt, routeAgentTask, routeCodexTurn, setRouterMode, getRouterMode } from './messageRouter'
-import { isRouteFamily } from './headroomProxy/modelRoute'
+import { configureRouter, registerTerminal, forgetTerminal, setTerminalHome, noteProxyResult, routePrompt, routeAgentTask, routeCodexTurn, setRouterMode, getRouterMode } from './messageRouter'
+import { isSeedLabel } from '../shared/routerSeeds'
 import type { RouterTuning } from '../shared/taskRouter'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
@@ -1033,11 +1033,6 @@ ipcMain.handle('router:configure', (_, opts: { mode?: unknown; tuning?: unknown 
   return ok(setRouterMode(opts?.mode))
 })
 ipcMain.handle('router:status', () => ok(getRouterMode()))
-// The user picked this pane's model by hand: stop routing it (or start again with pinned: false).
-ipcMain.handle('router:pin', (_, opts: { terminalId?: unknown; pinned?: unknown } = {}) => {
-  pinTerminal(opts?.terminalId, opts?.pinned !== false)
-  return ok()
-})
 // MODELHOME: the model a Claude terminal starts on and comes back to (its launch model, or a Model menu pick).
 ipcMain.handle('router:home', (_, opts: { terminalId?: unknown; model?: unknown } = {}) => {
   setTerminalHome(opts?.terminalId, opts?.model)
@@ -1046,7 +1041,7 @@ ipcMain.handle('router:home', (_, opts: { terminalId?: unknown; model?: unknown 
 // The user moved a message to another model: the classifier keeps its vector (never its text) as an example.
 ipcMain.handle('router:learn', async (_, opts: { prompt?: unknown; label?: unknown } = {}) => {
   const label = opts?.label
-  if (typeof opts?.prompt !== 'string' || !opts.prompt.trim() || !(label === 'keep' || isRouteFamily(label))) return err('Invalid example')
+  if (typeof opts?.prompt !== 'string' || !opts.prompt.trim() || !isSeedLabel(label)) return err('Invalid example')
   try { return ok(await routerLearn(app.getPath('userData'), opts.prompt.slice(0, 2000), label)) } catch (e: any) { return err(e?.message ?? 'Could not learn') }
 })
 

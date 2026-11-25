@@ -18,7 +18,9 @@ beforeEach(() => _resetModelRouteForTests())
 describe('modelRoute', () => {
   it('helpers', () => {
     expect(isRouteFamily('opus')).toBe(true)
-    expect(isRouteFamily('fable')).toBe(false)
+    // A family since MODELHOME fix 1: a Fable home is routed.
+    expect(isRouteFamily('fable')).toBe(true)
+    expect(isRouteFamily('other')).toBe(false)
     expect(isRouteFamily(1)).toBe(false)
     expect(isRefusal(400)).toBe(true)
     expect(isRefusal(404)).toBe(true)
