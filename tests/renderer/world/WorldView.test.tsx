@@ -42,7 +42,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 import { WorldView } from '../../../src/renderer/src/components/World'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
-import { GRAPHICS_FLAT, GRAPHICS_LOST } from '../../../src/renderer/src/components/World/WorldView'
+import { GRAPHICS_FLAT, GRAPHICS_LOST, GRAPHICS_WATCHDOG } from '../../../src/renderer/src/components/World/WorldView'
 import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { savedByNewerNotice } from '../../../src/renderer/src/components/World/worldNotes'
 import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE } from '../../../src/shared/world/types'
@@ -2873,6 +2873,21 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     act(() => v.opts.renderCard('<h3>Store</h3>'))
     expect(screen.getByTestId('world-card')).not.toHaveAttribute('data-solid')
     expect(screen.getByTestId('world-legend').style.backdropFilter).toBe('blur(10px)')
+  })
+
+  it('a 3D map that never draws a frame says so and shows the 2D map for good; the canvas host is the theme background (look spec 5.3)', async () => {
+    bridge()
+    await mount()
+    const v = viewer()
+    // Before any frame paints, the host shows the theme's background, never a white or blank box.
+    expect(screen.getByTestId('world-canvas-host').style.background).toBe('var(--world-bg, #03050a)')
+    act(() => { v.opts.onGraphics('watchdog') })
+    await settle()
+    expect(notice()).toHaveTextContent(GRAPHICS_WATCHDOG)
+    expect(GRAPHICS_WATCHDOG).toBe('Lumopolis switched to the 2D map because this graphics card could not draw the 3D view.')
+    expect(v.dispose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('world-canvas-host')).toBeNull()
+    expect(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]')).not.toBeNull()
   })
 
   it('a first loss shows a notice until the graphics come back; a second shows the 2D map for good', async () => {

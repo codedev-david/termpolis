@@ -43,6 +43,12 @@ export const gpu = {
   /** The context is lost (isContextLost), as it is from loseContext() on until its webglcontextrestored. */
   contextLost: false,
   /**
+   * The most pixels the browser gives a drawing buffer (null: as many as asked for). Past it the buffer is shrunk, as
+   * Chromium shrinks one it cannot allocate: drawingBufferWidth and drawingBufferHeight scaled down to fit, the canvas's
+   * width and height as asked.
+   */
+  allocMax: null as number | null,
+  /**
    * The context's WebGL 2 fences: whether it has them (off: WebGL 1, no fenceSync), how long after it is put in a fence
    * signals (performance.now ms; null: never), the fences put in, and the ones still not deleted.
    */
@@ -58,6 +64,7 @@ export const gpu = {
     gpu.gpuName = null
     gpu.debugInfo = true
     gpu.contextLost = false
+    gpu.allocMax = null
     gpu.fences = { on: false, signalAfter: 0, made: [], live: new Set() }
   },
 }
@@ -117,8 +124,7 @@ export class FakeWebGLRenderer {
     this.sizes.push([w, h])
     this.size = [w, h]
     this.buffers.push([w * this.ratio, h * this.ratio])
-    this.domElement.width = w
-    this.domElement.height = h
+    this.sizeCanvas()
     this.domElement.style.width = `${w}px`
     this.domElement.style.height = `${h}px`
   }
@@ -126,6 +132,12 @@ export class FakeWebGLRenderer {
     this.pixelRatios.push(r)
     this.ratio = r
     this.buffers.push([this.size[0] * r, this.size[1] * r])
+    this.sizeCanvas()
+  }
+  /** As three.js sizes the canvas: its width and height are the buffer asked for, its size times the ratio, floored. */
+  private sizeCanvas(): void {
+    this.domElement.width = Math.floor(this.size[0] * this.ratio)
+    this.domElement.height = Math.floor(this.size[1] * this.ratio)
   }
   getPixelRatio(): number { return this.ratio }
   setClearColor(c: unknown): void { this.clearColors.push(c) }
@@ -141,11 +153,16 @@ export class FakeWebGLRenderer {
   }
   forceContextLoss(): void { this.contextLost++ }
   /** A context answering the buffer limits (gpu.limits), the GPU's name (gpu.gpuName) and, with gpu.fences.on, fences. */
-  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; getParameter(p: number): unknown; getExtension(name: string): unknown; isContextLost(): boolean } {
+  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; drawingBufferWidth: number; drawingBufferHeight: number; getParameter(p: number): unknown; getExtension(name: string): unknown; isContextLost(): boolean } {
     // The unmasked name (0x9246) only through the extension; RENDERER (0x1f01) names it too when there is none.
     const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport, [gpu.debugInfo ? 0x9246 : 0x1f01]: gpu.gpuName }
+    // The buffer the browser gave: the canvas's, or scaled down to gpu.allocMax pixels when that is fewer.
+    const { width, height } = this.domElement
+    const max = gpu.allocMax
+    const scale = max !== null && width * height > max ? Math.sqrt(max / (width * height)) : 1
     return {
       MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, RENDERER: 0x1f01,
+      drawingBufferWidth: Math.floor(width * scale), drawingBufferHeight: Math.floor(height * scale),
       getParameter: (p) => (p in answers ? answers[p] : null),
       getExtension: (name) => (name === 'WEBGL_debug_renderer_info' && gpu.debugInfo ? { UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
       isContextLost: () => gpu.contextLost,

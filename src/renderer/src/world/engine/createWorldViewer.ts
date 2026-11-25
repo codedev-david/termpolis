@@ -108,9 +108,21 @@ export interface WorldViewer {
 
 /**
  * What became of the 3D map's graphics: 'lost' (the WebGL context was lost: nothing is drawn until it comes back),
- * 'restored' (it came back and the world was built again), 'flat' (lost a second time: the viewer shows the 2D map).
+ * 'restored' (it came back and the world was built again), 'flat' (lost a second time: the viewer shows the 2D map),
+ * 'watchdog' (the 3D map never presented a frame, or the GPU could not hold even its smallest drawing buffer: the
+ * viewer shows the 2D map; look spec §5.3).
  */
-export type WorldGraphics = 'lost' | 'restored' | 'flat'
+export type WorldGraphics = 'lost' | 'restored' | 'flat' | 'watchdog'
+
+/**
+ * How long the 3D map may take to present its first frame before the viewer shows the 2D map instead (look spec
+ * §5.3): on a GPU, and drawn in software. Only time the view is shown counts: not while paused, on a hidden page, or
+ * while a lost context is being waited out.
+ */
+export const FIRST_FRAME_MS_HW = 4000
+export const FIRST_FRAME_MS_SW = 15_000
+/** How often the first-frame watchdog looks. */
+const WATCH_TICK_MS = 500
 
 export interface WorldLoadOptions {
   animateFrom?: WorldDoc
@@ -142,6 +154,10 @@ export interface WorldDrawn {
   drawCalls: number
   /** Frames drawn since the 3D map was made: frames are drawn only while something moves (0 in 2D). */
   frames: number
+  /** Frames whose render returned, the first-frame watchdog's sign of life (0 in 2D). */
+  presented: number
+  /** The WebGL context is lost now, its event come or not (false in 2D). */
+  contextLost: boolean
   /**
    * The 3D map is drawn in software: no GPU draws it (a virtual machine, a remote session, a blocked driver), so the
    * page is composited by the CPU too (false in 2D). A host then draws its panels over the map opaque rather than
@@ -297,6 +313,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let r3: ThreeRenderer | null = null
   /** WebGL contexts lost so far: the first is waited out, the second drops to the 2D map. */
   let losses = 0
+  /** A lost context's event came and its restore has not: the watchdog waits it out. */
+  let lossPending = false
+  /** Fits that left the drawing buffer shrunk after all its steps (onBufferShrunk). */
+  let shrinkFails = 0
   if (hasWebGL()) {
     const before = new Set(Array.from(container.children))
     try {
@@ -306,8 +326,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         onEdgeLabel: (id) => { void select(id) },
         // A loss forgets the context found before (hasWebGL), so the next open probes again: after repeated losses Chromium
         // blocks WebGL for the page, and a cached yes would show the 3D legend over the 2D map (RESP review I-2).
-        onContextLost: () => { forgetWebGL(); if (++losses === 1) graphics('lost'); else dropToFlat() },
-        onContextRestored: () => { if (r3) graphics('restored') },
+        onContextLost: () => { lossPending = true; forgetWebGL(); if (++losses === 1) graphics('lost'); else dropToFlat() },
+        onContextRestored: () => { lossPending = false; if (r3) graphics('restored') },
+        // Twice the GPU could not hold even the smallest buffer: a lower drawn tier would be next (the governor, look
+        // plan Task 3); until there is one, the 2D map.
+        onBufferShrunk: () => { if (++shrinkFails >= 2) dropToFlat('watchdog') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
       })
@@ -707,15 +730,38 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
    * The WebGL context was lost a second time: the graphics cannot be trusted to come back, so the 3D map is freed and
    * the 2D map drawn in its place, with the selection and its card kept.
    */
-  function dropToFlat(): void {
+  function dropToFlat(state: WorldGraphics = 'flat'): void {
     const gone = r3
     if (!gone || disposed) return
+    clearTimeout(watch)
     cancelActions()
     unwireCanvas()
     r3 = null
     try { gone.dispose() } catch { /* the lost context may refuse to be freed: it is off the page either way */ }
     redraw()
-    graphics('flat')
+    graphics(state)
+  }
+
+  // ---------------- first-frame watchdog (look spec §5.3) ----------------
+  // A 4K canvas the GPU could not allocate, or a driver that hangs, leaves the 3D map blank with no error. From the first
+  // load the watchdog looks every half second until a frame has presented: past the deadline, or with the context lost
+  // two looks running and no loss event to wait out, the viewer shows the 2D map.
+  let paused = false
+  let watchArmed = false
+  let watch: ReturnType<typeof setTimeout> | undefined
+  /** Time counted toward the deadline: the view shown, not paused, no loss waited out. */
+  let watched = 0
+  let lostTicks = 0
+  function watchTick(): void {
+    // dropToFlat and dispose clear the timer, so the renderer is still there.
+    const d = (r3 as ThreeRenderer).drawnCounts()
+    if (d.presented > 0) return
+    if (d.contextLost && !lossPending) {
+      if (++lostTicks >= 2) { dropToFlat('watchdog'); return }
+    } else lostTicks = 0
+    if (!paused && !lossPending && document.visibilityState !== 'hidden') watched += WATCH_TICK_MS
+    if (watched >= (d.software ? FIRST_FRAME_MS_SW : FIRST_FRAME_MS_HW)) { dropToFlat('watchdog'); return }
+    watch = setTimeout(watchTick, WATCH_TICK_MS)
   }
 
   // ---------------- actions ----------------
@@ -899,6 +945,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   return {
     load(d, loadOpts = {}) {
       if (disposed) return
+      if (r3 && !watchArmed) { watchArmed = true; watch = setTimeout(watchTick, WATCH_TICK_MS) }
       if (loadOpts.statusOnly === true && doc !== null && sameParts(doc, d)) {
         doc = d
         // redraw() lights the selection again, or the tour's or an answer's highlight (baseFocus) while none is open.
@@ -990,7 +1037,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()
@@ -1002,7 +1049,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       }
     },
     setPaused(p) {
-      if (!disposed) r3?.setPaused(p)
+      if (disposed) return
+      paused = p
+      r3?.setPaused(p)
     },
     requestFrame() {
       if (!disposed) r3?.requestFrame()
@@ -1016,6 +1065,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     dispose() {
       if (disposed) return
       disposed = true
+      clearTimeout(watch)
       cancelActions()
       unwireCanvas()
       if (motionQuery && typeof motionQuery.removeEventListener === 'function') motionQuery.removeEventListener('change', onMotionChange)

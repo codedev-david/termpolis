@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { CANVAS_DESCRIPTION, createWorldViewer, forgetWebGL, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
+import { CANVAS_DESCRIPTION, createWorldViewer, FIRST_FRAME_MS_HW, FIRST_FRAME_MS_SW, forgetWebGL, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { building, minimal, rich } from './helpers'
@@ -470,7 +470,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, frames: 0, software: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -563,7 +563,7 @@ function fakeRenderer(host: HTMLElement) {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']), isShown: vi.fn((id: string) => id !== 'b1'),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false })),
     motionState: vi.fn(() => ({ ...MOTION })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(), setReducedMotion: vi.fn(), requestFrame: vi.fn(), stopFlight: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
@@ -1261,7 +1261,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, frames: 7, software: true, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, frames: 7, software: true, presented: 7, contextLost: false, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
@@ -1943,7 +1943,7 @@ function mount3d(opts: Parameters<typeof createWorldViewer>[1] = {}) {
   const viewer = createWorldViewer(host, { renderCard: (h) => { cards.push(h) }, ...opts })
   viewer.load(rich())
   const f = fake as unknown as ReturnType<typeof fakeRenderer>
-  const made = createThreeRenderer.mock.calls[0][1] as { onContextLost: () => void; onContextRestored: () => void; reducedMotion: boolean }
+  const made = createThreeRenderer.mock.calls[0][1] as { onContextLost: () => void; onContextRestored: () => void; onBufferShrunk: () => void; reducedMotion: boolean }
   return { host, viewer, cards, ...f, made }
 }
 
@@ -2203,5 +2203,126 @@ describe('WP2: cancel stops the camera flight under way (U5)', () => {
   it('in 2D cancelActions has no flight to stop', () => {
     const { viewer } = setup({ reducedMotion: true })
     expect(() => viewer.cancelActions()).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// WP-LOOK Task 0: a 4K canvas is never blank. A first frame that never presents drops the map to 2D (look spec §5.3).
+
+describe('the first-frame watchdog (look spec 5.3)', () => {
+  /** A viewer whose renderer has presented nothing yet; `set` changes what drawnCounts answers from then on. */
+  function unpresented(opts: Parameters<typeof createWorldViewer>[1] = {}) {
+    vi.useFakeTimers()
+    const graphics: WorldGraphics[] = []
+    const m = mount3d({ reducedMotion: true, onGraphics: (g) => { graphics.push(g) }, ...opts })
+    let counts = { ...m.r.drawnCounts(), presented: 0, software: false, contextLost: false }
+    vi.mocked(m.r.drawnCounts).mockImplementation(() => counts)
+    const set = (c: Partial<typeof counts>): void => { counts = { ...counts, ...c } }
+    return { ...m, graphics, set }
+  }
+
+  it('drops to the 2D map when no frame presents within 4 s on a GPU; a paused view or a hidden page does not count', () => {
+    expect(FIRST_FRAME_MS_HW).toBe(4000)
+    const { host, viewer, r, graphics } = unpresented()
+    viewer.setPaused(true)
+    vi.advanceTimersByTime(20_000)
+    expect(graphics).toEqual([])
+    viewer.setPaused(false)
+    const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    vi.advanceTimersByTime(20_000)
+    expect(graphics).toEqual([])
+    hidden.mockReturnValue('visible')
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
+    expect(graphics).toEqual([])
+    expect(r.dispose).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(500)
+    expect(graphics).toEqual(['watchdog'])
+    expect(r.dispose).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('section.world-fallback')).not.toBeNull()
+    expect(viewer.drawn()).toMatchObject({ presented: 0, contextLost: false, frames: 0 })
+    // It is done: nothing more is asked of the renderer it freed.
+    const asked = vi.mocked(r.drawnCounts).mock.calls.length
+    vi.advanceTimersByTime(60_000)
+    expect(vi.mocked(r.drawnCounts).mock.calls.length).toBe(asked)
+    expect(graphics).toEqual(['watchdog'])
+    viewer.dispose()
+  })
+
+  it('waits 15 s in software', () => {
+    expect(FIRST_FRAME_MS_SW).toBe(15_000)
+    const { viewer, graphics, set } = unpresented()
+    set({ software: true })
+    vi.advanceTimersByTime(FIRST_FRAME_MS_SW - 500)
+    expect(graphics).toEqual([])
+    vi.advanceTimersByTime(500)
+    expect(graphics).toEqual(['watchdog'])
+    viewer.dispose()
+  })
+
+  it('a context lost with no event trips it after two ticks; one with its loss event pending is waited out', () => {
+    const a = unpresented()
+    a.set({ contextLost: true })
+    vi.advanceTimersByTime(500)
+    a.set({ contextLost: false }) // one tick lost, then back: the count starts again
+    vi.advanceTimersByTime(500)
+    a.set({ contextLost: true })
+    vi.advanceTimersByTime(500)
+    expect(a.graphics).toEqual([])
+    vi.advanceTimersByTime(500)
+    expect(a.graphics).toEqual(['watchdog'])
+    a.viewer.dispose()
+    vi.useRealTimers()
+    createThreeRenderer.mockReset()
+    forgetWebGL()
+
+    const b = unpresented()
+    b.made.onContextLost()
+    b.set({ contextLost: true })
+    vi.advanceTimersByTime(60_000)
+    expect(b.graphics).toEqual(['lost']) // the loss is the context-loss ladder's to handle
+    b.made.onContextRestored()
+    b.set({ contextLost: false })
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
+    expect(b.graphics).toEqual(['lost', 'restored'])
+    vi.advanceTimersByTime(500)
+    expect(b.graphics).toEqual(['lost', 'restored', 'watchdog'])
+    b.viewer.dispose()
+  })
+
+  it('never fires once a frame has presented, nor after dispose', () => {
+    const a = unpresented()
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
+    a.set({ presented: 1 })
+    vi.advanceTimersByTime(500)
+    const asked = vi.mocked(a.r.drawnCounts).mock.calls.length
+    a.set({ presented: 0, contextLost: true })
+    vi.advanceTimersByTime(60_000)
+    expect(a.graphics).toEqual([])
+    expect(vi.mocked(a.r.drawnCounts).mock.calls.length).toBe(asked)
+    // A later load does not arm it again.
+    a.viewer.load(rich())
+    vi.advanceTimersByTime(60_000)
+    expect(a.graphics).toEqual([])
+    a.viewer.dispose()
+    vi.useRealTimers()
+    createThreeRenderer.mockReset()
+    forgetWebGL()
+
+    const b = unpresented()
+    b.viewer.dispose()
+    vi.advanceTimersByTime(60_000)
+    expect(b.graphics).toEqual([])
+  })
+
+  it('a drawing buffer still shrunk after its steps, twice, drops to the 2D map', () => {
+    const { viewer, made, graphics } = unpresented()
+    made.onBufferShrunk()
+    expect(graphics).toEqual([])
+    made.onBufferShrunk()
+    expect(graphics).toEqual(['watchdog'])
+    made.onBufferShrunk()
+    vi.advanceTimersByTime(60_000)
+    expect(graphics).toEqual(['watchdog'])
+    viewer.dispose()
   })
 })

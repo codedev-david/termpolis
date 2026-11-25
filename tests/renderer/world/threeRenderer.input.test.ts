@@ -279,15 +279,15 @@ describe('threeRenderer resize', () => {
   it("keeps the drawing buffer inside the GPU's largest one: a lower pixel ratio on a 4K view, the screen's back when it shrinks", () => {
     const ro = withObserver()
     vi.stubGlobal('devicePixelRatio', 2)
-    gpu.limits = { renderbuffer: 8192, texture: 16384, viewport: [16384, 4096] } // the viewport's 4096 down is the tighter limit there
+    gpu.limits = { renderbuffer: 4096, texture: 16384, viewport: [16384, 2048] } // the viewport's 2048 down is the tighter limit there
     resizeHost(h.host, 3840, 2160)
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
-    // 3840 x 2 = 7680 fits 8192 across; 2160 x 2 = 4320 is past 4096 down: 4096 / 2160.
-    expect(rendererOf().pixelRatios).toEqual([4096 / 2160])
+    // High's 4K budget gives a ratio of 1: 3840 fits 4096 across; 2160 is past 2048 down: 2048 / 2160.
+    expect(rendererOf().pixelRatios).toEqual([2048 / 2160])
     resizeHost(h.host, 5120, 1440)
-    ro.fire() // 5120 x 2 is past 8192 across: 8192 / 5120
-    expect(rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]).toBe(8192 / 5120)
-    expect(gpu.composers[0].pixelRatios).toEqual([8192 / 5120])
+    ro.fire() // the budget's ratio (about 1.06) takes 5120 past 4096 across: 4096 / 5120
+    expect(rendererOf().pixelRatios[rendererOf().pixelRatios.length - 1]).toBe(4096 / 5120)
+    expect(gpu.composers[0].pixelRatios).toEqual([4096 / 5120])
     expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([5120, 1440])
     resizeHost(h.host, 800, 600)
     ro.fire() // small again: the screen's full ratio
@@ -296,7 +296,7 @@ describe('threeRenderer resize', () => {
     r.dispose()
   })
 
-  it("draws a 5K view at most a 1080p screen's pixels in software, and the screen's full ratio on a GPU or a smaller view", () => {
+  it("draws a 5K view at most a 1080p screen's pixels in software, and the screen's full ratio on a smaller view", () => {
     // At 5120 x 2880 in software one frame inside a district of thousands of parts took the GPU process past
     // Chromium's watchdog, which ended it (exit code 2, twice: the map then stays in 2D for good).
     const ro = withObserver()
@@ -314,15 +314,15 @@ describe('threeRenderer resize', () => {
     ro.fire()
     expect(last()).toBeCloseTo(0.375)
     expect(gpu.composers[0].pixelRatios[gpu.composers[0].pixelRatios.length - 1]).toBeCloseTo(0.375)
-    // Back on a GPU (a driver came back): the screen's full ratio at 5K.
+    // Back on a GPU (a driver came back): High's 4K budget at 5K, 5120 x 2880 x 0.75 x 0.75 = 3840 x 2160.
     r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
     gpu.gpuName = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'
     r.canvas.dispatchEvent(new Event('webglcontextrestored'))
-    expect(last()).toBe(1)
+    expect(last()).toBe(0.75)
     r.dispose()
   })
 
-  it("keeps the low quality tier's half ratio at 4K in software (its buffer is a 1080p one already), and lowers it at 5K", () => {
+  it("draws the low quality tier at a 1080p buffer at 4K in software (as on a GPU), and at 5K", () => {
     const ro = withObserver()
     vi.stubGlobal('devicePixelRatio', 1)
     gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
@@ -404,18 +404,18 @@ describe('threeRenderer resize', () => {
 
   it('keeps the drawing buffer inside the largest texture too, where that is the tightest limit (N1)', () => {
     vi.stubGlobal('devicePixelRatio', 2)
-    gpu.limits = { renderbuffer: 16384, texture: 4096, viewport: [16384, 16384] }
+    gpu.limits = { renderbuffer: 16384, texture: 2048, viewport: [16384, 16384] }
     resizeHost(h.host, 3840, 2160)
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
-    // 3840 x 2 = 7680 is past the 4096 texture across: 4096 / 3840 (2160 down then fits).
-    expect(rendererOf().pixelRatios).toEqual([4096 / 3840])
+    // High's 4K budget gives a ratio of 1; 3840 is past the 2048 texture across: 2048 / 3840 (2160 down then fits).
+    expect(rendererOf().pixelRatios).toEqual([2048 / 3840])
     r.dispose()
   })
 
   it("a context that answers no buffer limits (lost, or a driver that leaves them out) holds the screen's ratio", () => {
     vi.stubGlobal('devicePixelRatio', 2)
     gpu.limits = { renderbuffer: null, texture: null, viewport: null }
-    resizeHost(h.host, 3840, 2160)
+    resizeHost(h.host, 1920, 1080) // 3840 x 2160 at 2x: inside High's budget
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     expect(rendererOf().pixelRatios).toEqual([2])
     r.dispose()

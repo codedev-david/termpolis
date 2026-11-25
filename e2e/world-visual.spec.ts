@@ -33,7 +33,6 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
-import { PNG } from 'pngjs'
 import { execFileSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -41,33 +40,9 @@ import os from 'os'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { closeMore, toolbarControl } from './helpers/worldToolbar'
 import { edgeSummary } from '../src/shared/world/edgeText'
+import { MAX_WHITE_FRACTION, MIN_LIT_FRACTION, MIN_MEAN_OVER_BACKGROUND, pngMetrics } from './worldPixels'
 
-/**
- * Thresholds, from luminance Y = 0.2126 R + 0.7152 G + 0.0722 B (0 to 255) over the canvas with the
- * labels and panels hidden. The background is the canvas's most common Y; a pixel is "lit" when its
- * Y is LIT_MARGIN above it, and the mean is taken over the background's Y, so the lighter Blueprint
- * and Glass backgrounds never pass on their colour alone. A pixel is "white" when its darkest
- * channel is at least WHITE_MIN: saturated white, what a bloomed-out fog cloud or a knot of
- * lines turns into.
- *
- * Measured locally (SwiftShader, 1280x800 window), mean over background / lit / white:
- *
- *   | case                         | neon                     | blueprint                | glass                    |
- *   |------------------------------|--------------------------|--------------------------|--------------------------|
- *   | small, after fix round 1     | 11.6 / 8.23 % / 0.000 %  | 12.4 / 11.32 % / 0.000 % | 7.6 / 4.89 % / 0.004 %   |
- *   | big, after fix round 1       | 35.4 / 32.31 % / 0.000 % | 33.3 / 32.28 % / 0.000 % | 20.4 / 14.08 % / 0.002 % |
- *   | big, first pass (whited out) | 29.1 / 24.1 % / -        | 32.8 / 35.9 % / -        | 16.2 / 12.9 % / -        |
- *   | big, before Task 7 (fogged)  | 0.7 / 0.2 % / -          |                          |                          |
- *
- * The approved prototype's page measures 10.5 / 5.8 % (labels and panels included).
- * The floors sit under the dimmest fixed case and over the fogged one; the white cap sits over the
- * fixed cases and under the first pass's whiteout.
- */
-const LIT_MARGIN = 32
-const MIN_MEAN_OVER_BACKGROUND = 3.5
-const MIN_LIT_FRACTION = 0.01
-const WHITE_MIN = 235
-const MAX_WHITE_FRACTION = 0.005
+// The thresholds (LIT_MARGIN and the rest), their measurements and the pixel math live in worldPixels.ts.
 /** District labels that must be readable at overview (fewer if the world has fewer districts). */
 const MIN_DISTRICT_LABELS = 4
 /** The smallest label font a person can read on the map. */
@@ -269,24 +244,7 @@ async function measure(file: string): Promise<{ mean: number; lit: number; white
   await page.waitForTimeout(300)
   const buf = await canvas().screenshot({ path: path.join(SHOTS, file) })
   await style.evaluate((el) => el.remove())
-  const png = PNG.sync.read(buf)
-  const n = png.width * png.height
-  const ys = new Float32Array(n)
-  const hist = new Array<number>(256).fill(0)
-  let sum = 0
-  let white = 0
-  for (let p = 0; p < n; p++) {
-    const i = p * 4
-    if (Math.min(png.data[i], png.data[i + 1], png.data[i + 2]) >= WHITE_MIN) white++
-    const y = 0.2126 * png.data[i] + 0.7152 * png.data[i + 1] + 0.0722 * png.data[i + 2]
-    ys[p] = y
-    sum += y
-    hist[Math.round(y)]++
-  }
-  const bgY = hist.indexOf(Math.max(...hist))
-  let lit = 0
-  for (const y of ys) if (y > bgY + LIT_MARGIN) lit++
-  return { mean: sum / n, lit: lit / n, white: white / n, bgY }
+  return pngMetrics(buf)
 }
 
 interface LabelState { text: string; inside: boolean; opacity: number; visibility: string; font: number; box: string }

@@ -764,17 +764,17 @@ describe('threeRenderer lost WebGL context', () => {
 
   it("a restore reads the GPU's buffer limits again and fits the buffer to them, a tighter cap first lowering the ratio (M5)", () => {
     vi.stubGlobal('devicePixelRatio', 2)
-    resizeHost(h.host, 3840, 2160)
+    resizeHost(h.host, 1920, 1080)
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
-    expect(rendererOf().pixelRatios).toEqual([2]) // 7680 x 4320 fits the 16384 cap
+    expect(rendererOf().pixelRatios).toEqual([2]) // 3840 x 2160 fits the 16384 cap (and High's 4K budget)
     lose(r.canvas)
-    gpu.limits = { renderbuffer: 4096, texture: 16384, viewport: [16384, 16384] } // back on a smaller GPU
+    gpu.limits = { renderbuffer: 2048, texture: 16384, viewport: [16384, 16384] } // back on a smaller GPU
     const from = rendererOf().buffers.length
     r.canvas.dispatchEvent(new Event('webglcontextrestored'))
-    expect(rendererOf().getPixelRatio()).toBe(4096 / 3840)
-    expect(gpu.composers[0].pixelRatios).toEqual([4096 / 3840])
-    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([3840, 2160])
-    expect(rendererOf().buffers.slice(from).filter(([x, y]) => x > 4096 + 1e-6 || y > 4096 + 1e-6)).toEqual([])
+    expect(rendererOf().getPixelRatio()).toBe(2048 / 1920)
+    expect(gpu.composers[0].pixelRatios).toEqual([2048 / 1920])
+    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([1920, 1080])
+    expect(rendererOf().buffers.slice(from).filter(([x, y]) => x > 2048 + 1e-6 || y > 2048 + 1e-6)).toEqual([])
     lose(r.canvas)
     gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] } // and on the big one again: the full ratio
     r.canvas.dispatchEvent(new Event('webglcontextrestored'))
@@ -826,6 +826,92 @@ describe('threeRenderer lost WebGL context', () => {
     canvas.dispatchEvent(new Event('webglcontextrestored'))
     expect(onContextLost).not.toHaveBeenCalled()
     expect(h.frames.pending()).toBe(0)
+  })
+})
+
+describe('threeRenderer: a 4K canvas is never blank (look spec 5.3)', () => {
+  function withObserver(): { fire: () => void } {
+    let cb: () => void = () => {}
+    vi.stubGlobal('ResizeObserver', class { constructor(f: () => void) { cb = f } observe(): void {} disconnect(): void {} })
+    return { fire: () => cb() }
+  }
+  const last = (xs: number[]): number => xs[xs.length - 1]
+
+  it('a shrunk drawing buffer steps the pixel ratio down until it fits, at most four times', () => {
+    const ro = withObserver()
+    vi.stubGlobal('devicePixelRatio', 2)
+    resizeHost(h.host, 3840, 2160)
+    // The browser gives at most half the pixels asked for: 3840 x 2160 is shrunk, and so is 2880 x 1620 (0.75);
+    // 2160 x 1215 (0.75 x 0.75) fits.
+    gpu.allocMax = (3840 * 2160) / 2
+    const onBufferShrunk = vi.fn()
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, onBufferShrunk })
+    expect(rendererOf().pixelRatios).toEqual([1, 0.75, 0.5625]) // High's 4K budget at 2x is a ratio of 1, then two steps
+    expect(last(gpu.composers[0].pixelRatios)).toBe(0.5625)
+    expect(onBufferShrunk).not.toHaveBeenCalled()
+    const gl = rendererOf().getContext()
+    expect([gl.drawingBufferWidth, gl.drawingBufferHeight]).toEqual([r.canvas.width, r.canvas.height])
+    // Nothing fits now: four more steps, then it gives up and says so, once for this fit.
+    gpu.allocMax = 1000
+    const from = rendererOf().pixelRatios.length
+    ro.fire()
+    expect(rendererOf().pixelRatios.slice(from)).toEqual([0.5625 * 0.75, 0.5625 * 0.75 ** 2, 0.5625 * 0.75 ** 3, 0.5625 * 0.75 ** 4])
+    expect(onBufferShrunk).toHaveBeenCalledTimes(1)
+    // A frame does not test the buffer again: only a fit does.
+    h.frames.run(10)
+    expect(rendererOf().pixelRatios.length).toBe(from + 4)
+    expect(onBufferShrunk).toHaveBeenCalledTimes(1)
+    // The steps hold for later fits; a context that comes back starts from the full ratio again.
+    gpu.allocMax = null
+    r.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(rendererOf().getPixelRatio()).toBe(1)
+    // A lost context is never tested: a lost one answers no buffer worth reading.
+    gpu.allocMax = 1000
+    gpu.contextLost = true
+    ro.fire()
+    expect(rendererOf().getPixelRatio()).toBe(1)
+    expect(onBufferShrunk).toHaveBeenCalledTimes(1)
+    gpu.contextLost = false
+    r.dispose()
+  })
+
+  it('a renderer with no onBufferShrunk gives up quietly; the frames it presents are counted', () => {
+    gpu.allocMax = 10
+    const r = createThreeRenderer(h.host, REDUCED)
+    expect(rendererOf().pixelRatios).toHaveLength(5)
+    expect(r.drawnCounts().presented).toBe(0)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    settle(h.frames)
+    expect(r.drawnCounts().presented).toBe(frames(r))
+    expect(r.drawnCounts().contextLost).toBe(false)
+    gpu.contextLost = true
+    expect(r.drawnCounts().contextLost).toBe(true)
+    gpu.contextLost = false
+    r.dispose()
+  })
+
+  it('a frame that throws is not counted as presented', () => {
+    const r = idle()
+    const n = r.drawnCounts().presented
+    vi.spyOn(gpu.composers[0], 'render').mockImplementation(() => { throw new Error('GPU process gone') })
+    r.setHovered('a')
+    expect(() => h.frames.step()).toThrow('GPU process gone')
+    expect(frames(r)).toBeGreaterThan(n)
+    expect(r.drawnCounts().presented).toBe(n)
+    r.dispose()
+  })
+
+  it('the canvas host takes the theme background on setTheme', () => {
+    const r = createThreeRenderer(h.host, REDUCED)
+    expect(r.canvas.style.background).toBe('var(--world-bg)')
+    r.setTheme('blueprint', { background: '#061a33', district: '#002244', conduit: '#3366ff', glow: '#66ccff', text: '#ffffff', fogDensity: 0.005 })
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe('#061a33')
+    r.draw(smallCity(), smallText(), false)
+    r.setTheme('glass', { background: '#111827', district: '#eeeeee', conduit: '#0000ff', glow: '#00ffff', text: '#000000', fogDensity: 0.004 })
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe('#111827')
+    r.dispose()
   })
 })
 

@@ -147,6 +147,8 @@ const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id)
 export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes back when they do.'
 /** The notice once the graphics were lost a second time: the 2D map shows from then on. */
 export const GRAPHICS_FLAT = 'The graphics stopped again, so the map shows in 2D.'
+/** The notice once the 3D map never drew a frame, or the GPU could not hold its smallest buffer (look spec §5.3). */
+export const GRAPHICS_WATCHDOG = 'Lumopolis switched to the 2D map because this graphics card could not draw the 3D view.'
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoTry, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
@@ -628,7 +630,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         setCard(html)
         setClickThrough(fromClick === true)
       },
-      // A lost WebGL context: the first is waited out on the 2D map, the second leaves the 2D map for good.
+      // A lost WebGL context: the first is waited out on the 2D map, the second leaves the 2D map for good, as a map that never drew a frame does (watchdog).
       onGraphics: (g) => {
         if (g === 'lost') {
           // What plays on the 3D map stops (a tour, an answer's steps); with the 3D map on show its card goes too, as
@@ -645,7 +647,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           // The context may come back on another GPU, or in software.
           setSoftware(v.drawn().software)
         }
-        else { setNotice(GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
+        else { setNotice(g === 'watchdog' ? GRAPHICS_WATCHDOG : GRAPHICS_FLAT); setGlGone(true); setGlPaused(false) }
       },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
@@ -1076,7 +1078,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             data-testid="world-canvas-host"
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
-            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden' }}
+            // The theme's background (the renderer sets --world-bg) shows before the first frame paints (look spec §5.3).
+            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden', background: 'var(--world-bg, #03050a)' }}
             onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
             onWheel={cancelBookmark}
           />

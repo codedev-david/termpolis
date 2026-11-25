@@ -146,6 +146,12 @@ describe('buildPage: header and control set', () => {
     const { control, q, viewer } = setup()
     change(control('theme') as HTMLSelectElement, 'glass')
     expect(viewer.setTheme).toHaveBeenCalledWith('glass')
+    // The page and the view behind the canvas take the theme's background, so it shows before a frame paints (look spec 5.3).
+    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#111827')
+    const css = Array.from(document.querySelectorAll('style'), (s) => s.textContent).join('')
+    expect(css).toContain('.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#03050a)')
+    expect(css).toContain('.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#03050a)}')
+    document.documentElement.style.removeProperty('--world-bg')
     change(control('labels') as HTMLSelectElement, 'tech')
     expect(viewer.setLayers).toHaveBeenCalledWith({ labels: 'tech' })
     change(q<HTMLInputElement>('[data-layer="allLineLabels"]'), true)

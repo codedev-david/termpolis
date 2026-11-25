@@ -92,6 +92,17 @@ afterEach(() => {
 })
 
 describe('boot', () => {
+  it("paints the first theme's background behind everything at once, before the world is read (look spec 5.3)", async () => {
+    writePage()
+    vi.stubGlobal('DecompressionStream', undefined) // fails after the background is set: it shows behind the message too
+    await boot()
+    expect(await window.__worldExport.ready).toBe('failed')
+    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#03050a')
+    expect(document.body.style.background).toBe('var(--world-bg,#03050a)')
+    document.documentElement.style.removeProperty('--world-bg')
+    document.body.style.background = ''
+  })
+
   it('mounts the viewer read-only with the page as its card panel, and loads the world', async () => {
     const doc = writePage()
     await boot()

@@ -77,12 +77,12 @@ describe('threeRenderer scene build', () => {
     expect(composer.renderTarget2.samples).toBe(0)
   })
 
-  it('at low quality: no antialias, half pixel ratio, no composer and no dust; frames render straight', () => {
+  it('at low quality: no antialias, three quarters of a 1x ratio, no composer and no dust; frames render straight', () => {
     vi.stubGlobal('devicePixelRatio', 3)
     const r = createThreeRenderer(host, { quality: 'low', reducedMotion: false })
     const gl = rendererOf()
     expect(gl.args).toEqual([{ antialias: false }])
-    expect(gl.pixelRatios).toEqual([1]) // min(3, 2) * 0.5
+    expect(gl.pixelRatios).toEqual([0.75]) // min(3, 1) * 0.75 (look spec §5)
     expect(gpu.composers).toHaveLength(0)
     frames.step()
     expect(gl.renders).toHaveLength(1)

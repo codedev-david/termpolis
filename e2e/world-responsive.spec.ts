@@ -37,6 +37,7 @@ import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
+import { CORNER_MAX_LEVELS, cornerPatches, drawnBackground, levelsApart, MAX_WHITE_FRACTION, MIN_LIT_FRACTION, pngMetrics } from './worldPixels'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
@@ -1086,6 +1087,56 @@ test.describe.serial('Lumopolis at every screen size', () => {
       }
     }
     expect(clickedZoomed, 'a zoomed button was clicked with the mouse').toBe(RUN.some((v) => uiScale(v.width, v.height) > 1))
+  })
+
+  test('the canvas is painted, never blank or white, at 3840x2160 and 5120x2880', async () => {
+    // Look spec §5.3: a 4K or 5K drawing buffer the GPU cannot hold must not leave a blank or white canvas. Each tier
+    // draws inside its pixel budget, and the theme's background sits behind the canvas. The reduced run (software-drawn
+    // macOS) checks 3840x2160 only, as it does for its other checks.
+    test.setTimeout(1_800_000)
+    const names = process.env.RESPONSIVE_REDUCED === '1' ? ['3840x2160'] : ['3840x2160', '5120x2880']
+    const sizes = VIEWPORTS.filter((v) => names.includes(v.name))
+    expect(sizes).toHaveLength(names.length)
+    if (!(await page.locator(PANE).isVisible())) {
+      // Run on its own (the world test before it opens the world, and leaves it open).
+      await setViewport(sizes[0])
+      await createTerminal('Repo', path.resolve('.'))
+      await openPane()
+    }
+    await settled(180_000)
+    for (const v of sizes) {
+      await setViewport(v)
+      await settled()
+      const host = page.locator('[data-testid="world-canvas-host"]')
+      await expect(host, `the 3D map is still up at ${v.name} (the watchdog did not drop it to 2D)`).toBeVisible()
+      const bg = await host.evaluate((el) => getComputedStyle(el).getPropertyValue('--world-bg').trim())
+      expect(bg, `the canvas host carries the theme background at ${v.name}`).toMatch(/^#[0-9a-f]{6}$/i)
+      const style = await page.addStyleTag({
+        content: '.lw-labels, [data-testid="world-stage"] > :not([data-testid="world-canvas-host"]) { visibility: hidden !important }',
+      })
+      let buf: Buffer
+      try {
+        await page.waitForTimeout(300)
+        // A clip of the page at CSS scale, as litShare takes it: an element shot of a 5K software frame can run out its time.
+        const box = await host.locator('canvas').first().boundingBox()
+        expect(box, `the map has a canvas at ${v.name}`).not.toBeNull()
+        buf = await page.screenshot({ clip: box!, scale: 'css', timeout: 120_000, path: path.join(SHOTS, `app-painted-${v.name}.png`) })
+        await reEmulate()
+      } finally {
+        await style.evaluate((el) => (el as Element).remove())
+      }
+      const m = pngMetrics(buf)
+      const why = m.lit > MIN_LIT_FRACTION ? '' : ` (${await mapCanvasState()})`
+      softly(m.lit, `the city is drawn at ${v.name}: ${(m.lit * 100).toFixed(2)}% lit${why}`).toBeGreaterThan(MIN_LIT_FRACTION)
+      softly(m.white, `the canvas is not whited out at ${v.name}: ${(m.white * 100).toFixed(3)}% white`).toBeLessThan(MAX_WHITE_FRACTION)
+      // The corners are the theme background as the frame draws it (tone mapped, drawnBackground), not blank or white.
+      const corners = cornerPatches(buf)
+      const theme = drawnBackground(bg)
+      console.log(`[world-responsive] painted ${v.name}: lit ${(m.lit * 100).toFixed(2)}%, white ${(m.white * 100).toFixed(3)}%, theme ${bg} drawn rgb ${theme.join(',')}, corners ${corners.map((c) => c.join(',')).join(' / ')}`)
+      for (const [i, c] of corners.entries()) {
+        softly(levelsApart(c, theme), `corner ${i} at ${v.name} is the theme background ${bg} (drawn rgb ${theme.join(',')}), not blank or white (it is rgb ${c.join(',')})`).toBeLessThanOrEqual(CORNER_MAX_LEVELS)
+      }
+    }
   })
 
   test('an answer made while memory is locked, or with no saved notes matching, says so, and fits with that note at 768x1024 and the largest size the run checks (WPA fix M8, WPA2 M8)', async () => {

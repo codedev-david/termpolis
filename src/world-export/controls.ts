@@ -52,12 +52,12 @@ const LEGEND_MAX_CARGO = 10
  */
 export const PAGE_CSS = `
 html{font-size:${BASE_PX}px}
-.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:#03050a;color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#03050a);color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wx-page [hidden]{display:none!important}
 .wx-header{display:flex;flex-wrap:wrap;gap:${r(4)} ${r(16)};align-items:center;justify-content:space-between;padding:${r(6)} ${r(14)};font-size:${r(12)};color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
 .wx-header a{color:#7dd3fc}
 .wx-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;--wx-low:${r(56)};--wx-top:${r(CARD_INSET + 48)}}
-.wx-view{position:absolute;inset:0;z-index:0}
+.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#03050a)}
 .wx-map2d{position:absolute;inset:0;box-sizing:border-box;overflow:auto;padding:${r(12)} ${r(16)};border-bottom:var(--wx-low) solid #0b1220;background:#0b1220}
 .wx-map2d [data-kind]{cursor:pointer}
 .wx-map2d ul{padding-left:${r(18)}}
@@ -480,7 +480,11 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
       v.setLayers({ proposal: layers.proposal })
       // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
       tools.append(
-        select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => v.setTheme(t as ThemeName)),
+        select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => {
+          // Behind the canvas the theme's background shows before a frame paints (look spec §5.3).
+          document.documentElement.style.setProperty('--world-bg', THEMES[t as ThemeName].background)
+          v.setTheme(t as ThemeName)
+        }),
         select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], DEFAULT_LAYERS.labels, (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
         checkbox('Processes', 'processes', DEFAULT_LAYERS.processes, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),
         checkbox('All line labels', 'allLineLabels', DEFAULT_LAYERS.allLineLabels, (on) => v.setLayers({ allLineLabels: on })),

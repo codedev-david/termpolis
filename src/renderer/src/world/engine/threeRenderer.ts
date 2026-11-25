@@ -16,7 +16,8 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3, pixelBudgetRatio, SOFTWARE_MAX_PIXELS } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { shrunk, tierPixelRatio, type TierName } from './tierBudget'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -68,6 +69,11 @@ export interface RendererOptions {
   onContextLost?: () => void
   /** The lost context came back: the last world drawn has been built again on it. */
   onContextRestored?: () => void
+  /**
+   * The browser still gave a smaller drawing buffer than asked for after the pixel ratio stepped down four times (look
+   * spec §5.3): the GPU cannot hold even the smallest one, and frames draw only part of the view, or nothing.
+   */
+  onBufferShrunk?: () => void
 }
 
 export interface ThreeRenderer {
@@ -136,7 +142,7 @@ export interface ThreeRenderer {
    * frames have been drawn since the renderer was built (nothing is drawn while nothing changes). `software`: the
    * context is drawn in software (softwareRenderer), as read when it was made or last came back.
    */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean }
   /**
    * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
@@ -483,19 +489,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
   }
   /**
-   * The pixel ratio for the view's size: the screen's (at most 2, halved at low quality), drawn in software lowered
-   * to SOFTWARE_MAX_PIXELS, and lowered to the buffer cap.
+   * The pixel ratio for the view's size: the tier's share of the screen's (tierPixelRatio: High at most 2 inside a 4K
+   * budget, Low at most three quarters inside a 1080p one, in software the 1080p one at either), lowered to the buffer
+   * cap, then by the steps a shrunk buffer took (fitShrunk).
    */
-  const pixelRatio = (): number => {
-    const want = Math.min(window.devicePixelRatio || 1, 2) * (high ? 1 : 0.5)
-    return bufferRatio(software ? pixelBudgetRatio(want, width, height, SOFTWARE_MAX_PIXELS) : want, width, height, bufferCap)
-  }
+  const look: TierName = high ? 'high' : 'low'
+  /** The steps down a drawing buffer the browser shrank has taken: 0.75 each, kept across fits until a new context. */
+  let shrinkScale = 1
+  const pixelRatio = (): number => tierPixelRatio(look, window.devicePixelRatio || 1, width, height, bufferCap, software) * shrinkScale
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
   const shown = { width, height, ratio: pixelRatio() }
   renderer.setPixelRatio(shown.ratio)
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
+  renderer.domElement.style.background = 'var(--world-bg)' // the theme's background until the first frame paints
   renderer.info.autoReset = false // a frame's draw calls add up across the composer's passes; reset once a frame
   undo.push(() => { renderer.domElement.remove(); renderer.dispose(); renderer.forceContextLoss() }) // off the page first, whatever freeing it does
   host.appendChild(renderer.domElement)
@@ -521,6 +529,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     bufferCap = readCap()
     software = readSoftware()
     loopGap = SOFTWARE_LOOP_MS
+    shrinkScale = 1
     fitBuffer()
     if (lastModel && lastText) draw(lastModel, lastText, allLabels)
     wake()
@@ -807,6 +816,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const boxRect = [NaN, NaN, NaN, NaN]
   const corner = new THREE.Vector3()
   let frameNo = 0
+  /** Frames whose render returned: a first-frame watchdog waits for one (look spec §5.3). */
+  let presented = 0
   let drawCalls = 0 // the last frame's GL draw calls, every pass
   let tier: ZoomTier = 'districts'
   /** Every building's floors and block, with the batches' bookkeeping (batchFrame). */
@@ -2243,7 +2254,23 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     renderer.setSize(width, height)
     composer?.setSize(width, height)
     setRatio(ratio)
+    fitShrunk()
   }
+  /**
+   * Chromium gives a smaller drawing buffer, without an error, when it cannot allocate the one asked for (look spec
+   * §5.3); a frame then draws part of the view, or nothing. The ratio steps down by a quarter until the buffer is
+   * whole, at most four times; still shrunk, the viewer is told (onBufferShrunk). A lost context is not tested.
+   */
+  function fitShrunk(): void {
+    const gl = renderer.getContext()
+    if (gl.isContextLost()) return
+    for (let i = 0; i < 4 && shrunk(gl, renderer.domElement); i++) {
+      shrinkScale *= 0.75
+      setRatio(pixelRatio())
+    }
+    if (shrunk(gl, renderer.domElement)) opts.onBufferShrunk?.()
+  }
+  fitShrunk() // the buffer made at build
   const resize = (): void => {
     solids = null
     ;[width, height] = size()
@@ -2970,6 +2997,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     renderer.info.reset()
     if (composer) composer.render()
     else renderer.render(scene, camera)
+    presented++
     drawCalls = renderer.info.render.calls
     labelRenderer.render(scene, camera)
     return moving ? 'moving' : looping || turning ? 'looping' : 'still'
@@ -3041,6 +3069,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setTheme(name, th) {
       themeName = name
       theme = th
+      host.style.setProperty('--world-bg', th.background) // behind the canvas, painted before any frame is
       extras = EXTRAS[themeName]
       fogTarget = fogFor()
       fog.density = fogTarget
@@ -3094,7 +3123,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // comes (a starved frame rate, a 5K view drawn in software, must not hold a finished change open).
       tickChanges()
       return {
-        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo, software,
+        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
         slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
