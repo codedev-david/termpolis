@@ -578,16 +578,54 @@ describe('worker-backed embedding orchestration (BB11)', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('a blank text is not sent to the worker: the worker answers null for one, and that must not read as a crash', async () => {
+  it('a blank text is not sent to the worker, and does not move its batch off it: its slot is null, as the worker and embedText give a blank (RESP fix-2 R2-2)', async () => {
     const embed = vi.fn(async (t: string) => [t.length])
     const dispose = vi.fn()
+    const backend = vi.fn(async (texts: string[]) => texts.map(() => [0]))
     setWorkerSpawner(() => ({ embed, dispose }), { backgroundOnly: true })
-    _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
-    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc', '  ']))).toEqual([[0], [0]]) // in process
-    expect(await runAsBackgroundEmbeds(() => embedBatch([7 as unknown as string]))).toEqual([[0]]) // nor is a value that is no text
-    expect(embed).not.toHaveBeenCalled()
-    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc']))).toEqual([[3]]) // the worker is still there
-    expect(dispose).not.toHaveBeenCalled()
+    _setBackendForTests(backend)
+    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc', '  ', 'de']))).toEqual([[3], null, [2]])
+    expect(await runAsBackgroundEmbeds(() => embedBatch([7 as unknown as string, 'f']))).toEqual([null, [1]]) // nor a value that is no text
+    expect(embed.mock.calls.map((c) => c[0])).toEqual(['abc', 'de', 'f'])
+    expect(backend).not.toHaveBeenCalled() // nothing ran on the calling thread
+    expect(dispose).not.toHaveBeenCalled() // and a blank is no crash
+  })
+
+  it('an interactive text is not posted once its call is past its deadline: the last text answered at the deadline (RESP fix-2 R2-1)', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = vi.fn((text: string) => new Promise<number[]>((r) => setTimeout(() => r([text.length]), 10_000)))
+      setWorkerSpawner(() => ({ embed: worker }))
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [9]))
+      const batch = embedBatch(['ab', 'cde'])
+      await vi.advanceTimersByTimeAsync(10_000) // 'ab' answers at the deadline itself
+      expect(await settledNow(batch)).toBe(true)
+      expect(await batch).toEqual([[9], [9]]) // in process
+      expect(worker).toHaveBeenCalledTimes(1) // 'cde' was never posted: nobody would read its answer
+      const next = embedBatch(['wxyz'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await next).toEqual([[4]]) // and the worker was free for the next Ask at once
+    } finally { vi.useRealTimers() }
+  })
+
+  it('an interactive text is not posted when its turn comes at its deadline: the embed ahead answered at that moment (RESP fix-2 R2-1)', async () => {
+    vi.useFakeTimers()
+    try {
+      const worker = vi.fn((text: string) => new Promise<number[]>((r) => setTimeout(() => r([text.length]), 10_000)))
+      setWorkerSpawner(() => ({ embed: worker }))
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [9]))
+      const passage = runAsBackgroundEmbeds(() => embedBatch(['abcdef']))
+      await vi.advanceTimersByTimeAsync(0)
+      const ask = embedBatch(['q'])
+      await vi.advanceTimersByTimeAsync(10_000) // the passage answers, and the Ask's turn comes, at its deadline
+      expect(await settledNow(ask)).toBe(true)
+      expect(await ask).toEqual([[9]])
+      expect(await passage).toEqual([[6]])
+      expect(worker).toHaveBeenCalledTimes(1) // the Ask's text was never posted
+      const next = runAsBackgroundEmbeds(() => embedBatch(['xy']))
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await next).toEqual([[2]]) // the turn was handed on
+    } finally { vi.useRealTimers() }
   })
 
   it('an interactive embed on a plain worker gets 10 s in all, its wait for the worker and its run together (RESP fix-1 F-3)', async () => {

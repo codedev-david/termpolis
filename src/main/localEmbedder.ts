@@ -346,8 +346,11 @@ async function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  *  run's `timeoutMs` counts from when the worker starts it. A background embed (`deadline` null) waits its turn however long,
  *  as each one ahead has its own bound. One someone waits on (main's plain worker: an Ask's query) is answered in process at
  *  its `deadline`, which covers its wait and its run together (RESP fix-1 F-3); a run it gave up on stays on the worker's
- *  turn until the worker answers or its own bound passes, so the next embed's clock still starts when the worker is free. */
+ *  turn until the worker answers or its own bound passes, so the next embed's clock still starts when the worker is free.
+ *  Once the deadline has passed, before the turn or when it comes, the text is not posted at all: its caller is answered in
+ *  process, and nobody would read the worker's answer (RESP fix-2 R2-1). */
 async function tryWorkerEmbed(w: WorkerTransport, text: string, timeoutMs: number, deadline: number | null): Promise<{ ok: boolean; vec: number[] | null }> {
+  if (deadline !== null && Date.now() >= deadline) return WORKER_MISS
   const before = workerTurn
   let done!: () => void
   workerTurn = new Promise<void>((r) => { done = r })
@@ -356,6 +359,7 @@ async function tryWorkerEmbed(w: WorkerTransport, text: string, timeoutMs: numbe
     void before.then(done) // the next embed's turn still comes after the one ahead
     return WORKER_MISS
   }
+  if (deadline !== null && Date.now() >= deadline) { done(); return WORKER_MISS } // the turn came at the deadline
   const run = runOnWorker(w, text, timeoutMs).finally(done)
   return deadline === null ? run : within(run, deadline - Date.now(), WORKER_MISS)
 }
@@ -451,16 +455,19 @@ export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<
   // BB11: try the off-thread worker first (single-text protocol). If it embeds every
   // text we're done; any miss disables it for this call and we use the in-process path.
   // A backgroundOnly worker (the memory host) takes only the background embeds.
-  // A blank text stays here too: the worker answers null for one, which would read as a crash.
+  // A blank text is never sent to the worker: it answers null for one, which would read as a crash. Its slot is null, as
+  // the worker and embedText give a blank, and the rest of the batch still goes to the worker (RESP fix-2 R2-2). A batch of
+  // blanks only stays here, as before.
   const background = inBackgroundEmbeds()
-  const blank = prepared.some((p) => typeof p !== 'string' || !p.trim())
-  const worker = !blank && (!workerBackgroundOnly || background) ? await ensureWorker() : null
+  const isBlank = (p: unknown): boolean => typeof p !== 'string' || !p.trim()
+  const worker = !prepared.every(isBlank) && (!workerBackgroundOnly || background) ? await ensureWorker() : null
   if (worker) {
     const out: (number[] | null)[] = []
     let ok = true
     const timeoutMs = background ? BACKGROUND_WORKER_TIMEOUT_MS : WORKER_TIMEOUT_MS
     const deadline = background ? null : Date.now() + WORKER_TIMEOUT_MS // one bound for the whole call
     for (const p of prepared) {
+      if (isBlank(p)) { out.push(null); continue }
       const r = await tryWorkerEmbed(worker, p, timeoutMs, deadline)
       if (!r.ok) { ok = false; break }
       out.push(r.vec)
