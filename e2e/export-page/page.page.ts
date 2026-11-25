@@ -46,6 +46,67 @@ async function pauseClock(page: Page): Promise<void> {
   expect(paused, 'the page has the clock Playwright installed').toBe(true)
 }
 
+/**
+ * Watches the city's frames through its canvas's WebGL context, the one the page drew with (getContext hands back the
+ * same object): each frame drawn clears the canvas, so `clear` counts frames, and drawn in software each frame ends
+ * with a fence that the page waits on before it draws the next (threeRenderer's lastDrawn), so the newest fence not
+ * yet deleted is kept. Nothing the page does changes: the wrappers call the context's own methods. False without a
+ * WebGL context (the 2D map).
+ */
+async function watchFrames(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('.wx-view canvas') as HTMLCanvasElement | null
+    const gl = canvas && ((canvas.getContext('webgl2') as WebGL2RenderingContext | null) ?? (canvas.getContext('webgl') as WebGL2RenderingContext | null))
+    if (!gl) return false
+    const seen: { gl: WebGL2RenderingContext; frames: number; fence: WebGLSync | null } = { gl, frames: 0, fence: null }
+    ;(window as unknown as { __frames: typeof seen }).__frames = seen
+    const clear = gl.clear.bind(gl)
+    gl.clear = (mask: number): void => { seen.frames++; clear(mask) }
+    if (typeof gl.fenceSync === 'function') {
+      const fenceSync = gl.fenceSync.bind(gl)
+      const deleteSync = gl.deleteSync.bind(gl)
+      gl.fenceSync = (condition: number, flags: number): WebGLSync | null => (seen.fence = fenceSync(condition, flags))
+      gl.deleteSync = (sync: WebGLSync | null): void => { if (sync === seen.fence) seen.fence = null; deleteSync(sync) }
+    }
+    return true
+  })
+}
+
+/** How many frames the city has drawn since watchFrames. */
+const framesDrawn = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { __frames: { frames: number } }).__frames.frames)
+
+/**
+ * Waits, in real time, until the GPU has finished the last frame the page drew: its fence is signalled (or there is
+ * none: drawn on a GPU, no frame waits on one). Drawn in software the page draws no frame while the last is still
+ * being drawn, however far its clock is moved, so a step of the stopped clock taken sooner draws nothing: on a CI
+ * runner every step of the flight below came within a few milliseconds of the last, and the camera never moved.
+ * Each look is a task of its own, so the context can update the fence's state between looks.
+ */
+async function gpuIdle(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const { gl, fence } = (window as unknown as { __frames: { gl: WebGL2RenderingContext; fence: WebGLSync | null } }).__frames
+    return fence === null || gl.isContextLost() || gl.getSyncParameter(fence, gl.SYNC_STATUS) === gl.SIGNALED
+  }), { message: 'the GPU finished the last frame the page drew', timeout: 60_000, intervals: [5, 10, 20, 50, 100] }).toBe(true)
+}
+
+/** One step of the stopped clock (runFor, or fastForward to go past timers in one frame), once the GPU is idle. */
+async function clockStep(page: Page, ms: number, how: 'runFor' | 'fastForward' = 'runFor'): Promise<void> {
+  await gpuIdle(page)
+  await (how === 'runFor' ? page.clock.runFor(ms) : page.clock.fastForward(ms))
+}
+
+/**
+ * Steps the stopped clock one 16 ms frame at a time until the city draws a frame, so the last frame drawn is drawn at
+ * the clock's time now (a longer step can run several frames, and drawn in software only the first of them draws).
+ * A frame with only the looping motions moving comes at most SOFTWARE_LOOP_MAX_MS (500 ms) of page time after the
+ * last, so one is drawn within 40 steps; a city with nothing moving draws none, and wakes with a fresh clock on the
+ * next change.
+ */
+async function drawOne(page: Page): Promise<void> {
+  const before = await framesDrawn(page)
+  for (let step = 0; step < 40 && (await framesDrawn(page)) === before; step++) await clockStep(page, 16)
+}
+
 /** Lets the city settle after load: its first frames, labels and the camera's opening move. */
 const settle = (page: Page): Promise<void> => page.waitForTimeout(1500)
 
@@ -236,7 +297,7 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   await settle(o.page)
   const three = await in3d(o.page)
   // Lesson distiller stands at a corner of the fixture city (-48, 0, 41): with no flight its label sits about
-  // 1.0 of the half-diagonal from the middle of the free area, and the flight brings it to about 0.1. A building
+  // 1.0 of the half-diagonal from the middle of the free area, and the flight brings it under 0.1. A building
   // near the middle (Terminal host, about 0.2 before any flight) could not show a camera that never moved, and
   // one framed off-centre among far neighbours (Linked machines, 0.32 -> 0.35) does not come to the middle.
   const ids = await ask(o.page, 'lesson distiller')
@@ -252,12 +313,22 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
     // page's frames, timers and clock with it, and the idle turn), the click selects the building, and the clock
     // is stepped one frame at a time until the selected building's label is drawn. The flight (1.5 s, eased in)
     // has then barely moved the camera: the reading has been up to 7% under that of a camera that never moved.
+    // Every step waits for the GPU to finish the last frame first (clockStep): drawn in software the page draws no
+    // frame before that, so a step taken sooner moves the page's time without drawing it.
+    expect(await watchFrames(o.page), 'the 3D city draws with a WebGL context').toBe(true)
     await pauseClock(o.page)
     try {
+      // A frame drawn just before the click, so the click's own frame is one 16 ms step after it. A frame comes as
+      // much later as the page's time moved since the last one drawn, and the picture moving beside the card that
+      // opens eases as far: one 16 ms step takes Lesson distiller's label to about 0.57, the camera all but still,
+      // and each 16 ms after it about 0.04 nearer the middle. A first frame 0.125 s after the last (the page
+      // waiting on its GPU) read under 0.5, and one up to 0.5 s after it (the looping motions are drawn that far
+      // apart in software) can read as low as the 0.39 a Windows runner once read.
+      await drawOne(o.page)
       await expect(first).toBeVisible()
       await first.click({ force: true }) // no actionability wait: it watches animation frames, and they are stopped
       for (let step = 0; step < 10 && from === null; step++) {
-        await o.page.clock.runFor(16)
+        await clockStep(o.page, 16)
         from = await reading()
       }
       // The rest of the flight runs on the stopped clock too, so where the camera ends up depends on the page's time
@@ -266,8 +337,9 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
       // (runFor) outlasted the test. fastForward moves the clock past the landing in one frame (the flight reads the
       // time, not the frames), then each 50 ms step is one frame of the picture's move beside the card.
       if (from !== null) {
-        await o.page.clock.fastForward(FLIGHT_MS)
-        for (let step = 0; step < EASE_FRAMES; step++) await o.page.clock.fastForward(50)
+        await clockStep(o.page, FLIGHT_MS, 'fastForward')
+        for (let step = 0; step < EASE_FRAMES; step++) await clockStep(o.page, 50, 'fastForward')
+        await gpuIdle(o.page)
         landed = await reading()
       }
     } finally {

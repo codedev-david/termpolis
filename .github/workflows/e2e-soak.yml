@@ -8,6 +8,9 @@ name: E2E soak
 #   - the whole suite on macOS, where Tests runs only a smoke of it, or on any OS for one ref
 #     against another: the same specs on main and on a branch, side by side, before an upgrade
 #     like Electron 43.
+#   - with suite=export-page, Tests' export-page job instead (playwright.export.config.ts, the exported
+#     Lumopolis page in each browser that runner has), as many copies over, with no retry, so a test
+#     that only passes on its retry fails the copy.
 on:
   workflow_dispatch:
     inputs:
@@ -29,6 +32,12 @@ on:
         description: Spec files to run (space-separated, e.g. e2e/chrome-smoke.spec.ts). Empty = all.
         required: false
         default: ''
+      suite:
+        description: e2e = the main suite (playwright.config.ts, sharded); export-page = Tests' export-page job (playwright.export.config.ts), no retries
+        required: false
+        default: e2e
+        type: choice
+        options: [e2e, export-page]
       display:
         description: Linux only. wayland = a headless Weston compositor and no X server at all, so the app can only start as a native Wayland client (Electron 38+'s default in a Wayland session).
         required: false
@@ -63,6 +72,7 @@ jobs:
           enableCrossOsArchive: true
 
   e2e:
+    if: inputs.suite != 'export-page'
     needs: model
     runs-on: ${{ inputs.os }}
     timeout-minutes: 75
@@ -181,4 +191,69 @@ jobs:
           path: |
             test-results/
             e2e/screenshots/docs/
+          retention-days: 7
+
+  # Tests' export-page job, with the browsers it runs on this runner, each copy with no retry (--retries=0).
+  export-page:
+    if: inputs.suite == 'export-page'
+    needs: model
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(inputs.copies) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Restore the embedding model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: ${{ needs.model.outputs.key }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - name: Install Playwright browsers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          npx playwright install --with-deps firefox webkit
+          npx playwright install-deps chromium
+      - name: Install Playwright browsers
+        if: runner.os != 'Linux'
+        run: npx playwright install firefox webkit
+      - name: Build the world viewer and the export runtime
+        run: npm run build:world-viewer
+      # The projects test.yml's export-page job runs on each OS: Edge only on Windows, the image's Chrome on macOS.
+      - name: Exported page e2e
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) projects=(--project=electron --project=msedge --project=firefox --project=webkit); wrap=() ;;
+            macOS) projects=(--project=electron --project=chrome --project=firefox --project=webkit); wrap=() ;;
+            *) projects=(--project=electron --project=firefox --project=webkit); wrap=(xvfb-run --auto-servernum) ;;
+          esac
+          "${wrap[@]}" npx playwright test -c playwright.export.config.ts ${{ inputs.specs }} "${projects[@]}" --retries=0 --reporter=list
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-export-page-${{ inputs.os }}-copy${{ matrix.copy }}
+          path: |
+            test-results/export-page/
+            !test-results/export-fixture/
+          if-no-files-found: ignore
           retention-days: 7
