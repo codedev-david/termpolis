@@ -67,8 +67,29 @@ const SHELL = process.platform === 'win32' ? 'powershell' : 'bash'
 
 let app: ElectronApplication | null = null
 
-test.beforeAll(() => {
+// The first Electron launch on a fresh runner cannot draw on time, whatever it shows: on a macOS
+// runner (software compositing, no GPU) its GPU process took 1.1 to 1.5 s for its first raster task
+// and 0.3 to 0.8 s for each one after it, its display compositor held both swaps meanwhile, and the
+// page got no frame for up to 2.8 s (Chromium traces of soak 45591853353). Every later launch on
+// the same runner, each with a userData folder of its own, draws on time: in the cold soak jobs only
+// the spec's first launch ever failed, never a later one, and its retry passed. What the first launch pays is
+// the runner's (the app's code and the OS's graphics paths read in for the first time), not the
+// app's or its profile's. So the spec pays it once before it measures anything: one launch that plays
+// the intro to its end and draws a frame of the app, in a folder no test uses.
+test.beforeAll(async () => {
   ensureE2eBuild()
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_TEST_LAUNCH_INTRO: '1' }
+  const warm = await electron.launch({ args: [...e2eLaunchArgs('intro-warm-up'), '--force-device-scale-factor=1'], env })
+  try {
+    const page = await warm.firstWindow()
+    await page.setViewportSize({ width: VIEW_W, height: VIEW_H })
+    await page.locator(INTRO).waitFor({ state: 'attached', timeout: 60_000 })
+    await page.locator(INTRO).waitFor({ state: 'detached', timeout: 60_000 })
+    await expect(page.locator('button[title="Settings"]')).toBeVisible({ timeout: 30_000 })
+    await page.screenshot()
+  } finally {
+    await quitApp(warm)
+  }
 })
 
 test.afterEach(async () => {
