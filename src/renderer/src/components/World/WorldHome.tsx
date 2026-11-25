@@ -6,7 +6,7 @@ import type { CSSProperties, KeyboardEvent, MutableRefObject } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
 import { DesignStart } from './DesignStart'
-import { targetOf, UI_FAILED, whereOf } from './worldTargets'
+import { missingNote, targetOf, UI_FAILED, whereOf } from './worldTargets'
 import type { OpenTarget } from './worldTargets'
 import { useUiZoom } from './worldPane'
 import { stepFocus } from '../../hooks/useFocusTrap'
@@ -60,6 +60,8 @@ const choiceCls = 'flex flex-col items-start gap-1 rounded-lg border border-[#3c
 export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef, listError = false, ticket = always, onDialog }: WorldHomeProps): JSX.Element {
   const zoom = useUiZoom()
   const [dialog, setDialog] = useState<'clone' | 'design' | null>(null)
+  /** What the clone dialog starts with: a missing repository's address and branch, from its Clone again. */
+  const [cloneFill, setCloneFill] = useState<{ url: string; branch: string }>({ url: '', branch: '' })
   const [error, setError] = useState<string | null>(null)
   // An open dialog dims the home behind it (a scrim over the cards), which is held at its top while the
   // dialog is up, so the dialog, placed near the top, is always in view and the scrim covers every card.
@@ -113,7 +115,12 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
     waiting.current = null
     if (w !== null && w.still()) onOpen(w.target)
   }
-  const openDialog = (which: 'clone' | 'design'): void => { setError(null); choosing.current = true; setDialog(which) }
+  const openDialog = (which: 'clone' | 'design', fill = { url: '', branch: '' }): void => {
+    setError(null)
+    choosing.current = true
+    setCloneFill(fill)
+    setDialog(which)
+  }
   const closeDialog = (): void => { setDialog(null); free() }
   const at = now ?? Date.now()
   // An open dialog takes the pane's Esc, wherever the focus is in the pane, and does its Cancel with it: the pane
@@ -210,6 +217,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
               {entries.map((e) => {
                 const kind = ICONS[e.source.kind]
                 const where = whereOf(e)
+                const repo = e.source.kind === 'git' ? e.source : null
                 const body = (
                   <>
                     <i className={`fa-solid ${kind.icon} w-4 text-[#9ca3af]`} title={kind.label} aria-hidden="true" />
@@ -224,10 +232,18 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
                 return (
                   <li key={e.key} data-testid={`world-recent-${e.key}`}>
                     {e.missing ? (
-                      <div className="flex items-center gap-3 rounded px-3 py-2 border border-[#3c3c3c] opacity-80">
-                        {body}
-                        <span className="text-[11px] uppercase rounded px-1.5 py-0.5 bg-[#5a1d1d] text-[#f48771]">missing</span>
-                        <button type="button" aria-label={`Remove ${e.title}`} className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] hover:bg-[#37373d]" onClick={() => remove(e.key)}>Remove</button>
+                      <div className="flex flex-col gap-1 rounded px-3 py-2 border border-[#3c3c3c]">
+                        <div className="flex items-center gap-3 opacity-80">
+                          {body}
+                          <span className="text-[11px] uppercase rounded px-1.5 py-0.5 bg-[#5a1d1d] text-[#f48771]">missing</span>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <span data-testid="world-missing-note" className="flex-1 min-w-0 text-xs text-[#9ca3af]">{missingNote(e.source)}</span>
+                          {repo !== null && (
+                            <button type="button" aria-label={`Clone ${e.title} again`} className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] hover:bg-[#37373d]" onClick={(ev) => { trigger.current = ev.currentTarget; openDialog('clone', { url: repo.url, branch: repo.ref ?? '' }) }}>Clone again</button>
+                          )}
+                          <button type="button" aria-label={`Remove ${e.title}`} className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] hover:bg-[#37373d]" onClick={() => remove(e.key)}>Remove</button>
+                        </div>
                       </div>
                     ) : (
                       <button
@@ -249,6 +265,8 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
         {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
         {dialog === 'clone' && (
           <CloneDialog
+            initialUrl={cloneFill.url}
+            initialBranch={cloneFill.branch}
             escRef={dialogEsc}
             onClose={closeDialog}
             onStart={committed}

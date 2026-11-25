@@ -132,6 +132,52 @@ describe('WorldHome', () => {
     expect(props.onOpen).not.toHaveBeenCalled()
   })
 
+  // WP4b F-R7: a world whose saved copy or folder is gone says what is gone, with a way out.
+  it('a missing folder, project or design says what Lumopolis cannot find, with Remove only', () => {
+    bridge()
+    home({ entries: [
+      { key: 'f', source: { kind: 'folder', root: 'C:/gone' }, title: 'gone', lastOpened: NOW, missing: true },
+      { key: 'p', source: { kind: 'project', root: 'C:/old' }, title: 'old', lastOpened: NOW, missing: true },
+      { key: 'design:d', source: { kind: 'design', id: 'd', title: 'Shop' }, title: 'Shop', lastOpened: NOW, missing: true },
+    ] })
+    for (const [key, note] of [
+      ['f', "Lumopolis can't find this folder. It may have been moved or deleted."],
+      ['p', "Lumopolis can't find this folder. It may have been moved or deleted."],
+      ['design:d', "Lumopolis can't find this design's saved file."],
+    ] as const) {
+      const row = screen.getByTestId(`world-recent-${key}`)
+      expect(within(row).getByTestId('world-missing-note')).toHaveTextContent(note)
+      expect(within(row).getByRole('button', { name: /^Remove / })).toBeInTheDocument()
+      expect(within(row).queryByRole('button', { name: /^Clone / })).toBeNull()
+    }
+  })
+
+  it('a missing cloned repository offers Clone again, which opens the clone dialog filled in and clones it', async () => {
+    const api = bridge()
+    const props = home({ entries: [
+      { key: 'g', source: { kind: 'git', url: 'https://x.dev/a.git', ref: 'dev', root: 'C:/data/a' }, title: 'a', lastOpened: NOW, missing: true },
+      { key: 'h', source: { kind: 'git', url: 'https://x.dev/h.git', root: 'C:/data/h' }, title: 'h', lastOpened: NOW, missing: true },
+    ] })
+    const row = screen.getByTestId('world-recent-g')
+    expect(within(row).getByTestId('world-missing-note')).toHaveTextContent("Lumopolis can't find its saved copy of this repository.")
+    fireEvent.click(within(row).getByRole('button', { name: 'Clone a again' }))
+    expect(screen.getByLabelText('Repository URL')).toHaveValue('https://x.dev/a.git')
+    expect(screen.getByLabelText('Branch (optional)')).toHaveValue('dev')
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    await settle()
+    expect(api.worldClone).toHaveBeenCalledWith('https://x.dev/a.git', 'dev')
+    expect(props.onChanged).toHaveBeenCalled()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    // One with no branch fills in the address only; Cancel puts the focus back on Clone again.
+    const again = within(screen.getByTestId('world-recent-h')).getByRole('button', { name: 'Clone h again' })
+    again.focus()
+    fireEvent.click(again)
+    expect(screen.getByLabelText('Repository URL')).toHaveValue('https://x.dev/h.git')
+    expect(screen.getByLabelText('Branch (optional)')).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(again).toHaveFocus()
+  })
+
   it('a failed Remove says so', async () => {
     bridge({ worldRemoveSource: vi.fn(async () => fail('Lumopolis couldn\'t update its list of worlds. Try again.')) })
     const props = home()

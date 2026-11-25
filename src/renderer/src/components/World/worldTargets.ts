@@ -1,5 +1,5 @@
 // What the Lumopolis pane can open, shared by the home, the switcher and the pane itself.
-import type { WorldEntry } from '../../../../shared/world/types'
+import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 
 /**
  * A world to open: a folder (a project, a chosen folder or a clone) or a design. `follow`: the world
@@ -10,6 +10,12 @@ export type OpenTarget = { kind: 'root'; root: string; follow?: boolean; key?: s
 
 /** Shown when a call could not even reach main: never the raw error. */
 export const UI_FAILED = "Lumopolis couldn't do that. Try again."
+
+/** What a world whose saved copy or folder is gone says (WP4b F-R7); its row offers Remove, and a repository Clone again. */
+export const MISSING_REPO_NOTE = "Lumopolis can't find its saved copy of this repository."
+export const MISSING_FOLDER_NOTE = "Lumopolis can't find this folder. It may have been moved or deleted."
+export const MISSING_DESIGN_NOTE = "Lumopolis can't find this design's saved file."
+export const missingNote = (s: WorldSource): string => s.kind === 'git' ? MISSING_REPO_NOTE : s.kind === 'design' ? MISSING_DESIGN_NOTE : MISSING_FOLDER_NOTE
 
 // M3: each action that can fail says, in one sentence of its own, what did not happen; never "Couldn't X:" before a
 // second sentence of main's. PENDING SIGN-OFF by David.

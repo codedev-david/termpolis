@@ -297,7 +297,7 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
     // The saved copy renders, and the background update that met no login asks for a sign-in in the notice.
     expect(await expectWorldOpen(page)).toBe(savedCopy)
     // First what main answered the background update, so a missing notice names its cause: an update
-    // that failed some other way shows nothing on purpose.
+    // that failed some other way shows its own words with Try again (WP4b F-R7), not the sign-in choices.
     await expect.poll(async () => (await updateReplies(run.app)).length, { timeout: 60_000 }).toBeGreaterThan(0)
     expect((await updateReplies(run.app))[0]).toEqual({
       success: true,

@@ -17,6 +17,9 @@ export interface CloneDialogProps {
   onStart?: () => void
   /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
   escRef?: MutableRefObject<(() => void) | null>
+  /** What the fields start with: a missing repository's Clone again fills them in (WP4b F-R7). */
+  initialUrl?: string
+  initialBranch?: string
   /** A clone the person stopped had already finished: it is saved, so the home's list is refreshed (WP4b F-R5). */
   onKept?: (entry: WorldEntry) => void
 }
@@ -33,10 +36,10 @@ export const CLONE_KEPT_MESSAGE = 'The clone finished before Lumopolis could sto
 
 type StoppedBy = 'clone' | 'token'
 
-export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept }: CloneDialogProps): JSX.Element {
+export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initialUrl = '', initialBranch = '' }: CloneDialogProps): JSX.Element {
   const zoom = useUiZoom()
-  const [url, setUrl] = useState('')
-  const [branch, setBranch] = useState('')
+  const [url, setUrl] = useState(initialUrl)
+  const [branch, setBranch] = useState(initialBranch)
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** Set when the repository needs a sign-in: the choices to make one. */
