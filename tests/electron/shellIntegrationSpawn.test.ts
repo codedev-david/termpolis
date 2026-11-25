@@ -254,6 +254,20 @@ describe('fish, started for real with the integration', () => {
       'function user_prompt_hook --on-event fish_prompt',
       "    printf 'USERPROMPT'",
       'end',
+      // #45. Functions of theirs named after the builtins the integration calls (fish 3.7 lets these two be shadowed).
+      // They pass through, and record only the integration's own calls: a record means a builtin was not called as one.
+      'function contains',
+      '    if builtin test (count $argv) -ge 4; and builtin test "$argv[3]" = -h; and builtin test "$argv[4]" = --help',
+      '        echo contains >> $HOME/shadowed.log',
+      '    end',
+      '    builtin contains $argv',
+      'end',
+      'function functions',
+      '    if builtin test "$argv[1]" = -q; and builtin test "$argv[2]" = lumopolis',
+      '        echo functions >> $HOME/shadowed.log',
+      '    end',
+      '    builtin functions $argv',
+      'end',
       '',
     ].join('\n'))
     const belDir = belFolder(root)
@@ -270,6 +284,7 @@ describe('fish, started for real with the integration', () => {
       const cd = sh.out().length
       await exercise(sh, belDir, spacedDir)
       expect(sh.out().slice(cd)).toContain('USERPROMPT')
+      expect(existsSync(join(home, 'shadowed.log')) ? readFileSync(join(home, 'shadowed.log'), 'utf8') : '').toBe('')
     } finally { sh.kill() }
   }, 60_000)
 })

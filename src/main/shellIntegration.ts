@@ -62,7 +62,8 @@ export const LUMOPOLIS_USAGE = 'usage: lumopolis [folder] - maps a folder in Lum
  */
 export function detectShellKind(executable: string): ShellKind {
   if (!executable) return 'unknown'
-  const base = executable.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? ''
+  const parts = executable.replace(/\\/g, '/').split('/') // never empty: split gives at least one part
+  const base = parts[parts.length - 1].toLowerCase()
   const stem = base.replace(/\.exe$/, '')
   switch (stem) {
     case 'powershell': return 'powershell'
@@ -234,32 +235,33 @@ export const ZSH_ZLOGIN = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zlogin')}\
 /**
  * fish's integration, sourced with --init-command, which fish runs after config.fish and before the first prompt. The
  * fish_prompt event reports the folder with the same OSC 7 as bash (\e and \a are ESC and BEL to fish's printf).
- * `lumopolis` is defined unless the person has one, with the same checks as bash's: `string`, `contains`, `test` and
- * `printf` are fish built-ins.
+ * `lumopolis` is defined unless the person has one, with the same checks as bash's. config.fish has run by then, so a
+ * function of theirs named after a builtin (contains, functions, printf, source; fish 3.7 refuses set, test, string and
+ * return as function names, other releases may not) would run in place of it: every builtin here goes through `builtin` (#45).
  */
 export const FISH_INTEGRATION_SCRIPT = `# Termpolis shell integration for fish, written by Termpolis on each run.
-if not set -q __termpolis_wrapped
-    set -g __termpolis_wrapped 1
+if not builtin set -q __termpolis_wrapped
+    builtin set -g __termpolis_wrapped 1
     function __termpolis_report_cwd --on-event fish_prompt
         builtin printf '\\e]7;file://%s%s\\a' "$hostname" "$PWD"
     end
-    if not functions -q lumopolis
+    if not builtin functions -q lumopolis
         function lumopolis --description 'Map a folder in Lumopolis'
-            set -l arg .
-            if set -q argv[1]; and test -n "$argv[1]"
-                set arg $argv[1]
+            builtin set -l arg .
+            if builtin set -q argv[1]; and builtin test -n "$argv[1]"
+                builtin set arg $argv[1]
             end
-            if contains -- $arg -h --help
+            if builtin contains -- $arg -h --help
                 builtin printf '%s\\n' '${LUMOPOLIS_USAGE}'
-                return 0
+                builtin return 0
             end
-            set -l p $arg
-            if not string match -qr -- '^(/|[A-Za-z]:[/\\x5c])' $p
-                set p "$PWD/$p"
+            builtin set -l p $arg
+            if not builtin string match -qr -- '^(/|[A-Za-z]:[/\\x5c])' $p
+                builtin set p "$PWD/$p"
             end
-            if string match -q -- '*'\\a'*' $p; or not test -d $p
+            if builtin string match -q -- '*'\\a'*' $p; or not builtin test -d $p
                 builtin printf 'lumopolis: no such folder: %s\\n' $arg >&2
-                return 1
+                builtin return 1
             end
             builtin printf '\\e]7377;lumopolis;%s;%s\\a' "$${LUMOPOLIS_NONCE_ENV}" $p
         end

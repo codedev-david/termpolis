@@ -40,6 +40,11 @@ describe('detectShellKind', () => {
     expect(detectShellKind('pwsh')).toBe('pwsh')
   })
 
+  it('a path ending in a separator has no shell name', () => {
+    expect(detectShellKind('C:\\Program Files\\Git\\bin\\')).toBe('unknown')
+    expect(detectShellKind('/')).toBe('unknown')
+  })
+
   it('treats sh as bash for prompt-hook purposes', () => {
     // dash ignores PROMPT_COMMAND rather than erroring, so this is safe.
     expect(detectShellKind('/bin/sh')).toBe('bash')
@@ -409,26 +414,28 @@ describe('zsh start-up files', () => {
 describe('the fish integration file', () => {
   const f = FISH_INTEGRATION_SCRIPT
   it('loads once, and reports the folder before every prompt with the same OSC 7 as bash', () => {
-    expect(f).toContain('if not set -q __termpolis_wrapped')
-    expect(f).toContain('set -g __termpolis_wrapped 1')
+    expect(f).toContain('if not builtin set -q __termpolis_wrapped')
+    expect(f).toContain('builtin set -g __termpolis_wrapped 1')
     expect(f).toContain('function __termpolis_report_cwd --on-event fish_prompt')
     expect(f).toContain(String.raw`builtin printf '\e]7;file://%s%s\a' "$hostname" "$PWD"`)
   })
 
   it('lumopolis: never over one of the person\'s own; -h; made absolute; refused unless a folder; then the sequence', () => {
     const parts = [
-      'if not functions -q lumopolis',
+      'if not builtin functions -q lumopolis',
       'function lumopolis',
-      'set -l arg .',
-      'if set -q argv[1]; and test -n "$argv[1]"',
-      'set arg $argv[1]',
-      'if contains -- $arg -h --help',
+      'builtin set -l arg .',
+      'if builtin set -q argv[1]; and builtin test -n "$argv[1]"',
+      'builtin set arg $argv[1]',
+      'if builtin contains -- $arg -h --help',
       `builtin printf '%s\\n' '${LUMOPOLIS_USAGE}'`,
-      'set -l p $arg',
-      String.raw`if not string match -qr -- '^(/|[A-Za-z]:[/\x5c])' $p`,
-      'set p "$PWD/$p"',
-      String.raw`if string match -q -- '*'\a'*' $p; or not test -d $p`,
+      'builtin return 0',
+      'builtin set -l p $arg',
+      String.raw`if not builtin string match -qr -- '^(/|[A-Za-z]:[/\x5c])' $p`,
+      'builtin set p "$PWD/$p"',
+      String.raw`if builtin string match -q -- '*'\a'*' $p; or not builtin test -d $p`,
       String.raw`builtin printf 'lumopolis: no such folder: %s\n' $arg >&2`,
+      'builtin return 1',
       String.raw`builtin printf '\e]7377;lumopolis;%s;%s\a' "$TERMPOLIS_LUMOPOLIS_NONCE" $p`,
     ]
     let at = -1
@@ -437,5 +444,21 @@ describe('the fish integration file', () => {
       expect(i, part).toBeGreaterThan(at)
       at = i
     }
+  })
+
+  // #45. config.fish runs before this file, so a function of the person's named after a builtin (contains, functions,
+  // printf, source; fish 3.7 refuses set, test, string and return as names) would run in its place. Every builtin it calls
+  // goes through `builtin`. fish's keywords (if, not, and, or, function, end) cannot be shadowed.
+  it("calls every builtin through `builtin`, so a function of the person's with the same name never runs instead", () => {
+    const names = ['set', 'functions', 'test', 'contains', 'string', 'return', 'printf', 'source', 'count', 'echo']
+    // A command starts a line, or follows if, not, and, or, a ';' or a '|'.
+    const re = new RegExp(String.raw`(?:^\s*|\b(?:if|not|and|or)\s+|[;|]\s*)(${names.join('|')})\b`, 'g')
+    const bare: string[] = []
+    for (const line of f.split('\n')) {
+      if (line.trimStart().startsWith('#')) continue
+      for (let m = re.exec(line); m; m = re.exec(line)) bare.push(`${m[1]}: ${line.trim()}`)
+    }
+    expect(bare).toEqual([])
+    expect(f.match(/\bbuiltin (?:set|functions|test|contains|string|return|printf)\b/g)!.length).toBeGreaterThanOrEqual(15)
   })
 })
