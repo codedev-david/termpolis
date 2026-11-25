@@ -49,7 +49,7 @@ import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { TOKEN_REJECTED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
-import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, STILL_NOT_FOUND_MESSAGE } from './gitSource'
+import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE } from './gitSource'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
@@ -266,11 +266,14 @@ const accessOf = (args: unknown): { access?: RepoAccess } | null => {
   return null
 }
 
+/** What a host that still said "not found" means, by the access used (R1): a token's reach, or the account's. */
+const stillNotFound = (access: RepoAccess | undefined): string => (access?.mode === 'token' ? STILL_NOT_FOUND_TOKEN_MESSAGE : STILL_NOT_FOUND_MESSAGE)
+
 /** A sign-in failure as the renderer's data: the host, whether git has a helper, and the words to show. A not-found,
  *  first or still after a sign-in (M2), shows the sign-in choices as the second choice: the address comes first. */
 const needsLoginOf = (n: NeedsLogin, access: RepoAccess | undefined): CloneNeedsLogin =>
   n.notFound || n.stillNotFound
-    ? { needsLogin: { host: n.host, helper: n.helper, notFound: true, message: n.stillNotFound ? STILL_NOT_FOUND_MESSAGE : NOT_FOUND_MESSAGE } }
+    ? { needsLogin: { host: n.host, helper: n.helper, notFound: true, message: n.stillNotFound ? stillNotFound(access) : NOT_FOUND_MESSAGE } }
     : { needsLogin: { host: n.host, helper: n.helper, message: access?.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE } }
 
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
@@ -582,6 +585,11 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
       return err(UPDATE_FAILED)
     }
     // F-R8: "not found" from the server is no reason to ask for a sign-in over a saved copy: the address may be gone.
+    // R4: the same answer to this computer's login, in the background, says the repository may have moved or gone; a
+    // sign-in stays offered, as the second choice, since the account may have lost access.
+    if (!res.ok && res.needsLogin?.stillNotFound && !access) {
+      return ok({ needsLogin: { host: res.needsLogin.host, helper: res.needsLogin.helper, notFound: true as const, message: REPO_GONE_MESSAGE } })
+    }
     if (!res.ok) return res.needsLogin && !res.needsLogin.notFound ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
     if (access) {
       try {

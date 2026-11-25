@@ -10,7 +10,7 @@ import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
-import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, STILL_NOT_FOUND_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
+import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
 import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import { createSourceRegistry } from '../../src/main/world/sources'
 import type { WorldDoc, WorldEntry, WorldSource } from '../../src/shared/world/types'
@@ -292,14 +292,15 @@ describe('registerWorldIpc sources handlers', () => {
     expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
-  it('M2: still not found after a sign-in or a token says to check the address, with the sign-in choices as the second choice', async () => {
+  it('M2: still not found after a sign-in or a token says to check the address and that access (R1), with the sign-in choices as the second choice', async () => {
     const s = setup()
-    const still = { ok: false as const, error: STILL_NOT_FOUND_MESSAGE, needsLogin: { host: 'github.com', helper: true, stillNotFound: true as const } }
-    const want = { success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message: STILL_NOT_FOUND_MESSAGE } } }
+    const still = { ok: false as const, error: 'raw', needsLogin: { host: 'github.com', helper: true, stillNotFound: true as const } }
+    const want = (message: string) => ({ success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message } } })
     ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce(still)
-    expect(await s.invoke('world:clone', { url: 'https://github.com/a/b.git', access: { mode: 'machine' } })).toEqual(want)
+    expect(await s.invoke('world:clone', { url: 'https://github.com/a/b.git', access: { mode: 'machine' } })).toEqual(want(STILL_NOT_FOUND_MESSAGE))
     ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce(still)
-    expect(await s.invoke('world:clone', { url: 'https://github.com/a/b.git', access: { mode: 'token', value: 'neutral-value-10' } })).toEqual(want)
+    expect(await s.invoke('world:clone', { url: 'https://github.com/a/b.git', access: { mode: 'token', value: 'neutral-value-10' } }))
+      .toEqual(want(STILL_NOT_FOUND_TOKEN_MESSAGE))
     expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
@@ -427,10 +428,20 @@ describe('registerWorldIpc sources handlers', () => {
     // F-R8: a background update a git server answered "not found" never asks for a sign-in: the address may be gone.
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: NOT_FOUND_MESSAGE, needsLogin: { host: 'github.com', helper: true, notFound: true } })
     expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: NOT_FOUND_MESSAGE })
-    // M2: an update still not found with the login it was given says to check the address, and may be signed in again.
-    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: STILL_NOT_FOUND_MESSAGE, needsLogin: { host: 'github.com', helper: true, stillNotFound: true } })
+    // R4: a saved repository that used this computer's login and is now not found has most likely moved or gone, so the
+    // words say that, not "sign in"; a sign-in stays offered (as a link) in case the account lost access.
+    const gone = { ok: false as const, error: 'raw', needsLogin: { host: 'github.com', helper: true, stillNotFound: true as const } }
+    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gone)
     expect(await s.invoke('world:update-source', { key: 'kg' }))
+      .toEqual({ success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message: REPO_GONE_MESSAGE } } })
+    expect(REPO_GONE_MESSAGE).toBe("Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access.")
+    // ...and a Sign in or a token that still finds nothing gets the R1 words for that access.
+    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gone)
+    expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'machine' } }))
       .toEqual({ success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message: STILL_NOT_FOUND_MESSAGE } } })
+    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gone)
+    expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'token', value: 'neutral-value-11' } }))
+      .toEqual({ success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message: STILL_NOT_FOUND_TOKEN_MESSAGE } } })
     // any other failure keeps its own message, and a host that throws is a fixed one
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: 'Lumopolis could not reach it.' })
     expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: 'Lumopolis could not reach it.' })

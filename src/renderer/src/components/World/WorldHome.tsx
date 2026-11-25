@@ -93,10 +93,28 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
     e.preventDefault()
     stepFocus(e.currentTarget, e.shiftKey)
   }
-  // An action that opens a world when it is done, and the dialogs, open it only while the pane is still where the
-  // person started it: a world picked meanwhile (the switcher, a terminal) stays (F-R4).
+  // An action that opens a world when it is done opens it only while the pane is still where the person started it: a
+  // world picked meanwhile (the switcher, a terminal) stays (F-R4). The ticket is taken when the person commits (R3):
+  // Clone or Design it pressed, a folder chosen. Opening a dialog or the picker and backing out leaves an earlier open.
   const dialogTicket = useRef<() => boolean>(always())
-  const openDialog = (which: 'clone' | 'design'): void => { setError(null); dialogTicket.current = ticket(); setDialog(which) }
+  const committed = (): void => { dialogTicket.current = ticket() }
+  // A world that finishes while the person is choosing (a dialog or the folder picker is up) waits for that choice, so
+  // nothing pulls them out of it: a commit lapses it, and backing out opens it then, if nothing else moved the pane.
+  const choosing = useRef(false)
+  const waiting = useRef<{ still: () => boolean; target: OpenTarget } | null>(null)
+  const openWhenFree = (still: () => boolean, target: OpenTarget): void => {
+    if (!still()) return
+    if (choosing.current) waiting.current = { still, target }
+    else onOpen(target)
+  }
+  const free = (): void => {
+    choosing.current = false
+    const w = waiting.current
+    waiting.current = null
+    if (w !== null && w.still()) onOpen(w.target)
+  }
+  const openDialog = (which: 'clone' | 'design'): void => { setError(null); choosing.current = true; setDialog(which) }
+  const closeDialog = (): void => { setDialog(null); free() }
   const at = now ?? Date.now()
   // An open dialog takes the pane's Esc, wherever the focus is in the pane, and does its Cancel with it: the pane
   // stays open. The dialog sets what that is (dialogEsc) as it renders.
@@ -123,17 +141,20 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
     const res = await api.worldMapProject(root)
     if (!res.success) return res.error
     onChanged()
-    if (still()) onOpen({ kind: 'root', root, follow: true })
+    openWhenFree(still, { kind: 'root', root, follow: true })
     return null
   })
 
+  // The folder picked is the person's newest choice, so it opens; a cancelled picker leaves an earlier open current (R3).
   const openFolder = (): void => run(async () => {
-    const still = ticket()
-    const res = await window.termpolis.worldOpenFolder()
+    choosing.current = true
+    const res = await window.termpolis.worldOpenFolder().catch((e: unknown) => { free(); throw e })
+    if (res.success && res.data !== null) ticket()
+    free()
     if (!res.success) return res.error
     if (res.data === null) return null
     onChanged()
-    if (still()) onOpen(targetOf(res.data))
+    onOpen(targetOf(res.data))
     return null
   })
 
@@ -229,15 +250,17 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
         {dialog === 'clone' && (
           <CloneDialog
             escRef={dialogEsc}
-            onClose={() => setDialog(null)}
-            onCloned={(entry) => { setDialog(null); onChanged(); if (dialogTicket.current()) onOpen(targetOf(entry)) }}
+            onClose={closeDialog}
+            onStart={committed}
+            onCloned={(entry) => { closeDialog(); onChanged(); if (dialogTicket.current()) onOpen(targetOf(entry)) }}
           />
         )}
         {dialog === 'design' && (
           <DesignStart
             escRef={dialogEsc}
-            onClose={() => setDialog(null)}
-            onDrafted={(key) => { setDialog(null); onChanged(); if (dialogTicket.current()) onOpen({ kind: 'design', key }) }}
+            onClose={closeDialog}
+            onStart={committed}
+            onDrafted={(key) => { closeDialog(); onChanged(); if (dialogTicket.current()) onOpen({ kind: 'design', key }) }}
           />
         )}
       </div>

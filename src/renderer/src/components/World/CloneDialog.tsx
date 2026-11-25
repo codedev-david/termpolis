@@ -13,6 +13,8 @@ import { useUiZoom } from './worldPane'
 export interface CloneDialogProps {
   onCloned: (entry: WorldEntry) => void
   onClose: () => void
+  /** Each Clone (or sign-in or token try) the person makes: the pane takes its ticket then (R3). */
+  onStart?: () => void
   /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
   escRef?: MutableRefObject<(() => void) | null>
 }
@@ -21,7 +23,7 @@ export const CLONE_UNREACHABLE = "Lumopolis couldn't clone that repository. Try 
 /** A machine sign-in may need no window at all (a helper with a saved login), so the words do not say one opened. */
 export const SIGNING_IN_MESSAGE = "Signing in with this computer's login… If a sign-in window opens, finish there."
 
-export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JSX.Element {
+export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogProps): JSX.Element {
   const zoom = useUiZoom()
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('')
@@ -48,6 +50,7 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
 
   const clone = (access?: RepoAccess): void => {
     if (!canClone) return
+    onStart?.()
     const mine = ++gen.current
     setCloning(true)
     setError(null)

@@ -14,10 +14,12 @@
  *      (FAKE_HELPER_EMPTY=1), opening the remembered entry shows the saved world and the
  *      Sign in needed notice, never a window.
  *   3. The token dialog holds the keyboard: Tab and Shift+Tab go round it alone, never out to the clone
- *      dialog under it, the toolbar or a terminal, and Esc gives the focus back to Use a token (F-R13).
+ *      dialog under it, the toolbar or a terminal. Tab from its last control lands on its first, Shift+Tab
+ *      from its first on its last, and Esc gives the focus back to Use a token (F-R13).
  *   4. Use a token opens a private repository: with no helper, only Use a token is offered; the pasted
  *      reply opens the world, and the saved sources file does not contain it. Use this token, pressed
- *      with Enter, greys while the token is tried, and the focus stays in the token dialog (F-R13). CI
+ *      with Enter, greys while the token is tried; once the focus leaves the grey button (Chromium moves
+ *      it), it is on the token dialog or a control in it, never grey and never outside (F-R13). CI
  *      only: git hands the askpass its prompt on a command line, which this project keeps off developer
  *      machines.
  */
@@ -303,16 +305,32 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
         if (a?.closest('[data-testid="world-repo-access"]')) return 'token dialog'
         return a?.getAttribute('data-testid') ?? a?.getAttribute('aria-label') ?? a?.tagName ?? 'nothing'
       })
-    const visited = new Set<string>()
-    for (const key of ['Tab', 'Shift+Tab']) {
-      for (let i = 0; i < 7; i++) {
-        await page.keyboard.press(key)
-        expect(await where(), `after ${i + 1} x ${key}`).toBe('token dialog')
-        visited.add(await page.evaluate(() => (document.activeElement as HTMLElement).outerHTML.slice(0, 80)))
-      }
+    // The dialog's Tab order, read from the page: its enabled, shown controls that Tab reaches, in document order.
+    const count = await dialog.evaluate((d) => {
+      const els = Array.from(d.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')).filter(
+        (e) => e.tabIndex >= 0 && !e.matches(':disabled') && e.getClientRects().length > 0
+      )
+      ;(window as unknown as { __tabOrder?: HTMLElement[] }).__tabOrder = els
+      return els.length
+    })
+    // There is somewhere to go round, and the field the dialog opened on is one of its stops.
+    expect(count).toBeGreaterThan(1)
+    const at = (): Promise<number> =>
+      page.evaluate(() => ((window as unknown as { __tabOrder: HTMLElement[] }).__tabOrder).indexOf(document.activeElement as HTMLElement))
+    const start = await at()
+    expect(start).toBeGreaterThanOrEqual(0)
+    // Tab walks the order once round: on the way it goes from the last control to the first (the wrap).
+    for (let i = 1; i <= count; i++) {
+      await page.keyboard.press('Tab')
+      expect(await where(), `after ${i} x Tab`).toBe('token dialog')
+      expect(await at(), `after ${i} x Tab`).toBe((start + i) % count)
     }
-    // It went round more than one control, so the keys were not simply swallowed.
-    expect(visited.size).toBeGreaterThan(1)
+    // Shift+Tab walks it back once round: on the way it goes from the first control to the last.
+    for (let i = 1; i <= count; i++) {
+      await page.keyboard.press('Shift+Tab')
+      expect(await where(), `after ${i} x Shift+Tab`).toBe('token dialog')
+      expect(await at(), `after ${i} x Shift+Tab`).toBe((((start - i) % count) + count) % count)
+    }
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
     await expect(useToken).toBeFocused()
@@ -342,26 +360,36 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
     await dialog.locator('[data-testid="world-repo-access-input"]').fill(reply)
     const use = dialog.getByRole('button', { name: 'Use this token' })
     await use.focus()
-    // Use this token greys while the token is tried; the focus must stay in the token dialog, both as it greys and a
-    // frame later, never falling to the page (F-R13). Watched from the page, so a fast clone cannot hide it.
+    // Use this token greys while the token is tried. Chromium moves the focus off a control that greys (to <body>) on
+    // its next rendering step, so the check waits, every frame for up to 3 s, until the focus is no longer on the grey
+    // button, then says where it went: the token dialog itself or a control in it, never grey and never outside
+    // (F-R13). Watched from the page as the button greys, so a fast clone cannot hide it. Without the dialog's
+    // holdFocus the focus stays on the grey button until Chromium drops it to <body>: 'BODY', or 'still on the grey
+    // button' if it never moves.
     await use.evaluate((b) => {
-      const g = window as unknown as { __greyFocus?: string[] }
-      g.__greyFocus = []
+      const g = window as unknown as { __greyFocus?: string }
       const where = (): string => {
         const a = document.activeElement
-        return a?.closest('[data-testid="world-repo-access"]') ? 'token dialog' : a?.getAttribute('data-testid') ?? a?.tagName ?? 'nothing'
+        const d = document.querySelector('[data-testid="world-repo-access"]')
+        if (a && d && (a === d || d.contains(a))) return a.matches(':disabled') ? 'grey control in the token dialog' : 'token dialog'
+        return a?.getAttribute('data-testid') ?? a?.tagName ?? 'nothing'
       }
       new MutationObserver((_, mo) => {
         if (!(b as HTMLButtonElement).disabled) return
         mo.disconnect()
-        g.__greyFocus?.push(where())
-        requestAnimationFrame(() => g.__greyFocus?.push(where()))
+        const until = performance.now() + 3000
+        const look = (): void => {
+          if (document.activeElement !== b) g.__greyFocus = where()
+          else if (performance.now() > until) g.__greyFocus = 'still on the grey button'
+          else requestAnimationFrame(look)
+        }
+        look()
       }).observe(b, { attributes: true, attributeFilter: ['disabled'] })
     })
     await page.keyboard.press('Enter')
     await expect
-      .poll(() => page.evaluate(() => (window as unknown as { __greyFocus?: string[] }).__greyFocus ?? []), { timeout: 30_000 })
-      .toEqual(['token dialog', 'token dialog'])
+      .poll(() => page.evaluate(() => (window as unknown as { __greyFocus?: string }).__greyFocus ?? null), { timeout: 30_000 })
+      .toBe('token dialog')
     await expectWorldOpen(page)
     const sources = path.join(userData, 'world', 'sources.json')
     expect(fs.existsSync(sources)).toBe(true)

@@ -19,7 +19,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
 
 import { WorldHome, agoText, targetOf } from '../../../src/renderer/src/components/World/WorldHome'
 import { CloneDialog, SIGNING_IN_MESSAGE } from '../../../src/renderer/src/components/World/CloneDialog'
-import { linkCls, whereOf } from '../../../src/renderer/src/components/World/worldTargets'
+import { linkCls, whereOf, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { DesignStart } from '../../../src/renderer/src/components/World/DesignStart'
 import { BuildItDialog } from '../../../src/renderer/src/components/World/BuildItDialog'
 import { WorldSwitcher } from '../../../src/renderer/src/components/World/WorldSwitcher'
@@ -871,7 +871,8 @@ describe('WorldHome stale opens (F-R4)', () => {
     expect(props.onOpen).not.toHaveBeenCalled()
   })
 
-  it('Open a folder that finishes after the pane moved on does not open it either', async () => {
+  // R3: the folder the person picks is their newest choice: it opens, whatever moved while the picker was up.
+  it('a folder chosen opens even when the pane moved while the picker was up', async () => {
     const d = deferred<Res<WorldEntry | null>>()
     bridge({ worldOpenFolder: vi.fn(() => d.promise) })
     const t = lapsing()
@@ -881,7 +882,7 @@ describe('WorldHome stale opens (F-R4)', () => {
     d.resolve(ok({ key: 'k-f', source: { kind: 'folder', root: 'C:/picked' }, title: 'picked', lastOpened: NOW }))
     await settle()
     expect(props.onChanged).toHaveBeenCalled()
-    expect(props.onOpen).not.toHaveBeenCalled()
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/picked', key: 'k-f' })
   })
 
   it('a clone or a design that finishes after the pane moved on is listed but not opened', async () => {
@@ -910,6 +911,162 @@ describe('WorldHome stale opens (F-R4)', () => {
     await settle()
     expect(again.onChanged).toHaveBeenCalledTimes(1)
     expect(again.onOpen).not.toHaveBeenCalled()
+  })
+
+  // R3: useOpenWorld's tickets (each one lapses every older one). Only a commit takes one: Clone or Design it pressed, a
+  // folder chosen. Opening a dialog or the folder picker and then backing out leaves the earlier open current.
+  const panes = () => {
+    let moves = 0
+    return (): (() => boolean) => {
+      const at = ++moves
+      return () => moves === at
+    }
+  }
+  const slowMap = (over: Record<string, unknown> = {}) => {
+    const d = deferred<Res<WorldEntry>>()
+    bridge({ worldMapProject: vi.fn(() => d.promise), ...over })
+    const props = home({ ticket: panes() })
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    const mapped = async () => {
+      d.resolve(ok({ key: 'k-new', source: { kind: 'project', root: 'C:/repo/src-root' }, title: 'x', lastOpened: NOW }))
+      await settle()
+    }
+    return { props, mapped }
+  }
+  const MAPPED = { kind: 'root', root: 'C:/repo/src-root', follow: true }
+
+  it('a slow map, then Open a git repository and Design something new opened and cancelled: the map opens', async () => {
+    const { props, mapped } = slowMap()
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.click(within(screen.getByTestId('world-clone')).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Design something new/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await mapped()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith(MAPPED)
+  })
+
+  it('a slow map, then the folder picker cancelled: the map opens', async () => {
+    const { props, mapped } = slowMap({ worldOpenFolder: vi.fn(async () => ok(null)) })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    await settle()
+    await mapped()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith(MAPPED)
+  })
+
+  it('a slow map, then a folder chosen: the folder opens and the map does not', async () => {
+    const pick = deferred<Res<WorldEntry | null>>()
+    const { props, mapped } = slowMap({ worldOpenFolder: vi.fn(() => pick.promise) })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    await act(async () => { pick.resolve(ok({ key: 'k-f', source: { kind: 'folder', root: 'C:/picked' }, title: 'picked', lastOpened: NOW })) })
+    await settle()
+    await mapped()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/picked', key: 'k-f' })
+  })
+
+  it('a slow map, then Clone pressed: the clone opens and the map does not', async () => {
+    const c = deferred<Res<WorldEntry>>()
+    const { props, mapped } = slowMap({ worldClone: vi.fn(() => c.promise) })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    await mapped()
+    expect(props.onOpen).not.toHaveBeenCalled()
+    await act(async () => { c.resolve(ok({ key: 'k-c', source: { kind: 'git', url: 'https://x.dev/a.git', root: 'C:/data/clone' }, title: 'clone', lastOpened: NOW })) })
+    await settle()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/data/clone', key: 'k-c' })
+  })
+
+  it('a slow map, then Design it pressed: the design opens and the map does not', async () => {
+    const d = deferred<Res<unknown>>()
+    const { props, mapped } = slowMap({ worldDesignDraft: vi.fn(() => d.promise) })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Design something new/ }))
+    fireEvent.change(screen.getByPlaceholderText('Describe the app you want…'), { target: { value: 'A shop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
+    await mapped()
+    expect(props.onOpen).not.toHaveBeenCalled()
+    await act(async () => { d.resolve(ok({ key: 'design:new', doc: {}, text: 'Drafted.' })) })
+    await settle()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'design', key: 'design:new' })
+  })
+
+  // A map that finishes while the person is choosing waits for that choice, so nothing pulls them out of it (F-R4).
+  it('a map that finishes while the clone dialog is up waits: Cancel then opens it', async () => {
+    const { props, mapped } = slowMap()
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a' } })
+    await mapped()
+    expect(props.onOpen).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Repository URL')).toHaveValue('https://x.dev/a')
+    fireEvent.click(within(screen.getByTestId('world-clone')).getByRole('button', { name: 'Cancel' }))
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith(MAPPED)
+  })
+
+  it('a map that finishes while the design dialog is up, then Design it pressed: only the design opens', async () => {
+    const { props, mapped } = slowMap()
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Design something new/ }))
+    await mapped()
+    expect(props.onOpen).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByPlaceholderText('Describe the app you want…'), { target: { value: 'A shop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
+    await settle()
+    expect(props.onOpen).toHaveBeenCalledTimes(1)
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'design', key: 'design:new' })
+  })
+
+  it('a map that waited for a dialog opens nothing once the pane moved meanwhile', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    bridge({ worldMapProject: vi.fn(() => d.promise) })
+    const ticket = panes()
+    const props = home({ ticket })
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    d.resolve(ok({ key: 'k-new', source: { kind: 'project', root: 'C:/repo/src-root' }, title: 'x', lastOpened: NOW }))
+    await settle()
+    ticket()
+    fireEvent.click(within(screen.getByTestId('world-clone')).getByRole('button', { name: 'Cancel' }))
+    expect(props.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('a map that finishes while the folder picker is up waits for it: a cancel or a failed pick opens it then', async () => {
+    for (const answer of [ok(null), fail("Lumopolis couldn't open that folder.")]) {
+      const pick = deferred<Res<WorldEntry | null>>()
+      const { props, mapped } = slowMap({ worldOpenFolder: vi.fn(() => pick.promise) })
+      await settle()
+      fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+      await mapped()
+      expect(props.onOpen).not.toHaveBeenCalled()
+      await act(async () => { pick.resolve(answer as Res<WorldEntry | null>) })
+      await settle()
+      expect(props.onOpen).toHaveBeenCalledTimes(1)
+      expect(props.onOpen).toHaveBeenCalledWith(MAPPED)
+      cleanup()
+    }
+  })
+
+  it('a picker that throws lets a map that waited for it open, and says the fixed words', async () => {
+    const pick = deferred<Res<WorldEntry | null>>()
+    const { props, mapped } = slowMap({ worldOpenFolder: vi.fn(() => pick.promise) })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    await mapped()
+    await act(async () => { pick.reject(new Error('ipc down')) })
+    await settle()
+    expect(props.onOpen).toHaveBeenCalledWith(MAPPED)
+    expect(screen.getByRole('alert')).toHaveTextContent(UI_FAILED)
   })
 
   it('with a ticket that holds, each of them opens its world as before', async () => {

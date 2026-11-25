@@ -491,10 +491,47 @@ describe('WorldView sign in needed', () => {
     await openGit()
     const notice = screen.getByTestId('world-sign-in-needed')
     expect(notice).toHaveTextContent("This repository needs you to sign in before Lumopolis can update it. You're seeing the saved copy.")
-    expect(within(notice).getByRole('button', { name: 'Sign in to GitHub' })).toBeInTheDocument()
-    expect(within(notice).getByRole('button', { name: 'Use a token' })).toBeInTheDocument()
+    expect(within(notice).getByRole('button', { name: 'Sign in to GitHub' })).not.toHaveClass('underline')
+    expect(within(notice).getByRole('button', { name: 'Use a token' })).not.toHaveClass('underline')
     fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  // R4: a saved repository the host no longer finds says so in main's words; Sign in and Use a token stay, as links, in
+  // case the account lost access, and a Sign in that still finds nothing says the sign-in words under it.
+  it('a saved repository that is not found any more says so, with Sign in and Use a token as links', async () => {
+    const GONE = "Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access."
+    const STILL = "Lumopolis still couldn't find that repository after signing in. Check the address, and that this account can see it."
+    const api = gitBridge(ok({ needsLogin: { host: 'github.com', helper: true, notFound: true, message: GONE } }))
+    await openGit()
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(notice).toHaveTextContent(GONE)
+    expect(notice).not.toHaveTextContent('needs you to sign in')
+    const signIn = within(notice).getByRole('button', { name: 'Sign in to GitHub' })
+    expect(signIn).toHaveClass('underline')
+    expect(within(notice).getByRole('button', { name: 'Use a token' })).toHaveClass('underline')
+    expect(within(notice).getByRole('button', { name: 'Dismiss' })).not.toHaveClass('underline')
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ needsLogin: { host: 'github.com', helper: true, notFound: true, message: STILL } }))
+    fireEvent.click(signIn)
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kgit', { mode: 'machine' })
+    const after = screen.getByTestId('world-sign-in-needed')
+    expect(within(after).getByRole('alert')).toHaveTextContent(STILL)
+    // The notice still says why it is there, and its choices stay links.
+    expect(after).toHaveTextContent(GONE)
+    expect(within(after).getByRole('button', { name: 'Sign in to GitHub' })).toHaveClass('underline')
+  })
+
+  it('a Sign in over a sign-in notice that then finds nothing keeps its own words and says why under it', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ needsLogin: { host: 'github.com', helper: true, notFound: true, message: 'Still not there.' } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    await settle()
+    const after = screen.getByTestId('world-sign-in-needed')
+    expect(after).toHaveTextContent("This repository needs you to sign in before Lumopolis can update it.")
+    expect(within(after).getByRole('alert')).toHaveTextContent('Still not there.')
+    expect(within(after).getByRole('button', { name: 'Sign in to GitHub' })).not.toHaveClass('underline')
   })
 
   it('shows no notice when the update works, and recompiles when something changed', async () => {

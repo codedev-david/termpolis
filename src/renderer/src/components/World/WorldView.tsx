@@ -1104,6 +1104,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
               <SignInNeededNotice
                 host={repoUpdate.host}
                 helper={repoUpdate.helper}
+                message={repoUpdate.message}
+                notFound={repoUpdate.notFound}
                 busy={repoBusy}
                 error={repoError}
                 onSignIn={signIn}

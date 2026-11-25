@@ -57,9 +57,16 @@ export const UNREACHABLE_MESSAGE = "Lumopolis couldn't reach that repository. Ch
 /** A host answered an anonymous https clone with "not found": a wrong address, or a private repository on a host that
  *  answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. PENDING SIGN-OFF. */
 export const NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, or sign in if it's private."
-/** The host still said "not found" once a sign-in or a token was used: most likely the address, so the words never blame
- *  the login (M2). The sign-in choices stay, for another account. PENDING SIGN-OFF. */
-export const STILL_NOT_FOUND_MESSAGE = "Lumopolis still couldn't find that repository after signing in. Check the address."
+/** The host still said "not found" once a sign-in or a token was used: the address first, then what that access can see
+ *  (M2, R1); this is the sign-in's. The sign-in choices stay, for another account. PENDING SIGN-OFF (R1, David). */
+export const STILL_NOT_FOUND_MESSAGE = "Lumopolis still couldn't find that repository after signing in. Check the address, and that this account can see it."
+/** R1 (PENDING SIGN-OFF, David): the token's words name what a token most often lacks: GitHub's fine-grained tokens see
+ *  only public repositories until this one is added to them. */
+export const STILL_NOT_FOUND_TOKEN_MESSAGE =
+  "Lumopolis still couldn't find that repository with this token. Check the address, and that the token can read this repository. " +
+  'A fine-grained token sees only public repositories unless you add this one.'
+/** R4 (PENDING SIGN-OFF, David): a saved repository, cloned with this computer's login, that the host no longer finds. */
+export const REPO_GONE_MESSAGE = "Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access."
 /** An ssh server said "not found": a wrong address, or a repository the ssh key can't see. Ssh logins are the ssh
  *  agent's, so no sign-in is offered. PENDING SIGN-OFF. */
 export const SSH_NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, and that your ssh key can open it."
@@ -568,9 +575,10 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     if (!auth && notFound && run.mode === 'none' && host !== null) {
       return { ok: false, error: NOT_FOUND_MESSAGE, detail: failure, needsLogin: { host, helper: await hasLoginHelper(deps, host), notFound: true } }
     }
-    // Still "not found" after a sign-in or a token: most likely the address, so that is what the words say (M2).
+    // Still "not found" after a sign-in or a token: the address first, then what that access can see (M2, R1).
     if (!auth && notFound && host !== null) {
-      return { ok: false, error: STILL_NOT_FOUND_MESSAGE, needsLogin: { host, helper: await hasLoginHelper(deps, host), stillNotFound: true } }
+      const error = run.mode === 'token' ? STILL_NOT_FOUND_TOKEN_MESSAGE : STILL_NOT_FOUND_MESSAGE
+      return { ok: false, error, needsLogin: { host, helper: await hasLoginHelper(deps, host), stillNotFound: true } }
     }
     if (!auth) return { ok: false, error: UNREACHABLE_MESSAGE, detail: failure }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.

@@ -17,7 +17,8 @@ export type OpenWorld = { kind: 'home' } | { kind: 'root'; root: string; follow:
 export interface WorldRequest { folder: string; seq: number }
 
 /** A remembered repository that needs a sign-in before it can update; the saved copy keeps showing. */
-export type RepoUpdate = { key: string; host: string; helper: boolean; message: string } | null
+/** notFound (R4): the host no longer finds the repository, so the notice says main's words and the sign-in choices are links. */
+export type RepoUpdate = { key: string; host: string; helper: boolean; message: string; notFound: boolean } | null
 
 export const REPO_UPDATE_UNREACHABLE = "Lumopolis couldn't update that repository. Try again."
 
@@ -50,7 +51,8 @@ export interface UseOpenWorld {
   clearRepoError(): void
 }
 
-const needsOf = (d: CloneNeedsLogin): { host: string; helper: boolean; message: string } => d.needsLogin
+const needsOf = ({ needsLogin: n }: CloneNeedsLogin): { host: string; helper: boolean; message: string; notFound: boolean } =>
+  ({ host: n.host, helper: n.helper, message: n.message, notFound: n.notFound === true })
 
 const fromRoot = (root: string): OpenWorld => (root ? { kind: 'root', root, follow: true } : { kind: 'home' })
 const fromRequest = (r: WorldRequest): OpenWorld => ({ kind: 'root', root: r.folder, follow: false, project: true })
@@ -170,7 +172,8 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   /** An interactive retry for the repository the notice is about. */
   const retry = (access: RepoAccess): void => {
     if (!repoUpdate || retrying.current) return
-    const key = repoUpdate.key
+    const shown = repoUpdate
+    const key = shown.key
     retrying.current = true
     setRepoBusy(true)
     setRepoError(null)
@@ -183,7 +186,11 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     window.termpolis.worldUpdateSource(key, access).then((res) => {
       if (!finish()) return
       if (!res.success) setRepoError(res.error)
-      else if ('needsLogin' in res.data) { setRepoUpdate({ key, ...needsOf(res.data) }); setRepoError(res.data.needsLogin.message) }
+      // The notice keeps saying why it is there; what this try met goes under it (R4).
+      else if ('needsLogin' in res.data) {
+        setRepoUpdate({ ...needsOf(res.data), key, message: shown.message, notFound: shown.notFound })
+        setRepoError(res.data.needsLogin.message)
+      }
       else {
         setRepoUpdate(null)
         if ('changed' in res.data && res.data.changed) setRepoChanged((n) => n + 1)

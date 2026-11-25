@@ -11,6 +11,8 @@ import { useUiZoom } from './worldPane'
 export interface DesignStartProps {
   onDrafted: (key: string) => void
   onClose: () => void
+  /** Design it pressed: the pane takes its ticket then (R3). */
+  onStart?: () => void
   /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
   escRef?: MutableRefObject<(() => void) | null>
 }
@@ -20,7 +22,7 @@ export const DRAFT_UNREACHABLE = "Lumopolis couldn't draft that design. Try agai
 let drafts = 0
 const draftKey = (): string => `draft:${Date.now().toString(36)}-${++drafts}`
 
-export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): JSX.Element {
+export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStartProps): JSX.Element {
   const zoom = useUiZoom()
   const [text, setText] = useState('')
   const [drafting, setDrafting] = useState<string | null>(null)
@@ -34,6 +36,7 @@ export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): J
   const description = text.trim()
   const submit = (): void => {
     if (description === '' || drafting !== null) return
+    onStart?.()
     const key = draftKey()
     current.current = key
     setDrafting(key)

@@ -99,7 +99,7 @@ describe('useOpenWorld repository updates', () => {
     setup(gitEntry('machine'), ok(NEEDS))
     const r = renderHook(() => useOpenWorld(''))
     await openIt(r)
-    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.' })
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.', notFound: false })
     api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: true }))
     act(() => r.result.current.signIn())
     expect(r.result.current.repoBusy).toBe(true)
@@ -320,7 +320,7 @@ describe('useOpenWorld when marking the world opened fails', () => {
     await openIt(r)
     expect(api.worldUpdateSource).toHaveBeenCalledTimes(1)
     expect(api.worldUpdateSource).toHaveBeenCalledWith('kg')
-    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.' })
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.', notFound: false })
   })
 
   it('a touch whose call itself fails does the same', async () => {
