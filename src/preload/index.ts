@@ -305,6 +305,8 @@ const api: TermpolisAPI = {
   worldClone: (url: string, ref?: string, access?: import('../shared/world/repoAccess').RepoAccess) =>
     ipcRenderer.invoke('world:clone', { url, ...(ref === undefined ? {} : { ref }), ...(access === undefined ? {} : { access }) }),
   worldCloneCancel: (url: string, ref?: string) => ipcRenderer.invoke('world:clone-cancel', ref === undefined ? { url } : { url, ref }),
+  worldUpdateCancel: (key: string) => ipcRenderer.invoke('world:update-cancel', { key }),
+  worldCompileCancel: (root: string) => ipcRenderer.invoke('world:compile-cancel', { root }),
   worldRemoveSource: (key: string) => ipcRenderer.invoke('world:remove-source', { key }),
   worldAnnotate: (key: string, itemId: string, text: string) => ipcRenderer.invoke('world:annotate', { key, itemId, text }),
   worldTouchSource: (key: string) => ipcRenderer.invoke('world:touch-source', { key }),

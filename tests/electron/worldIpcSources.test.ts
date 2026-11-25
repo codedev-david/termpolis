@@ -10,8 +10,8 @@ import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
-import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
-import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
+import { AUTH_MESSAGE, CANCELLED_MESSAGE, NOT_FOUND_MESSAGE, TIMEOUT_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
+import { CLONE_STOPPED_MESSAGE, TOKEN_REJECTED_MESSAGE, UPDATE_STOPPED_MESSAGE } from '../../src/shared/world/repoAccess'
 import { createSourceRegistry } from '../../src/main/world/sources'
 import type { WorldDoc, WorldEntry, WorldSource } from '../../src/shared/world/types'
 import type { WorldSettingsStore } from '../../src/main/world/worldSettings'
@@ -56,7 +56,7 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner, c
 describe('registerWorldIpc sources handlers', () => {
   it('registers the source handlers only when sources are passed', () => {
     const keys = [...setup().handlers.keys()]
-    for (const ch of ['world:sources-list', 'world:map-project', 'world:open-folder', 'world:pick-folder', 'world:clone', 'world:clone-cancel', 'world:remove-source', 'world:touch-source', 'world:update-source', 'world:design-get', 'world:build-it']) {
+    for (const ch of ['world:sources-list', 'world:map-project', 'world:open-folder', 'world:pick-folder', 'world:clone', 'world:clone-cancel', 'world:remove-source', 'world:touch-source', 'world:update-source', 'world:update-cancel', 'world:design-get', 'world:build-it']) {
       expect(keys).toContain(ch)
     }
   })
@@ -172,8 +172,11 @@ describe('registerWorldIpc sources handlers', () => {
       expect(await s.invoke('world:clone', { url: 'https://example.com/r', ref })).toEqual({ success: false, error: BAD_REF_MESSAGE })
     }
     expect(s.deps.clone).not.toHaveBeenCalled()
-    ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: 'Cancelled' })
-    expect(await s.invoke('world:clone', { url: 'https://example.com/r' })).toEqual({ success: false, error: 'Cancelled' })
+    // A stopped clone says so in plain words, never the host's 'Cancelled' (WP4b F-R5).
+    ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: CANCELLED_MESSAGE })
+    expect(await s.invoke('world:clone', { url: 'https://example.com/r' })).toEqual({ success: false, error: CLONE_STOPPED_MESSAGE })
+    ;(s.deps.clone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(await s.invoke('world:clone', { url: 'https://example.com/r' })).toEqual({ success: false, error: TIMEOUT_MESSAGE })
     ;(s.deps.clone as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('host gone'))
     expect(await s.invoke('world:clone', { url: 'https://example.com/r' })).toEqual({ success: false, error: CLONE_FAILED })
     expect(s.registry.upsert).not.toHaveBeenCalled()
@@ -480,6 +483,36 @@ describe('registerWorldIpc sources handlers', () => {
     }
     ;(s.deps.designs.load as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:design-get', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_NOT_FOUND })
+  })
+})
+
+describe('registerWorldIpc stopped updates (WP4b F-R5, F-R6)', () => {
+  const GIT = entryOf({ kind: 'git', url: 'https://github.com/o/r.git', ref: 'dev', root: 'C:/ud/world/repos/r' })
+
+  it('a stopped update says so in plain words', async () => {
+    const s = setup()
+    s.registry.get.mockResolvedValueOnce(GIT)
+    ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, error: CANCELLED_MESSAGE })
+    expect(await s.invoke('world:update-source', { key: GIT.key, access: { mode: 'machine' } })).toEqual({ success: false, error: UPDATE_STOPPED_MESSAGE })
+  })
+
+  it('world:update-cancel stops the update of the saved repository with that key', async () => {
+    const s = setup()
+    s.registry.get.mockResolvedValueOnce(GIT)
+    expect(await s.invoke('world:update-cancel', { key: GIT.key })).toEqual({ success: true, data: true })
+    expect(s.deps.cancelClone).toHaveBeenCalledWith('https://github.com/o/r.git', 'dev')
+    // nothing saved under the key, or not a repository: nothing to stop
+    expect(await s.invoke('world:update-cancel', { key: 'nope' })).toEqual({ success: true, data: false })
+    s.registry.get.mockResolvedValueOnce(entryOf({ kind: 'folder', root: 'C:/f' }))
+    expect(await s.invoke('world:update-cancel', { key: 'kf' })).toEqual({ success: true, data: false })
+    expect(s.deps.cancelClone).toHaveBeenCalledTimes(1)
+    // a bad key, a registry that failed, a host that failed
+    expect(await s.invoke('world:update-cancel', {})).toEqual({ success: false, error: 'key required' })
+    s.registry.get.mockRejectedValueOnce(new Error('disk'))
+    expect(await s.invoke('world:update-cancel', { key: 'kg' })).toEqual({ success: true, data: false })
+    s.registry.get.mockResolvedValueOnce(GIT)
+    ;(s.deps.cancelClone as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('host gone'))
+    expect(await s.invoke('world:update-cancel', { key: GIT.key })).toEqual({ success: true, data: false })
   })
 })
 

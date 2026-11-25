@@ -27,6 +27,7 @@
 //   world:update-source { key, access? } → ok({ changed } | { skipped: true } | CloneNeedsLogin)  (brings a cloned
 //                                      repository up to date; a missing key, a world that is not a cloned
 //                                      repository, and a token entry asked without its token are all skipped)
+//   world:update-cancel { key }      → ok(boolean)  (stops the update or sign-in of that saved repository)
 //   world:design-get { key }         → ok(WorldDoc)
 //   world:build-it { key, root, agent, confirmNonEmpty? } → ok(BuildItResult)  (links the design to the folder; the
 //                                      renderer then opens the agent terminal there with the first prompt)
@@ -48,8 +49,8 @@ import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
-import { TOKEN_REJECTED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
-import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE } from './gitSource'
+import { CLONE_STOPPED_MESSAGE, TOKEN_REJECTED_MESSAGE, UPDATE_STOPPED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
+import { AUTH_MESSAGE, CANCELLED_MESSAGE, NOT_FOUND_MESSAGE, REPO_GONE_MESSAGE, STILL_NOT_FOUND_MESSAGE, STILL_NOT_FOUND_TOKEN_MESSAGE } from './gitSource'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
@@ -500,7 +501,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     } catch {
       return err(CLONE_FAILED)
     }
-    if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
+    if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error === CANCELLED_MESSAGE ? CLONE_STOPPED_MESSAGE : res.error)
     try {
       return ok(
         await registry.upsert({
@@ -522,6 +523,20 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     if (typeof target === 'string') return err(target)
     try {
       return ok(await deps.cancelClone(target.url, target.ref))
+    } catch {
+      return ok(false)
+    }
+  })
+
+  // The notice's Stop (and a person leaving the world) ends a sign-in or update under way: the host stops the git run
+  // for that repository, and the update answers UPDATE_STOPPED_MESSAGE (WP4b F-R6). Nothing running answers false.
+  ipc.handle('world:update-cancel', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
+    try {
+      const src = (await registry.get(key))?.source
+      if (!src || src.kind !== 'git') return ok(false)
+      return ok(await deps.cancelClone(src.url, src.ref))
     } catch {
       return ok(false)
     }
@@ -590,6 +605,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     if (!res.ok && res.needsLogin?.stillNotFound && !access) {
       return ok({ needsLogin: { host: res.needsLogin.host, helper: res.needsLogin.helper, notFound: true as const, message: REPO_GONE_MESSAGE } })
     }
+    if (!res.ok && res.error === CANCELLED_MESSAGE) return err(UPDATE_STOPPED_MESSAGE)
     if (!res.ok) return res.needsLogin && !res.needsLogin.notFound ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
     if (access) {
       try {

@@ -725,6 +725,10 @@ export interface TermpolisAPI {
   worldClone: (url: string, ref?: string, access?: RepoAccess) => Promise<IpcResponse<WorldEntry | CloneNeedsLogin>>
   /** Lumopolis home: stop a running clone of the same url and branch. */
   worldCloneCancel: (url: string, ref?: string) => Promise<IpcResponse<boolean>>
+  /** Stops the update or sign-in under way for that saved repository (WP4b F-R6). */
+  worldUpdateCancel: (key: string) => Promise<IpcResponse<boolean>>
+  /** Stops the map of `root` being made: nothing of it is saved (WP4b F-R6). */
+  worldCompileCancel: (root: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home: forget a world (its files are left alone). */
   worldRemoveSource: (key: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home/switcher: a recent world was opened, so it is marked opened now (null if unknown). */

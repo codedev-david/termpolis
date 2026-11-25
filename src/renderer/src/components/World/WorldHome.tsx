@@ -252,6 +252,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
             escRef={dialogEsc}
             onClose={closeDialog}
             onStart={committed}
+            onKept={onChanged}
             onCloned={(entry) => { closeDialog(); onChanged(); if (dialogTicket.current()) onOpen(targetOf(entry)) }}
           />
         )}

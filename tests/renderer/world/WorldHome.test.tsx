@@ -18,7 +18,8 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
 }))
 
 import { WorldHome, agoText, targetOf } from '../../../src/renderer/src/components/World/WorldHome'
-import { CloneDialog, SIGNING_IN_MESSAGE } from '../../../src/renderer/src/components/World/CloneDialog'
+import { CloneDialog, CLONE_KEPT_MESSAGE, SIGNING_IN_MESSAGE, STOPPING_MESSAGE, TOKEN_STOPPED_MESSAGE } from '../../../src/renderer/src/components/World/CloneDialog'
+import { CLONE_STOPPED_MESSAGE } from '../../../src/shared/world/repoAccess'
 import { linkCls, whereOf, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { DesignStart } from '../../../src/renderer/src/components/World/DesignStart'
 import { BuildItDialog } from '../../../src/renderer/src/components/World/BuildItDialog'
@@ -294,9 +295,9 @@ describe('agoText and targetOf', () => {
 
 describe('CloneDialog', () => {
   const mount = () => {
-    const props = { onCloned: vi.fn(), onClose: vi.fn() }
-    render(<CloneDialog {...props} />)
-    return props
+    const props = { onCloned: vi.fn(), onClose: vi.fn(), onKept: vi.fn() }
+    const view = render(<CloneDialog {...props} />)
+    return { ...props, view }
   }
   const url = () => screen.getByLabelText('Repository URL')
   const branch = () => screen.getByLabelText('Branch (optional)')
@@ -341,7 +342,7 @@ describe('CloneDialog', () => {
     expect(props.onCloned).toHaveBeenCalledWith(entry)
   })
 
-  it('cancel during clone calls world:clone cancel', async () => {
+  it('Cancel during a clone stops it, says it is stopping until main answers, then says it stopped (WP4b F-R5)', async () => {
     const d = deferred<Res<WorldEntry>>()
     const api = bridge({ worldClone: vi.fn(() => d.promise) })
     const props = mount()
@@ -349,20 +350,52 @@ describe('CloneDialog', () => {
     fireEvent.click(cloneBtn())
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(api.worldCloneCancel).toHaveBeenCalledWith('https://x.dev/a.git', undefined)
-    await settle()
-    // The cancelled clone's failure is not shown, and the dialog is ready for another try.
-    d.resolve(fail('Clone cancelled.'))
-    await settle()
-    expect(screen.queryByRole('alert')).toBeNull()
+    // Until the stopped clone answers, nothing can start another (it would join the run being stopped).
+    expect(screen.getByRole('status')).toHaveTextContent(STOPPING_MESSAGE)
+    expect(url()).toBeDisabled()
+    expect(cloneBtn()).toBeDisabled()
+    fireEvent.keyDown(url(), { key: 'Enter' })
+    expect(api.worldClone).toHaveBeenCalledTimes(1)
+    await act(async () => { d.resolve(fail(CLONE_STOPPED_MESSAGE)) })
+    expect(screen.getByRole('alert')).toHaveTextContent(CLONE_STOPPED_MESSAGE)
+    expect(screen.queryByRole('status')).toBeNull()
     expect(props.onCloned).not.toHaveBeenCalled()
     expect(props.onClose).not.toHaveBeenCalled()
     expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(url()).toBeEnabled()
     // Not cloning: Cancel closes.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(props.onClose).toHaveBeenCalled()
   })
 
-  it('a cancel that cannot reach main is quiet; a cancelled clone that succeeded anyway is dropped', async () => {
+  it('a stopped clone says it stopped whatever main answered, even an unreachable main; a new clone clears it', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    const api = bridge({ worldClone: vi.fn(() => d.promise) })
+    mount()
+    fireEvent.change(url(), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(cloneBtn())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => { d.reject(new Error('host gone')) })
+    expect(screen.getByRole('alert')).toHaveTextContent(CLONE_STOPPED_MESSAGE)
+    api.worldClone.mockResolvedValueOnce(fail(UI_FAILED))
+    fireEvent.click(cloneBtn())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(UI_FAILED))
+  })
+
+  it('a second Cancel while the clone is stopping closes the dialog, and asks main to stop only once', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    const api = bridge({ worldClone: vi.fn(() => d.promise) })
+    const props = mount()
+    fireEvent.change(url(), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(cloneBtn())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(props.onClose).toHaveBeenCalledTimes(1)
+    props.view.unmount()
+    expect(api.worldCloneCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('a cancel that cannot reach main is quiet; a clone that finished before the stop is kept and said so, never opened', async () => {
     const d = deferred<Res<WorldEntry>>()
     bridge({ worldClone: vi.fn(() => d.promise), worldCloneCancel: vi.fn(async () => { throw new Error('x') }) })
     const props = mount()
@@ -371,9 +404,31 @@ describe('CloneDialog', () => {
     fireEvent.click(cloneBtn())
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await settle()
-    d.resolve(ok({ key: 'k', source: { kind: 'git', url: 'u', root: 'r' }, title: 't', lastOpened: 1 }))
-    await settle()
+    const entry: WorldEntry = { key: 'k', source: { kind: 'git', url: 'u', root: 'r' }, title: 't', lastOpened: 1 }
+    await act(async () => { d.resolve(ok(entry)) })
     expect(props.onCloned).not.toHaveBeenCalled()
+    expect(props.onKept).toHaveBeenCalledWith(entry)
+    expect(screen.getByRole('status')).toHaveTextContent(CLONE_KEPT_MESSAGE)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('closing the dialog while a clone runs stops that clone (WP4b F-R5); one closed after it ended asks nothing', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    // A stop that cannot reach main is quiet here too.
+    const api = bridge({ worldClone: vi.fn(() => d.promise), worldCloneCancel: vi.fn(async () => { throw new Error('x') }) })
+    const first = mount()
+    fireEvent.change(url(), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.change(branch(), { target: { value: 'dev' } })
+    fireEvent.click(cloneBtn())
+    first.view.unmount()
+    expect(api.worldCloneCancel).toHaveBeenCalledWith('https://x.dev/a.git', 'dev')
+    api.worldClone.mockResolvedValueOnce(fail(UI_FAILED))
+    const second = mount()
+    fireEvent.change(url(), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(cloneBtn())
+    await screen.findByRole('alert')
+    second.view.unmount()
+    expect(api.worldCloneCancel).toHaveBeenCalledTimes(1)
   })
 
   it('a failed clone shows main\'s reason; a thrown one a fixed message', async () => {
@@ -1224,28 +1279,44 @@ describe('WorldHome token dialog keyboard (F-R13)', () => {
     tab(true)
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await act(async () => { d.resolve(fail(CLONE_STOPPED_MESSAGE)) })
     url.focus()
     fireEvent.keyDown(url, { key: 'Enter' })
     expect(url).toBeDisabled()
     expect(dialog).toHaveFocus()
   })
 
-  it('cancelling the token dialog while its token is tried stops that clone, and the focus goes back to Use a token', async () => {
-    const d = deferred<Res<WorldEntry>>()
+  it('cancelling the token dialog while its token is tried stops that clone and says so; the focus stays in the clone dialog', async () => {
+    const d = deferred<Res<unknown>>()
     const { props } = await tokenUp(asksFirst(() => d.promise))
     fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
     fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
     fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByTestId('world-repo-access')).toBeNull()
     expect(window.termpolis.worldCloneCancel).toHaveBeenCalledWith('https://github.com/o/r.git', undefined)
-    const useToken = screen.getByTestId('world-clone-use-token')
-    expect(useToken).toBeEnabled()
-    expect(useToken).toHaveFocus()
-    await act(async () => { d.resolve(ok({ key: 'k-c', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/clone' }, title: 'clone', lastOpened: NOW })) })
-    await settle()
+    // Use a token is grey until the stopped try answers, so the dialog holds the focus (F-R13).
+    expect(screen.getByTestId('world-clone-use-token')).toBeDisabled()
+    expect(screen.getByTestId('world-clone')).toHaveFocus()
+    expect(screen.getByRole('status')).toHaveTextContent(STOPPING_MESSAGE)
+    await act(async () => { d.resolve(fail(CLONE_STOPPED_MESSAGE)) })
+    expect(screen.getByRole('alert')).toHaveTextContent(TOKEN_STOPPED_MESSAGE)
+    expect(screen.getByTestId('world-clone-use-token')).toBeEnabled()
     expect(props.onChanged).not.toHaveBeenCalled()
     expect(props.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('a token clone that finished before the stop is kept: the home list is refreshed, nothing is opened', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    const { props } = await tokenUp(asksFirst(() => d.promise))
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    await act(async () => { d.resolve(ok({ key: 'k-c', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/clone' }, title: 'clone', lastOpened: NOW })) })
+    await settle()
+    expect(props.onChanged).toHaveBeenCalled()
+    expect(props.onOpen).not.toHaveBeenCalled()
     expect(screen.getByTestId('world-clone')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(CLONE_KEPT_MESSAGE)
   })
 
   it('Esc in the token dialog while its token is tried stops that clone too', async () => {
@@ -1257,7 +1328,7 @@ describe('WorldHome token dialog keyboard (F-R13)', () => {
     act(() => { (escRef.current as () => boolean)() })
     expect(screen.queryByTestId('world-repo-access')).toBeNull()
     expect(window.termpolis.worldCloneCancel).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('world-clone-use-token')).toHaveFocus()
+    expect(screen.getByTestId('world-clone')).toHaveFocus()
   })
 })
 

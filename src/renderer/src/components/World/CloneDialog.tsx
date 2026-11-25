@@ -1,9 +1,9 @@
 // Lumopolis: open a git repository. The URL is checked as it is typed (the same rules main enforces:
 // https://, ssh:// or git@ only, nothing that reads as an option), with an optional branch. While
 // main clones (shallow, into Termpolis's data folder) an indeterminate bar runs; Cancel stops it.
-import { useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { WorldEntry } from '../../../../shared/world/types'
-import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess'
+import { CLONE_STOPPED_MESSAGE, type NeedsLogin, type RepoAccess } from '../../../../shared/world/repoAccess'
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
 import { btnCls, dialogCls, fieldCls, linkCls, primaryCls, signInLabel } from './worldTargets'
 import { RepoAccessDialog } from './RepoAccessDialog'
@@ -17,13 +17,23 @@ export interface CloneDialogProps {
   onStart?: () => void
   /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
   escRef?: MutableRefObject<(() => void) | null>
+  /** A clone the person stopped had already finished: it is saved, so the home's list is refreshed (WP4b F-R5). */
+  onKept?: (entry: WorldEntry) => void
 }
 
 export const CLONE_UNREACHABLE = "Lumopolis couldn't clone that repository. Try again."
 /** A machine sign-in may need no window at all (a helper with a saved login), so the words do not say one opened. */
 export const SIGNING_IN_MESSAGE = "Signing in with this computer's login… If a sign-in window opens, finish there."
+/** Shown from Cancel until the stopped clone answers (WP4b F-R5): nothing can start another clone meanwhile. */
+export const STOPPING_MESSAGE = 'Stopping the clone…'
+/** The token dialog was closed while its token was tried, and that try is over. */
+export const TOKEN_STOPPED_MESSAGE = 'Lumopolis stopped trying that token.'
+/** A stopped clone that had finished before the stop reached it: kept, not opened. */
+export const CLONE_KEPT_MESSAGE = 'The clone finished before Lumopolis could stop it, so the repository is in your recent worlds.'
 
-export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogProps): JSX.Element {
+type StoppedBy = 'clone' | 'token'
+
+export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept }: CloneDialogProps): JSX.Element {
   const zoom = useUiZoom()
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('')
@@ -34,8 +44,13 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogP
   const [tokenOpen, setTokenOpen] = useState(false)
   const [tokenError, setTokenError] = useState<string | null>(null)
   const [signingIn, setSigningIn] = useState(false)
-  /** Bumped by every clone and every cancel: only the latest clone's result counts. */
-  const gen = useRef(0)
+  /** Set from a Cancel (or the token dialog's Cancel) until the stopped clone answers; mirrored in a ref for its answer. */
+  const [stopping, setStopping] = useState<StoppedBy | null>(null)
+  const stoppedBy = useRef<StoppedBy | null>(null)
+  /** A clone that finished before the person's stop reached it. */
+  const [kept, setKept] = useState(false)
+  /** The clone running now, if any: the dialog closing under it stops it (WP4b F-R5). */
+  const running = useRef<{ url: string; ref?: string } | null>(null)
 
   const trimmed = url.trim()
   const ref = branch.trim() === '' ? undefined : branch.trim()
@@ -48,20 +63,35 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogP
   /** A changed address or branch is a different repository: the sign-in choices no longer apply. */
   const edited = (): void => { setLogin(null); setTokenOpen(false) }
 
+  // One clone at a time: Clone and the fields are grey while one runs, and stay grey while a stopped one answers.
   const clone = (access?: RepoAccess): void => {
     if (!canClone) return
     onStart?.()
-    const mine = ++gen.current
+    running.current = ref === undefined ? { url: trimmed } : { url: trimmed, ref }
     setCloning(true)
     setError(null)
     setTokenError(null)
+    setKept(false)
     setSigningIn(access?.mode === 'machine')
     // The words go to the token dialog when the try came from it, else to the alert under the fields.
     const viaToken = access?.mode === 'token'
     const done = (message: string | null, entry?: WorldEntry, needs?: NeedsLogin): void => {
-      if (gen.current !== mine) return
+      running.current = null
       setCloning(false)
       setSigningIn(false)
+      const by = stoppedBy.current
+      if (by !== null) {
+        // The person stopped it: however main answered, the words say it stopped; one that had finished is kept.
+        stoppedBy.current = null
+        setStopping(null)
+        if (entry) {
+          setKept(true)
+          onKept?.(entry)
+        } else {
+          setError(by === 'token' ? TOKEN_STOPPED_MESSAGE : CLONE_STOPPED_MESSAGE)
+        }
+        return
+      }
       if (entry) { onCloned(entry); return }
       if (needs) setLogin(needs)
       if (viaToken) setTokenError(message)
@@ -80,21 +110,31 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogP
 
   const submitToken = (value: string): void => clone({ mode: 'token', value })
 
-  /** Stops the clone under way: its answer, when it comes, no longer counts. */
-  const stop = (): void => {
-    gen.current++
-    setCloning(false)
+  /** Stops the clone under way. The dialog stays grey until its answer comes (a clone started meanwhile would join the
+   *  run being stopped), and that answer then says it stopped (WP4b F-R5). */
+  const stop = (by: StoppedBy): void => {
+    stoppedBy.current = by
+    setStopping(by)
     setSigningIn(false)
     window.termpolis.worldCloneCancel(trimmed, ref).catch(() => undefined)
   }
+  // A second Cancel while the stop is under way closes the dialog: the stop was already asked for.
   const cancel = (): void => {
-    if (!cloning) { onClose(); return }
-    stop()
+    if (!cloning || stoppedBy.current !== null) { onClose(); return }
+    stop('clone')
   }
+  // Closed under a clone that runs (Esc or a second Cancel during the stop are already stopping it): that clone stops.
+  useEffect(() => () => {
+    const run = running.current
+    if (run === null || stoppedBy.current !== null) return
+    // Its answer then counts as stopped too: never opened from a dialog that is gone, only kept if it had finished.
+    stoppedBy.current = 'clone'
+    window.termpolis.worldCloneCancel(run.url, run.ref).catch(() => undefined)
+  }, [])
   const choiceCls = login !== null && login.notFound === true ? linkCls : btnCls
   // Closing the token dialog while its token is tried stops that try too: its answer would have nowhere to show (F-R5).
   const closeToken = (): void => {
-    if (cloning) stop()
+    if (cloning) stop('token')
     setTokenOpen(false)
     setTokenError(null)
   }
@@ -161,6 +201,8 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef }: CloneDialogP
         </div>
       )}
       {signingIn && <p className="text-xs text-[#9ca3af]">{SIGNING_IN_MESSAGE}</p>}
+      {stopping !== null && <p role="status" className="text-xs text-[#9ca3af]">{STOPPING_MESSAGE}</p>}
+      {kept && <p role="status" className="text-xs text-[#9ca3af]">{CLONE_KEPT_MESSAGE}</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
       {login !== null && (
         // When the host only said it could not find the repository, the address is the likelier fault: the

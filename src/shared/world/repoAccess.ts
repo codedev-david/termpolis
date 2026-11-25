@@ -54,3 +54,8 @@ export function hideValue(text: string, value: string): string {
   const hidden = value ? text.split(value).join('[hidden]') : text
   return redactSecrets(hidden)
 }
+
+/** A clone the person stopped (Cancel in the clone dialog), said in plain words: never the host's sentinel (WP4b F-R5). */
+export const CLONE_STOPPED_MESSAGE = 'Lumopolis stopped the clone before it finished.'
+/** An update or sign-in of a saved repository the person stopped: the saved copy is still what is shown (WP4b F-R6). */
+export const UPDATE_STOPPED_MESSAGE = "Lumopolis stopped updating this repository. You're seeing the saved copy."

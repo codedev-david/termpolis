@@ -819,7 +819,8 @@ describe('WorldView: Esc in a home dialog', () => {
     esc(screen.getByLabelText('Repository URL'))
     expect(api.worldCloneCancel).toHaveBeenCalledWith('https://x.dev/a.git', undefined)
     expect(screen.getByTestId('world-clone')).toBeInTheDocument()
-    expect(screen.queryByRole('progressbar')).toBeNull()
+    // The dialog says it is stopping until the stopped clone answers (WP4b F-R5); a second Esc closes it.
+    expect(within(screen.getByTestId('world-clone')).getByRole('status')).toHaveTextContent('Stopping the clone')
     esc(screen.getByLabelText('Repository URL'))
     expect(screen.queryByTestId('world-clone')).toBeNull()
     fireEvent.click(choice(/^Design something new/))
