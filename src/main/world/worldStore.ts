@@ -232,10 +232,10 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       // Never moved aside, never written over: this version shows its own copy, or reads what it can of the newer one.
       newerOnDisk.set(name, true)
       const own = shadow.get(name)
-      if (own) return { ...structuredClone(own), savedByNewer: true }
+      if (own) return { ...upgradeSavedWords(structuredClone(own)), savedByNewer: true }
       // No backup is needed for what this view leaves out: a newer version's file is never written by this one.
       const view = checked({ ...(parsed as Record<string, unknown>), version: WORLD_VERSION })
-      return view ? { ...view.doc, savedByNewer: true } : null
+      return view ? { ...upgradeSavedWords(view.doc), savedByNewer: true } : null
     }
     // Safe to save over only once the backup or the move-aside below is done (M1).
     const ours = (): void => { newerOnDisk.set(name, false); shadow.delete(name) }

@@ -21,7 +21,7 @@ import {
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
 import { BUILTIN_TECH } from '../../src/main/world/techStack'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { KIND_WORD, upgradeSavedWords } from '../../src/main/world/kindWords'
+import { KIND_WORD, portLabel, portWords, upgradeSavedWords } from '../../src/main/world/kindWords'
 import { edgeId, isToolingPath, shortHash, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
@@ -1995,7 +1995,10 @@ describe('message ports are called message ports, not TCP (WP-LOOK Task 9)', () 
     expect(JSON.stringify(again)).not.toContain('TCP')
   })
 
-  it('a code-made label with TCP among other kind words is renamed; a model\'s own TCP is kept, with its definition', () => {
+  // The claim compile gives every line it found in the code; a design's lines (written by an agent) never carry one.
+  const SEEN: WorldEdge['claims'] = [{ text: 'Seen in code', state: 'observed', evidence: [{ kind: 'file', ref: 'src/a.ts:1' }] }]
+
+  it('on load, TCP is renamed only on a code-made label of a part a code-made port line reaches; a model\'s own TCP is kept, with its definition', () => {
     const base = { ...minimalWorld() }
     const b = base.buildings[0]
     const OLD = 'A network connection on a numbered port'
@@ -2005,28 +2008,119 @@ describe('message ports are called message ports, not TCP (WP-LOOK Task 9)', () 
         { ...b, id: 'b-mixed', techLabel: 'IPC · TCP · Process' },
         { ...b, id: 'b-model', techLabel: 'TCP server' },
         { ...b, id: 'b-stack', techLabel: 'Redis · TCP', stack: ['TCP'] },
-        { ...b, id: 'b-plain', techLabel: 'IPC · Worker' }
+        { ...b, id: 'b-plain', techLabel: 'IPC · Worker' },
+        // A model's label made only of kind words, on a real socket server: no port line reaches it (review I-1).
+        { ...b, id: 'b-alone', techLabel: 'TCP' },
+        { ...b, id: 'b-sock', techLabel: 'HTTP server · TCP' },
+        // A design part: its port line has the code's wording but was never seen in code.
+        { ...b, id: 'b-design', techLabel: 'IPC · TCP' }
       ],
       edges: [
-        { ...edgeOf('b-mixed', 'b-model'), label: 'ipc a, port b', tech: ['IPC', 'TCP'] },
+        { ...edgeOf('b-mixed', 'b-model'), label: 'ipc a, port b', tech: ['IPC', 'TCP'], claims: SEEN },
         { ...edgeOf('b-model', 'b-stack'), label: 'Streams terminal data', tech: ['TCP'] },
-        { ...edgeOf('b-stack', 'b-plain'), label: 'http-out h', tech: ['HTTP client', 'TCP'] }
+        { ...edgeOf('b-stack', 'b-plain'), label: 'http-out h', tech: ['HTTP client', 'TCP'], claims: SEEN },
+        { ...edgeOf('b-alone', 'b-sock'), label: 'http-listen 7070', tech: ['HTTP server'], claims: SEEN },
+        { ...edgeOf('b-design', 'b-plain'), label: 'port d', tech: ['TCP'] }
       ],
-      glossary: { IPC: 'x', Process: 'x', 'HTTP client': 'x', TCP: OLD }
+      glossary: { IPC: 'x', Process: 'x', 'HTTP client': 'x', 'HTTP server': 'x', TCP: OLD }
     }
     const up = upgradeSavedWords(saved)
-    expect(up.buildings.map((x) => x.techLabel)).toEqual(['IPC · Message port · Process', 'TCP server', 'Redis · TCP', 'IPC · Worker'])
+    expect(up.buildings.map((x) => x.techLabel)).toEqual(['IPC · Message port · Process', 'TCP server', 'Redis · TCP', 'IPC · Worker', 'TCP', 'HTTP server · TCP', 'IPC · TCP'])
     expect(up.buildings[2].stack).toEqual(['TCP'])
-    // Only a line the code wrote with a port on it had its TCP from the port.
-    expect(up.edges.map((e) => e.tech)).toEqual([['IPC', 'Message port'], ['TCP'], ['HTTP client', 'TCP']])
+    // Only a line the code wrote with a port on it, and saw in the code, had its TCP from the port.
+    expect(up.edges.map((e) => e.tech)).toEqual([['IPC', 'Message port'], ['TCP'], ['HTTP client', 'TCP'], ['HTTP server'], ['TCP']])
     // TCP is still in use, so its definition stays, and Message port gains one.
-    expect(up.glossary).toEqual({ IPC: 'x', Process: 'x', 'HTTP client': 'x', TCP: OLD, 'Message port': BUILTIN_GLOSSARY['Message port'] })
+    expect(up.glossary).toEqual({ IPC: 'x', Process: 'x', 'HTTP client': 'x', 'HTTP server': 'x', TCP: OLD, 'Message port': BUILTIN_GLOSSARY['Message port'] })
     // A model's own definition of TCP is never dropped; a world with no TCP comes back as the same object.
-    const own = upgradeSavedWords({ ...saved, edges: [saved.edges[0]], buildings: [saved.buildings[0]], glossary: { ...saved.glossary, TCP: 'Our wire' } })
+    const own = upgradeSavedWords({ ...saved, edges: [saved.edges[0]], buildings: saved.buildings.slice(0, 2), glossary: { ...saved.glossary, TCP: 'Our wire' } })
     expect(own.glossary.TCP).toBe('Our wire')
     const none = { ...saved, buildings: [saved.buildings[3]], edges: [], glossary: { IPC: 'x' } }
     expect(upgradeSavedWords(none)).toBe(none)
     // An old definition nothing uses any more is dropped even when nothing was renamed.
     expect(upgradeSavedWords({ ...none, glossary: { IPC: 'x', TCP: OLD } }).glossary).toEqual({ IPC: 'x' })
+  })
+
+  it('a TCP a plan proposal still uses keeps its definition, and the proposal is upgraded by the same rule (review M-6)', () => {
+    const base = minimalWorld()
+    const b = base.buildings[0]
+    const OLD = 'A network connection on a numbered port'
+    const plan = {
+      id: 'plan',
+      title: 'Relay',
+      summary: [],
+      buildings: [{ ...b, id: 'p-relay', techLabel: 'TCP', stack: ['TCP'] }, { ...b, id: 'p-port', techLabel: 'IPC · TCP' }, { ...b, id: 'p-host' }],
+      edges: [{ ...edgeOf('p-port', 'p-host'), label: 'port q', tech: ['TCP'], claims: SEEN }, { ...edgeOf('p-relay', 'p-host'), tech: ['TCP'] }]
+    }
+    const saved: WorldDoc = { ...base, layers: { plan: [plan] }, glossary: { TCP: OLD } }
+    const up = upgradeSavedWords(saved)
+    expect(up.layers.plan[0].buildings.map((x) => [x.techLabel, x.stack])).toEqual([['TCP', ['TCP']], ['IPC · Message port', []], ['', []]])
+    expect(up.layers.plan[0].edges.map((e) => e.tech)).toEqual([['Message port'], ['TCP']])
+    expect(up.glossary).toEqual({ TCP: OLD, 'Message port': BUILTIN_GLOSSARY['Message port'] })
+    // TCP used only by a proposal's line still counts.
+    const lineOnly: WorldDoc = { ...base, layers: { plan: [{ ...plan, buildings: [plan.buildings[2]], edges: [plan.edges[1]] }] }, glossary: { TCP: OLD } }
+    expect(upgradeSavedWords(lineOnly)).toBe(lineOnly)
+    // A proposal with nothing to change is the same object.
+    const same: WorldDoc = { ...base, layers: { plan: [{ ...plan, buildings: [plan.buildings[2]], edges: [] }] } }
+    expect(upgradeSavedWords(same)).toBe(same)
+  })
+
+  it('portWords renames TCP only when every word is an older word for one of the crossings given, a port among them', () => {
+    expect(portWords(['IPC', 'TCP'], ['ipc', 'port'])).toEqual(['IPC', 'Message port'])
+    const kept = [['TCP', 'Redis'], ['TCP', 'Worker'], ['TCP'], ['IPC']]
+    expect(kept.map((w, i) => portWords(w, i === 2 ? ['ipc', 'http-listen'] : ['port', 'ipc']) === w)).toEqual([true, true, true, true])
+    expect(portLabel('IPC · TCP', ['port', 'ipc'])).toBe('IPC · Message port')
+    const own = 'TCP server'
+    expect(portLabel(own, ['port'])).toBe(own)
+  })
+
+  // A real socket server: net.createServer(...).listen(7070) is an http-listen boundary, never a port.
+  const SOCK: Record<string, string> = { 'src/relay/server.ts': "import net from 'node:net'\nnet.createServer(() => undefined).listen(7070)\n" }
+
+  it('a model\'s "TCP" or "HTTP server · TCP" on a real socket server stays, at load and through the next compile (review I-1)', async () => {
+    const deps = mkDeps(SOCK, { glob: async () => [] })
+    const doc = await compileWorld({ snap: snapOf(SOCK, {}), projectKey: 'sock', head: HEAD, previous: null }, deps)
+    const relay = doc.buildings.find((b) => b.members.includes('src/relay/server.ts')) as WorldDoc['buildings'][number]
+    expect(relay.techLabel).toBe('HTTP server')
+    const OLD = 'A network connection on a numbered port'
+    for (const techLabel of ['TCP', 'HTTP server · TCP']) {
+      const saved: WorldDoc = { ...doc, buildings: doc.buildings.map((b) => (b.id === relay.id ? { ...b, techLabel } : b)), glossary: { ...doc.glossary, TCP: OLD } }
+      const up = upgradeSavedWords(saved)
+      expect(up).toBe(saved)
+      const again = await compileWorld({ snap: snapOf(SOCK, {}), projectKey: 'sock', head: HEAD, previous: up, changed: [] }, deps)
+      expect(again.buildings.find((b) => b.id === relay.id)?.techLabel).toBe(techLabel)
+      expect(again.glossary.TCP).toBe(OLD)
+    }
+  })
+
+  it('the next compile renames TCP by the part\'s own crossings: a port part with no line, and a port line a model described (review I-1, M-7)', async () => {
+    const OLD = 'A network connection on a numbered port'
+    // A part that posts on a port nobody opens here: no line, so a load cannot tell; the compile can.
+    const ALONE: Record<string, string> = { 'src/main/ptyHost.ts': PTY['src/main/ptyHost.ts'] }
+    const aloneDeps = mkDeps(ALONE, { glob: async () => [] })
+    const first = await compileWorld({ snap: snapOf(ALONE, {}), projectKey: 'alone', head: HEAD, previous: null }, aloneDeps)
+    const saved: WorldDoc = { ...first, buildings: first.buildings.map((b) => ({ ...b, techLabel: 'TCP' })), glossary: { ...first.glossary, TCP: OLD } }
+    expect(upgradeSavedWords(saved)).toBe(saved)
+    const next = await compileWorld({ snap: snapOf(ALONE, {}), projectKey: 'alone', head: HEAD, previous: saved, changed: [] }, aloneDeps)
+    expect(next.buildings.map((b) => b.techLabel)).toEqual(['Message port'])
+    expect(JSON.stringify(next)).not.toContain('TCP')
+    // A port line whose words a model wrote keeps the model's words, and its chip follows the line's own crossings.
+    const doc = await compilePty()
+    const line = doc.edges.find((e) => e.label.startsWith('port ')) as WorldEdge
+    const described: WorldDoc = {
+      ...doc,
+      edges: doc.edges.map((e) => (e.id === line.id ? { ...e, label: 'Streams terminal data', tech: ['TCP'] } : e)),
+      glossary: { ...doc.glossary, TCP: OLD }
+    }
+    expect(upgradeSavedWords(described)).toBe(described)
+    const ptyDeps = mkDeps(PTY, { glob: async () => [] })
+    const again = await compileWorld({ snap: snapOf(PTY, {}), projectKey: 'pty', head: HEAD, previous: described, changed: [] }, ptyDeps)
+    const after = again.edges.find((e) => e.id === line.id) as WorldEdge
+    expect([after.label, after.tech]).toEqual(['Streams terminal data', ['Message port']])
+    expect(JSON.stringify(again)).not.toContain('TCP')
+    // A model's TCP beside a word that is not one of this line's own crossings is its own, and stays.
+    const mixed: WorldDoc = { ...described, edges: described.edges.map((e) => (e.id === line.id ? { ...e, tech: ['TCP', 'IPC'] } : e)) }
+    const kept = await compileWorld({ snap: snapOf(PTY, {}), projectKey: 'pty', head: HEAD, previous: mixed, changed: [] }, ptyDeps)
+    expect(kept.edges.find((e) => e.id === line.id)?.tech).toEqual(['TCP', 'IPC'])
+    expect(kept.glossary.TCP).toBe(OLD)
   })
 })

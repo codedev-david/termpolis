@@ -25,7 +25,7 @@ import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { goModulePath, resolveLangImports, scanLangImports, type GoModule } from './langImports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
-import { MESSAGE_PORT, MESSAGE_PORT_MEANS } from './kindWords'
+import { MESSAGE_PORT, MESSAGE_PORT_MEANS, portLabel, portWords, withoutUnusedOldPort } from './kindWords'
 import { BUILDINGS_PER_BATCH, codeLabels, isLegacyOtherFloors, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
@@ -514,6 +514,8 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   }
   // Every untouched building has a previous twin with the same members (a new one is touched). Its floors are kept,
   // unless they are the old code-derived "other" floor (look spec §9.3): those give way to the code's floors today.
+  // An older compiler's TCP for a port (look spec §9.4) is renamed by the part's own boundaries, and a line's by its own
+  // crossings, so a model's TCP on a part or line with no port is kept (review I-1, M-7).
   for (const b of g.buildings) {
     if (ids.has(b.id)) {
       labels.buildings[b.id] = fresh.buildings[b.id]
@@ -522,13 +524,14 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     const p = prevB.get(b.id) as WorldDoc['buildings'][number]
     const kept = fromPrevious(p)
     if (isLegacyOtherFloors(p.floors, p.members)) kept.floors = labels.buildings[b.id].floors
+    kept.techLabel = portLabel(p.techLabel, b.boundaries.map((x) => x.kind))
     labels.buildings[b.id] = kept
   }
   for (const e of g.edges) {
     const id = edgeId(e)
     const p = prevE.get(id)
     if (touches(e)) labels.edges[id] = fresh.edges[id]
-    else if (p) labels.edges[id] = edgeFromPrevious(p)
+    else if (p) labels.edges[id] = { ...edgeFromPrevious(p), tech: [...portWords(p.tech, e.via.map((v) => v.kind))] }
   }
   labels.glossary = { ...previous.glossary, ...named.glossary, ...fresh.glossary }
   labels.tokens = fresh.tokens + named.tokens
@@ -1206,8 +1209,10 @@ async function compileWithin(input: StagedInput, deps: CompileDeps, signal: Abor
     ...filesNotes(snap, root, files.length),
     ...(traced !== null ? { filesRead: readCount, filesListed: files.length } : {})
   }
-  // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
-  const merged = deps.annotations ? mergeAnnotations(doc, renameClaims(await deps.annotations(), renames)) : doc
+  // Annotations are merged by item id before the plan is laid over, so a recompile never loses one. The older
+  // compiler's TCP definition goes once nothing shows TCP (the plan brings its own definitions with it).
+  const tidy = withoutUnusedOldPort(doc)
+  const merged = deps.annotations ? mergeAnnotations(tidy, renameClaims(await deps.annotations(), renames)) : tidy
   progress('layout', 100)
   logSlow(input.projectKey, stages, Date.now(), ranOut)
   return { doc: input.plan ? overlayPlan(merged, input.plan, previous) : merged, cache }

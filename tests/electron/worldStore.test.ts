@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorldDoc } from '../../src/shared/world/types'
 import { createWorldStore, LABEL_MAX_AGE_MS, pruneLabelCache, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import { STAGE_CACHE_VERSION } from '../../src/main/world/stageCache'
+import { edgeId } from '../../src/main/world/group'
 
 function doc(projectKey = 'demo'): WorldDoc {
   return {
@@ -42,6 +43,24 @@ function doc(projectKey = 'demo'): WorldDoc {
   }
 }
 
+const OLD_TCP = 'A network connection on a numbered port'
+/** A world an older compiler saved: TCP on a part, and on the port line it found in the code to the next part. */
+function portWorld(): WorldDoc {
+  const saved = doc()
+  const a = saved.buildings[0]
+  saved.buildings = [{ ...a, techLabel: 'TCP' }, { ...a, id: 'b-b', name: 'b', members: ['src/b.ts'] }]
+  saved.districts = [{ ...saved.districts[0], members: ['b-a', 'b-b'] }]
+  saved.layout = { seed: 1, positions: { ...saved.layout.positions, 'b-b': [2, 0, 2] } }
+  saved.edges = [
+    {
+      id: edgeId({ from: 'b-a', to: 'b-b' }), from: 'b-a', to: 'b-b', cargo: '', label: 'port data', how: [], why: [], tech: ['TCP'], rate: '', twoWay: false,
+      claims: [{ text: 'Seen in code', state: 'observed', evidence: [{ kind: 'file', ref: 'src/a.ts:1' }] }]
+    }
+  ]
+  saved.glossary = { TCP: OLD_TCP }
+  return saved
+}
+
 let dir = ''
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'world-store-'))
@@ -75,15 +94,34 @@ describe('worldStore', () => {
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
-  it('a saved world with TCP on a port-only building loads with Message port (WP-LOOK Task 9)', async () => {
+  it('a saved world with TCP on a port part loads with Message port; a model\'s TCP with no port line is kept (WP-LOOK Task 9, review I-1)', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(portWorld()))
+    const loaded = await createWorldStore(dir).load('demo')
+    expect(loaded?.buildings.map((b) => b.techLabel)).toEqual(['Message port', 'TS'])
+    expect(loaded?.edges[0].tech).toEqual(['Message port'])
+    expect(loaded?.glossary).toEqual({ 'Message port': 'Messages passed over a channel between two parts of the app' })
+    // The same TCP with no port line to show where it came from is a model's word, and stays.
+    const own = doc()
+    own.buildings[0] = { ...own.buildings[0], techLabel: 'TCP' }
+    own.glossary = { TCP: OLD_TCP }
+    await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(own))
+    expect(await createWorldStore(dir).load('demo')).toEqual(own)
+  })
+
+  it('a TCP only a plan proposal uses keeps its definition through a load, a save and a load (review M-6)', async () => {
     const saved = doc()
-    saved.buildings[0] = { ...saved.buildings[0], techLabel: 'TCP' }
-    saved.glossary = { TCP: 'A network connection on a numbered port' }
+    saved.layers = { plan: [{ id: 'plan', title: 'Relay', summary: [], buildings: [{ ...saved.buildings[0], id: 'p-relay', status: 'proposed', stack: ['TCP'] }], edges: [] }] }
+    saved.layout = { seed: 1, positions: { ...saved.layout.positions, 'p-relay': [3, 0, 3] } }
+    saved.glossary = { TCP: OLD_TCP }
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(saved))
-    const loaded = await createWorldStore(dir).load('demo')
-    expect(loaded?.buildings[0].techLabel).toBe('Message port')
-    expect(loaded?.glossary).toEqual({ 'Message port': 'Messages passed over a channel between two parts of the app' })
+    const store = createWorldStore(dir)
+    const loaded = (await store.load('demo')) as WorldDoc
+    expect(loaded).toEqual(saved)
+    await store.save(loaded)
+    expect(await createWorldStore(dir).load('demo')).toEqual(saved)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
   it('corrupt file → load null + a timestamped, numbered .bad backup; earlier backups are kept (F21)', async () => {
@@ -538,6 +576,19 @@ describe('pruneLabelCache', () => {
 describe('worldStore and a world written by a newer Termpolis (C13)', () => {
   const file = (): string => join(dir, 'world', 'demo.json')
   const newer = (): Record<string, unknown> => ({ ...doc(), version: 2, futureField: { kept: true } })
+
+  it('a newer world, and this version\'s own copy of it, are shown with the new words too (review M-8)', async () => {
+    const store = createWorldStore(dir)
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const text = JSON.stringify({ ...portWorld(), version: 2 })
+    await writeFile(file(), text)
+    const shown = await store.load('demo')
+    expect([shown?.savedByNewer, shown?.buildings[0].techLabel, shown?.edges[0].tech]).toEqual([true, 'Message port', ['Message port']])
+    await store.save({ ...portWorld(), generatedAt: 5, savedByNewer: true })
+    const own = await store.load('demo')
+    expect([own?.generatedAt, own?.savedByNewer, own?.buildings[0].techLabel, own?.edges[0].tech]).toEqual([5, true, 'Message port', ['Message port']])
+    expect(await readFile(file(), 'utf8')).toBe(text)
+  })
 
   it('opens it read-only: shows it marked savedByNewer, never moves it aside, never writes over it', async () => {
     const store = createWorldStore(dir)
