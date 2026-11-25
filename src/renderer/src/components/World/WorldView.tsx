@@ -920,6 +920,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** The world as opened, before its folder resolves: a followed folder changes it on every cd. */
   const openedAs = designKey !== null ? `design ${designKey}` : `root ${target}`
   let empty: 'loading' | 'mapping' | 'error' | null = null
+  // Stop mapping (WP4b F-R6): main stops the compile and saves nothing, and the person is back on the home, where the
+  // folder they opened stays in the recent worlds. What the stopped run answers is dropped with the world it was for.
+  const stopMapping = (at: string): void => {
+    window.termpolis.worldCompileCancel(at).catch(() => undefined)
+    goHome()
+  }
   const recompileShown = recompileError !== null && recompileError.at === worldRoot ? recompileError : null
   if (home) empty = null
   else if (error !== null) empty = 'error'
@@ -1075,6 +1081,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             progress={progress}
             error={error}
             onRetry={() => setAttempt((n) => n + 1)}
+            {...(empty === 'mapping' && worldRoot !== null ? { onCancel: () => stopMapping(worldRoot) } : {})}
           />
         )}
         {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}

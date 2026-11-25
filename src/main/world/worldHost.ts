@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import type { GraphSnapshot } from '../codeGraph'
 import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
-import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
+import { COMPILE_STOPPED_MESSAGE, type Claim, type Evidence, type Proposal, type WorldDoc, type WorldQuery, type WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
 import { compileWorld, compileWorldStaged, createRecompileScheduler, firstMap, readProgress, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
@@ -457,6 +457,36 @@ export interface WorldHostDeps {
 export const PROVISIONAL_MIN_FILES = 2000
 /** How long the scans made from a snapshot's reads stay usable by the compile that follows it. */
 export const PRESCAN_TTL_MS = 120_000
+export { COMPILE_STOPPED_MESSAGE }
+
+/** A person's stop of a project's mapping, as a run that started before it sees it (WP4b F-R6). */
+export interface Stop {
+  stopped(): boolean
+  /** Settles when the stop comes; never when none does. */
+  when: Promise<void>
+  /** The run is over: the stop no longer has it to stop. */
+  release(): void
+}
+
+/** `start()`, or `none` as soon as `stop` comes (at once, starting nothing, when it came already). */
+const cutBy = <T>(stop: Stop, start: () => Promise<T>, none: T): Promise<T> =>
+  stop.stopped() ? Promise.resolve(none) : Promise.race([start(), stop.when.then(() => none)])
+
+/** The compile's deps once the person stops it: no file is read, no search or test source is waited for, nothing is
+ *  reported or copied. What the compile still builds from what it got is never saved (the handler checks before). */
+export const stoppable = (d: CompileDeps, stop: Stop): CompileDeps => {
+  const { readSource, transcriptRuns, ciRuns, copyAnnotations, onProgress } = d
+  return {
+    ...d,
+    readFile: (p) => cutBy(stop, () => d.readFile(p), null),
+    ...(readSource ? { readSource: (p: string) => cutBy(stop, () => readSource(p), null) } : {}),
+    glob: (root, patterns, o) => cutBy(stop, () => d.glob(root, patterns, o), []),
+    ...(transcriptRuns ? { transcriptRuns: () => cutBy(stop, transcriptRuns, null) } : {}),
+    ...(ciRuns ? { ciRuns: () => cutBy(stop, ciRuns, null) } : {}),
+    ...(copyAnnotations ? { copyAnnotations: async (renames: Record<string, string>) => (stop.stopped() ? undefined : copyAnnotations(renames)) } : {}),
+    ...(onProgress ? { onProgress: (stage: CompileStage, pct: number) => (stop.stopped() ? undefined : onProgress(stage, pct)) } : {})
+  }
+}
 /** The most folders whose snapshot scans are kept at once (each is taken by the compile that follows it). */
 const MAX_PRESCANS = 4
 /** How long a compile waits for its first map still being drawn before it starts without it (M4). */
@@ -577,6 +607,32 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    * read and the compile after them runs (or, once the read ends with no compile, for PRESCAN_TTL_MS); never stored.
    */
   const provisional = new Map<string, { doc: WorldDoc }>()
+  /** Per project: the line a person's stop cuts (cancelCompile), and how many runs hold it. A snapshot or compile takes the
+   *  line in place when it is asked for, so a stop reaches it while it waits in the queue too; a stop starts a new line,
+   *  so a run asked for after it is not stopped (WP4b F-R6). */
+  const stopLines = new Map<string, { users: number; cut: boolean; when: Promise<void>; fire: () => void }>()
+  const stopFor = (key: string): Stop => {
+    let line = stopLines.get(key)
+    if (!line) {
+      let fire!: () => void
+      const when = new Promise<void>((r) => (fire = r))
+      line = { users: 0, cut: false, when, fire }
+      stopLines.set(key, line)
+    }
+    const mine = line
+    mine.users++
+    return {
+      // Its own line's mark, never whether the line is still current: a run over and released is not stopped.
+      stopped: () => mine.cut,
+      when: mine.when,
+      // Each run releases once (the compile's serial finally, the snapshot's finally).
+      release: () => {
+        mine.users--
+        if (mine.users === 0 && stopLines.get(key) === mine) stopLines.delete(key)
+      }
+    }
+  }
+  const stoppedError = (): Error => new Error(COMPILE_STOPPED_MESSAGE)
   /** Projects whose compile call is running in the host. */
   const running = new Set<string>()
   /** Per project: the first map being drawn now, which its compile waits for (bounded) before it starts (M4). */
@@ -975,7 +1031,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         missed = true
         return null
       }
+      const stop = stopFor(key)
       return serial(key, async () => {
+        // Stopped while it waited in the queue: it starts nothing.
+        if (stop.stopped()) throw stoppedError()
         // The scans the snapshot just made for this folder, if it made them: then its progress is this run's too, and
         // only rises from where it got to; otherwise the run starts from 0.
         const scans = takePrescan(snap.root)
@@ -1009,7 +1068,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           const cache = await stagesOf(st, key)
           st.checked.delete(key)
           const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn } : {}) }
-          const out = await compile(input, withPrescan(depsFor(st, key, snap, labelled ? cacheOnly : null), scans))
+          const out = await compile(input, stoppable(withPrescan(depsFor(st, key, snap, labelled ? cacheOnly : null), scans), stop))
+          // Stopped while it ran: what it built from the reads it got is never saved.
+          if (stop.stopped()) throw stoppedError()
           // The run's own progress is over: a label run after it reports from its own start.
           runPct.delete(key)
           await saveCompiled(st, key, out, { snap, head, ...plan })
@@ -1020,13 +1081,26 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           if (missed) labelLater(st, key, out.doc, { snap, head, ...plan }, out.cache)
           return out.doc
         } catch (e) {
-          dropFirst(key, e)
-          throw e
+          // A stopped run says it stopped, whatever its cut reads made of it.
+          const why = stop.stopped() ? stoppedError() : e
+          dropFirst(key, why)
+          throw why
         } finally {
           running.delete(key)
           runPct.delete(key)
         }
-      })
+      }).finally(stop.release)
+    },
+    /** Stops the person's mapping of this project that is under way (WP4b F-R6): its snapshot's reads and the compiles
+     *  asked for before this, waiting or running. They answer COMPILE_STOPPED_MESSAGE and save nothing. True when one ran. */
+    cancelCompile: async (projectKey: unknown) => {
+      const key = needKey(projectKey)
+      const line = stopLines.get(key)
+      if (!line) return false
+      stopLines.delete(key)
+      line.cut = true
+      line.fire()
+      return true
     },
     // The stored world; before the first one is saved, and only for the pane (`provisional`), the first map drawn
     // from the listing (drawFirst), if any. Export and Ask never see a first map (fix round 1, I1).
@@ -1095,6 +1169,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       // The reads' progress, with a beat while a read is stuck (fix round 4, M1): for a person's run only. Its timer
       // starts inside the try, so the finally stops it whatever throws first (minor sweep, R4-2).
       let reads: ReturnType<typeof readProgress> | null = null
+      // A person's run can be stopped (WP4b F-R6): it answers at once, and no file is read after.
+      const stop = early !== null ? stopFor(early) : null
       sweepRuns()
       if (early !== null) {
         // A run already going for this project keeps its percentage: a second snapshot never takes it back (M1).
@@ -1103,21 +1179,23 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       }
       try {
         if (early !== null) reads = readProgress((pct) => postProgress(early, 'boundaries', pct), 0)
-        const snap = await snapshotFromFiles(root, {
-          read,
+        const beat = reads
+        const work = snapshotFromFiles(root, {
+          read: stop ? (p: string) => cutBy(stop, () => read(p), null) : read,
           ...(deps.listFiles ? { listFiles: deps.listFiles } : {}),
           onText: (rel, text) => void scans.set(rel, scanFile(rel, text)),
-          ...(early !== null
+          ...(early !== null && stop && beat
             ? {
                 onListed: (paths: GraphSnapshot) => {
-                  // One first map per run: none while one is drawn, shown or its compile runs (M1).
-                  if (paths.files.length < provisionalMin || drawing.has(early) || provisional.has(early) || running.has(early)) return
+                  // One first map per run: none while one is drawn, shown or its compile runs (M1), or once it stopped.
+                  if (stop.stopped() || paths.files.length < provisionalMin || drawing.has(early) || provisional.has(early) || running.has(early)) return
                   drawFirst(st, early, paths, head)
                 },
-                onRead: (reads as NonNullable<typeof reads>).read
+                onRead: (...a: Parameters<typeof beat.read>) => (stop.stopped() ? undefined : beat.read(...a))
               }
             : {})
         })
+        const snap = await (stop ? Promise.race([work, stop.when.then((): never => { throw stoppedError() })]) : work)
         // Kept for the compile that follows; scans no compile took in time, and the oldest past MAX_PRESCANS, go.
         const at = now()
         for (const [k, p] of prescans) if (at - p.at > PRESCAN_TTL_MS) prescans.delete(k)
@@ -1134,6 +1212,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         throw e
       } finally {
         reads?.stop()
+        stop?.release()
       }
     },
     // Cancels the running clone or update and every call waiting behind it (a waiting one never starts git).

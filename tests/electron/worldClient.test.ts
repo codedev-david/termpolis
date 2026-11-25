@@ -22,7 +22,7 @@ import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/w
 import { WORLD_READ_FAILED, worldFileName } from '../../src/main/world/worldStore'
 import { WORLD_CALL_FAILED, windowMessage } from '../../src/main/world/windowError'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
-import type { WorldDoc } from '../../src/shared/world/types'
+import { COMPILE_STOPPED_MESSAGE, type WorldDoc } from '../../src/shared/world/types'
 
 const ROOT = 'C:/repos/demo'
 const KEY = graphKeyForRoot(ROOT)
@@ -900,6 +900,94 @@ describe('createWorldClient', () => {
     who = ''
     client.applySettings()
     expect(spawned[0].posted[spawned[0].posted.length - 1]).toEqual({ kind: 'settings', labelling: true })
+  })
+
+  // WP4b F-R6: Stop mapping stops the compile in flight, at whatever step it is.
+  describe('cancelCompile', () => {
+    const gated = <T,>(value: T) => {
+      let open!: () => void
+      const wait = new Promise<void>((r) => (open = r))
+      return { fn: vi.fn(async () => { await wait; return value }), open }
+    }
+    const fns = (t: FakeTransport | undefined) => (t ? t.calls().map((c) => c.fn) : [])
+
+    it('with no compile in flight answers false and asks the host nothing', async () => {
+      const { client, spawn, spawned } = setup()
+      expect(await client.cancelCompile(ROOT)).toBe(false)
+      expect(await client.cancelCompile('')).toBe(false)
+      expect(await client.cancelCompile(7 as unknown as string)).toBe(false)
+      expect(spawn).not.toHaveBeenCalled()
+      await client.compile(ROOT)
+      expect(await client.cancelCompile(ROOT)).toBe(false)
+      expect(fns(spawned[0])).toEqual(['compile'])
+    })
+
+    it('a stop while the commit is looked up starts neither the snapshot nor the compile', async () => {
+      const head = gated({ head: 'h1', dirty: false })
+      const snapshot = vi.fn(() => SNAP)
+      const { client, spawn } = setup({ head: head.fn, snapshot })
+      const run = client.compile(ROOT)
+      const said = run.catch((e: Error) => e.message)
+      await flush()
+      expect(await client.cancelCompile(ROOT)).toBe(true)
+      head.open()
+      expect(await said).toBe(COMPILE_STOPPED_MESSAGE)
+      expect(snapshot).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+    })
+
+    it('a stop while the snapshot or the design is read starts no compile', async () => {
+      for (const at of ['snapshot', 'plan'] as const) {
+        const step = gated(at === 'snapshot' ? SNAP : null)
+        const { client, spawned } = setup(at === 'snapshot' ? { snapshot: step.fn } : { planFor: step.fn })
+        await client.get(ROOT)
+        const said = client.compile(ROOT).catch((e: Error) => e.message)
+        await flush()
+        expect(await client.cancelCompile(ROOT)).toBe(true)
+        step.open()
+        expect(await said).toBe(COMPILE_STOPPED_MESSAGE)
+        expect(fns(spawned[0])).toEqual(['get', 'cancelCompile'])
+      }
+    })
+
+    it("a stop while the host compiles asks the host to stop it, with the key, and the run ends with the host's words", async () => {
+      const { client, spawned } = setup({}, (t) => {
+        t.reply = (m) =>
+          m.fn === 'compile' ? undefined : { kind: 'result', id: m.id, ok: true, result: m.fn === 'cancelCompile' ? true : null }
+      })
+      const updated: unknown[] = []
+      client.onUpdated((e) => updated.push(e))
+      const said = client.compile(ROOT).catch((e: Error) => e.message)
+      await flush()
+      await flush()
+      const t = spawned[0]
+      const compile = t.calls().find((c) => c.fn === 'compile') as CallMsg
+      expect(await client.cancelCompile(ROOT)).toBe(true)
+      expect(t.calls().filter((c) => c.fn === 'cancelCompile').map((c) => c.args)).toEqual([[KEY]])
+      t.emit({ kind: 'result', id: compile.id, ok: false, error: { name: 'Error', message: COMPILE_STOPPED_MESSAGE } })
+      expect(await said).toBe(COMPILE_STOPPED_MESSAGE)
+      expect(updated).toEqual([{ root: ROOT, projectKey: KEY, error: COMPILE_STOPPED_MESSAGE }])
+      // Nothing left in flight: a second stop has nothing to stop.
+      expect(await client.cancelCompile(ROOT)).toBe(false)
+    })
+
+    it('a host that cannot take the stop still counts it as stopped, and a compile asked for after maps as ever', async () => {
+      const head = gated({ head: 'h1', dirty: false })
+      const { client, spawned } = setup({ head: head.fn }, (t) => {
+        t.reply = (m) =>
+          m.fn === 'cancelCompile'
+            ? { kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: 'host gone' } }
+            : { kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? null : DOC }
+      })
+      await client.get(ROOT)
+      const said = client.compile(ROOT).catch((e: Error) => e.message)
+      await flush()
+      expect(await client.cancelCompile(ROOT)).toBe(true)
+      head.open()
+      expect(await said).toBe(COMPILE_STOPPED_MESSAGE)
+      expect(await client.compile(ROOT)).toEqual(DOC)
+      expect(fns(spawned[0])).toEqual(['get', 'cancelCompile', 'compile'])
+    })
   })
 
   describe('clone', () => {

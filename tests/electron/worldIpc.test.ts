@@ -60,7 +60,7 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
 
 describe('registerWorldIpc', () => {
   it('registers world:get, world:compile, world:relayout the annotation and the settings pair', () => {
-    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:relayout', 'world:annotate', 'world:settings-get', 'world:settings-set'])
+    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:compile-cancel', 'world:relayout', 'world:annotate', 'world:settings-get', 'world:settings-set'])
   })
 
   it('world:settings-get answers the stored settings', async () => {
@@ -201,6 +201,18 @@ describe('registerWorldIpc', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+
+  // WP4b F-R6: Stop mapping.
+  it('world:compile-cancel stops the mapping of that root and answers whether one ran; a client without it answers false', async () => {
+    const { invoke, client } = setup()
+    expect(await invoke('world:compile-cancel', { root: 'C:/repo' })).toEqual({ success: true, data: false })
+    const cancelCompile = vi.fn(async (root: string) => root === 'C:/repo')
+    Object.assign(client, { cancelCompile })
+    expect(await invoke('world:compile-cancel', { root: 'C:/repo' })).toEqual({ success: true, data: true })
+    expect(await invoke('world:compile-cancel', { root: 'C:/other' })).toEqual({ success: true, data: false })
+    expect(cancelCompile.mock.calls).toEqual([['C:/repo'], ['C:/other']])
+    expect(await invoke('world:compile-cancel', {})).toEqual({ success: false, error: 'root required' })
   })
 
   it('handlers return ok() shapes', async () => {

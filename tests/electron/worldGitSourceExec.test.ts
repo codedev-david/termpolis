@@ -29,6 +29,9 @@ import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } fro
 class FakeChild extends EventEmitter {
   stderr = new EventEmitter()
   kill = vi.fn()
+  // As a real ChildProcess while it runs: the stop kills git itself only while it is still running (WP4b F-R6).
+  exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
 }
 let child: FakeChild
 const spawnCalls: unknown[][] = []

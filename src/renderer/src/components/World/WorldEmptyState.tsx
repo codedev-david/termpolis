@@ -1,5 +1,5 @@
 // What the Lumopolis pane shows while a world is not drawn yet: opening, mapping (with the
-// compile's progress), or a failure the user can retry. With no world open the pane shows the home.
+// compile's progress, and Stop mapping), or a failure the user can retry. With no world open the pane shows the home.
 
 import { useUiZoom } from './worldPane'
 import { UI_FAILED } from './worldTargets'
@@ -14,9 +14,11 @@ export interface WorldEmptyStateProps {
   error?: string | null
   /** Try again, in error mode. */
   onRetry?: () => void
+  /** Stop mapping, in mapping mode (WP4b F-R6): absent, the mapping cannot be stopped from here. */
+  onCancel?: () => void
 }
 
-export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptyStateProps): JSX.Element {
+export function WorldEmptyState({ mode, progress, error, onRetry, onCancel }: WorldEmptyStateProps): JSX.Element {
   const zoom = useUiZoom()
   return (
     <div className="flex items-center justify-center p-6" style={{ position: 'absolute', inset: 0 }} data-testid="world-empty">
@@ -24,6 +26,14 @@ export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptySt
         <i className="fa-solid fa-earth-americas text-3xl text-[#4fc1ff]" aria-hidden="true" />
         {mode === 'loading' && <p className="text-sm" data-testid="world-loading">Opening Lumopolis&hellip;</p>}
         {mode === 'mapping' && <MappingProgress progress={progress ?? null} />}
+        {mode === 'mapping' && onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            data-testid="world-mapping-cancel"
+            className="text-xs px-3 py-1.5 rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#cccccc]"
+          >Stop mapping</button>
+        )}
         {mode === 'error' && (
           <>
             <p className="text-sm">Lumopolis could not map this project.</p>

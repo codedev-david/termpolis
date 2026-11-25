@@ -106,6 +106,31 @@ afterEach(() => {
 })
 
 describe('WorldView', () => {
+  // WP4b F-R6: a person can stop the first mapping; they are back on the home, with nothing said against them.
+  it("Stop mapping stops the compile of that folder and goes to the home; the stopped run's answer and push change nothing", async () => {
+    for (const cancel of ['answers', 'throws'] as const) {
+      const compile = deferred<Res<WorldDoc>>()
+      const b = bridge({
+        worldGet: vi.fn(async () => ok(null)),
+        worldCompile: vi.fn(() => compile.promise),
+        worldCompileCancel: vi.fn(async () => { if (cancel === 'throws') throw new Error('ipc'); return ok(true) }),
+      })
+      await mount()
+      fireEvent.click(screen.getByTestId('world-mapping-cancel'))
+      await settle()
+      expect(b.api.worldCompileCancel).toHaveBeenCalledWith('/repo')
+      expect(screen.getByTestId('world-home')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-mapping')).toBeNull()
+      await act(async () => compile.resolve(fail('Lumopolis stopped mapping this project.')))
+      await b.updated({ root: '/repo', projectKey: 'k', error: 'Lumopolis stopped mapping this project.' })
+      await settle()
+      expect(screen.getByTestId('world-home')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-empty')).toBeNull()
+      expect(b.api.worldCompile).toHaveBeenCalledTimes(1)
+      cleanup()
+    }
+  })
+
   it('shows "Mapping your project…" with progress while worldGet returns null and progress events arrive', async () => {
     const compile = deferred<Res<WorldDoc>>()
     const b = bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(() => compile.promise) })

@@ -382,6 +382,18 @@ describe('WorldEmptyState', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
     expect(screen.getByText('Mapping your project…')).toBeInTheDocument()
   })
+
+  // WP4b F-R6
+  it('mapping offers Stop mapping when it can be stopped, and only then', () => {
+    const onCancel = vi.fn()
+    const { rerender } = render(<WorldEmptyState mode="mapping" onCancel={onCancel} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop mapping' }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    rerender(<WorldEmptyState mode="mapping" />)
+    expect(screen.queryByRole('button', { name: 'Stop mapping' })).toBeNull()
+    rerender(<WorldEmptyState mode="loading" onCancel={onCancel} />)
+    expect(screen.queryByRole('button', { name: 'Stop mapping' })).toBeNull()
+  })
 })
 
 describe('EvidenceView', () => {

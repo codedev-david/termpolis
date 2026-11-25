@@ -1,6 +1,8 @@
 // Lumopolis IPC (main process): the renderer's three world requests and the two pushes back to it.
 //   world:get      { root } → ok(WorldDoc | null)
 //   world:compile  { root } → ok(WorldDoc)
+//   world:compile-cancel { root } → ok(boolean)  (Stop mapping: the compile in flight ends with COMPILE_STOPPED_MESSAGE
+//                                      and saves nothing; true when one ran)
 //   world:relayout { root } → ok(WorldDoc)   (a compile that ignores the stored positions)
 //   world:annotate { key, itemId, text } → ok(WorldDoc)   (a person confirms a claim: stored as a verified claim with
 //                                      person evidence, merged into the world; the pane shows the returned doc)
@@ -93,7 +95,7 @@ const settingsFailed = (e: unknown, words: string): ReturnType<typeof err> => {
 }
 
 export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'> &
-  Partial<Pick<WorldClient, 'cancelLabelling'>>
+  Partial<Pick<WorldClient, 'cancelLabelling' | 'cancelCompile'>>
 
 const rootOf = (args: unknown): string | null => {
   const root = args && typeof args === 'object' ? (args as { root?: unknown }).root : undefined
@@ -310,6 +312,7 @@ export function registerWorldIpc(
     return doc && Array.isArray(aliasKeys) && aliasKeys.length > 0 ? { ...doc, aliasKeys } : doc
   }))
   ipc.handle('world:compile', handler((root) => client.compile(root)))
+  ipc.handle('world:compile-cancel', handler(async (root) => (client.cancelCompile ? client.cancelCompile(root) : false)))
   ipc.handle('world:relayout', handler((root) => client.relayout(root)))
 
   // A person's confirmation: the only writer of person evidence. The claim is built here, never taken from the pane.

@@ -275,11 +275,13 @@ describe('host file-system deps', () => {
     await h.init(false)
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap('/repo'), HEAD] })
     const deps = got as unknown as CompileDeps
-    expect(deps.readSource).toBe(readSource)
-    expect(deps.readFile).toBe(readFile)
     expect(await deps.label.excerpt('src/a.ts')).toBe('src')
     expect(readSource).toHaveBeenCalledWith('/repo/src/a.ts')
     expect(readFile).not.toHaveBeenCalled()
+    // The compile reads through them (a person's stop cuts them, WP4b F-R6, worldCompileCancel.test.ts).
+    expect(await (deps.readSource as (p: string) => Promise<string | null>)('/repo/src/b.ts')).toBe('src')
+    expect(await deps.readFile('/repo/report.xml')).toBe('report')
+    expect(readFile).toHaveBeenCalledWith('/repo/report.xml')
   })
 
   it('a cloned repository is read only inside itself: a path that leaves the clone reads as null', async () => {

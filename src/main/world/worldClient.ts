@@ -14,7 +14,7 @@ import { app, utilityProcess } from 'electron'
 import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
 import { killUtility } from '../utilityKill'
 import { abortError } from '../hostLane'
-import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
+import { COMPILE_STOPPED_MESSAGE, type Claim, type Evidence, type WorldDoc, type WorldProgressEvent, type WorldQuery, type WorldReadResult, type WorldUpdatedEvent } from '../../shared/world/types'
 import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
 import type { TestRun } from './testStatus'
@@ -481,13 +481,24 @@ export function createWorldClient(
   /** Per project: the commit of the compile in flight, so the host's snapshot for it can draw a first map from the
    *  listing (snapshotFromFiles) while it reads the files. */
   const compilingHead = new Map<string, WorldHead>()
+  /** Per project with a compile in flight: how many times the person stopped its mapping (cancelCompile). A run that
+   *  sees the count move since it started goes no further: it never asks the host to compile (WP4b F-R6). */
+  const compileStops = new Map<string, number>()
+  const stopsOf = (key: string): number => compileStops.get(key) ?? 0
 
   const compileRun = async (root: string, key: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
+    const stops = stopsOf(key)
+    const going = (): void => {
+      if (stopsOf(key) !== stops) throw shownError(COMPILE_STOPPED_MESSAGE)
+    }
     const head = await headOf(root)
+    going()
     compilingHead.set(key, head)
     try {
       const snap = await snapshotOf(root)
+      going()
       const plan = linked === undefined ? await planOf(key) : linked
+      going()
       const extra = { ...(relayout ? { relayout: true } : {}), ...(plan ? { plan } : {}) }
       const doc = await call<WorldDoc>('compile', Object.keys(extra).length > 0 ? [key, snap, head, extra] : [key, snap, head], key)
       known.add(key)
@@ -510,7 +521,11 @@ export function createWorldClient(
     runs.add(run)
     const done = (): void => {
       runs.delete(run)
-      if (runs.size === 0 && inFlight.get(key) === runs) inFlight.delete(key)
+      if (runs.size === 0 && inFlight.get(key) === runs) {
+        inFlight.delete(key)
+        // No run is left to hold the count it started with.
+        compileStops.delete(key)
+      }
     }
     // A compile that ended without a world (the host failed it, stopped, or the call ran out) is pushed with its
     // error, so a pane showing the first map from the listing, or one opened while it ran, hears how it ended (I2).
@@ -677,6 +692,18 @@ export function createWorldClient(
      */
     updateSource: (url: string, ref?: string, login?: RepoLogin, access?: RepoAccess): Promise<UpdateSourceResult> =>
       hiddenFrom(call<UpdateSourceResult>('updateSource', argsOf(url, ref, login, access)), tokenOf(access)),
+    /**
+     * Stops the person's mapping of `root` (WP4b F-R6): every compile in flight, at whatever step, ends with
+     * COMPILE_STOPPED_MESSAGE and saves nothing; the host stops reading at once. True when one was in flight.
+     */
+    cancelCompile: async (root: string): Promise<boolean> => {
+      const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
+      if (!key || !inFlight.has(key)) return false
+      compileStops.set(key, stopsOf(key) + 1)
+      // A host that cannot take it has nothing of this run to stop; a run not at the host yet stops here.
+      if (current) await call('cancelCompile', [key]).catch(() => undefined)
+      return true
+    },
     /** Cancels a running clone of the same url and ref; true when there was one. */
     cancelClone: (url: string, ref?: string): Promise<boolean> => call('cancelClone', ref === undefined ? [url] : [url, ref]),
     /**

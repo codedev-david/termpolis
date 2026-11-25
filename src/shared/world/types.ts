@@ -134,6 +134,8 @@ export interface WorldProgressEvent { root: string; projectKey: string; stage: s
 /** A stored world changed after files changed (the watcher's recompile finished). */
 /** A world was saved; with `error`, the run that drew a first map ended without one (the pane shows the error). */
 export interface WorldUpdatedEvent { root: string; projectKey: string; error?: string }
+/** PENDING SIGN-OFF (WP4b F-R6): what a mapping the person stopped (world:compile-cancel) answers. */
+export const COMPILE_STOPPED_MESSAGE = 'Lumopolis stopped mapping this project.'
 
 // ---- Lumopolis ask (renderer <-> main): one question about the world, answered by the user's agent ----
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string; /** The model id for the Lumopolis agent; absent means the CLI's own default. */ model?: string; /** The design proposal on show (an id in doc.layers.plan); main looks it up and adds it to the question. */ proposalId?: string }
