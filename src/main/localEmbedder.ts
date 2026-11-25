@@ -271,6 +271,17 @@ const WORKER_TIMEOUT_MS = 10_000
  *  25 s for one ingest passage (a Windows runner drawing the map in software), and nothing waits on a background embed, so
  *  the 10 s bound would drop the worker (and put every later passage back on the calling thread) for no gain. */
 export const BACKGROUND_WORKER_TIMEOUT_MS = 60_000
+/** How long a worker that timed out rests before the next embed starts a new one (the calling thread embeds meanwhile). */
+export const WORKER_RETRY_MS = 5 * 60_000
+/** Timeouts in a row (no answer between them) after which the worker is retired for the session. */
+export const WORKER_MAX_TIMEOUTS = 3
+/** Timeouts since the worker last answered. */
+let workerTimeouts = 0
+/** When a rested worker may be started again; 0 when none is resting. */
+let workerRetryAt = 0
+/** The embed the worker is on: the next waits for it, so each one's give-up clock starts when the worker starts it, not
+ *  while it waits behind other passages (RESP review M-1: three ingest passes at once queued a passage past 60 s). */
+let workerTurn: Promise<void> = Promise.resolve()
 
 /** Set the worker spawner (the app wires this to a real worker_thread; tests inject a mock). With `backgroundOnly`, only the
  *  embeds run inside runAsBackgroundEmbeds go to the worker; the rest stay on the calling thread (the memory host: see there). */
@@ -279,6 +290,8 @@ export function setWorkerSpawner(fn: (() => WorkerTransport | null) | null, opts
   workerTransport = null
   workerTried = false
   workerBackgroundOnly = opts.backgroundOnly === true
+  workerTimeouts = 0
+  workerRetryAt = 0
 }
 
 const backgroundEmbeds = new AsyncLocalStorage<true>()
@@ -300,9 +313,12 @@ function resetWorker(): void {
   workerTried = false
   workerSpawner = null
   workerBackgroundOnly = false
+  workerTimeouts = 0
+  workerRetryAt = 0
 }
 
 async function ensureWorker(): Promise<WorkerTransport | null> {
+  if (workerRetryAt > 0 && Date.now() >= workerRetryAt) { workerRetryAt = 0; workerTried = false } // rested: start a new one
   if (workerTried) return workerTransport
   workerTried = true
   try { workerTransport = workerSpawner ? workerSpawner() : null } catch { workerTransport = null }
@@ -311,15 +327,30 @@ async function ensureWorker(): Promise<WorkerTransport | null> {
 
 /** Embed one (already-prepared) text via the worker, with a timeout. `ok=false` means
  *  the worker is unavailable/failed and the caller must fall back to in-process. */
-async function tryWorkerEmbed(text: string, timeoutMs: number): Promise<{ ok: boolean; vec: number[] | null }> {
-  const w = await ensureWorker()
-  if (!w) return { ok: false, vec: null }
+async function tryWorkerEmbed(w: WorkerTransport, text: string, timeoutMs: number, background: boolean): Promise<{ ok: boolean; vec: number[] | null }> {
+  const before = workerTurn
+  let done!: () => void
+  workerTurn = new Promise<void>((r) => { done = r })
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
+    // A background embed waits its turn however long (each one ahead has its own bound). One someone waits on (main's
+    // plain worker: an Ask's query) waits at most its bound, then runs in process; the worker is kept, as it is only busy.
+    if (background) await before
+    else {
+      let waitTimer: ReturnType<typeof setTimeout> | undefined
+      const turn = await Promise.race([
+        before.then(() => true),
+        new Promise<boolean>((r) => { waitTimer = setTimeout(() => r(false), timeoutMs) }),
+      ])
+      clearTimeout(waitTimer)
+      if (!turn) return { ok: false, vec: null }
+    }
+    if (workerTransport !== w) return { ok: false, vec: null } // given up while this one waited: in process
     const vec = await Promise.race([
       w.embed(text),
       new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('worker timeout')), timeoutMs) }),
     ])
+    workerTimeouts = 0
     // F9: a worker that RESOLVES null (crash/exit/model-absent — embedWorker's failAll
     // resolves pending with null) is a MISS, not a success. Report ok:false so embedBatch
     // falls through to the in-process backend instead of silently returning a null vector
@@ -328,9 +359,17 @@ async function tryWorkerEmbed(text: string, timeoutMs: number): Promise<{ ok: bo
   } catch {
     try { w.dispose?.() } catch { /* ignore */ }
     workerTransport = null // disable on failure/timeout → fall back to in-process
+    // Rest it and start a new one later; retired for the session only after WORKER_MAX_TIMEOUTS in a row.
+    if (++workerTimeouts < WORKER_MAX_TIMEOUTS) workerRetryAt = Date.now() + WORKER_RETRY_MS
+    else {
+      workerRetryAt = 0
+      console.warn(`[termpolis][embed] embedding worker given up after ${workerTimeouts} timeouts in a row: embeds run on the calling thread`)
+    }
     return { ok: false, vec: null }
   } finally {
     if (timer) clearTimeout(timer)
+    // The next embed's turn comes when the worker is free: after the one ahead, even when this one gave up waiting for it.
+    void before.then(done)
   }
 }
 
@@ -395,7 +434,7 @@ export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<
     let ok = true
     const timeoutMs = background ? BACKGROUND_WORKER_TIMEOUT_MS : WORKER_TIMEOUT_MS
     for (const p of prepared) {
-      const r = await tryWorkerEmbed(p, timeoutMs)
+      const r = await tryWorkerEmbed(worker, p, timeoutMs, background)
       if (!r.ok) { ok = false; break }
       out.push(r.vec)
     }

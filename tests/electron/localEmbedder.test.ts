@@ -10,6 +10,8 @@ import {
   setWorkerSpawner,
   runAsBackgroundEmbeds,
   BACKGROUND_WORKER_TIMEOUT_MS,
+  WORKER_RETRY_MS,
+  WORKER_MAX_TIMEOUTS,
   isEmbedderReady,
   _setBackendForTests,
   _setOrtForTests,
@@ -420,6 +422,113 @@ describe('worker-backed embedding orchestration (BB11)', () => {
       await vi.advanceTimersByTimeAsync(BACKGROUND_WORKER_TIMEOUT_MS)
       expect(await p).toEqual([[5]])
       expect(dispose).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('the give-up clock counts from when the worker starts an embed, not from when it was queued behind others (RESP review M-1)', async () => {
+    vi.useFakeTimers()
+    try {
+      // The worker is one thread: it embeds one text at a time, each 25 s here (a busy machine).
+      let busyUntil = 0
+      const started: number[] = []
+      const worker = vi.fn((text: string) => {
+        const at = Math.max(Date.now(), busyUntil)
+        busyUntil = at + 25_000
+        return new Promise<number[]>((r) => setTimeout(() => { started.push(at); r([text.length]) }, busyUntil - Date.now()))
+      })
+      const dispose = vi.fn()
+      setWorkerSpawner(() => ({ embed: worker, dispose }), { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      // Three passes at once (code ingest, the notes pass, session episodes): the third finishes 75 s after it was asked.
+      const passes = ['a', 'bb', 'ccc'].map((t) => runAsBackgroundEmbeds(() => embedBatch([t])))
+      await vi.advanceTimersByTimeAsync(75_000)
+      expect(await Promise.all(passes)).toEqual([[[1]], [[2]], [[3]]]) // all from the worker
+      expect(dispose).not.toHaveBeenCalled()
+      expect(75_000).toBeGreaterThan(BACKGROUND_WORKER_TIMEOUT_MS)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a timeout rests the worker, and the next embed after WORKER_RETRY_MS starts a new one: one timeout never retires it for the session', async () => {
+    vi.useFakeTimers()
+    try {
+      let spawns = 0
+      const embeds: number[] = []
+      setWorkerSpawner(() => {
+        const n = ++spawns
+        return { embed: (t: string) => { embeds.push(n); return n === 1 ? new Promise<number[]>(() => {}) : Promise.resolve([t.length, n]) }, dispose: vi.fn() }
+      }, { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      const hung = runAsBackgroundEmbeds(() => embedBatch(['x']))
+      // A pass queued behind the hung embed: once that one times out it runs in process, never on the worker given up.
+      const queued = runAsBackgroundEmbeds(() => embedBatch(['yy']))
+      await vi.advanceTimersByTimeAsync(BACKGROUND_WORKER_TIMEOUT_MS)
+      expect(await hung).toEqual([[0]])
+      expect(await queued).toEqual([[0]])
+      expect(embeds).toEqual([1])
+      expect(await runAsBackgroundEmbeds(() => embedBatch(['zz']))).toEqual([[0]]) // resting: in process
+      expect(spawns).toBe(1)
+      await vi.advanceTimersByTimeAsync(WORKER_RETRY_MS)
+      expect(await runAsBackgroundEmbeds(() => embedBatch(['abc']))).toEqual([[3, 2]]) // a new worker
+      expect(spawns).toBe(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('WORKER_MAX_TIMEOUTS timeouts in a row retire the worker for the session, said once; an answer between them resets the count', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Every worker hangs, except that worker 2 answers its first embed once.
+      let spawns = 0
+      setWorkerSpawner(() => {
+        const n = ++spawns
+        let calls = 0
+        return { embed: (t: string) => (n === 2 && calls++ === 0 ? Promise.resolve([t.length]) : new Promise<number[]>(() => {})) }
+      }, { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      const once = async (): Promise<(number[] | null)[]> => {
+        const p = runAsBackgroundEmbeds(() => embedBatch(['ab']))
+        await vi.advanceTimersByTimeAsync(BACKGROUND_WORKER_TIMEOUT_MS)
+        const out = await p
+        await vi.advanceTimersByTimeAsync(WORKER_RETRY_MS)
+        return out
+      }
+      expect(await once()).toEqual([[0]]) // worker 1 times out (1 in a row)
+      expect(await once()).toEqual([[2]]) // worker 2 answers: the count starts again
+      expect(await once()).toEqual([[0]]) // worker 2 times out (1)
+      expect(await once()).toEqual([[0]]) // worker 3 (2)
+      expect(warn).not.toHaveBeenCalled() // without the reset this would be the third, and the worker retired
+      expect(await once()).toEqual([[0]]) // worker 4 (3): retired
+      expect(WORKER_MAX_TIMEOUTS).toBe(3)
+      expect(spawns).toBe(4)
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('embedding worker given up')
+      await vi.advanceTimersByTimeAsync(WORKER_RETRY_MS * 10)
+      expect(await runAsBackgroundEmbeds(() => embedBatch(['ab']))).toEqual([[0]])
+      expect(spawns).toBe(4) // retired: no new worker
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a plain worker busy with a background embed: an interactive one waits at most the 10 s bound for its turn, then runs in process, and the worker is kept', async () => {
+    vi.useFakeTimers()
+    try {
+      const dispose = vi.fn()
+      let n = 0
+      const worker = vi.fn((text: string) => new Promise<number[]>((r) => setTimeout(() => r([text.length]), n++ === 0 ? 25_000 : 10)))
+      setWorkerSpawner(() => ({ embed: worker, dispose }))
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [9]))
+      const passage = runAsBackgroundEmbeds(() => embedBatch(['abcd']))
+      await vi.advanceTimersByTimeAsync(0)
+      const ask = embedBatch(['q'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await ask).toEqual([[9]]) // in process, after waiting its 10 s
+      expect(worker).toHaveBeenCalledTimes(1) // never sent behind the passage
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(await passage).toEqual([[4]]) // the passage finishes on the worker
+      expect(dispose).not.toHaveBeenCalled() // waiting is not the worker's fault
+      const next = embedBatch(['xy']) // and the worker takes the next embed at once
+      await vi.advanceTimersByTimeAsync(10)
+      expect(await next).toEqual([[2]])
     } finally { vi.useRealTimers() }
   })
 
