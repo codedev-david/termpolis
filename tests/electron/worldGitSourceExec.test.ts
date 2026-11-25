@@ -97,6 +97,11 @@ describe('nodeExecFile cwd', () => {
     child.emit('close', 0)
     await q
     expect((spawnCalls[1][2] as { cwd?: string }).cwd).toBeUndefined()
+    // A git ended by a signal from outside (no exit code, nothing on stderr) still fails, and says how it ended.
+    child = new FakeChild()
+    const s = nodeExecFile('git', [], { env: {}, timeout: 10_000 })
+    child.emit('close', null)
+    expect(await s).toEqual({ code: 1, stderr: 'git exited with code null' })
   })
 })
 
