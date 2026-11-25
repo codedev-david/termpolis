@@ -532,6 +532,111 @@ describe('worker-backed embedding orchestration (BB11)', () => {
     } finally { vi.useRealTimers() }
   })
 
+  /** Whether `p` has settled by now (after the microtasks and any timers due at this instant). */
+  async function settledNow(p: Promise<unknown>): Promise<boolean> {
+    let done = false
+    void p.then(() => { done = true }, () => { done = true })
+    await vi.advanceTimersByTimeAsync(0)
+    return done
+  }
+
+  it('a worker that answers null (it crashed or exited) is a failure: given up at once, its next embed never sent to the dead thread, rested, and retired after WORKER_MAX_TIMEOUTS in a row (RESP fix-1 F-1)', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Like a real worker that died loading the model: failAll answers the embed in flight with null, and a message posted
+      // to the exited thread afterwards is dropped, so a later embed would never be answered.
+      let spawns = 0
+      const sent: number[] = []
+      const dispose = vi.fn()
+      setWorkerSpawner(() => {
+        const n = ++spawns
+        let dead = false
+        return {
+          embed: () => { sent.push(n); if (dead) return new Promise<number[] | null>(() => {}); dead = true; return Promise.resolve(null) },
+          dispose,
+        }
+      }, { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      for (let i = 0; i < WORKER_MAX_TIMEOUTS; i++) {
+        const crash = runAsBackgroundEmbeds(() => embedBatch(['ab']))
+        const behind = runAsBackgroundEmbeds(() => embedBatch(['cd'])) // queued behind the embed that crashed
+        expect(await settledNow(crash)).toBe(true) // in process at once, not after a 60 s timeout
+        expect(await settledNow(behind)).toBe(true)
+        expect(await crash).toEqual([[0]])
+        expect(await behind).toEqual([[0]])
+        expect(await settledNow(runAsBackgroundEmbeds(() => embedBatch(['ef'])))).toBe(true) // resting: in process
+        await vi.advanceTimersByTimeAsync(WORKER_RETRY_MS)
+      }
+      expect(sent).toEqual([1, 2, 3]) // one embed per worker: nothing sent to a thread that had died
+      expect(dispose).toHaveBeenCalledTimes(WORKER_MAX_TIMEOUTS)
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('embedding worker given up')
+      await vi.advanceTimersByTimeAsync(WORKER_RETRY_MS * 10)
+      expect(await runAsBackgroundEmbeds(() => embedBatch(['gh']))).toEqual([[0]])
+      expect(spawns).toBe(WORKER_MAX_TIMEOUTS) // retired
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a blank text is not sent to the worker: the worker answers null for one, and that must not read as a crash', async () => {
+    const embed = vi.fn(async (t: string) => [t.length])
+    const dispose = vi.fn()
+    setWorkerSpawner(() => ({ embed, dispose }), { backgroundOnly: true })
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc', '  ']))).toEqual([[0], [0]]) // in process
+    expect(await runAsBackgroundEmbeds(() => embedBatch([7 as unknown as string]))).toEqual([[0]]) // nor is a value that is no text
+    expect(embed).not.toHaveBeenCalled()
+    expect(await runAsBackgroundEmbeds(() => embedBatch(['abc']))).toEqual([[3]]) // the worker is still there
+    expect(dispose).not.toHaveBeenCalled()
+  })
+
+  it('an interactive embed on a plain worker gets 10 s in all, its wait for the worker and its run together (RESP fix-1 F-3)', async () => {
+    vi.useFakeTimers()
+    try {
+      const dispose = vi.fn()
+      const worker = vi.fn((text: string) => new Promise<number[]>((r) => setTimeout(() => r([text.length]), 6_000)))
+      setWorkerSpawner(() => ({ embed: worker, dispose }))
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [9]))
+      // 6 s waiting behind a passage, then 6 s of its own: 12 s, past the bound.
+      const passage = runAsBackgroundEmbeds(() => embedBatch(['abcd']))
+      await vi.advanceTimersByTimeAsync(0)
+      const ask = embedBatch(['q'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await settledNow(ask)).toBe(true)
+      expect(await ask).toEqual([[9]]) // in process at 10 s
+      expect(await passage).toEqual([[4]])
+      // Two texts of 6 s each: the second is cut off at 10 s from the start of the call, not 10 s from its own start.
+      const batch = embedBatch(['ab', 'cde'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(await settledNow(batch)).toBe(true)
+      expect(await batch).toEqual([[9], [9]])
+      await vi.advanceTimersByTimeAsync(4_000) // the worker finishes the text it was on (started at 18 s, done at 24 s)
+      expect(dispose).not.toHaveBeenCalled() // a slow answer within its own bound is not the worker's fault
+      const next = embedBatch(['xyz'])
+      await vi.advanceTimersByTimeAsync(6_000)
+      expect(await next).toEqual([[3]]) // the worker is kept, and free
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a new spawner starts with an empty turn queue: an embed left waiting on the old worker does not hold up the new one (RESP fix-1 F-4)', async () => {
+    vi.useFakeTimers()
+    try {
+      const oldDispose = vi.fn()
+      setWorkerSpawner(() => ({ embed: () => new Promise<number[]>(() => {}), dispose: oldDispose }), { backgroundOnly: true })
+      _setBackendForTests(async (texts: string[]) => texts.map(() => [0]))
+      const hung = runAsBackgroundEmbeds(() => embedBatch(['x']))
+      await vi.advanceTimersByTimeAsync(0)
+      setWorkerSpawner(() => ({ embed: async (t: string) => [t.length] }), { backgroundOnly: true })
+      const fresh = runAsBackgroundEmbeds(() => embedBatch(['yy']))
+      expect(await settledNow(fresh)).toBe(true)
+      expect(await fresh).toEqual([[2]]) // from the new worker, at once
+      await vi.advanceTimersByTimeAsync(BACKGROUND_WORKER_TIMEOUT_MS)
+      expect(await hung).toEqual([[0]]) // the straggler times out and runs in process
+      expect(oldDispose).toHaveBeenCalledTimes(1)
+      expect(await runAsBackgroundEmbeds(() => embedBatch(['zzz']))).toEqual([[3]]) // and does not count against the new worker
+    } finally { vi.useRealTimers() }
+  })
+
   it('a plain worker (main, memory in process) still takes every embed, background or not, with the 10 s bound', async () => {
     vi.useFakeTimers()
     try {

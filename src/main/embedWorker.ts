@@ -40,11 +40,15 @@ export function createWorkerTransport(workerPath: string = resolveWorkerPath()):
     const resolve = pending.get(m.id)
     if (resolve) { pending.delete(m.id); resolve(m.vec) }
   })
-  const failAll = (): void => { for (const resolve of pending.values()) resolve(null); pending.clear() }
+  // A message posted to a thread that has exited is dropped without a word, so once it is gone every embed answers null at
+  // once rather than waiting out its timeout.
+  let dead = false
+  const failAll = (): void => { dead = true; for (const resolve of pending.values()) resolve(null); pending.clear() }
   worker.on('error', failAll)
   worker.on('exit', failAll)
   return {
     embed: (text: string) => new Promise<number[] | null>((resolve) => {
+      if (dead) { resolve(null); return }
       const id = nextId++
       pending.set(id, resolve)
       worker.postMessage({ id, text })
