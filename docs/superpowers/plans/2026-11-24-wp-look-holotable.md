@@ -78,6 +78,11 @@ Sizes: S ≈ half a day, M ≈ a day, L ≈ two days, XL ≈ three or more.
 
 Until they land, implementers use the recommended options: (b), (a), and the software floor only.
 
+**Decided by David on 2026-11-25** (he took the recommendations):
+- **D1:** (b), ice-white `#eafaff` as the selection colour.
+- **D2:** (a), Holotable replaces Neon, and a saved Neon loads as Holotable.
+- **D3:** an integrated-graphics laptop at 1080p is the low-end proof device for Task 20, alongside the software floor.
+
 ## Review Focus
 
 1. **The 4K canvas is never blank or white.** At 3840x2160 and 5120x2880, on Linux SwiftShader, a canvas the browser could not allocate shows the dark background. The watchdog then lands on a drawn tier or on the 2D map with its notice. Tasks 0 and 19.
