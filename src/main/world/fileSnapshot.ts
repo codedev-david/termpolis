@@ -279,10 +279,14 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
   const toRead = capped === null ? candidates : readOrder(candidates).filter((f) => capped.has(f))
   const found: (string[] | null)[] = new Array<string[] | null>(toRead.length).fill(null)
   let done = 0
+  // Whether any file could be read at all (WP4b fix round 1, I1): a file read but holding nothing to map (an empty
+  // main.py in a new project) is not a folder Lumopolis can't read.
+  let readAny = false
   await eachLimit(toRead, deps.concurrency ?? READ_CONCURRENCY, async (rel, i) => {
     const content = await deps.read(`${base}/${rel}`).catch(() => null)
     deps.onRead?.(++done, toRead.length)
     if (content === null) return
+    readAny = true
     // Too long to scan: shown like a file past the read cap, with no imports.
     if (content.length > MAX_SNAPSHOT_FILE_CHARS) {
       found[i] = []
@@ -308,12 +312,13 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     }
   }
   files.sort()
-  // Nothing to map (WP4b F-R9): files listed that none maps, or files to map none of which could be read, say so at
-  // once; an empty listing (or one that failed) looks at the folder itself.
+  // Nothing to map (WP4b F-R9): files listed that none maps say so at once, and so do files to map that held nothing
+  // (empty: the folder was read, it holds no code yet) or none of which could be read (unreadable). An empty listing
+  // (or one that failed) looks at the folder itself.
   const noFiles: NoFilesReason | null = files.length > 0
     ? null
     : candidates.length > 0
-      ? 'unreadable'
+      ? readAny ? 'empty' : 'unreadable'
       : listing.files.length > 0
         ? 'unsupported'
         : await (deps.whyNoFiles ?? whyNoFiles)(root)

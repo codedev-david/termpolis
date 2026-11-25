@@ -54,10 +54,24 @@ export interface RunsDeps {
   now: () => number
 }
 
+/**
+ * Main's CI answer for a folder (WP4b fix round 1, I2 and M1). `head` is the commit it judged: the one checked out
+ * when main looked, which need not be the commit the host compiled, so the host keeps or uses the runs only for
+ * that commit. `head` is null when CI is not read here at all (the setting is off, or no `gh` or git may run): no
+ * commit was judged and there are no runs. `age` is how long ago the answer was found (main keeps it CI_CACHE_MS),
+ * so the host's memo of it never outlives main's. A failure (git or `gh` could not answer: offline, signed out,
+ * rate-limited, timed out, could not start) is no answer at all, null, and is never kept, here or in the host.
+ */
+export interface CiAnswer {
+  head: string | null
+  runs: TestRun[]
+  age: number
+}
+
 export interface WorldRuns {
   /** The transcript files the host should read: at most the 20 newest, or none when conversations may not be read. */
   transcriptFiles: (root: string) => Promise<string[]>
-  ciRuns: (root: string) => Promise<TestRun[]>
+  ciRuns: (root: string) => Promise<CiAnswer | null>
 }
 
 interface CachedFiles {
@@ -117,21 +131,27 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     return path
   }
 
-  const lookUp = async (root: string, head: string, ghBin: string, git: (root: string, args: string[]) => Promise<string | null>): Promise<TestRun[]> => {
+  /** The runs of `head`: [] when there surely is none to find (no GitHub remote, no branch, no finished test run of
+   *  it), null when git or `gh` failed to answer, which says nothing about CI. */
+  const lookUp = async (root: string, head: string, ghBin: string, git: (root: string, args: string[]) => Promise<string | null>): Promise<TestRun[] | null> => {
     // `gh` reads GitHub only: a repository with no GitHub remote has no run to find.
     const remotes = await git(root, ['remote', '-v'])
-    if (remotes === null || !remotes.split('\n').some((line) => GITHUB_REMOTE.test(line.split(/\s+/)[1] ?? ''))) return []
+    if (remotes === null) return null
+    if (!remotes.split('\n').some((line) => GITHUB_REMOTE.test(line.split(/\s+/)[1] ?? ''))) return []
     const branch = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    if (branch === null) return null
     // A detached HEAD names no branch, so no run can be tied to it.
-    if (branch === null || branch === 'HEAD' || !BRANCH.test(branch)) return []
+    if (branch === 'HEAD' || !BRANCH.test(branch)) return []
     const listed = await d.exec(
       ghBin,
       ['run', 'list', '--branch', branch, '--limit', String(CI_RUNS_FETCHED), '--json', 'conclusion,headSha,createdAt,databaseId,workflowName'],
       { cwd: root, timeout: GH_TIMEOUT_MS }
     )
-    if (listed.error) return []
+    // Any failure of gh (offline, not signed in, rate-limited, timed out, not startable) is no answer, never "no CI":
+    // only a gh that answered with a list says which runs there are.
+    if (listed.error) return null
     const rows = JSON.parse(listed.stdout) as unknown
-    if (!Array.isArray(rows)) return []
+    if (!Array.isArray(rows)) return null
     // Only a run of the test workflow on exactly the commit that is checked out judges this code.
     const match = (rows as Array<GhRow | null>).find(
       (r) =>
@@ -143,7 +163,7 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     )
     if (!match) return []
     const changed = await git(root, ['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', head])
-    if (changed === null) return []
+    if (changed === null) return null
     const parsed = typeof match.createdAt === 'string' ? Date.parse(match.createdAt) : NaN
     const at = Math.min(Number.isNaN(parsed) ? d.now() : parsed, d.now())
     return changed
@@ -154,30 +174,32 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
       .map((file) => ({ file, passed: match.conclusion === 'success', at, source: 'ci' as const }))
   }
 
-  const ciRuns = async (root: string): Promise<TestRun[]> => {
+  const ciRuns = async (root: string): Promise<CiAnswer | null> => {
+    const none: CiAnswer = { head: null, runs: [], age: 0 }
     // The consent first: `gh` reads its own stored login, so without the setting nothing for CI is started.
-    if (!(await d.ciAllowed())) return []
+    if (!(await d.ciAllowed())) return none
     // No `gh` on PATH: no CI result, quietly, and no git started for it. A `gh` inside the repository itself is
     // never run either, whatever PATH says.
     const ghBin = await ghPath()
-    if (ghBin === null || (await binInside(ghBin, root, d.realpath))) return []
+    if (ghBin === null || (await binInside(ghBin, root, d.realpath))) return none
     // The same for git: no git, or one inside the repository, and nothing runs.
     const gitBin = await d.gitBin()
-    if (gitBin === null || (await binInside(gitBin, root, d.realpath))) return []
+    if (gitBin === null || (await binInside(gitBin, root, d.realpath))) return none
     const git = (at: string, args: string[]): Promise<string | null> => run(gitBin, at, args)
-    let runs: TestRun[] = []
     try {
       const head = ((await git(root, ['rev-parse', 'HEAD'])) ?? '').toLowerCase()
-      if (!FULL_SHA.test(head)) return []
+      // No commit to judge (git failed, or a repository with no commit yet): no answer.
+      if (!FULL_SHA.test(head)) return null
       const hit = ci.get(root)
       // A cached answer holds only while HEAD is the commit it judged.
-      if (hit && hit.head === head && d.now() - hit.at < CI_CACHE_MS) return hit.runs
-      runs = await lookUp(root, head, ghBin, git)
+      if (hit && hit.head === head && d.now() - hit.at < CI_CACHE_MS) return { head, runs: hit.runs, age: d.now() - hit.at }
+      const runs = await lookUp(root, head, ghBin, git)
+      if (runs === null) return null
       ci.set(root, { at: d.now(), head, runs })
+      return { head, runs, age: 0 }
     } catch {
-      runs = []
+      return null
     }
-    return runs
   }
 
   return { transcriptFiles, ciRuns }

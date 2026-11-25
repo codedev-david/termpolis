@@ -187,7 +187,8 @@ async function driveDisplayPaths(dir: string, file: string): Promise<Record<stri
       return { stdout: r.stdout, ...(r.error ? { error: r.error } : {}) }
     }
   })
-  got['CI lookup'] = await settle(ci.ciRuns(dir))
+  // The answer must name the commit it judged: HEAD (WP4b fix round 1, I2).
+  got['CI lookup'] = await settle(ci.ciRuns(dir).then((a) => (a?.head === sha ? a.runs : Promise.reject(new Error(`CI answered for ${String(a?.head)}, not ${sha}`)))))
   got['CI lookup git'] = ciGitErrors.length === 0 ? { ok: true, out: null } : { ok: false, error: ciGitErrors.join('\n') }
   // The code map's listing (repoFileList.ts builders).
   got['code map listing'] = await settle(gitListFiles(dir))

@@ -20,6 +20,8 @@ export interface WorldRequest { folder: string; seq: number }
 /** notFound (R4): the host no longer finds the repository, so the notice says main's words and the sign-in choices are links. */
 /** reason (WP4b F-R7): 'failed', the background update failed for another reason (main's words in `message`, with Try
  *  again); 'token', the repository was opened with a token, so it updates only when the person gives one. */
+/** The interactive retry running: this computer's login, a token, or Try again with neither. */
+export type RepoTry = 'machine' | 'token' | 'again'
 export type RepoUpdate = { key: string; host: string; helper: boolean; message: string; notFound: boolean; reason?: 'failed' | 'token' } | null
 
 export const REPO_UPDATE_UNREACHABLE = "Lumopolis couldn't update that repository. Try again."
@@ -41,6 +43,8 @@ export interface UseOpenWorld {
   repoUpdate: RepoUpdate
   /** An interactive retry (Sign in, Use a token, Try again) is running. */
   repoBusy: boolean
+  /** Which retry is running, so the notice can say what it is doing (WP4b fix round 1, M5); null when none is. */
+  repoTry: RepoTry | null
   /** The person asked that retry to stop, and its answer has not come yet. */
   repoStopping: boolean
   /** What the last interactive retry came back with, for the token dialog. */
@@ -118,7 +122,8 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   }, [seq])
 
   const [repoUpdate, setRepoUpdate] = useState<RepoUpdate>(null)
-  const [repoBusy, setRepoBusy] = useState(false)
+  const [repoTry, setRepoTry] = useState<RepoTry | null>(null)
+  const repoBusy = repoTry !== null
   const [repoStopping, setRepoStopping] = useState(false)
   const [repoError, setRepoError] = useState<string | null>(null)
   const [repoChanged, setRepoChanged] = useState(0)
@@ -134,7 +139,7 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     const run = retrying.current
     if (run !== null) {
       retrying.current = null
-      setRepoBusy(false)
+      setRepoTry(null)
       setRepoStopping(false)
       if (!run.stopped) window.termpolis.worldUpdateCancel(run.key).catch(() => undefined)
     }
@@ -211,14 +216,14 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     const key = shown.key
     const run = { key, stopped: false }
     retrying.current = run
-    setRepoBusy(true)
+    setRepoTry(access ? access.mode : 'again')
     setRepoError(null)
     // Only this try's own answer counts: one left behind by a world change (clearRepo) touches nothing.
     const finish = (): boolean => {
       if (retrying.current !== run) return false
       retrying.current = null
       if (!live.current) return false
-      setRepoBusy(false)
+      setRepoTry(null)
       setRepoStopping(false)
       return true
     }
@@ -271,5 +276,5 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   useEffect(() => { if (id !== ownedId.current) clearRepo(null, id) }, [id])
   useEffect(() => { refresh() }, [id, refresh])
 
-  return { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError }
+  return { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoTry, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError }
 }

@@ -3,7 +3,7 @@
 // (fallback2d.ts) instead, and clicks on that list still raise select events.
 // Excluded from the coverage gate (its WebGL path needs a GPU): tests/renderer/world/createWorldViewer.test.ts
 // pins the 2D path in jsdom, and e2e/world-engine.spec.ts covers the WebGL path.
-import { diffSummary, diffWorlds, riseIds } from '../../../../shared/world/diff'
+import { diffSummary, diffWorlds, riseIds, sameParts } from '../../../../shared/world/diff'
 import { edgeSummary } from '../../../../shared/world/edgeText'
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
@@ -114,6 +114,13 @@ export type WorldGraphics = 'lost' | 'restored' | 'flat'
 
 export interface WorldLoadOptions {
   animateFrom?: WorldDoc
+  /**
+   * The newer world changes test status only (CI's late answer: WP4b fix round 1, M6). When its parts are those the
+   * viewer holds, in the same places (sameParts), they are restyled in place: nothing under way stops (a tour, a
+   * flight, a pulse, a rise), nothing pulses and no toast shows, and the camera, the selection, its card and the open
+   * building stay. Any other world is loaded as without it.
+   */
+  statusOnly?: true
 }
 
 /** The motions and the drawn result as the renderer reports them (MotionState); all empty on the 2D fallback. */
@@ -892,6 +899,13 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   return {
     load(d, loadOpts = {}) {
       if (disposed) return
+      if (loadOpts.statusOnly === true && doc !== null && sameParts(doc, d)) {
+        doc = d
+        // redraw() lights the selection again, or the tour's or an answer's highlight (baseFocus) while none is open.
+        redraw()
+        if (selection) renderCard(cardFor(selection))
+        return
+      }
       cancelActions()
       r3?.stopChanges()
       const diff = loadOpts.animateFrom ? diffWorlds(loadOpts.animateFrom, d) : null

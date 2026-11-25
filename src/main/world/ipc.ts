@@ -591,7 +591,8 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     try {
       entry = await registry.get(key)
     } catch {
-      return err(SOURCES_FAILED)
+      // The pane says this over the repository, so it names the repository, not the list of worlds (WP4b fix round 1, M4).
+      return err(UPDATE_FAILED)
     }
     const src = entry?.source
     // Only a cloned repository updates; one opened with a token waits until the person gives it again.

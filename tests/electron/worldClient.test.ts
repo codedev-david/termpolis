@@ -20,6 +20,7 @@ import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS }
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { WORLD_READ_FAILED, worldFileName } from '../../src/main/world/worldStore'
+import type { CiAnswer } from '../../src/main/world/worldRuns'
 import { WORLD_CALL_FAILED, windowMessage } from '../../src/main/world/windowError'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
 import { COMPILE_STOPPED_MESSAGE, type WorldDoc } from '../../src/shared/world/types'
@@ -759,7 +760,7 @@ describe('createWorldClient', () => {
   it('worldClient answers runs requests from the transcript and CI hooks, and an absent or failing hook gives none', async () => {
     const run = { file: 'a.test.ts', passed: true, at: 1, source: 'ci' as const }
     const transcriptFiles = vi.fn(async (_root: string) => ['a.jsonl'])
-    const ciRuns = vi.fn(async (root: string): Promise<(typeof run)[]> => {
+    const ciRuns = vi.fn(async (_root: string): Promise<CiAnswer | null> => {
       if (ciRuns.mock.calls.length === 1) throw new Error('gh down')
       return 5 as never
     })
@@ -776,18 +777,37 @@ describe('createWorldClient', () => {
     expect(t.posted.filter((m) => m.kind === 'runs-result')).toEqual(
       expect.arrayContaining([
         { kind: 'runs-result', id: 1, runs: [], files: ['a.jsonl'] },
-        { kind: 'runs-result', id: 2, runs: [], files: [] },
+        // CI that threw, or answered with something that is no answer, is said to be no answer (WP4b fix round 1, M1)
+        { kind: 'runs-result', id: 2, runs: null },
         { kind: 'runs-result', id: 3, runs: [], files: [] },
         { kind: 'runs-result', id: 4, runs: [], files: [] },
-        { kind: 'runs-result', id: 5, runs: [], files: [] }
+        { kind: 'runs-result', id: 5, runs: null }
       ])
     )
     expect(transcriptFiles).toHaveBeenCalledWith(ROOT)
-    // a CI answer that is a list is passed on
-    const ok = setup({ ciRuns: async () => [run] })
+    // a CI answer is passed on with the commit it judged and its age (I2)
+    const ok = setup({ ciRuns: async () => ({ head: 'H', runs: [run], age: 7 }) })
     await ok.client.compile(ROOT)
     ok.spawned[0].emit({ kind: 'runs', id: 6, projectKey: KEY, source: 'ci' })
-    await vi.waitFor(() => expect(ok.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 6, runs: [run], files: [] }))
+    await vi.waitFor(() => expect(ok.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 6, runs: [run], head: 'H', age: 7 }))
+    // no answer stays no answer; CI not read names no commit; an odd head or age is none
+    const odd = [
+      [async () => null, { runs: null }],
+      [async () => ({ head: null, runs: [], age: 0 }), { runs: [], head: null, age: 0 }],
+      [async () => ({ head: 5, runs: [run], age: NaN }), { runs: [run], head: null, age: 0 }],
+      [async () => ({ head: 'H', runs: 'x', age: 1 }), { runs: null }]
+    ] as const
+    let oddId = 20
+    for (const [answer, want] of odd) {
+      const s = setup({ ciRuns: answer as () => Promise<CiAnswer | null> })
+      await s.client.compile(ROOT)
+      const id = ++oddId
+      s.spawned[0].emit({ kind: 'runs', id, projectKey: KEY, source: 'ci' })
+      await vi.waitFor(() => expect(s.spawned[0].posted).toContainEqual({ kind: 'runs-result', id, ...want }))
+    }
+    // a CI ask for a project main does not know is no answer
+    ok.spawned[0].emit({ kind: 'runs', id: 30, projectKey: 'unknown', source: 'ci' })
+    await vi.waitFor(() => expect(ok.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 30, runs: null }))
     // a transcript hook that fails, or answers with a non-list, names no files
     const bad = setup({ transcriptFiles: async () => 5 as never })
     await bad.client.compile(ROOT)
@@ -801,7 +821,12 @@ describe('createWorldClient', () => {
     const plain = setup()
     await plain.client.compile(ROOT)
     plain.spawned[0].emit({ kind: 'runs', id: 7, projectKey: KEY, source: 'ci' })
-    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 7, runs: [], files: [] }))
+    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 7, runs: [], head: null, age: 0 }))
+
+    // a host that died while main looked at CI: the answer is dropped quietly too
+    ok.spawned[0].throwOnPost = true
+    ok.spawned[0].emit({ kind: 'runs', id: 31, projectKey: KEY, source: 'ci' })
+    await flush()
 
     // a host that died while main looked: the answer is dropped quietly
     t.throwOnPost = true
@@ -1702,7 +1727,15 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
     // The host's own push of a failed run carries its error through; junk in its place is left out.
     spawned[0].emit({ kind: 'updated', projectKey: KEY, error: 'store said no' })
     spawned[0].emit({ kind: 'updated', projectKey: KEY, error: 7 })
-    expect(updated.slice(2)).toEqual([{ root: ROOT, projectKey: KEY, error: 'store said no' }, { root: ROOT, projectKey: KEY }])
+    // A status-only push (late CI, WP4b fix round 1, M6) says so; anything but true in its place is left out.
+    spawned[0].emit({ kind: 'updated', projectKey: KEY, statusOnly: true })
+    spawned[0].emit({ kind: 'updated', projectKey: KEY, statusOnly: 'yes' })
+    expect(updated.slice(2)).toEqual([
+      { root: ROOT, projectKey: KEY, error: 'store said no' },
+      { root: ROOT, projectKey: KEY },
+      { root: ROOT, projectKey: KEY, statusOnly: true },
+      { root: ROOT, projectKey: KEY }
+    ])
   })
 })
 

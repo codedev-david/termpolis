@@ -313,6 +313,15 @@ vi.mock('../../src/main/world/worldClient', () => ({
     return world.client
   },
 }))
+/** The one source registry main makes, so a test can say what it holds without writing the user-data folder. */
+const sourcesReg = vi.hoisted(() => ({ reg: null as null | import('../../src/main/world/sources').SourceRegistry }))
+vi.mock('../../src/main/world/sources', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../src/main/world/sources')>()
+  return {
+    ...orig,
+    createSourceRegistry: (...a: Parameters<typeof orig.createSourceRegistry>) => (sourcesReg.reg = orig.createSourceRegistry(...a)),
+  }
+})
 vi.mock('../../src/main/world/label', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/world/label')>()),
   makeWorldLlm: (...a: unknown[]) => {
@@ -4374,6 +4383,37 @@ describe('Lumopolis world wiring in index.ts', () => {
       cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
       world.client.snapshotFromFiles.mockResolvedValueOnce({ ...empty, noFiles })
       await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow(words)
+    }
+    // A Build it folder or clone linked to a design starts empty with no failure, and its world never hears why the
+    // folder is empty (WP4b fix round 1, M2); an unlinked one, or a design, is still the failure.
+    const reg = sourcesReg.reg as NonNullable<typeof sourcesReg.reg>
+    const get = vi.spyOn(reg, 'get')
+    try {
+      const linked = [
+        { kind: 'folder', root: '/mnt/gone', linkedDesign: 'design:d1' },
+        { kind: 'git', url: 'https://github.com/o/r', root: '/mnt/gone', linkedDesign: 'design:d1' }
+      ] as const
+      for (const source of linked) {
+        get.mockResolvedValueOnce({ key: 'key:/mnt/gone', source, title: 'r', lastOpened: 1 })
+        cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+        world.client.snapshotFromFiles.mockResolvedValueOnce({ ...empty, noFiles: 'empty' })
+        const snap = await world.opts.snapshot('/mnt/gone')
+        expect(snap.files).toEqual([])
+        expect('noFiles' in snap).toBe(false)
+      }
+      expect(get).toHaveBeenCalledWith('key:/mnt/gone')
+      const unlinked = [
+        { kind: 'folder', root: '/mnt/gone' },
+        { kind: 'design', id: 'd1', title: 'Design' }
+      ] as const
+      for (const source of unlinked) {
+        get.mockResolvedValueOnce({ key: 'key:/mnt/gone', source, title: 'r', lastOpened: 1 })
+        cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+        world.client.snapshotFromFiles.mockResolvedValueOnce({ ...empty, noFiles: 'empty' })
+        await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow('This folder has no files Lumopolis can map yet.')
+      }
+    } finally {
+      get.mockRestore()
     }
   })
 

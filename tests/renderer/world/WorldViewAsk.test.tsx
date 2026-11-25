@@ -239,6 +239,41 @@ describe('Ask bar inside the Lumopolis pane', () => {
     expect(v.load).toHaveBeenLastCalledWith(second, { animateFrom: v.load.mock.calls[0][0] })
   })
 
+  // WP4b fix round 1, M6: a status-only world stops nothing, so it need not wait for the answer; one that comes after an
+  // ordinary world held back waits with it (it is the newer one, and loads as an ordinary world then).
+  it('a status-only world mid-tour loads at once as statusOnly; behind a held world it waits and loads as an ordinary one', async () => {
+    speakAnswers = true
+    const first = minimal()
+    const tested = { ...minimal(), generatedAt: first.generatedAt + 1 }
+    const grown = { ...minimal(), generatedAt: first.generatedAt + 2 }
+    const retested = { ...minimal(), generatedAt: first.generatedAt + 3 }
+    const b = bridge({ worldGet: vi.fn().mockResolvedValueOnce(ok(first)).mockResolvedValueOnce(ok(tested)).mockResolvedValueOnce(ok(grown)).mockResolvedValue(ok(retested)) })
+    await mount()
+    const v = viewer()
+    const tour = deferred<undefined>()
+    v.play.mockImplementationOnce(() => tour.promise)
+    await askQ()
+    speech.cancel.mockClear()
+    const cancelsBefore = v.cancelActions.mock.calls.length
+    await b.updated({ root: '/repo', projectKey: first.projectKey, statusOnly: true })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(tested, { animateFrom: v.load.mock.calls[0][0], statusOnly: true })
+    expect(v.cancelActions).toHaveBeenCalledTimes(cancelsBefore)
+    expect(speech.cancel).not.toHaveBeenCalled()
+    // An ordinary world waits for the answer, and a status-only one after it waits with it.
+    await b.updated({ root: '/repo', projectKey: first.projectKey })
+    await settle()
+    await b.updated({ root: '/repo', projectKey: first.projectKey, statusOnly: true })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(2)
+    await act(async () => { tour.resolve(undefined) })
+    const u = speech.speak.mock.calls[0][0] as { onend: () => void }
+    act(() => { u.onend() })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(3)
+    expect(v.load).toHaveBeenLastCalledWith(retested, { animateFrom: tested })
+  })
+
   it('with no answer under way a world update loads at once', async () => {
     const first = minimal()
     const second = { ...minimal(), generatedAt: first.generatedAt + 1 }

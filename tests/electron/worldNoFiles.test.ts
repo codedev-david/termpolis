@@ -93,6 +93,24 @@ describe('snapshotFromFiles marks a snapshot with nothing to map (WP4b F-R9)', (
     expect(whyNoFiles).not.toHaveBeenCalled()
   })
 
+  it('a new project whose only source file is empty (touch main.py) is empty, not unreadable: it was read, it holds nothing yet', async () => {
+    await writeFile(join(dir, 'main.py'), '')
+    const { readFile } = await import('node:fs/promises')
+    const snap = await snapshotFromFiles(dir, { read: (p) => readFile(p, 'utf8') })
+    expect(snap.files).toEqual([])
+    expect(snap.noFiles).toBe('empty')
+  })
+
+  it('files to map that were read but hold nothing, beside ones that could not be read, are empty: something was read', async () => {
+    const reads: Record<string, string | null> = { '/r/a.ts': '', '/r/b.ts': null, '/r/c.py': '' }
+    const read = async (p: string): Promise<string | null> => reads[p] ?? null
+    const snap = await snapshotFromFiles('/r', { read, listFiles: async () => ['a.ts', 'b.ts', 'c.py'], whyNoFiles: async () => 'unreadable' })
+    expect(snap.noFiles).toBe('empty')
+    // A read that throws counts as one that failed, as a null does: with no read that worked, the folder is unreadable.
+    const failing = async (p: string): Promise<string | null> => (p.endsWith('a.ts') ? Promise.reject(new Error('EACCES')) : null)
+    expect((await snapshotFromFiles('/r', { read: failing, listFiles: async () => ['a.ts', 'b.ts'] })).noFiles).toBe('unreadable')
+  })
+
   it('every file read as absent still has its reason: the folder listed files Lumopolis maps, so it is unreadable', async () => {
     const snap = await snapshotFromFiles('/r', { read: async () => null, listFiles: async () => ['a.ts'], whyNoFiles: async () => 'empty' })
     expect(snap.files).toEqual([])

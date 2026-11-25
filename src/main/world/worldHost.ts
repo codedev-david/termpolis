@@ -109,13 +109,17 @@ export interface WorldContextResultMsg {
 }
 /**
  * Main's answer to a `runs` request: for `ci`, the test runs; for `transcript`, only the FILES to read (the host
- * reads and parses them, so main never does). Empty when there are none.
+ * reads and parses them, so main never does). Empty when there are none. For `ci` (WP4b fix round 1, I2 and M1),
+ * `head` is the commit main judged (null: CI is not read here, so none) and `age` how long ago it found the
+ * answer; runs null is no answer at all (git or gh failed), which the host keeps nothing of.
  */
 export interface WorldRunsResultMsg {
   kind: 'runs-result'
   id: number
-  runs: TestRun[]
+  runs: TestRun[] | null
   files?: string[]
+  head?: string | null
+  age?: number
 }
 export type WorldHostRequest =
   | WorldInitMsg
@@ -134,7 +138,11 @@ export interface WorldErrMsg { kind: 'result'; id: number; ok: false; error: Ser
 export interface WorldProgressMsg { kind: 'progress'; projectKey: string; stage: string; pct: number }
 /** A world was saved (or, with `error`, the run that drew a first map ended without one: the pane drops that map and
  *  shows the error, fix round 1 I2). */
-export interface WorldUpdatedMsg { kind: 'updated'; projectKey: string; error?: string }
+export interface WorldUpdatedMsg {
+  kind: 'updated'; projectKey: string; error?: string
+  /** Only test status changed (the late CI recompile, WP4b fix round 1, M6): the pane restyles the parts in place. */
+  statusOnly?: true
+}
 export interface WorldLlmMsg { kind: 'llm'; id: number; projectKey: string; prompt: string }
 /** The host stopped waiting for a labelling request (its limit passed): main drops it, and never starts it if it still waits. */
 export interface WorldLlmCancelMsg { kind: 'llm-cancel'; id: number }
@@ -202,7 +210,8 @@ export { RUNS_WAIT_MS }
  * them. Short, so a person opening a world never watches the bar stand at status for the network.
  */
 export const CI_ASK_MS = 1_500
-/** How long main's CI answer for one project and commit is kept by the host: main keeps its own for as long. */
+/** How long main's CI answer for one project and commit is kept: main keeps its own as long, and the host's ends
+ *  with main's (the answer's age counts). */
 export const CI_MEMO_MS = 10 * 60_000
 /**
  * The watcher recompile's debounce. Its input is already paced: main tells the host only after the code
@@ -211,6 +220,29 @@ export const CI_MEMO_MS = 10 * 60_000
  */
 export const WATCH_RECOMPILE_MS = 100
 const MAX_RUNS = 5000
+
+/** What main answered a `runs` ask with, unchecked. */
+interface RunsAnswer {
+  runs?: unknown
+  files?: unknown
+  head?: unknown
+  age?: unknown
+}
+
+/**
+ * Main's CI answer, judged against the commit the compile is for (WP4b fix round 1, I2). Runs of another commit
+ * (HEAD moved while main looked) are no answer for this one: never used, kept or compiled in. Runs null, or an answer
+ * naming no commit it judged, are no answer either (git or gh failed: M1). An answer naming none (head null: CI is not
+ * read here) is no runs, used but never kept, so turning CI on shows at the next compile. `age` is main's: the host's
+ * memo ends when main's does.
+ */
+export function ciOf(a: RunsAnswer | null, commit: string): { runs: TestRun[]; keep: boolean; age: number } | null {
+  if (a === null || !Array.isArray(a.runs)) return null
+  if (a.head === null) return { runs: [], keep: false, age: 0 }
+  if (typeof a.head !== 'string' || commit === '' || a.head.toLowerCase() !== commit) return null
+  const age = typeof a.age === 'number' && Number.isFinite(a.age) ? Math.min(Math.max(a.age, 0), CI_MEMO_MS) : 0
+  return { runs: cleanRuns(a.runs, 'ci'), keep: true, age }
+}
 
 /** Main's test runs, checked: whole runs only, as `source`, at most MAX_RUNS. */
 export function cleanRuns(v: unknown, source: TestRun['source']): TestRun[] {
@@ -679,7 +711,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   let removed = new Set<string>()
   let llmSeq = 0
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
-  const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
+  const runsWaiting = new Map<number, (msg: RunsAnswer) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
   const clones = new Map<string, { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }>()
   // Calls waiting behind a different run, and how many cancels came while any waited, by clone key.
@@ -754,7 +786,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
 
   /** Asks main about test runs from `source`; null: no answer in time, so the runs are not known (fix round 3, N2). */
-  const askRunsMain = (projectKey: string, source: 'transcript' | 'ci'): Promise<{ runs?: unknown; files?: unknown } | null> =>
+  const askRunsMain = (projectKey: string, source: 'transcript' | 'ci'): Promise<RunsAnswer | null> =>
     new Promise((resolve) => {
       const id = ++llmSeq
       const timer = setTimeout(() => {
@@ -777,20 +809,22 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const ciMemo = new Map<string, { at: number; commit: string; runs: TestRun[] }>()
   const ciAsking = new Map<string, { commit: string; answer: Promise<TestRun[] | null>; late: boolean }>()
   const askCi = (projectKey: string, head: WorldHead) => async (): Promise<TestRun[] | null> => {
-    const commit = head.head
+    const commit = head.head.toLowerCase()
     const hit = ciMemo.get(projectKey)
     if (hit && hit.commit === commit && now() - hit.at < CI_MEMO_MS) return hit.runs
     let ask = ciAsking.get(projectKey)
     if (!ask || ask.commit !== commit) {
-      const answer = askRunsMain(projectKey, 'ci').then((a) => (a === null ? null : cleanRuns(a.runs, 'ci')))
+      const judged = askRunsMain(projectKey, 'ci').then((a) => ciOf(a, commit))
+      const answer = judged.then((j) => (j === null ? null : j.runs))
       const mine = { commit, answer, late: false }
       ciAsking.set(projectKey, mine)
-      void answer.then((runs) => {
+      void judged.then((j) => {
         // An ask for an older commit, replaced by a newer one meanwhile, is not this project's any more.
         if (ciAsking.get(projectKey) !== mine) return
         ciAsking.delete(projectKey)
-        if (runs === null) return
-        ciMemo.set(projectKey, { at: now(), commit, runs })
+        // Kept only when main judged this very commit, and only for what is left of main's own CI_MEMO_MS.
+        if (j === null || !j.keep) return
+        ciMemo.set(projectKey, { at: now() - j.age, commit, runs: j.runs })
         if (mine.late) ciLanded(projectKey, commit)
       })
       ask = mine
@@ -842,13 +876,14 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const compiledFrom = new Map<string, Latest>()
   const bump = (key: string): void => void generations.set(key, (generations.get(key) ?? 0) + 1)
 
-  /** Saves a compiled world and its stage cache, records what it came from, and pushes `updated`. */
-  const saveCompiled = async (st: HostState, key: string, out: { doc: WorldDoc; cache: StageCache | null }, from: Latest): Promise<void> => {
+  /** Saves a compiled world and its stage cache, records what it came from, and pushes `updated` (`statusOnly`: the
+   *  world changed test status only). */
+  const saveCompiled = async (st: HostState, key: string, out: { doc: WorldDoc; cache: StageCache | null }, from: Latest, statusOnly = false): Promise<void> => {
     await st.store.save(out.doc)
     await keepStages(st, key, out.cache)
     bump(key)
     compiledFrom.set(key, from)
-    post({ kind: 'updated', projectKey: key })
+    post({ kind: 'updated', projectKey: key, ...(statusOnly ? { statusOnly: true as const } : {}) })
   }
 
   /** One labelled run in flight. `again` asks for one more after it, for `changed` files (null: every file). */
@@ -944,7 +979,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const st = state as HostState
     void serial(key, async () => {
       const from = compiledFrom.get(key)
-      if (!from || from.head.head !== commit) return
+      if (!from || from.head.head.toLowerCase() !== commit) return
       const previous = await st.store.load(key)
       if (!previous) return
       const fromCache = async (): Promise<null> => null
@@ -952,7 +987,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         { snap: from.snap, projectKey: key, head: from.head, previous, changed: [], ...stagedArg(await stagesOf(st, key), []), ...planArg(from.plan) },
         depsFor(st, key, from.snap, from.head, st.labelling ? fromCache : null)
       )
-      await saveCompiled(st, key, out, from)
+      // Nothing but the status stage ran again: the pane restyles the parts in place, and a tour or a flight under way
+      // goes on (fix round 1, M6). The pane's viewer checks the parts really are the same before it does.
+      await saveCompiled(st, key, out, from, true)
     }).catch((err: unknown) => console.warn('[world host] the late CI results could not be added:', err))
   }
 
@@ -1443,7 +1480,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         return
       }
       if (msg.kind === 'runs-result') {
-        runsWaiting.get(msg.id)?.({ runs: msg.runs, files: msg.files })
+        runsWaiting.get(msg.id)?.({ runs: msg.runs, files: msg.files, head: msg.head, age: msg.age })
         return
       }
       if (msg.kind === 'llm-result') {

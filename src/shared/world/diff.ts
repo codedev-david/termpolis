@@ -47,6 +47,25 @@ export function diffWorlds(prev: WorldDoc | null, next: WorldDoc): WorldDiff {
   return { added, removed, changed, turnedSolid }
 }
 
+/** Where the parts are and what they hold: everything of a world but its test status (statuses, claims) and names. */
+const partsOf = (d: WorldDoc): string =>
+  JSON.stringify([
+    d.projectKey,
+    d.layout,
+    d.districts.map((x) => [x.id, x.members]),
+    d.buildings.map((b) => [b.id, b.districtId, b.members, b.floors]),
+    d.edges.map((e) => [e.id, e.from, e.to]),
+    d.externals.map((x) => x.id)
+  ])
+
+/**
+ * The same parts in the same places (WP4b fix round 1, M6): only test status (and so the statuses and claims) can
+ * differ. A world CI's late answer recompiled is one, and the viewer restyles it in place rather than loading it.
+ */
+export function sameParts(prev: WorldDoc, next: WorldDoc): boolean {
+  return partsOf(prev) === partsOf(next)
+}
+
 /** The parts that rise: added and turned-solid ids, each once, at most RISE_CAP of them. */
 export function riseIds(diff: WorldDiff): string[] {
   return uniqueParts(diff).slice(0, RISE_CAP)

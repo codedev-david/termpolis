@@ -148,7 +148,7 @@ export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes 
 export const GRAPHICS_FLAT = 'The graphics stopped again, so the map shows in 2D.'
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
-  const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
+  const { world, open, goHome, entries, listError, refresh, ticket, repoUpdate, repoBusy, repoTry, repoStopping, repoError, repoChanged, signIn, useToken, tryAgain, stopRepoUpdate, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   // The token dialog closed while its token is tried stops that try, as on the home (WP4b F-R6).
   const closeToken = (): void => {
@@ -310,6 +310,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const askEscRef = useRef<(() => boolean) | null>(null)
   const askBusyRef = useRef(false)
   const heldDocRef = useRef<WorldDoc | null>(null)
+  /** The doc a status-only push brought (CI's late answer, WP4b fix round 1, M6): the viewer restyles it in place. */
+  const statusOnlyRef = useRef<WorldDoc | null>(null)
   /** Tours waiting for the complete world to be shown (askLink.whenComplete): let go when the pane's doc is no first map. */
   const completeWaitersRef = useRef<Array<() => void>>([])
   /** Lets every waiting tour go (each then checks whether the pane is still on its world). */
@@ -520,7 +522,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           if (got === null) return
           // Loading a world stops the answer's tour, so it waits until the answer is over. A first map gives way at once:
           // the answer is computed from the complete world and its tour waits for it (whenComplete), never the reverse.
-          if (askBusyRef.current && docRef.current?.provisional !== true) { heldDocRef.current = got; return }
+          // A status-only world stops nothing, so it loads at once, unless a world held back is waiting: it is newer than
+          // that one, so it waits in its place and loads as an ordinary world then (fix round 1, M6).
+          const statusOnly = e.statusOnly === true
+          if (askBusyRef.current && docRef.current?.provisional !== true && (!statusOnly || heldDocRef.current !== null)) { heldDocRef.current = got; return }
+          if (statusOnly) statusOnlyRef.current = got
           setError(null)
           setDoc(got)
         },
@@ -663,7 +669,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     // keeps the camera, the open building and the selection across it (a labelled follow-up, a
     // watched change), so nothing is opened again here; a Re-layout, which moves the parts, closes the
     // open building and flies to the selection's new spot or the overview.
-    if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held })
+    // A status-only world (late CI) is restyled in place, when the viewer finds its parts are the ones it holds.
+    const statusOnly = statusOnlyRef.current === doc
+    statusOnlyRef.current = null
+    if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held, ...(statusOnly ? { statusOnly: true as const } : {}) })
     else viewer.load(doc)
   }, [viewer, doc])
 
@@ -1128,6 +1137,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 message={repoUpdate.message}
                 notFound={repoUpdate.notFound}
                 busy={repoBusy}
+                {...(repoTry ? { trying: repoTry } : {})}
                 error={tokenOpen ? null : repoError}
                 inert={tokenOpen}
                 onSignIn={signIn}

@@ -45,14 +45,25 @@ function make(over: Partial<RunsDeps> = {}, o: Setup = {}): { d: RunsDeps; exec:
   return { d, exec, clock }
 }
 const ciOf = async (o: Setup = {}, over: Partial<RunsDeps> = {}) => createWorldRuns(make(over, o).d).ciRuns(ROOT)
+/** The runs of an answer that judged HEAD (WP4b fix round 1, I2): any other answer fails the test. */
+const runsOf = async (o: Setup = {}, over: Partial<RunsDeps> = {}) => {
+  const a = await ciOf(o, over)
+  expect(a?.head).toBe(o.head ?? HEAD)
+  return a?.runs
+}
+/** No CI read here at all: no commit judged, no runs. */
+const NOT_READ = { head: null, runs: [], age: 0 }
 const ghCalls = (exec: ReturnType<typeof vi.fn>): number => exec.mock.calls.filter((c) => c[0] === GH).length
 
 describe('ciRuns', () => {
   it('a test run on exactly HEAD marks the commit files, with the 5 s gh timeout', async () => {
     const { d, exec } = make()
-    const runs = await createWorldRuns(d).ciRuns(ROOT)
+    const answer = await createWorldRuns(d).ciRuns(ROOT)
     const at = Date.parse('2026-11-02T10:00:00Z')
-    expect(runs).toEqual([
+    // The answer names the commit it judged, and is new.
+    expect(answer?.head).toBe(HEAD)
+    expect(answer?.age).toBe(0)
+    expect(answer?.runs).toEqual([
       { file: 'src/a.ts', passed: true, at, source: 'ci' },
       { file: 'src/b.ts', passed: true, at, source: 'ci' }
     ])
@@ -65,27 +76,29 @@ describe('ciRuns', () => {
   })
 
   it('failure marks them failed; a future createdAt is clamped to now; a bad one uses now', async () => {
-    const f = await ciOf({ rows: [row({ conclusion: 'failure' })], changed: 'x.ts' })
+    const f = await runsOf({ rows: [row({ conclusion: 'failure' })], changed: 'x.ts' })
     expect(f).toEqual([{ file: 'x.ts', passed: false, at: Date.parse('2026-11-02T10:00:00Z'), source: 'ci' }])
     const now = Date.parse('2026-11-03T00:00:00Z')
-    expect((await ciOf({ rows: [row({ createdAt: '2099-01-01T00:00:00Z' })], changed: 'x.ts' }))[0].at).toBe(now)
-    expect((await ciOf({ rows: [row({ createdAt: 'nope' })], changed: 'x.ts' }))[0].at).toBe(now)
-    expect((await ciOf({ rows: [row({ createdAt: undefined })], changed: 'x.ts' }))[0].at).toBe(now)
+    expect((await runsOf({ rows: [row({ createdAt: '2099-01-01T00:00:00Z' })], changed: 'x.ts' }))?.[0].at).toBe(now)
+    expect((await runsOf({ rows: [row({ createdAt: 'nope' })], changed: 'x.ts' }))?.[0].at).toBe(now)
+    expect((await runsOf({ rows: [row({ createdAt: undefined })], changed: 'x.ts' }))?.[0].at).toBe(now)
   })
 
   it('picks the matching run among several, not just the first row', async () => {
-    const runs = await ciOf({ rows: [row({ workflowName: 'Release' }), row({ headSha: OLD }), row({ conclusion: 'failure', headSha: HEAD.toUpperCase() })], changed: 'x.ts' })
+    const runs = await runsOf({ rows: [row({ workflowName: 'Release' }), row({ headSha: OLD }), row({ conclusion: 'failure', headSha: HEAD.toUpperCase() })], changed: 'x.ts' })
     expect(runs).toEqual([{ file: 'x.ts', passed: false, at: Date.parse('2026-11-02T10:00:00Z'), source: 'ci' }])
   })
 
-  it('an unrelated green workflow, a stale headSha, an unfinished run and a null row give no result', async () => {
-    expect(await ciOf({ rows: [row({ workflowName: 'Release' })] })).toEqual([])
-    expect(await ciOf({ rows: [row({ workflowName: undefined })] })).toEqual([])
-    expect(await ciOf({ rows: [row({ headSha: OLD })] })).toEqual([])
-    expect(await ciOf({ rows: [row({ headSha: 5 })] })).toEqual([])
-    expect(await ciOf({ rows: [row({ conclusion: 'cancelled' })] })).toEqual([])
-    expect(await ciOf({ rows: [null] })).toEqual([])
-    expect(await ciOf({ rows: { not: 'a list' } })).toEqual([])
+  it('an unrelated green workflow, a stale headSha, an unfinished run and a null row are no CI for HEAD', async () => {
+    expect(await runsOf({ rows: [row({ workflowName: 'Release' })] })).toEqual([])
+    expect(await runsOf({ rows: [row({ workflowName: undefined })] })).toEqual([])
+    expect(await runsOf({ rows: [row({ headSha: OLD })] })).toEqual([])
+    expect(await runsOf({ rows: [row({ headSha: 5 })] })).toEqual([])
+    expect(await runsOf({ rows: [row({ conclusion: 'cancelled' })] })).toEqual([])
+    expect(await runsOf({ rows: [null] })).toEqual([])
+    expect(await runsOf({ rows: [] })).toEqual([])
+    // gh printing something other than a list did not answer: no answer, not "no CI".
+    expect(await ciOf({ rows: { not: 'a list' } })).toBeNull()
   })
 
   it('asks only about the current branch; a detached or odd branch gives no result and no gh call', async () => {
@@ -94,16 +107,16 @@ describe('ciRuns', () => {
     expect(a.exec).toHaveBeenCalledWith(GH, expect.arrayContaining(['--branch', 'other']), expect.anything())
     for (const branch of ['HEAD', '--evil', '']) {
       const b = make({}, { branch })
-      expect(await createWorldRuns(b.d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(b.d).ciRuns(ROOT)).toEqual({ head: HEAD, runs: [], age: 0 })
       expect(ghCalls(b.exec)).toBe(0)
     }
   })
 
-  it('a HEAD that cannot be read gives no result and no gh call', async () => {
+  it('a HEAD that cannot be read is no answer, and no gh call', async () => {
     const fails = [async () => ({ stdout: '', error: new Error('git') }), async () => ({ stdout: 'not a sha' })] as RunsDeps['exec'][]
     for (const exec of fails) {
       const spy = vi.fn(exec)
-      expect(await createWorldRuns(make({ exec: spy }).d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(make({ exec: spy }).d).ciRuns(ROOT)).toBeNull()
       expect(spy.mock.calls.every((c) => c[0] === GIT)).toBe(true)
     }
   })
@@ -111,14 +124,14 @@ describe('ciRuns', () => {
   it('never starts gh or git unless the setting is on', async () => {
     const ghOnPath = vi.fn(async () => GH)
     const { d, exec } = make({ ciAllowed: async () => false, ghOnPath })
-    expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual([])
+    expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual(NOT_READ)
     expect(exec).not.toHaveBeenCalled()
     expect(ghOnPath).not.toHaveBeenCalled()
   })
 
   it('with no gh on PATH, gives no result quietly and starts nothing at all', async () => {
     const { d, exec } = make({ ghOnPath: async () => null })
-    expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual([])
+    expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual(NOT_READ)
     expect(exec).not.toHaveBeenCalled()
   })
 
@@ -131,7 +144,7 @@ describe('ciRuns', () => {
     // A gh found in the repository itself (PATH names its folder) is refused: nothing runs for CI.
     for (const planted of ['/repo/gh', '/repo/tools/gh', '/REPO/gh']) {
       const m = make({ ghOnPath: async () => planted })
-      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual(NOT_READ)
       expect(m.exec).not.toHaveBeenCalled()
     }
     // A sibling folder whose name only starts like the repository's is not inside it.
@@ -147,7 +160,7 @@ describe('ciRuns', () => {
     expect(exec.mock.calls.filter((c) => c[0] === GIT).length).toBeGreaterThan(0)
     for (const gitBin of [async () => null, async () => '/repo/git', async () => '/repo/tools/git']) {
       const m = make({ gitBin })
-      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual(NOT_READ)
       expect(m.exec).not.toHaveBeenCalled()
     }
   })
@@ -157,7 +170,7 @@ describe('ciRuns', () => {
     const realpath = async (p: string): Promise<string> => (p.startsWith('/links/') ? '/repo/' + p.slice('/links/'.length) : p)
     for (const over of [{ ghOnPath: async () => '/links/gh' }, { gitBin: async () => '/links/git' }]) {
       const m = make({ realpath, ...over })
-      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual(NOT_READ)
       expect(m.exec).not.toHaveBeenCalled()
     }
   })
@@ -172,7 +185,7 @@ describe('ciRuns', () => {
     const Path = `.;bin;\\;C:;${root};C:\\Program Files\\GitHub CLI`
     const exec = vi.fn(async (bin: string, args: string[]) => (bin === real ? { stdout: JSON.stringify([row()]) } : gitAnswer(args)))
     const ghOnPath = (): Promise<string | null> => commandOnPath('gh', { Path }, 'win32', runnable, root)
-    const runs = await createWorldRuns({ ...make().d, exec, ghOnPath }).ciRuns(root)
+    const runs = (await createWorldRuns({ ...make().d, exec, ghOnPath }).ciRuns(root))?.runs ?? []
     expect(runs.length).toBeGreaterThan(0)
     expect(runnable.mock.calls.map((c) => c[0])).toEqual([real])
     expect(exec).toHaveBeenCalledWith(real, GH_ARGS, { cwd: root, timeout: GH_TIMEOUT_MS })
@@ -181,7 +194,7 @@ describe('ciRuns', () => {
     const planted = vi.fn(async (_bin: string, args: string[]) => gitAnswer(args))
     const fromRepo = (): Promise<string | null> => commandOnPath('gh', { Path: root }, 'win32', runnable, 'C:\\Windows')
     expect(await fromRepo()).toBe(root + '\\gh.exe')
-    expect(await createWorldRuns({ ...make().d, exec: planted, ghOnPath: fromRepo }).ciRuns(root)).toEqual([])
+    expect(await createWorldRuns({ ...make().d, exec: planted, ghOnPath: fromRepo }).ciRuns(root)).toEqual(NOT_READ)
     expect(planted).not.toHaveBeenCalled()
   })
 
@@ -197,31 +210,74 @@ describe('ciRuns', () => {
     expect(ghOnPath).toHaveBeenCalledTimes(2)
   })
 
-  it('a repository with no GitHub remote, or remotes git cannot list, gives no result and no gh call', async () => {
+  it('a repository with no GitHub remote is no CI for HEAD; remotes git cannot list are no answer; neither calls gh', async () => {
     const others = ['', 'origin\thttps://gitlab.com/o/r.git (fetch)\n', 'origin\thttps://notgithub.com/o/r (fetch)\n', 'origin\n', 'github.com:o/r (fetch)\n']
     for (const remotes of others) {
       const m = make({}, { remotes })
-      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual({ head: HEAD, runs: [], age: 0 })
       expect(ghCalls(m.exec)).toBe(0)
     }
     const failing = vi.fn(async (bin: string, args: string[]) => (plain(args)[0] === 'remote' ? { stdout: '', error: new Error('git') } : gitAnswer(args)))
-    expect(await createWorldRuns(make({ exec: failing }).d).ciRuns(ROOT)).toEqual([])
+    expect(await createWorldRuns(make({ exec: failing }).d).ciRuns(ROOT)).toBeNull()
     expect(ghCalls(failing)).toBe(0)
+    // A branch git cannot name is no answer either.
+    const noBranch = vi.fn(async (bin: string, args: string[]) => (plain(args)[1] === '--abbrev-ref' ? { stdout: '', error: new Error('git') } : gitAnswer(args)))
+    expect(await createWorldRuns(make({ exec: noBranch }).d).ciRuns(ROOT)).toBeNull()
+    expect(ghCalls(noBranch)).toBe(0)
     // Every GitHub URL shape counts, on any remote line.
     for (const url of ['https://github.com/o/r.git', 'ssh://git@github.com/o/r', 'git@GitHub.com:o/r.git']) {
       const m = make({}, { remotes: `upstream\thttps://gitlab.com/x (fetch)\norigin\t${url} (fetch)\n`, changed: 'x.ts' })
-      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toHaveLength(1)
+      expect((await createWorldRuns(m.d).ciRuns(ROOT))?.runs).toHaveLength(1)
     }
   })
 
-  it('gh missing, failing or unparsable, or a failing diff, gives []', async () => {
+  it('every way gh can fail is no answer, never "no CI", and none is kept: the next call asks gh again (WP4b fix round 1, M1)', async () => {
     const git = (args: string[]): { stdout: string } => gitAnswer(args)
-    const cases: RunsDeps['exec'][] = [
-      async (bin, args) => (bin === GH ? { stdout: '', error: Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }) } : git(args)),
-      async (bin, args) => (bin === GH ? { stdout: 'not json' } : git(args)),
-      async (bin, args) => (bin === GH ? { stdout: JSON.stringify([row()]) } : plain(args)[0] === 'diff-tree' ? { stdout: '', error: new Error('git') } : git(args))
-    ]
-    for (const exec of cases) expect(await ciOf({}, { exec })).toEqual([])
+    const ghFails = (error: Error, stdout = ''): RunsDeps['exec'] => async (bin, args) => (bin === GH ? { stdout, error } : git(args))
+    const failures: Record<string, RunsDeps['exec']> = {
+      // procHost hands back the child's error: gh could not start.
+      spawn: ghFails(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' })),
+      // gh exits 1 with its own words for each of these on stderr.
+      offline: ghFails(new Error('error connecting to api.github.com')),
+      auth: ghFails(new Error('To get started with GitHub CLI, please run:  gh auth login')),
+      rateLimit: ghFails(new Error('HTTP 403: API rate limit exceeded')),
+      // Past GH_TIMEOUT_MS the run is killed, with whatever it printed so far.
+      timeout: ghFails(Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' }), '[{"conc'),
+      unparsable: async (bin, args) => (bin === GH ? { stdout: 'not json' } : git(args)),
+      diffTree: async (bin, args) => (bin === GH ? { stdout: JSON.stringify([row()]) } : plain(args)[0] === 'diff-tree' ? { stdout: '', error: new Error('git') } : git(args))
+    }
+    for (const [name, exec] of Object.entries(failures)) {
+      const spy = vi.fn(exec)
+      const w = createWorldRuns(make({ exec: spy }).d)
+      expect(await w.ciRuns(ROOT), name).toBeNull()
+      expect(await w.ciRuns(ROOT), name).toBeNull()
+      expect(ghCalls(spy), name).toBe(2)
+    }
+    // gh back: the next call asks it again and gets the runs.
+    let ghUp = false
+    const back = vi.fn(async (bin: string, args: string[]) =>
+      bin === GH ? (ghUp ? { stdout: JSON.stringify([row()]) } : { stdout: '', error: new Error('offline') }) : plain(args)[0] === 'diff-tree' ? { stdout: 'x.ts' } : gitAnswer(args)
+    )
+    const w = createWorldRuns(make({ exec: back }).d)
+    expect(await w.ciRuns(ROOT)).toBeNull()
+    ghUp = true
+    expect((await w.ciRuns(ROOT))?.runs).toHaveLength(1)
+  })
+
+  it('only a gh that answered with zero runs of HEAD is "no CI", and that is kept', async () => {
+    const { d, exec } = make({}, { rows: [] })
+    const w = createWorldRuns(d)
+    expect(await w.ciRuns(ROOT)).toEqual({ head: HEAD, runs: [], age: 0 })
+    await w.ciRuns(ROOT)
+    expect(ghCalls(exec)).toBe(1)
+  })
+
+  it('a kept answer says how old it is, and names the commit it judged', async () => {
+    const { d, clock } = make({}, { rows: [row()], changed: 'x.ts' })
+    const w = createWorldRuns(d)
+    await w.ciRuns(ROOT)
+    clock.t += 90_000
+    expect(await w.ciRuns(ROOT)).toEqual({ head: HEAD, runs: [expect.objectContaining({ file: 'x.ts' })], age: 90_000 })
   })
 
   it('keeps the answer 10 minutes while HEAD stays, even an empty one; a new HEAD asks again', async () => {

@@ -415,8 +415,10 @@ describe('registerWorldIpc sources handlers', () => {
       expect(JSON.stringify(res)).not.toContain('neutral-value-9')
     }
     expect(s.deps.updateSource).not.toHaveBeenCalled()
+    // The notice that shows it is about the repository, so it says the repository could not update (WP4b fix round 1,
+    // M4), not that the list of worlds could not.
     s.registry.get.mockRejectedValueOnce(new Error('disk'))
-    expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: SOURCES_FAILED })
+    expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: UPDATE_FAILED })
   })
 
   it('a background failure that needs a sign-in answers needsLogin', async () => {

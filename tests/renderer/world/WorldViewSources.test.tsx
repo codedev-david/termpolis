@@ -30,6 +30,11 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 import { WorldView } from '../../../src/renderer/src/components/World'
 import type { WorldAskLink } from '../../../src/renderer/src/components/World/WorldView'
 import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
+import { SIGNING_IN_MESSAGE } from '../../../src/renderer/src/components/World/CloneDialog'
+import { UPDATING_MESSAGE } from '../../../src/renderer/src/components/World/SignInNeededNotice'
+/** main's words (ipc.ts UPDATE_FAILED, gitSource.ts UNREACHABLE_MESSAGE), as the notice receives them. */
+const UPDATE_FAILED = "Lumopolis couldn't update that repository. Try again."
+const UNREACHABLE = "Lumopolis couldn't reach that repository. Check the address and your connection, then try again."
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -517,6 +522,79 @@ describe('WorldView sign in needed', () => {
     expect(screen.getByRole('button', { name: 'Sign in to GitHub' })).toHaveFocus()
   })
 
+  // WP4b fix round 1, M5: a try says what it is doing, and Stop never drops the focus to the page.
+  it('while a Sign in runs the notice says it is signing in; Try again says it is updating; a token try leaves the words to its dialog', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    const answer = hangNext(api)
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(within(notice).queryByTestId('world-sign-in-progress')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    expect(within(notice).getByTestId('world-sign-in-progress')).toHaveTextContent(SIGNING_IN_MESSAGE)
+    await answer(ok(NEEDS))
+    await settle()
+    expect(within(notice).queryByTestId('world-sign-in-progress')).toBeNull()
+    // A token try: its dialog is up and the notice behind it says nothing more.
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    const tok = hangNext(api)
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    expect(screen.queryByTestId('world-sign-in-progress')).toBeNull()
+    await tok(ok({ changed: false }))
+    await settle()
+  })
+
+  it('Try again on a failed update says it is updating until the update answers', async () => {
+    const api = gitBridge(fail(UNREACHABLE))
+    await openGit()
+    const answer = hangNext(api)
+    const notice = screen.getByTestId('world-sign-in-needed')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
+    expect(within(notice).getByTestId('world-sign-in-progress')).toHaveTextContent(UPDATING_MESSAGE)
+    await answer(fail(UNREACHABLE))
+    await settle()
+    expect(within(notice).queryByTestId('world-sign-in-progress')).toBeNull()
+  })
+
+  it('pressing Stop keeps the focus in the notice until the stop answers, then gives it to the first choice', async () => {
+    for (const how of ['moved', 'tabbed'] as const) {
+      const api = gitBridge(ok(NEEDS))
+      await openGit()
+      const answer = hangNext(api)
+      const signIn = screen.getByRole('button', { name: 'Sign in to GitHub' })
+      // moved: the pressed choice had the focus, so Stop took it; tabbed: the person moved to Stop themselves.
+      if (how === 'moved') signIn.focus()
+      fireEvent.click(signIn)
+      const notice = screen.getByTestId('world-sign-in-needed')
+      const stop = within(notice).getByRole('button', { name: 'Stop' })
+      if (how === 'tabbed') stop.focus()
+      expect(stop).toHaveFocus()
+      fireEvent.click(stop)
+      // Stopping… is grey: the notice holds the focus, so Tab and Esc still start from it, never from the page.
+      expect(within(notice).getByRole('button', { name: 'Stopping…' })).toBeDisabled()
+      expect(notice).toHaveFocus()
+      expect(notice.tabIndex).toBe(-1)
+      await answer(fail(STOPPED))
+      await settle()
+      expect(screen.getByRole('button', { name: 'Sign in to GitHub' }), how).toHaveFocus()
+      cleanup()
+    }
+  })
+
+  it('a stop pressed while the focus is elsewhere leaves it there', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    const answer = hangNext(api)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    const map2d = screen.getByTestId('world-map2d')
+    map2d.focus()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(map2d).toHaveFocus()
+    await answer(fail(STOPPED))
+    await settle()
+    expect(map2d).toHaveFocus()
+  })
+
   it('a try that ends while the focus is elsewhere leaves the focus where the person put it', async () => {
     const api = gitBridge(ok(NEEDS))
     await openGit()
@@ -573,6 +651,42 @@ describe('WorldView sign in needed', () => {
     await settle()
     expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kgit')
     expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  // WP4b fix round 1, M4: the Try again button carries the action, so the words never say "Try again." beside it.
+  it('a failed update never says "Try again." beside the Try again button; words that say when or how to try again stay', async () => {
+    const said = [
+      [UPDATE_FAILED, "Lumopolis couldn't update that repository. You're seeing the saved copy."],
+      [UNREACHABLE, `${UNREACHABLE} You're seeing the saved copy.`],
+      ["Lumopolis couldn't save that repository. Try again in a moment.", "Lumopolis couldn't save that repository. Try again in a moment. You're seeing the saved copy."]
+    ] as const
+    for (const [error, words] of said) {
+      gitBridge(fail(error))
+      await openGit()
+      const notice = screen.getByTestId('world-sign-in-needed')
+      expect(notice.querySelector('span')?.textContent, error).toBe(words)
+      expect(within(notice).getAllByRole('button').map((b) => b.textContent)).toEqual(['Try again', 'Dismiss'])
+      cleanup()
+    }
+    // A Try again that fails again says so under the words, and that line does not say "Try again." beside the button
+    // either; nor does one main could not be asked for.
+    for (const again of [fail(UPDATE_FAILED), 'rejected'] as const) {
+      const api = gitBridge(fail(UPDATE_FAILED))
+      await openGit()
+      const answer = hangNext(api)
+      const notice = screen.getByTestId('world-sign-in-needed')
+      fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
+      if (again === 'rejected') await answer(Promise.reject(new Error('ipc')) as never)
+      else await answer(again)
+      await settle()
+      expect(within(notice).getByRole('alert'), String(again)).toHaveTextContent(/^Lumopolis couldn't update that repository\.$/)
+      expect(within(notice).getAllByRole('button').map((b) => b.textContent)).toEqual(['Try again', 'Dismiss'])
+      cleanup()
+    }
+    // An update main could not be asked for (the bridge rejected) reads the same.
+    gitBridge(ok(NEEDS), { worldUpdateSource: vi.fn(async () => { throw new Error('ipc') }) })
+    await openGit()
+    expect(screen.getByTestId('world-sign-in-needed').querySelector('span')?.textContent).toBe("Lumopolis couldn't update that repository. You're seeing the saved copy.")
   })
 
   it('a repository opened with a token offers Update with a token, which updates with the token given', async () => {

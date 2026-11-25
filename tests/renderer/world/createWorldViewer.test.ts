@@ -1806,6 +1806,114 @@ describe('load with animateFrom', () => {
   }
 })
 
+// WP4b fix round 1, M6: CI's late answer changes only the test status. Loaded with statusOnly, the parts are restyled in
+// place: nothing under way is stopped (a tour, a flight, a pulse, a rise), nothing pulses, no "N changed" toast shows,
+// and the camera, the selection and its card stay.
+describe('load with statusOnly', () => {
+  /** rich() a moment later with b2's tests now failing: the same parts in the same places. */
+  const restatused = (): WorldDoc => {
+    const d = rich()
+    d.generatedAt += 1
+    d.buildings.find((b) => b.id === 'b2')!.status = 'gap'
+    return d
+  }
+  const toastText = (host: HTMLElement): string | null => {
+    const el = host.querySelector<HTMLElement>('.lw-toast')
+    return el && !el.hidden ? el.textContent : null
+  }
+  function setup3dMoving(doc: WorldDoc) {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((host: HTMLElement) => { fake = fakeRenderer(host); return fake.r })
+    const s = setup({ reducedMotion: false, doc })
+    return { ...s, ...(fake as unknown as ReturnType<typeof fakeRenderer>) }
+  }
+  const drawnStatus = (r: ReturnType<typeof fakeRenderer>['r'], id: string): unknown => {
+    const model = r.draw.mock.calls[r.draw.mock.calls.length - 1][0] as { buildings: Array<{ id: string; status?: unknown; look?: unknown }> }
+    const b = model.buildings.find((x) => x.id === id)
+    return b ? (b.status ?? b.look) : undefined
+  }
+
+  it('a tour under way goes on: its caption and highlight stay, no flight or pulse is stopped, and the next stop follows', async () => {
+    vi.useFakeTimers()
+    const before = rich()
+    const { r, viewer, cards, host } = setup3dMoving(before)
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cards[cards.length - 1]).toContain('one')
+    const lit = viewer.drawn().highlighted
+    expect(lit.length).toBeGreaterThan(0)
+    const was = drawnStatus(r, 'b2')
+    const watched = [r.stopFlight, r.stopPulses, r.stopChanges, r.keepGhosts, r.animateChanges, r.overview, r.setSelected]
+    for (const f of [r.draw, ...watched]) f.mockClear()
+    const n = cards.length
+    viewer.load(restatused(), { animateFrom: before, statusOnly: true })
+    // The statuses are drawn...
+    expect(r.draw).toHaveBeenCalledTimes(1)
+    expect(drawnStatus(r, 'b2')).not.toBe(was)
+    expect(drawnStatus(r, 'b2')).toBe('amber')
+    // ...and nothing under way is stopped, nothing pulses or rises, and no toast shows.
+    for (const f of watched) expect(f).not.toHaveBeenCalled()
+    expect(toastText(host)).toBeNull()
+    expect(cards.length).toBe(n)
+    expect(viewer.drawn().highlighted).toEqual(lit)
+    // The tour goes on to its next stop, on the newer world.
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    expect(cards[cards.length - 1]).toContain('two')
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await done
+  })
+
+  it('the selection and its card stay, the card drawn again with the new status', async () => {
+    const before = rich()
+    const { r, viewer, cards, sels } = setup3dMoving(before)
+    await viewer.apply({ type: 'openCard', id: 'b2' })
+    sels.length = 0
+    r.setSelected.mockClear()
+    const n = cards.length
+    viewer.load(restatused(), { animateFrom: before, statusOnly: true })
+    expect(viewer.getSelection()).toEqual(['b2'])
+    expect(sels).toEqual([])
+    expect(r.setSelected).toHaveBeenLastCalledWith('b2')
+    expect(cards.length).toBe(n + 1)
+    expect(cards[cards.length - 1]).toContain('b2')
+    expect(r.setSelected).not.toHaveBeenCalledWith(null)
+  })
+
+  it('a statusOnly load whose parts changed after all is an ordinary load: it stops what plays, pulses and says what changed', () => {
+    const before = rich()
+    const { r, viewer, host } = setup3dMoving(before)
+    const grown = restatused()
+    grown.buildings.push(building('n1'))
+    viewer.load(grown, { animateFrom: before, statusOnly: true })
+    expect(r.stopFlight).toHaveBeenCalled()
+    expect(r.stopChanges).toHaveBeenCalled()
+    expect(r.animateChanges).toHaveBeenCalledWith({ rise: ['n1'], pulse: ['b2'] })
+    expect(toastText(host)).toBe('+1 part, 1 changed')
+  })
+
+  it('a statusOnly load of another project, or onto no world, is an ordinary load', () => {
+    const other = { ...restatused(), projectKey: 'elsewhere' }
+    const { r, viewer } = setup3dMoving(rich())
+    viewer.load(other, { statusOnly: true })
+    expect(r.overview).toHaveBeenCalled()
+    // A fresh viewer holds no world yet: the statusOnly load just draws the world.
+    const fresh = createWorldViewer(document.createElement('div'), { reducedMotion: true })
+    fresh.load(restatused(), { statusOnly: true })
+    expect(fresh.drawn().layers).toBeDefined()
+    fresh.dispose()
+  })
+
+  it('in 2D the list is drawn again with the new status, and no toast shows', () => {
+    const before = rich()
+    const { viewer, host } = setup({ reducedMotion: false, doc: before })
+    const list = host.querySelector('section.world-fallback')?.innerHTML
+    viewer.load(restatused(), { animateFrom: before, statusOnly: true })
+    expect(host.querySelector('section.world-fallback')?.innerHTML).not.toBe(list)
+    expect(toastText(host)).toBeNull()
+  })
+})
+
 describe('read-only viewer', () => {
   it('createWorldViewer passes readOnly to every card it renders', () => {
     const host = document.createElement('div')

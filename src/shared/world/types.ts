@@ -133,7 +133,11 @@ export interface WorldReadResult {
 export interface WorldProgressEvent { root: string; projectKey: string; stage: string; pct: number }
 /** A stored world changed after files changed (the watcher's recompile finished). */
 /** A world was saved; with `error`, the run that drew a first map ended without one (the pane shows the error). */
-export interface WorldUpdatedEvent { root: string; projectKey: string; error?: string }
+export interface WorldUpdatedEvent {
+  root: string; projectKey: string; error?: string
+  /** The world changed test status only (CI's late answer, WP4b fix round 1, M6): the pane restyles the parts in place. */
+  statusOnly?: true
+}
 /** PENDING SIGN-OFF (WP4b F-R6): what a mapping the person stopped (world:compile-cancel) answers. */
 export const COMPILE_STOPPED_MESSAGE = 'Lumopolis stopped mapping this project.'
 

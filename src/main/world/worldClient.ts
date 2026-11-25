@@ -18,6 +18,7 @@ import { COMPILE_STOPPED_MESSAGE, type Claim, type Evidence, type WorldDoc, type
 import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
 import type { TestRun } from './testStatus'
+import type { CiAnswer } from './worldRuns'
 import { shownAsIs, shownError } from './windowError'
 import { worldFileName } from './worldStore'
 import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
@@ -71,8 +72,9 @@ export interface WorldClientOptions {
   context?: (root: string, members: string[]) => Promise<Evidence[]>
   /** The agent transcript files of the project at `root` (at most the 20 newest). The world host reads and parses them, never main. Absent, or throwing: none. */
   transcriptFiles?: (root: string) => Promise<string[]>
-  /** The newest CI conclusion of the project at `root`, as runs of the files the commit changed. Absent, or throwing: none. */
-  ciRuns?: (root: string) => Promise<TestRun[]>
+  /** The newest CI conclusion of the project at `root`, as runs of the files the commit changed, with the commit it
+   *  judged (CiAnswer). null or throwing: no answer, which the host keeps nothing of. Absent: CI is not read. */
+  ciRuns?: (root: string) => Promise<CiAnswer | null>
   /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
   head?: (root: string) => Promise<WorldHead>
   /** The code-graph snapshot posted to the host. Default: the structure-only
@@ -296,16 +298,37 @@ export function createWorldClient(
     }
   }
 
+  /**
+   * CI's answer, with the commit it judged and its age (WP4b fix round 1, I2 and M1): the host keeps and uses it only
+   * for that commit. No answer (runs null: git or gh failed, a folder main does not know) is said as such, so the host
+   * keeps nothing; no CI read here at all (no ciRuns) names no commit.
+   */
+  const answerCi = async (tr: WorldHostTransport, id: number, projectKey: string): Promise<void> => {
+    let reply: { runs: TestRun[] | null; head?: string | null; age?: number } = { runs: null }
+    const root = roots.get(projectKey)
+    if (root !== undefined) {
+      try {
+        const a = opts.ciRuns ? await opts.ciRuns(root) : { head: null, runs: [], age: 0 }
+        if (a && Array.isArray(a.runs)) reply = { runs: a.runs, head: typeof a.head === 'string' ? a.head : null, age: Number.isFinite(a.age) ? a.age : 0 }
+      } catch {
+        reply = { runs: null }
+      }
+    }
+    try {
+      tr.postMessage({ kind: 'runs-result', id, ...reply })
+    } catch {
+      // the host went away while main looked; its exit already failed the compile
+    }
+  }
+
   const answerRuns = async (tr: WorldHostTransport, id: number, projectKey: string, source: unknown): Promise<void> => {
+    if (source === 'ci') return void answerCi(tr, id, projectKey)
     let runs: TestRun[] = []
     let files: string[] = []
     const root = roots.get(projectKey)
     if (root !== undefined) {
       try {
-        if (source === 'ci' && opts.ciRuns) {
-          const r = await opts.ciRuns(root)
-          runs = Array.isArray(r) ? r : []
-        } else if (source === 'transcript' && opts.transcriptFiles) {
+        if (source === 'transcript' && opts.transcriptFiles) {
           const f = await opts.transcriptFiles(root)
           files = Array.isArray(f) ? f : []
         }
@@ -352,7 +375,12 @@ export function createWorldClient(
         emit(progressSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, stage: m.stage, pct: m.pct })
         return
       case 'updated':
-        emit(updatedSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, ...(typeof m.error === 'string' ? { error: m.error } : {}) })
+        emit(updatedSubs, {
+          root: roots.get(m.projectKey) ?? '',
+          projectKey: m.projectKey,
+          ...(typeof m.error === 'string' ? { error: m.error } : {}),
+          ...(m.statusOnly === true ? { statusOnly: true as const } : {})
+        })
         return
       case 'llm':
         void answerLlm(tr, m.id, m.projectKey, m.prompt)

@@ -1033,6 +1033,26 @@ describe('WorldView', () => {
     expect(v.load).toHaveBeenCalledTimes(3)
   })
 
+  // WP4b fix round 1, M6: CI's late answer changes test status only. Its push says so, and the viewer is told to restyle
+  // the parts in place (statusOnly), so a tour or flight under way goes on and no "N changed" toast shows.
+  it('a status-only push loads its world as statusOnly; the next ordinary push loads as before', async () => {
+    const b = bridge()
+    await mount()
+    const v = viewer()
+    const first = v.load.mock.calls[0][0]
+    const tested = { ...minimal(), generatedAt: 2 }
+    b.api.worldGet.mockResolvedValueOnce(ok(tested))
+    await b.updated({ root: '/repo', projectKey: 'k', statusOnly: true })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(tested, { animateFrom: first, statusOnly: true })
+    expect(v.cancelActions).not.toHaveBeenCalled()
+    const grown = { ...minimal(), generatedAt: 3 }
+    b.api.worldGet.mockResolvedValueOnce(ok(grown))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(grown, { animateFrom: tested })
+  })
+
   it('a newer world of the same project loads over the one shown and opens nothing itself: the viewer keeps the view (film bug 6)', async () => {
     const b = bridge()
     await mount()

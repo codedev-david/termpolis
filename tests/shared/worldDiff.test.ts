@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffSummary, diffWorlds, riseIds, RISE_CAP, type WorldDiff } from '../../src/shared/world/diff'
+import { diffSummary, diffWorlds, riseIds, RISE_CAP, sameParts, type WorldDiff } from '../../src/shared/world/diff'
 import type { Building, Proposal, WorldDoc } from '../../src/shared/world/types'
 import minDoc from './fixtures/world.min.json'
 import grownDoc from './fixtures/world.grown.json'
@@ -109,5 +109,41 @@ describe('diffSummary', () => {
     expect(diffSummary({ ...empty, changed: ['x'], removed: ['y'] })).toBe('1 changed, 1 removed')
     expect(diffSummary({ added: ['a'], removed: ['y'], changed: ['x'], turnedSolid: [] })).toBe('+1 part, 1 changed, 1 removed')
     expect(diffSummary({ ...empty, turnedSolid: ['t'] })).toBe('+1 part')
+  })
+})
+
+// WP4b fix round 1, M6: a late CI answer changes the test status of the parts and nothing else. The viewer restyles
+// such a world in place only when its parts really are the same ones, standing in the same places.
+describe('sameParts', () => {
+  it('two worlds that differ only in test status (statuses, claims, when made) have the same parts', () => {
+    const before = copy(grownDoc)
+    const after = copy(grownDoc)
+    after.generatedAt += 1
+    after.buildings[0].status = after.buildings[0].status === 'verified' ? 'gap' : 'verified'
+    after.buildings[0].claims = [{ text: 'Its tests passed.', state: 'verified', evidence: [] }]
+    expect(sameParts(before, after)).toBe(true)
+    expect(diffWorlds(before, after).changed).toEqual([after.buildings[0].id])
+  })
+
+  it('any other change of part, place or project is not the same parts', () => {
+    const changes: Array<[string, (d: WorldDoc) => void]> = [
+      ['project', (d) => { d.projectKey = 'other' }],
+      ['a part added', (d) => { d.buildings.push(bldg(d, 'nb')) }],
+      ['a part gone', (d) => { d.buildings.pop() }],
+      ['its members', (d) => { d.buildings[0].members = [...d.buildings[0].members, 'x.ts'] }],
+      ['its floors', (d) => { d.buildings[0].floors = [] }],
+      ['its district', (d) => { d.buildings[0].districtId = 'elsewhere' }],
+      ['a district', (d) => { d.districts[0].members = [] }],
+      ['a place', (d) => { const id = Object.keys(d.layout.positions)[0]; d.layout.positions[id] = [99, 0, 99] }],
+      ['a Re-layout', (d) => { d.layout.round = (d.layout.round ?? 0) + 1 }],
+      ['a line', (d) => { d.edges.push({ ...d.edges[0], id: 'ne' }) }],
+      ['a line moved', (d) => { d.edges[0] = { ...d.edges[0], to: 'elsewhere' } }],
+      ['an outside part', (d) => { d.externals.push({ id: 'nx', name: 'nx', kind: 'service', fog: false }) }]
+    ]
+    for (const [what, change] of changes) {
+      const after = copy(grownDoc)
+      change(after)
+      expect(sameParts(copy(grownDoc), after), what).toBe(false)
+    }
   })
 })

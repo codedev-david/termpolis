@@ -760,7 +760,7 @@ describe('createWorldHost', () => {
     await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'runs')).toHaveLength(3))
     const ci = h.out.filter((m) => m.kind === 'runs')[2] as Extract<WorldHostResponse, { kind: 'runs' }>
     expect(ci.source).toBe('ci')
-    await h.send({ kind: 'runs-result', id: ci.id, runs: [{ file: 'c.test.ts', passed: true, at: 3 }, { file: 7 }] })
+    await h.send({ kind: 'runs-result', id: ci.id, runs: [{ file: 'c.test.ts', passed: true, at: 3 }, { file: 7 }] as never, head: HEAD.head })
     await again
     expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: Date.parse('2026-11-02T10:00:00.000Z'), source: 'transcript' }], [{ file: 'c.test.ts', passed: true, at: 3, source: 'ci' }]])
     // A transcript ask main does not answer in time is not known either, and is not cached: the next compile asks again.
