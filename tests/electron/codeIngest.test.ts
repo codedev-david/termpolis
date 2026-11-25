@@ -306,6 +306,9 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
       write(root, 'py/lib/site.py', 'VENV_CODE = 1\n')
       write(root, 'web/jquery.min.js', 'var DEPENDENCY_CODE = 3\n')
       write(root, 'build/linux/after-install.sh', 'echo BUILD_RESOURCE\n')
+      // Third-party code and a generated report, committed: not the project's own (review m3).
+      write(root, 'vendor/lib/v.go', 'package lib // DEPENDENCY_CODE 4\n')
+      write(root, 'coverage/lcov-report/sorter.js', 'var DEPENDENCY_CODE = 5\n')
       git(root, 'add', '-A', '-f')
       git(root, 'commit', '-q', '-m', 'committed')
       expect(relTo(root, await discoverRepoFiles(root))).toEqual(['build/linux/after-install.sh', 'src/app.ts'])

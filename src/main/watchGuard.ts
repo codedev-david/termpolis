@@ -50,7 +50,9 @@ const BASE_IGNORED_DIRS: readonly string[] = [
   '.git',
   // Nested checkouts: where agent swarms and Claude Code Workflows edit thousands of files.
   '.worktrees',
-  // Dependencies and build output.
+  // Dependencies and build output. The map's listing keeps committed files in dist, out, build and target
+  // (repoFileList.ts OWN_OUTPUT_DIRS), but they stay unwatched here: watching them would re-index on every build.
+  // An edit there is picked up by the next full relist (opening the world, a compile), not by a watcher run.
   'node_modules', 'dist', 'out', 'build', 'target', 'coverage',
   '.venv', '__pycache__', '.next', '.nuxt', '.turbo', '.parcel-cache', '.svelte-kit', '.angular', '.gradle',
   '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',

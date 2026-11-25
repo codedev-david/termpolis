@@ -27,11 +27,11 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
 ])
 /**
  * Skip folders whose names a project also gives folders it fills by hand and commits: electron-builder's build
- * resources, a published dist, vendored code it owns, a target or obj that is not build output. Their tracked files are
- * kept (the code index reads what was committed); tracked files in every other skip folder are dropped, since a
- * committed node_modules, virtual environment, cache or worktree is code no read needs (WP4a #63).
+ * resources, a published dist, a target or obj that is not build output. Their tracked files are kept (the code index
+ * reads what was committed); tracked files in every other skip folder are dropped, since a committed node_modules,
+ * vendor (third-party code), virtual environment, coverage report, cache or worktree is code no read needs (WP4a #63).
  */
-export const OWN_OUTPUT_DIRS: ReadonlySet<string> = new Set(['build', 'out', 'dist', 'vendor', 'target', 'obj', 'coverage'])
+export const OWN_OUTPUT_DIRS: ReadonlySet<string> = new Set(['build', 'out', 'dist', 'target', 'obj'])
 /** The file every Python virtual environment holds at its top (python -m venv, virtualenv, uv). */
 export const VENV_MARKER = 'pyvenv.cfg'
 /** The most files a map takes from one folder walk, or from all nested repositories together. Past it the world says so. */
@@ -342,8 +342,11 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
   const { deps } = ctx
   const depth = chain.length
   const listed = parseTaggedListing(stdout)
-  // A virtual environment is told by its pyvenv.cfg, whatever its folder is called (env, .env, py311...), committed or not.
-  const venvs = [...listed.untracked, ...listed.tracked].filter((n) => n.endsWith(`/${VENV_MARKER}`)).map((n) => n.slice(0, -VENV_MARKER.length))
+  // A virtual environment is told by its pyvenv.cfg, whatever its folder is called (env, .env, py311...), committed or
+  // not, here or in a submodule (its files are added below, before any is kept).
+  const venvsIn = (names: readonly string[]): string[] =>
+    names.filter((n) => n.endsWith(`/${VENV_MARKER}`)).map((n) => n.slice(0, -VENV_MARKER.length))
+  const venvs = venvsIn([...listed.untracked, ...listed.tracked])
   const inVenv = (n: string): boolean => venvs.some((v) => n.startsWith(v))
   const keep = (n: string): boolean => !inSkippedPath(n) && !inVenv(n)
   // Tracked files are held to the skip folders too, but for the build-output names a project also fills by hand.
@@ -359,6 +362,7 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
       const parsed = parseLsFiles(sub)
       recursed = parsed.names
       unreadableTracked = parsed.unreadable
+      venvs.push(...venvsIn(recursed))
     }
   }
   // Merged before the tracked skip rule, so a submodule's gitlink goes with the files it holds, kept or not.

@@ -157,7 +157,10 @@ describe('repoFileList: folders no map reads', () => {
   })
 
   it('WP4a #63: a tracked file is dropped in every skip folder but the build-output names a project also gives its own folders', () => {
-    expect([...OWN_OUTPUT_DIRS].sort()).toEqual(['build', 'coverage', 'dist', 'obj', 'out', 'target', 'vendor'])
+    // Not vendor (third-party code) nor coverage (generated reports): the rule's own reason (review m3).
+    expect([...OWN_OUTPUT_DIRS].sort()).toEqual(['build', 'dist', 'obj', 'out', 'target'])
+    expect(inTrackedSkipPath('vendor/lib/v.go')).toBe(true)
+    expect(inTrackedSkipPath('coverage/report.ts')).toBe(true)
     for (const d of OWN_OUTPUT_DIRS) expect(SKIP_DIRS.has(d), d).toBe(true)
     for (const d of SKIP_DIRS) expect(inTrackedSkipPath(`a/${d}/x.ts`), d).toBe(!OWN_OUTPUT_DIRS.has(d))
     expect(inTrackedSkipPath('.claude/worktrees/x/a.ts')).toBe(true)
@@ -252,7 +255,7 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
       )
     })
     expect(await listRepo('/r', { git, exists: existsIn(['/r/.git']) })).toEqual({
-      files: ['.claude/settings.json', 'app/obj/x.cs', 'build/linux/after-install.sh', 'coverage/report.ts', 'dist/index.js', 'out/main.js', 'src/a.ts', 'src/env/config.ts', 'target/gen.rs', 'vendor/lib/v.go'],
+      files: ['.claude/settings.json', 'app/obj/x.cs', 'build/linux/after-install.sh', 'dist/index.js', 'out/main.js', 'src/a.ts', 'src/env/config.ts', 'target/gen.rs'],
       unreadable: ['src/q�.ts'],
       nestedCapped: false, nested: []
     })
@@ -267,9 +270,24 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
       )
     })
     expect(await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules']) })).toEqual({
-      files: ['.gitmodules', 'libs/shared/x.ts', 'src/a.ts', 'vendor/mod/m.go'],
+      files: ['.gitmodules', 'libs/shared/x.ts', 'src/a.ts'],
       unreadable: ['libs/shared/w�.ts'],
-      nestedCapped: false, nested: ['libs/shared', 'vendor/mod']
+      nestedCapped: false, nested: ['libs/shared']
+    })
+  })
+
+  it('a virtual environment a submodule commits is told by its pyvenv.cfg, whatever its folder is called (review m5)', async () => {
+    const git = fakeGit({
+      'ls /r': z('H .gitmodules', 'H libs/shared', 'H src/a.ts'),
+      'sub /r': z(
+        '.gitmodules', 'src/a.ts', 'libs/shared/x.py', 'libs/shared/py311/pyvenv.cfg', 'libs/shared/py311/lib/site.py',
+        'libs/shared/py311/lib/w�.py', 'libs/shared/env/config.py'
+      )
+    })
+    expect(await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules']) })).toEqual({
+      files: ['.gitmodules', 'libs/shared/env/config.py', 'libs/shared/x.py', 'src/a.ts'],
+      unreadable: [],
+      nestedCapped: false, nested: ['libs/shared']
     })
   })
 
@@ -456,12 +474,12 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     const git = fakeGit({
       'ls /r': z('H a.ts', 'H .gitmodules', 'H empty', '? sdk/'),
       'sub /r': z('.gitmodules', 'a.ts'),
-      'ls /r/sdk': z('H .gitmodules', 'H s.ts', 'H vendor/lib'),
-      'sub /r/sdk': z('.gitmodules', 's.ts', 'vendor/lib/v.ts')
+      'ls /r/sdk': z('H .gitmodules', 'H s.ts', 'H third/lib'),
+      'sub /r/sdk': z('.gitmodules', 's.ts', 'third/lib/v.ts')
     })
     const got = await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules', '/r/sdk/.git', '/r/sdk/.gitmodules']) })
-    expect(got?.files).toEqual(['.gitmodules', 'a.ts', 'empty', 'sdk/.gitmodules', 'sdk/s.ts', 'sdk/vendor/lib/v.ts'])
-    expect(got?.nested).toEqual(['sdk', 'sdk/vendor/lib'])
+    expect(got?.files).toEqual(['.gitmodules', 'a.ts', 'empty', 'sdk/.gitmodules', 'sdk/s.ts', 'sdk/third/lib/v.ts'])
+    expect(got?.nested).toEqual(['sdk', 'sdk/third/lib'])
   })
 
   describe('a worktree is told apart without git as well (fails closed)', () => {
