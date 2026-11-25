@@ -327,6 +327,57 @@ describe('threeRenderer drawn in software', () => {
     return frames(r) - n
   }
 
+  it('the first frame comes a frame late in software (the page paints first) and at once on a GPU', () => {
+    gpu.gpuName = GEFORCE
+    const g = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(g.canvas, 800, 600)
+    h.frames.step()
+    expect(frames(g)).toBe(1)
+    g.dispose()
+    gpu.gpuName = SWIFTSHADER
+    const r = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false) // a world drawn before the first frame waits with it
+    expect(h.frames.pending()).toBe(1)
+    h.frames.step() // the page's frame: nothing drawn, the next asked for
+    expect(frames(r)).toBe(0)
+    expect(rendererOf().renders.length).toBe(0)
+    expect(h.frames.pending()).toBe(1)
+    h.frames.step()
+    expect(frames(r)).toBe(1)
+    r.dispose()
+  })
+
+  it('a renderer disposed before its first software frame never draws; paused or lost meanwhile, it draws once let go', () => {
+    gpu.gpuName = SWIFTSHADER
+    const d = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(d.canvas, 800, 600)
+    d.dispose()
+    expect(h.frames.pending()).toBe(0)
+    h.frames.run(3)
+    expect(frames(d)).toBe(0)
+    const p = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(p.canvas, 800, 600)
+    p.setPaused(true)
+    h.frames.run(3)
+    expect(frames(p)).toBe(0)
+    expect(h.frames.pending()).toBe(0)
+    p.setPaused(false)
+    h.frames.step()
+    expect(frames(p)).toBe(1)
+    p.dispose()
+    const l = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(l.canvas, 800, 600)
+    l.canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    h.frames.run(3)
+    expect(frames(l)).toBe(0)
+    expect(h.frames.pending()).toBe(0)
+    l.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    h.frames.step()
+    expect(frames(l)).toBe(1)
+    l.dispose()
+  })
+
   it('draws the looping motions alone every SOFTWARE_LOOP_MS, at their own speed, and never sleeps', () => {
     gpu.gpuName = SWIFTSHADER
     const r = idle(DEFAULT_OPTS) // the opening turn, the dust, the rings, the packets: they never stop

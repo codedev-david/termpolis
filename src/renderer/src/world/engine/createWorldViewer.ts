@@ -190,17 +190,31 @@ export interface WorldViewerOptions {
   onGraphics?: (state: WorldGraphics) => void
 }
 
+/**
+ * A WebGL context was made on this page already: the probe answers true at once. Making one can take more than a
+ * second (macOS), on the main thread, and a pane opening asks more than once (each render of WorldView, then the
+ * viewer). A renderer that still cannot be made forgets it (forgetWebGL), so the next open probes again.
+ */
+let webglFound = false
+
 /** True when this browser can create a WebGL context. */
 export function hasWebGL(): boolean {
+  if (webglFound) return true
   try {
     const c = document.createElement('canvas')
     const gl = (c.getContext('webgl2') ?? c.getContext('webgl')) as WebGLRenderingContext | null
     if (!gl) return false
     gl.getExtension('WEBGL_lose_context')?.loseContext()
+    webglFound = true
     return true
   } catch {
     return false
   }
+}
+
+/** The next hasWebGL makes a context again rather than trust one made before. */
+export function forgetWebGL(): void {
+  webglFound = false
 }
 
 const DRAG_PX = 5
@@ -294,6 +308,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       // setTheme after it returned. Whatever it appended (canvas, label layer) goes before the 2D list.
       try { r3?.dispose() } catch { /* already half torn down */ }
       r3 = null
+      forgetWebGL() // WebGL may be gone for good now: the next open probes for it
       for (const el of Array.from(container.children)) if (!before.has(el)) el.remove()
     }
   }

@@ -2974,8 +2974,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     labelRenderer.render(scene, camera)
     return moving ? 'moving' : looping || turning ? 'looping' : 'still'
   }
-  started = true
-  wake()
+  /**
+   * Drawn in software, the first frame compiles every shader, which takes seconds there (3.5 s on a macOS runner). It
+   * comes a frame late, so the page first paints the pane that holds the map and gets a turn to answer input; drawn
+   * on a GPU it comes at once. A pause or a lost context meanwhile holds it as it holds any frame (wake).
+   */
+  let startRaf = 0
+  const start = (): void => {
+    startRaf = 0
+    started = true
+    wake()
+  }
+  if (software) startRaf = requestAnimationFrame(start)
+  else start()
 
   return {
     canvas: renderer.domElement,
@@ -3189,6 +3200,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       changes.stop()
       cancelAnimationFrame(raf)
       raf = 0
+      cancelAnimationFrame(startRaf) // not started yet: it never will be
       dropFence(true)
       ro?.disconnect()
       dropRatioQuery()

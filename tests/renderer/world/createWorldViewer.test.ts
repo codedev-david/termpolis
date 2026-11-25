@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { CANVAS_DESCRIPTION, createWorldViewer, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
+import { CANVAS_DESCRIPTION, createWorldViewer, forgetWebGL, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { building, minimal, rich } from './helpers'
@@ -43,6 +43,7 @@ beforeEach(() => {
   createThreeRenderer.mockReset()
 })
 afterEach(() => {
+  forgetWebGL() // a context found by one test is not trusted by the next
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -56,8 +57,24 @@ describe('hasWebGL', () => {
     getContext.mockReturnValue({ getExtension: () => ({ loseContext }) } as never)
     expect(hasWebGL()).toBe(true)
     expect(loseContext).toHaveBeenCalled()
+    forgetWebGL()
     getContext.mockImplementation(() => { throw new Error('blocked') })
     expect(hasWebGL()).toBe(false)
+  })
+
+  it('once a context is found, answers true again without making another, until it is forgotten', () => {
+    const loseContext = vi.fn()
+    getContext.mockReturnValue({ getExtension: () => ({ loseContext }) } as never)
+    expect(hasWebGL()).toBe(true)
+    const made = getContext.mock.calls.length
+    getContext.mockReturnValue(null)
+    expect(hasWebGL()).toBe(true)
+    expect(hasWebGL()).toBe(true)
+    expect(getContext.mock.calls.length).toBe(made) // no other context made
+    expect(loseContext).toHaveBeenCalledTimes(1)
+    forgetWebGL()
+    expect(hasWebGL()).toBe(false)
+    expect(getContext.mock.calls.length).toBeGreaterThan(made)
   })
 })
 
@@ -638,6 +655,7 @@ describe('WebGL path (stand-in renderer)', () => {
     viewer.dispose()
     expect(press(r.canvas, 2)).toBe(true)
     // The 2D list is text: a double-click there may select a word.
+    forgetWebGL() // WebGL gone: the probe looks again
     getContext.mockReturnValue(null)
     const flatHost = document.createElement('div')
     document.body.appendChild(flatHost)
@@ -672,6 +690,7 @@ describe('WebGL path (stand-in renderer)', () => {
     viewer.load(big())
     await viewer.apply({ type: 'openCard', id: 'big' })
     expect(lastCard()).toContain('40 files. It started as the src/big folder. Double-click it to see its floors.')
+    forgetWebGL() // WebGL gone: the probe looks again
     getContext.mockReturnValue(null)
     const flat = setup({ reducedMotion: true, doc: big() })
     await flat.viewer.apply({ type: 'openCard', id: 'big' })
@@ -1358,6 +1377,7 @@ describe('WebGL path (stand-in renderer)', () => {
     await v.setCamera(s, false)
     expect(r.flyTo).toHaveBeenCalledTimes(flights)
     createThreeRenderer.mockReset()
+    forgetWebGL() // WebGL gone: the probe looks again
     getContext.mockReturnValue(null)
     const flat = createWorldViewer(document.createElement('div'))
     expect(flat.cameraState()).toBeNull()
@@ -1441,6 +1461,7 @@ describe('WebGL path (stand-in renderer)', () => {
     v.setCardReserve(0, 0)
     expect(el.style.left).toBe('calc(50% - 54px)')
     createThreeRenderer.mockReset()
+    forgetWebGL() // WebGL gone: the probe looks again
     getContext.mockReturnValue(null)
     const flatHost = document.createElement('div')
     document.body.appendChild(flatHost)
@@ -1641,6 +1662,9 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(host.querySelector('canvas')).toBeNull()
     item('building', 'b1').click()
     expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+    // The context found before is forgotten: the next probe makes one again, and finds none now.
+    getContext.mockReturnValue(null)
+    expect(hasWebGL()).toBe(false)
   })
 
   it('keeps what the host held before when the renderer throws', () => {
@@ -2028,6 +2052,7 @@ describe('WP2: the canvas has a text alternative (R11), frames on request, and t
     viewer.dispose()
     viewer.requestFrame()
     expect(r.requestFrame).toHaveBeenCalledTimes(1)
+    forgetWebGL() // WebGL gone: the probe looks again
     getContext.mockReturnValue(null)
     const flat = setup({ reducedMotion: true })
     expect(() => flat.viewer.requestFrame()).not.toThrow()
