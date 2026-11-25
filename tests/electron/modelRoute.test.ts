@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as http from 'http'
 import {
   planRequest, setRoute, routeOf, terminalOf, isRouteFamily, noteRefused, isRefusal, asksHourCache,
-  _resetModelRouteForTests, ROUTE_HEADER, DEFAULT_MODEL_IDS,
+  _resetModelRouteForTests, ROUTE_HEADER, DEFAULT_MODEL_IDS, routeTargetOf,
 } from '../../src/main/headroomProxy/modelRoute'
 const { createProxyServer, resultFrame, routeFields } = await import('../../src/main/headroomProxy/proxyMain')
 
@@ -182,10 +182,60 @@ describe('the proxy routes a session', () => {
     expect(seen[0].body).toContain('"model":"claude-opus-5-5"')
   })
 
+  it('MODELHOME: a routed result says which model the session asked for', async () => {
+    setRoute('t1', 'haiku', null, true, true)
+    expect(await post(body('claude-opus-5-5'), { [ROUTE_HEADER]: 't1' })).toBe(200)
+    expect(results[0]).toMatchObject({ terminal: 't1', main: true, model: 'haiku', asked: 'opus' })
+    expect(resultFrame(results[0] as never)).toMatchObject({ model: 'haiku', asked: 'opus' })
+    setRoute('t1', null, null, true)
+    expect(await post(body('claude-opus-5-5'), { [ROUTE_HEADER]: 't1' })).toBe(200)
+    expect(results[1]).toMatchObject({ model: 'opus' })
+    expect(results[1].asked).toBeUndefined()
+    expect(resultFrame(results[1] as never)).not.toHaveProperty('asked')
+  })
+
   it('an unrouted request passes through with its own model', async () => {
     refuse = () => true // a 400 on an unrouted request reaches the client as it is
     expect(await post(body('claude-opus-5-5'), { [ROUTE_HEADER]: 't9' })).toBe(400)
     expect(seen).toHaveLength(1)
     expect(seen[0].body).toContain('"model":"claude-opus-5-5"')
+  })
+})
+
+describe('MODELHOME: a step-down route', () => {
+  it('rewrites only to a model cheaper than the one the session asks for', () => {
+    setRoute('t', 'haiku', 'low', true, true)
+    expect(routeTargetOf('t')).toEqual({ family: 'haiku', effort: 'low', down: true })
+    expect(planRequest(body('claude-opus-5-5'), H('t', 's1'))).toMatchObject({ asked: 'opus', used: 'haiku', effort: 'low', modelChanged: true })
+    _resetModelRouteForTests()
+    setRoute('t', 'sonnet', 'medium', true, true)
+    const hk = body('claude-haiku-4-5', TOOLS)
+    const p = planRequest(hk, H('t', 's1'))
+    expect(p).toMatchObject({ asked: 'haiku', used: 'haiku', main: true })
+    expect(p.body).toBe(hk)
+    expect(p.effort).toBeUndefined()
+    expect(p.original).toBeUndefined()
+    _resetModelRouteForTests()
+    setRoute('t', 'sonnet', 'medium', true, true)
+    expect(planRequest(body('claude-sonnet-5-5'), H('t', 's1'))).toMatchObject({ asked: 'sonnet', used: 'sonnet' })
+    expect(planRequest(body('claude-sonnet-5-5'), H('t', 's1')).original).toBeUndefined()
+  })
+
+  it('a refused step down drops its effort too: the request runs on home as the session asked', () => {
+    setRoute('t', 'sonnet', 'low', true, true)
+    noteRefused('t', 'sonnet')
+    expect(routeTargetOf('t')).toEqual({ family: null, effort: null })
+    // An Auto route keeps its effort, as before.
+    setRoute('t', 'sonnet', 'low', true)
+    noteRefused('t', 'sonnet')
+    expect(routeTargetOf('t')).toEqual({ family: null, effort: 'low' })
+  })
+
+  it('an Auto route (no step-down flag) still moves either way, as before', () => {
+    setRoute('t', 'sonnet', null, true)
+    expect(routeTargetOf('t')).toEqual({ family: 'sonnet', effort: null })
+    expect(planRequest(body('claude-haiku-4-5'), H('t', 's1'))).toMatchObject({ asked: 'haiku', used: 'sonnet' })
+    setRoute('t', null, null, true, true) // nothing to step down to: just routed
+    expect(routeTargetOf('t')).toEqual({ family: null, effort: null })
   })
 })

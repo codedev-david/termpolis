@@ -47,7 +47,25 @@ export const UP_MIN_CONFIDENCE = 0.6
 export const TTL_5M = 5 * 60_000
 export const TTL_1H = 60 * 60_000
 
-const RANK: Readonly<Record<RouteFamily, number>> = { haiku: 0, sonnet: 1, opus: 2 }
+/** MODELHOME: the families cheapest first, by list price (output, then input). This order, not a fixed
+ *  ladder, is what "a step down" and "never above home" mean, so a family added to PRICE takes its
+ *  place by what it costs. */
+export const BY_PRICE: readonly RouteFamily[] = rankByPrice(PRICE)
+
+/** The keys of a price list, cheapest first: by output price, then input price. */
+export function rankByPrice<K extends string>(prices: Readonly<Record<K, { in: number; out: number }>>): K[] {
+  return (Object.keys(prices) as K[]).sort((a, b) => prices[a].out - prices[b].out || prices[a].in - prices[b].in)
+}
+
+/** A family's place in BY_PRICE: 0 is the cheapest. */
+export function priceRank(f: RouteFamily): number {
+  return BY_PRICE.indexOf(f)
+}
+
+/** a costs less than b. */
+export function cheaper(a: RouteFamily, b: RouteFamily): boolean {
+  return priceRank(a) < priceRank(b)
+}
 
 /** What the proxy has seen of one session's traffic. */
 export interface Economy {
@@ -137,7 +155,7 @@ export function decideSwitch(i: SwitchInput): SwitchDecision {
   const saving = costNow - costWant
   const sameModel = want === current
   const go = (reason: string): SwitchDecision => ({ model: want, effort: we, switched: true, reason, saving })
-  if (RANK[want] < RANK[current] || (sameModel && effortRank(we) < effortRank(ce))) {
+  if (cheaper(want, current) || (sameModel && effortRank(we) < effortRank(ce))) {
     return costWant <= costNow * (1 - DOWN_MIN_SAVING) ? go(sameModel ? 'lighter' : 'cheaper') : stay('switch-costs-more')
   }
   if (confidence < UP_MIN_CONFIDENCE) return stay('not-sure-enough')

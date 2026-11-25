@@ -4066,18 +4066,29 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
 // v1.56.0 per-message routing: the router's IPC and the MCP hook into it.
 describe('router IPC', () => {
   it('configure validates the mode and the tuning; status reports it', async () => {
-    expect(await invoke('router:configure', { mode: 'all', tuning: { haikuMaxWords: 10, misroutes: {} } })).toEqual({ success: true, data: 'all' })
-    expect(await invoke('router:status')).toEqual({ success: true, data: 'all' })
-    expect(await invoke('router:configure', { mode: 'bogus', tuning: 'nope' })).toEqual({ success: true, data: 'all' })
-    expect(await invoke('router:configure', { tuning: { haikuMaxWords: 'x' } })).toEqual({ success: true, data: 'all' })
-    expect(await invoke('router:configure')).toEqual({ success: true, data: 'all' })
-    expect(await invoke('router:configure', { mode: 'auto-panes' })).toEqual({ success: true, data: 'auto-panes' })
+    expect(await invoke('router:configure', { mode: 'off', tuning: { haikuMaxWords: 10, misroutes: {} } })).toEqual({ success: true, data: 'off' })
+    expect(await invoke('router:status')).toEqual({ success: true, data: 'off' })
+    expect(await invoke('router:configure', { mode: 'bogus', tuning: 'nope' })).toEqual({ success: true, data: 'off' })
+    expect(await invoke('router:configure', { tuning: { haikuMaxWords: 'x' } })).toEqual({ success: true, data: 'off' })
+    expect(await invoke('router:configure')).toEqual({ success: true, data: 'off' })
+    // MODELHOME: the modes before 2.0 both mean the one default now.
+    expect(await invoke('router:configure', { mode: 'all' })).toEqual({ success: true, data: 'every' })
+    expect(await invoke('router:configure', { mode: 'auto-panes' })).toEqual({ success: true, data: 'every' })
   })
 
   it('pin and unpin a pane', async () => {
     expect(await invoke('router:pin', { terminalId: 't1' })).toEqual({ success: true })
     expect(await invoke('router:pin', { terminalId: 't1', pinned: false })).toEqual({ success: true })
     expect(await invoke('router:pin')).toEqual({ success: true })
+  })
+
+  it('MODELHOME: home sets the model a pane starts on, and ignores what is not one', async () => {
+    const mr = await import('../../src/main/messageRouter')
+    mr.registerTerminal('home-ipc', true)
+    expect(await invoke('router:home', { terminalId: 'home-ipc', model: 'sonnet' })).toEqual({ success: true })
+    expect(await invoke('router:home', { terminalId: 'home-ipc', model: 7 })).toEqual({ success: true })
+    expect(await invoke('router:home')).toEqual({ success: true })
+    mr.forgetTerminal('home-ipc')
   })
 
   it('learn validates the example and forwards it capped', async () => {

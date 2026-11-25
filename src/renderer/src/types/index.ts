@@ -533,6 +533,7 @@ export interface TermpolisAPI {
   onRouterMessage?: (cb: (e: import('../../../shared/smartRoute').RouteEvent) => void) => () => void
   routerConfigure?: (opts: { mode?: string; tuning?: unknown }) => Promise<IpcResponse<string>>
   routerPin?: (opts: { terminalId: string; pinned?: boolean }) => Promise<IpcResponse>
+  routerHome?: (opts: { terminalId: string; model: string }) => Promise<IpcResponse>
   routerLearn?: (opts: { prompt: string; label: string }) => Promise<IpcResponse<boolean>>
   /** Counters of that routing, numbers and one boolean only: for an e2e spec to read what the real bridge did. */
   terminalDataStats: () => { shared: boolean; ids: number; panes: number; all: number; delivered: number; dropped: number }

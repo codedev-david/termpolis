@@ -27,7 +27,7 @@
 
 import { modelFamily, type ModelFamily } from '../headroom/effectiveUnits'
 import { armOf } from '../headroom/elisionPolicy'
-import type { RouteFamily } from '../../shared/switchEconomics'
+import { cheaper, type RouteFamily } from '../../shared/switchEconomics'
 import { bumpEffort, effortOrDefault, effortRank, isEffort, type EffortLevel } from '../../shared/effortLevels'
 
 export const ROUTE_HEADER = 'x-termpolis-terminal'
@@ -62,7 +62,13 @@ export const DEFAULT_MODEL_IDS: Readonly<Record<RouteFamily, string>> = {
 const ROUTE_FAMILIES: readonly ModelFamily[] = ['opus', 'sonnet', 'haiku']
 
 /** What a terminal's (or a subagent's) requests run on. null fields leave the request's own. */
-export interface RouteTarget { family: RouteFamily | null; effort: EffortLevel | null }
+export interface RouteTarget {
+  family: RouteFamily | null
+  effort: EffortLevel | null
+  /** MODELHOME: a step down from the terminal's home model. It applies only to a request that asks for a
+   *  pricier model than "family"; any other request goes out as it asked (still routed). */
+  down?: boolean
+}
 type AgentTarget = RouteTarget & { off?: boolean }
 
 /** A subagent's task, for main to route. */
@@ -109,12 +115,13 @@ function capped<K, V>(m: Map<K, V>, k: K, v: V): void {
 
 /** Route a terminal's main requests to `family` and `effort` until told otherwise. Both null with `on`
  *  keeps the terminal routed with nothing to change (struggling can still raise its effort, its
- *  subagents are still routed); both null without it stops routing the terminal. */
-export function setRoute(terminal: unknown, family: unknown, effort?: unknown, on?: unknown): void {
+ *  subagents are still routed); both null without it stops routing the terminal. MODELHOME: "down" marks
+ *  a step down from home (RouteTarget.down). */
+export function setRoute(terminal: unknown, family: unknown, effort?: unknown, on?: unknown, down?: unknown): void {
   if (typeof terminal !== 'string' || !TERMINAL_RE.test(terminal)) return
   const f = isRouteFamily(family) ? family : null
   const e = isEffort(effort) ? effort : null
-  if (f || e || on === true) routes.set(terminal, { family: f, effort: e })
+  if (f || e || on === true) routes.set(terminal, down === true && f ? { family: f, effort: e, down: true } : { family: f, effort: e })
   else routes.delete(terminal)
 }
 
@@ -316,7 +323,11 @@ export function planRequest(body: string, headers: Record<string, string | strin
   if (!isRouteFamily(asked)) return { ...plain, main }
   let target: RouteTarget | undefined
   const agent = !main && key > 0
-  if (main) target = routes.get(terminal)
+  if (main) {
+    target = routes.get(terminal)
+    // MODELHOME: a step down never moves the session up, nor sideways: asked at or below it, it runs as asked.
+    if (target?.down && target.family && !cheaper(target.family, asked)) target = { family: null, effort: null }
+  }
   else if (agent) {
     const id = `${terminal}:${key}`
     const a = agents.get(id)
@@ -370,7 +381,8 @@ export function noteRefused(terminal: string | null, family: ModelFamily | null,
   if (!isRouteFamily(family)) return
   refused.add(`${terminal}:${family}`)
   const r = routes.get(terminal)
-  if (r?.family === family) routes.set(terminal, { family: null, effort: r.effort })
+  // A refused step down (MODELHOME) runs on home as the session asked: its effort was the step's, not home's.
+  if (r?.family === family) routes.set(terminal, { family: null, effort: r.down ? null : r.effort })
 }
 
 /** A status that means the API would not take the rewritten request. */

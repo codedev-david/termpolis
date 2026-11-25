@@ -116,6 +116,19 @@ describe('the supervisor keeps the routes', () => {
     expect(children[children.length - 1].posted.some((m) => m.kind === 'agent-route')).toBe(false)
   })
 
+  it('MODELHOME: a step-down route carries its flag, and keeps it on a respawn', async () => {
+    startProxy({ port: 7504 })
+    setProxyRoute('h1', 'haiku', 'low', true, true)
+    setProxyRoute('h2', 'sonnet', null, true, false)
+    expect(routesOf(children[0])).toEqual([
+      { kind: 'route', terminal: 'h1', family: 'haiku', effort: 'low', on: true, down: true },
+      { kind: 'route', terminal: 'h2', family: 'sonnet', effort: null, on: true },
+    ])
+    children[0].exit()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(routesOf(children[children.length - 1])).toContainEqual({ kind: 'route', terminal: 'h1', family: 'haiku', effort: 'low', on: true, down: true })
+  })
+
   it('a post that fails does not throw', () => {
     startProxy({ port: 7502 })
     failPost = true

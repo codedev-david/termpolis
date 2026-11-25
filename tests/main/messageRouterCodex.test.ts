@@ -88,13 +88,14 @@ describe('routeCodexTurn', () => {
     expect(kept?.switched).toBe(true) // asked was not an effort Codex knows
   })
 
-  it('a Codex command that set its own effort is routed only when every terminal is', async () => {
+  it('a Codex command that set its own effort is left as it is (MODELHOME: Codex routes on Auto only)', async () => {
     const d = deps()
     registerTerminal('c1', false, true)
     expect(await turn()).toBeNull()
-    setRouterMode('all')
-    expect(await turn()).not.toBeNull()
+    setRouterMode('all') // the old "every terminal" value: now the one default mode
+    expect(await turn()).toBeNull()
     expect(d.setCodexRoute).toHaveBeenCalledTimes(2)
+    expect(d.setCodexRoute).toHaveBeenLastCalledWith('c1', expect.any(Number), null)
   })
 
   it('a vote it is not sure enough of runs as Codex asked', async () => {

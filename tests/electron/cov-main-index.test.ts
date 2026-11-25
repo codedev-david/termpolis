@@ -625,6 +625,7 @@ vi.mock('../../src/main/workflow/demoCleanup', () => ({
 // ---- memory brain ----
 const MEMC = vi.hoisted(() => ({
   initSwarmMemory: vi.fn(),
+  routerClassify: vi.fn(async () => null), // no vote: the word rules route alone
   memoryWrite: vi.fn(async () => ({ id: 'mem-1' })),
   memorySearch: vi.fn(async () => [] as unknown[]),
   memoryRelated: vi.fn(() => []),
@@ -1417,8 +1418,15 @@ describe('headroom proxy wiring', () => {
     // a pin stops routing the pane: the proxy is told so
     M.setProxyRoute.mockClear()
     mr.pinTerminal('pin-1')
-    expect(M.setProxyRoute).toHaveBeenCalledWith('pin-1', null, null, false)
+    expect(M.setProxyRoute).toHaveBeenCalledWith('pin-1', null, null, false, false)
     mr.forgetTerminal('pin-1')
+    // MODELHOME: a step down from a terminal's home reaches the proxy flagged as one (setRoute's down).
+    mr.registerTerminal('home-1', false)
+    mr.setTerminalHome('home-1', 'opus')
+    M.setProxyRoute.mockClear()
+    await mr.routePrompt({ terminalId: 'home-1', prompt: 'fix the failing terminalManager test' })
+    expect(M.setProxyRoute).toHaveBeenLastCalledWith('home-1', 'sonnet', expect.anything(), true, true)
+    mr.forgetTerminal('home-1')
     expect(() => onTask(undefined)).not.toThrow()
   })
 

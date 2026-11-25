@@ -30,17 +30,17 @@ describe('messageRouter', () => {
 
   it('modes: validates, and off clears every route', () => {
     const d = deps()
-    expect(getRouterMode()).toBe('auto-panes')
-    expect(isRouterMode('all')).toBe(true)
+    expect(getRouterMode()).toBe('every')
+    expect(isRouterMode('every')).toBe(true)
     expect(isRouterMode('nope')).toBe(false)
     expect(isRouterMode(3)).toBe(false)
-    expect(setRouterMode('bogus')).toBe('auto-panes')
+    expect(setRouterMode('bogus')).toBe('every')
     registerTerminal('t1', true)
     registerTerminal('t2', false)
     expect(setRouterMode('off')).toBe('off')
     expect(d.setRoute).toHaveBeenCalledWith('t1', null)
     expect(d.setRoute).toHaveBeenCalledWith('t2', null)
-    expect(setRouterMode('all')).toBe('all')
+    expect(setRouterMode('every')).toBe('every')
   })
 
   it('off without deps does not throw', () => {
@@ -69,13 +69,11 @@ describe('messageRouter', () => {
     expect(d.setRoute).not.toHaveBeenCalled()
   })
 
-  it('only auto panes route in auto-panes mode; every pane in all; none when pinned', async () => {
+  it('every pane routes (MODELHOME: one not on Auto from its home); none when pinned', async () => {
     const d = deps()
     registerTerminal('auto', true)
     registerTerminal('manual', false)
-    expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).toBeNull()
     expect(await routePrompt({ terminalId: 'auto', prompt: BUILD })).not.toBeNull()
-    setRouterMode('all')
     expect(await routePrompt({ terminalId: 'manual', prompt: BUILD })).not.toBeNull()
     pinTerminal('manual')
     expect(d.setRoute).toHaveBeenLastCalledWith('manual', null)

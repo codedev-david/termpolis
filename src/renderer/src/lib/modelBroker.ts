@@ -12,6 +12,7 @@
 // renderer-side brain that recommends and the conductor prompt that instructs.
 
 import { routeTask, type ClaudeModelWord, type RouterTuning } from '../../../shared/taskRouter'
+import { PRICE } from '../../../shared/switchEconomics'
 
 export type ModelTier = 'economy' | 'standard' | 'premium'
 
@@ -27,14 +28,15 @@ export interface AgentModelTiers {
 // Per-agent model tiers. Claude only, for now — aliases match Claude Code's
 // --model (opus = claude-opus-4-8 ≈ $5/$25 per MTok, sonnet = claude-sonnet-4-6
 // ≈ $3/$15, haiku = claude-haiku-4-5 ≈ $1/$5). Cost weights use the output price
-// ratio to Opus, the dominant cost in agentic coding. Keep the alias strings in
+// ratio to Opus, the dominant cost in agentic coding, read from the router's own price list
+// (switchEconomics.PRICE), so a price change moves both. Keep the alias strings in
 // sync with the sanitizer's AGENT_MODEL_ALIASES (the authoritative allowlist).
 export const AGENT_MODEL_TIERS: Record<string, AgentModelTiers> = {
   claude: {
     economy: 'haiku',
     standard: 'sonnet',
     premium: 'opus',
-    cost: { economy: 0.2, standard: 0.6, premium: 1.0 },
+    cost: { economy: PRICE.haiku.out / PRICE.opus.out, standard: PRICE.sonnet.out / PRICE.opus.out, premium: 1.0 },
   },
 }
 

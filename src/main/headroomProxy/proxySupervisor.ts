@@ -19,6 +19,8 @@ export interface ProxyResultMsg {
   /** The request's model family and effort (proxyMain.requestModelAndEffort); absent from a child older than the app. */
   model?: string
   effort?: string
+  /** MODELHOME: the family the request asked for, when routing sent it on another. */
+  asked?: string
   /** v1.56.0 routing (proxyMain.routeFields): the terminal, main request, hour cache, a refused routed model. */
   terminal?: string
   main?: boolean
@@ -101,7 +103,7 @@ let agentTaskCb: ((q: ProxyAgentTaskMsg) => void) | null = null
 let codexTurnCb: ((q: ProxyCodexTurnMsg) => void) | null = null
 // v1.56.0: the model (v1.57.0: and effort) each routed terminal's next requests run on. Kept here, so a
 // respawned child gets them all back with its init instead of quietly sending every session as it asks.
-type RouteFrame = { kind: 'route'; terminal: string; family: string | null; effort: string | null; on: boolean }
+type RouteFrame = { kind: 'route'; terminal: string; family: string | null; effort: string | null; on: boolean; down?: true }
 const routes = new Map<string, RouteFrame>()
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
@@ -119,8 +121,9 @@ export function setProxyMode(m: string): void {
 
 /** Route a terminal's main requests to a model family and effort (modelRoute.setRoute). Both null with
  *  `on` keeps the terminal routed with nothing to change; both null without it stops routing it. */
-export function setProxyRoute(terminal: string, family: string | null, effort: string | null = null, on = false): void {
+export function setProxyRoute(terminal: string, family: string | null, effort: string | null = null, on = false, down = false): void {
   const frame: RouteFrame = { kind: 'route', terminal, family, effort, on }
+  if (down && family) frame.down = true // MODELHOME: a step down from home (modelRoute.RouteTarget.down)
   if (family || effort || on) routes.set(terminal, frame)
   else routes.delete(terminal)
   try { transport?.postMessage(frame) } catch { /* best effort: the session runs on its own model */ }

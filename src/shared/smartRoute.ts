@@ -8,7 +8,7 @@
 import { routeTask, type RouteDecision, type RouterTuning, type EffortLevel } from './taskRouter'
 import type { SeedLabel } from './routerSeeds'
 import { bumpEffort, effortRank } from './effortLevels'
-import { UP_MIN_CONFIDENCE, type RouteFamily } from './switchEconomics'
+import { UP_MIN_CONFIDENCE, cheaper, priceRank, type RouteFamily } from './switchEconomics'
 
 export interface LabeledVec {
   label: SeedLabel
@@ -31,6 +31,11 @@ export const USER_WEIGHT = 2
 export const MIN_TOP_SIM = 0.55
 /** The classifier overrides a disagreeing rule from this share of the vote. */
 export const OVERRIDE_CONFIDENCE = 0.55
+/** MODELHOME: a terminal on its home model steps down from this share of the vote. Measured on the seeds,
+ *  leave one out, from an Opus home: every bar from 0.45 to 0.55 steps down 46 of the 66 Haiku- and
+ *  Sonnet-labelled seeds and none of the 30 Opus ones; 0.4 moves 3 Opus seeds down, 0.6 keeps 37 light
+ *  seeds on Opus. The top of that plateau, and the bar subagents already step down at. */
+export const DOWN_MIN_CONFIDENCE = OVERRIDE_CONFIDENCE
 /** v1.56.2: Haiku only on a clear vote for it. A hard task wrongly sent down costs a worse answer the user
  *  may not notice; one wrongly kept on Sonnet costs a little money. The word rules alone never pick Haiku. */
 export const HAIKU_MIN_CONFIDENCE = 0.7
@@ -113,7 +118,8 @@ const DEEP_THINK = /\b(?:think (?:hard|harder|deeply|carefully|it through)|step[
 /** Says it is small: one level less, when the route is sure of itself. */
 const LIGHT = /\b(?:quick(?:ly)?|simple|briefly|tiny|trivial|typo|one[- ]liner)\b/i
 
-function clampEffort(label: RouteFamily, e: EffortLevel): EffortLevel {
+/** `e` moved into the range `label` is routed at (EFFORT_RANGE). */
+export function clampEffort(label: RouteFamily, e: EffortLevel): EffortLevel {
   const [lo, hi] = EFFORT_RANGE[label]
   if (effortRank(e) < effortRank(lo)) return lo
   return effortRank(e) > effortRank(hi) ? hi : e
@@ -143,7 +149,19 @@ export function routeMessage(prompt: string, cls: Classification | null, tune?: 
   return { ...r, effort: chooseEffort(prompt, r) }
 }
 
-const RANK: Readonly<Record<RouteFamily, number>> = { haiku: 0, sonnet: 1, opus: 2 }
+/** MODELHOME: one message's route on a terminal whose home model the user chose. It steps down from home,
+ *  to the cheaper model routeMessage picks, only when that route is sure of itself (DOWN_MIN_CONFIDENCE);
+ *  anything else, a stronger pick included, runs on home. Never above home. 'keep' passes through. */
+export function homeRoute(prompt: string, cls: Classification | null, home: RouteFamily, tune?: RouterTuning): MessageRoute {
+  return fromHome(routeMessage(prompt, cls, tune), home)
+}
+
+/** homeRoute's rule, on a route already made. */
+export function fromHome(r: MessageRoute, home: RouteFamily): MessageRoute {
+  if (r.label === 'keep') return r
+  if (cheaper(r.label, home) && r.confidence >= DOWN_MIN_CONFIDENCE) return r
+  return { ...r, label: home }
+}
 
 /** v1.57.0: the route for a subagent, from the task its parent gave it, against the model it was launched
  *  on. A subagent starts with an empty context, so moving it costs nothing yet, but whoever launched it
@@ -155,8 +173,8 @@ export function routeSubagent(task: string, cls: Classification | null, asked: R
   if (r.label === 'keep') return r
   let label: RouteFamily = r.label
   if (label === 'haiku' && !(cls && cls.label === 'haiku' && cls.topSim >= MIN_TOP_SIM && cls.confidence >= HAIKU_MIN_CONFIDENCE)) label = 'sonnet'
-  if (RANK[label] > RANK[asked] && r.confidence < UP_MIN_CONFIDENCE) label = asked
-  if (RANK[label] < RANK[asked] && r.confidence < OVERRIDE_CONFIDENCE) label = asked
+  if (priceRank(label) > priceRank(asked) && r.confidence < UP_MIN_CONFIDENCE) label = asked
+  if (cheaper(label, asked) && r.confidence < OVERRIDE_CONFIDENCE) label = asked
   const base: MessageRoute = { ...r, label, effort: label === r.label ? r.effort : EFFORT_OF[label] }
   return { ...base, effort: chooseEffort(task, base, { countLength: false }) }
 }
@@ -205,8 +223,13 @@ export interface RouteEvent {
   switched: boolean
   /** Why: first, keep, same, cheaper, lighter, switch-costs-more, needs-stronger, more-thought,
    *  not-sure-enough, context-too-big, too-big-for-haiku; agent (a subagent's task); struggling (tool
-   *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort). */
+   *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort).
+   *  MODELHOME: home (back on the home model after a step-down), at-home (stayed on it), unplaced (the
+   *  home is a model the router cannot rank by price, so nothing is routed). */
   reason: string
+  /** MODELHOME: the home model the router could not place (its family or a short name); the model
+   *  field is then just a placeholder. */
+  unplaced?: string
   /** What the message looked like. */
   label: SeedLabel
   source: MessageRoute['source']

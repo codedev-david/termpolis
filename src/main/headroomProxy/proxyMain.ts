@@ -47,6 +47,9 @@ export interface ProxyResult {
   status: number
   /** The family of the model the request asked for (opus, sonnet, haiku, fable, other), never a build id. */
   model?: ModelFamily
+  /** MODELHOME: the family the request asked for, when routing sent it on another (`model` is then the
+   *  one it ran on). */
+  asked?: ModelFamily
   /** The request's `output_config.effort`, when it is one of the known levels. */
   effort?: string
   /** v1.56.0 routing: the terminal the session runs in, when it carries the header. */
@@ -175,7 +178,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
     async function handle(): Promise<void> {
       let body = Buffer.concat(chunks)
       let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
-      let asked: { model?: ModelFamily; effort?: string } = {}
+      let asked: { model?: ModelFamily; effort?: string; asked?: ModelFamily } = {}
       let plan: RoutePlan | null = null
       let conv: ConvInfo | null = null
       if (isMessages) {
@@ -200,7 +203,8 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
             }
             if (plan.original !== undefined) {
               body = Buffer.from(plan.body, 'utf8')
-              if (plan.modelChanged && plan.used) asked = { ...asked, model: plan.used }
+              // A rewritten request always named its model (planRequest), so asked is set.
+              if (plan.modelChanged && plan.used) asked = { ...asked, model: plan.used, asked: plan.asked as ModelFamily }
               if (plan.effortChanged && plan.effort) asked = { ...asked, effort: plan.effort }
             }
           } catch { plan = null }
@@ -301,6 +305,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
 export function resultFrame(r: ProxyResult): ProxyResultMsg {
   const msg: ProxyResultMsg = { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
   if (r.model) msg.model = r.model
+  if (r.asked) msg.asked = r.asked
   if (r.effort) msg.effort = r.effort
   if (r.terminal) msg.terminal = r.terminal
   if (r.main) msg.main = true
@@ -330,7 +335,7 @@ if (parentPort) {
     const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
     if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
-    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on); return } // v1.56.0 per-message routing
+    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown; down?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on, r.down); return } // v1.56.0 per-message routing
     if (msg.kind === 'codex-route') { const r = msg as { terminal?: unknown; key?: unknown; effort?: unknown }; setCodexRoute(r.terminal, r.key, r.effort); return } // v1.58.0 Codex effort
     if (msg.kind === 'codex-forget') { forgetCodexTerminal((msg as { terminal?: unknown }).terminal); return }
     if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on); return } // v1.57.0 subagents
