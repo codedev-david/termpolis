@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
 import { INTRO_ART } from '../../assets/intro/introManifest'
 import type { IntroImg } from '../../assets/intro/introManifest'
-import { INTRO_HARD_CAP_MS, INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, ON_TIME_SLACK_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
+import { INTRO_HARD_CAP_MS, INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_DRAWING_RECHECK_MS, NOT_PAINTED_MS, NO_FRAME_LIMIT_MS, ON_TIME_SLACK_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
 
 // The two-second launch intro: pre-rendered lettering from the film's title cards, animated with the
 // Web Animations API over the starting app. It is a non-interactive overlay: it never takes focus,
@@ -167,19 +167,30 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
       timers.push(setTimeout(end, Math.min(INTRO_HARD_CAP_MS, Math.max(0, INTRO_HARD_CAP_MS - late))))
     }
     frames.push(requestAnimationFrame(() => firstFrame(now())))
-    // No frame at all NOT_PAINTED_MS after mount, with a main thread free to run this timer on time:
-    // the window is not drawing (minimised or covered before its first frame), and the intro never
-    // shows, so a window restored later shows no stale intro. A timer that runs late means a busy
-    // launch, which holds the first frame back as well: it waits again, and that wait counts nothing.
+    // No frame at all NOT_PAINTED_MS after mount, with a main thread free to run this timer on time,
+    // and still none NOT_DRAWING_RECHECK_MS later: the window is not drawing (minimised or covered
+    // before its first frame, or visible with a compositor that is not drawing yet), and the intro
+    // never shows. No frame of it was computed, so none was seen: a window restored later shows no
+    // stale intro, and a stalled one shows the app. A timer that runs late means a busy launch, which
+    // holds the first frame back as well: the guard waits again, and that wait counts nothing.
+    const onTime = (armedAt: number, delay: number): boolean => now() - armedAt < delay + ON_TIME_SLACK_MS
     const guard = (): void => {
       const armedAt = now()
       timers.push(setTimeout(() => {
         if (firstFrameAt !== null) return
-        if (now() - armedAt < NOT_PAINTED_MS + ON_TIME_SLACK_MS) end()
-        else guard()
+        if (!onTime(armedAt, NOT_PAINTED_MS)) { guard(); return }
+        const recheckAt = now()
+        timers.push(setTimeout(() => {
+          if (firstFrameAt !== null) return
+          if (onTime(recheckAt, NOT_DRAWING_RECHECK_MS)) end()
+          else guard()
+        }, NOT_DRAWING_RECHECK_MS))
       }, NOT_PAINTED_MS))
     }
     guard()
+    // However late every guard runs (timers coalesced on a hidden app), a launch with no frame this
+    // long after mount has no use for an intro.
+    timers.push(setTimeout(() => { if (firstFrameAt === null) end() }, NO_FRAME_LIMIT_MS))
     stage.ready.then((s) => {
       if (disposed) return
       const t = now()

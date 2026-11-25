@@ -17,13 +17,24 @@ export const INTRO_TOTAL_MS = INTRO_BUDGET_MS - 16
  */
 export const NOT_PAINTED_MS = 1000
 /**
- * A window that has drawn no frame at all NOT_PAINTED_MS after mount is not drawing (minimised, or
- * covered, before its first frame): the intro never appears, so a window restored later shows no
- * stale intro. The guard's timer runs in a hidden window too (no background throttling), so it is
- * told apart from a busy launch by running on time: a timer that runs this much late or more means
- * the main thread was busy, which holds the first frame back too, and the guard waits again.
+ * A window that has drawn no frame at all NOT_PAINTED_MS after mount is not drawing: minimised or covered
+ * before its first frame, or visible with a compositor that is not drawing yet (a cold launch on a
+ * machine without a GPU, whose first raster holds every frame back). Either way no frame with the
+ * overlay was ever computed, so nothing of it was seen: the intro never appears, a window restored
+ * later shows no stale intro, and a stalled one shows the app when its first frame lands. That is by
+ * design. The guard's timer runs in a hidden window too (no background throttling), so it is told
+ * apart from a busy launch by running on time: a timer that runs this much late or more means the
+ * main thread was busy, which holds the first frame back too, and the guard waits again.
  */
 export const ON_TIME_SLACK_MS = 50
+/**
+ * A guard that runs on time with no frame checks once more this much later before it ends the intro:
+ * a drawing compositor delivers a frame within a vsync of the main thread being free, so a launch whose
+ * busy stretch ends right at the guard's due time still plays. Held to the same on-time rule.
+ */
+export const NOT_DRAWING_RECHECK_MS = 100
+/** No frame this long after mount, however late the guard's timers run: the intro ends, whatever the cause. */
+export const NO_FRAME_LIMIT_MS = 10_000
 /** Backstop, from the same first frame: the overlay is gone by now, whatever the animation or its timers did. */
 export const INTRO_HARD_CAP_MS = NOT_PAINTED_MS + INTRO_TOTAL_MS
 

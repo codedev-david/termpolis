@@ -3,7 +3,7 @@ import { render, act, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { LaunchIntro } from '../../../src/renderer/src/components/LaunchIntro/LaunchIntro'
 import { INTRO_ART } from '../../../src/renderer/src/assets/intro/introManifest'
-import { INTRO_HARD_CAP_MS, INTRO_TOTAL_MS, NOT_PAINTED_MS, ON_TIME_SLACK_MS, introSteps } from '../../../src/renderer/src/lib/launchIntro'
+import { INTRO_HARD_CAP_MS, INTRO_TOTAL_MS, NOT_DRAWING_RECHECK_MS, NOT_PAINTED_MS, NO_FRAME_LIMIT_MS, ON_TIME_SLACK_MS, introSteps } from '../../../src/renderer/src/lib/launchIntro'
 
 // A stand-in for a Web Animation: play-pending (startTime null) until the test starts it, the way a
 // real one waits for the next frame the browser commits.
@@ -245,11 +245,15 @@ describe('LaunchIntro', () => {
     holdFrames()
     render(<LaunchIntro play now={now} />)
     // Minimised or covered before its first frame: the page's timers run (no background throttling)
-    // but no frame comes. The guard fires on time with no frame, so the window is not drawing.
-    clock = NOT_PAINTED_MS - 1
-    advance(NOT_PAINTED_MS - 1)
-    expect(intro()).not.toBeNull()
+    // but no frame comes. The guard fires on time with no frame, checks once more NOT_DRAWING_RECHECK_MS
+    // later (on time again, still no frame), so the window is not drawing.
     clock = NOT_PAINTED_MS
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock = NOT_PAINTED_MS + NOT_DRAWING_RECHECK_MS - 1
+    advance(NOT_DRAWING_RECHECK_MS - 1)
+    expect(intro()).not.toBeNull()
+    clock = NOT_PAINTED_MS + NOT_DRAWING_RECHECK_MS
     advance(1)
     expect(intro()).toBeNull()
     expect(calls.every((c) => c.anim.cancel.mock.calls.length === 1)).toBe(true)
@@ -292,6 +296,9 @@ describe('LaunchIntro', () => {
     expect(intro()).not.toBeNull()
     clock = 1600 + NOT_PAINTED_MS + ON_TIME_SLACK_MS - 1
     advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock += NOT_DRAWING_RECHECK_MS + ON_TIME_SLACK_MS - 1
+    advance(NOT_DRAWING_RECHECK_MS)
     expect(intro()).toBeNull()
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -302,7 +309,81 @@ describe('LaunchIntro', () => {
     clock = NOT_PAINTED_MS + ON_TIME_SLACK_MS
     advance(NOT_PAINTED_MS)
     expect(intro()).not.toBeNull()
-    expect(vi.getTimerCount()).toBe(1)
+    // The guard, armed again, and the no-frame limit from mount.
+    expect(vi.getTimerCount()).toBe(2)
+  })
+
+  it('keeps the intro when the first frame comes just after an on-time guard, inside the recheck', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // Startup work holds the thread until just before the guard is due; the guard runs on time with
+    // no frame, and the first frame comes 11 ms later, as a drawing compositor's next vsync does.
+    clock = NOT_PAINTED_MS
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock = NOT_PAINTED_MS + 11
+    advance(11)
+    frame()
+    await startAll(NOT_PAINTED_MS + 11)
+    advance(NOT_DRAWING_RECHECK_MS)
+    expect(intro()).not.toBeNull()
+    advance(INTRO_TOTAL_MS - NOT_DRAWING_RECHECK_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a recheck that runs late means a busy thread: the guard waits again', () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    clock = NOT_PAINTED_MS
+    advance(NOT_PAINTED_MS)
+    clock = NOT_PAINTED_MS + NOT_DRAWING_RECHECK_MS + ON_TIME_SLACK_MS
+    advance(NOT_DRAWING_RECHECK_MS)
+    expect(intro()).not.toBeNull()
+    // Waiting again from that late recheck: on time, then on time once more, with no frame, ends it.
+    const at = clock
+    clock = at + NOT_PAINTED_MS
+    advance(NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    clock = at + NOT_PAINTED_MS + NOT_DRAWING_RECHECK_MS
+    advance(NOT_DRAWING_RECHECK_MS)
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ends at NO_FRAME_LIMIT_MS from mount when no frame has come, however late every guard runs', () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // Timers coalesced on a hidden app: every guard runs late, so it never decides; the limit does.
+    for (let t = NOT_PAINTED_MS; t <= NO_FRAME_LIMIT_MS; t += NOT_PAINTED_MS) {
+      clock += 2 * NOT_PAINTED_MS
+      advance(NOT_PAINTED_MS - 1)
+      expect(intro()).not.toBeNull()
+      advance(1)
+    }
+    expect(intro()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('never ends at NO_FRAME_LIMIT_MS an intro whose first frame came before it', async () => {
+    holdFrames()
+    render(<LaunchIntro play now={now} />)
+    // A long busy launch: the guard always runs late, the first frame comes at 9.5 s, and the intro
+    // plays its whole timeline past the 10 s limit.
+    for (let t = NOT_PAINTED_MS; t < 9 * NOT_PAINTED_MS + 1; t += NOT_PAINTED_MS) {
+      clock += 2 * NOT_PAINTED_MS
+      advance(NOT_PAINTED_MS)
+    }
+    advance(NO_FRAME_LIMIT_MS - 500 - 9 * NOT_PAINTED_MS)
+    expect(intro()).not.toBeNull()
+    frame()
+    await startAll(clock)
+    advance(INTRO_TOTAL_MS - 1)
+    expect(intro()).not.toBeNull()
+    advance(1)
+    expect(intro()).toBeNull()
   })
 
   it('renders nothing, and animates nothing, in a page that is hidden at mount', () => {

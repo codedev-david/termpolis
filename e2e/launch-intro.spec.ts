@@ -198,7 +198,9 @@ const TIMING_SCRIPT = `(() => {
  * INTRO_TOTAL_MS, the hard cap at INTRO_HARD_CAP_MS from the first frame, less what a late start took),
  * and pausing animations does not stop them, so a slow runner could lose the overlay before the
  * screenshot. While the overlay is attached, a timer with one of those delays never fires; every
- * other timer is untouched. Each frame pins every animation at \`t\`.
+ * other timer is untouched. The guard's recheck is armed only by the guard, which is held, and the
+ * no-frame limit (NO_FRAME_LIMIT_MS) does nothing once a frame has come, so neither is held.
+ * Each frame pins every animation at \`t\`.
  * Only the frame tests install it; the timing test runs the real, unfrozen removal.
  */
 function freezeScript(t: number): string {
