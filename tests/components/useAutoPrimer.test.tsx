@@ -2303,7 +2303,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   it('types nothing into a Termpolis-launched Claude whose launch recall was too slow to seed it', async () => {
     vi.useFakeTimers()
-    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
     // aiProfiles: the recall missed PRIMER_WAIT_MS, so the command went in without the seed.
     useTerminalStore.setState({ terminals: [{ id: 't-slow', agentCommand: 'claude', launchPrimed: false, agentLaunchPending: false } as any] })
     renderHook(() => useAutoPrimer('t-slow', agent, 'C:\\Users\\me\\SIMPLILEARN_CONTENT', openGate()))
@@ -2314,7 +2314,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   it('types nothing into a Claude that launchAgents typed (no pane gate, never seeded)', async () => {
     vi.useFakeTimers()
-    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
     useTerminalStore.setState({ terminals: [{ id: 't-la', agentCommand: 'claude --dangerously-skip-permissions' } as any] })
     renderHook(() => useAutoPrimer('t-la', agent, '/repo'))
     await vi.advanceTimersByTimeAsync(30_000)
@@ -2323,7 +2323,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   it('types nothing into a Claude typed by hand', async () => {
     vi.useFakeTimers()
-    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
     const { state, gate } = liveGate({ launched: null })
     renderHook(() => useAutoPrimer('t-hand', agent, '/repo', gate))
     await vi.advanceTimersByTimeAsync(2000)
@@ -2334,7 +2334,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   it('still types the pointer into a Claude whose profile has no memory hook', async () => {
     vi.useFakeTimers()
-    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+    mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOff) })
     useTerminalStore.setState({ terminals: [{ id: 't-nohook', agentCommand: 'claude' } as any] })
     renderHook(() => useAutoPrimer('t-nohook', agent, '/repo', openGate()))
     await vi.advanceTimersByTimeAsync(30_000)
@@ -2344,7 +2344,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
   it('still types the pointer into Codex, which has no such hook', async () => {
     vi.useFakeTimers()
     const status = vi.fn(async () => hookOn)
-    mockApi({ agentIntegrationStatus: status })
+    mockApi({ agentIntegrationMemoryHook: status })
     useTerminalStore.setState({ terminals: [{ id: 't-codex', agentCommand: 'codex' } as any] })
     renderHook(() => useAutoPrimer('t-codex', codexAgent, '/repo', { launchedAgent: () => codexAgent, draft: () => '' }))
     await vi.advanceTimersByTimeAsync(30_000)
@@ -2366,7 +2366,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   it('a compaction in an unseeded Claude with the hook types nothing', async () => {
     vi.useFakeTimers()
-    mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+    mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
     useTerminalStore.setState({ terminals: [{ id: 't-cmp', launchPrimed: false } as any] })
     const { result } = renderHook(() => useCompactionReprimer('t-cmp', agent, '/repo'))
     result.current('Compacting conversation...')
@@ -2378,7 +2378,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
   it('a compaction elsewhere is re-primed as before', async () => {
     vi.useFakeTimers()
     const status = vi.fn(async () => hookOn)
-    mockApi({ agentIntegrationStatus: status })
+    mockApi({ agentIntegrationMemoryHook: status })
     useTerminalStore.setState({ terminals: [{ id: 't-cmp2', launchPrimed: false } as any] })
     const { result } = renderHook(() => useCompactionReprimer('t-cmp2', codexAgent, '/repo'))
     result.current('Compacting conversation...')
@@ -2398,27 +2398,37 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
 
   describe('claudeHookLoadsMemory', () => {
     it('is false without the bridge: nothing is known about the hook', async () => {
-      mockApi()
+      // Said outright, not left to mockApi's defaults: a default that gains the method would turn this into another test.
+      mockApi({ agentIntegrationMemoryHook: undefined })
+      expect((window as any).termpolis.agentIntegrationMemoryHook).toBeUndefined()
       expect(await claudeHookLoadsMemory()).toBe(false)
+      expect(await claudeHookLoadsMemory('t-any')).toBe(false)
+    })
+    // 1.63.1 review, Minor 2: the full status reads every agent's config on main's thread. The primer never asks it.
+    it('never falls back to the full status, which main reads synchronously', async () => {
+      const full = vi.fn(async () => ({ success: true, data: { connected: true, primerHook: true } }))
+      mockApi({ agentIntegrationMemoryHook: undefined, agentIntegrationStatus: full })
+      expect(await claudeHookLoadsMemory()).toBe(false)
+      expect(full).not.toHaveBeenCalled()
     })
     it('is true only when Agent Integration is connected with the memory hook on', async () => {
-      mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
       expect(await claudeHookLoadsMemory()).toBe(true)
-      mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOff) })
       expect(await claudeHookLoadsMemory()).toBe(false)
-      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: true, data: { connected: false, primerHook: true } })) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => ({ success: true, data: { connected: false, primerHook: true } })) })
       expect(await claudeHookLoadsMemory()).toBe(false)
     })
     // Fix round 2: a failed read used to count as "has the hook", which typed nothing into a Claude
     // that has no other way to its memory. Only a read that says so counts now.
     it('is false when the read fails or comes back empty: nothing is known, so the pointer is typed', async () => {
-      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: false, error: 'x' })) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => ({ success: false, error: 'x' })) })
       expect(await claudeHookLoadsMemory()).toBe(false)
-      mockApi({ agentIntegrationStatus: vi.fn(async () => ({ success: true })) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => ({ success: true })) })
       expect(await claudeHookLoadsMemory()).toBe(false)
-      mockApi({ agentIntegrationStatus: vi.fn(async () => null) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => null) })
       expect(await claudeHookLoadsMemory()).toBe(false)
-      mockApi({ agentIntegrationStatus: vi.fn(async () => { throw new Error('ipc gone') }) })
+      mockApi({ agentIntegrationMemoryHook: vi.fn(async () => { throw new Error('ipc gone') }) })
       expect(await claudeHookLoadsMemory()).toBe(false)
     })
 
@@ -2438,21 +2448,21 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
       afterEach(() => useTerminalStore.setState({ accountsView: null, accountsByHand: {}, terminals: [] }))
 
       it('is false for a Claude on an account whose profile lacks the hook, though the ledger has it on', async () => {
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row({ connection: conn(false) }))
         expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
         put(row({ connection: null, folderExists: false }))
         expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
       })
       it('is true for an account profile that holds the hook, and never without the ledger saying so', async () => {
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row())
         expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOff) })
         expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
       })
       it('goes by the ledger alone on the default profile and on an account changed by hand', async () => {
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row({ isDefault: true, connection: conn(false) }))
         expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
         put(row({ connection: conn(false) }), { 't-acc': true })
@@ -2460,7 +2470,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
       })
       it('a launch on an account profile without the hook types the pointer', async () => {
         vi.useFakeTimers()
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row({ connection: conn(false) }))
         renderHook(() => useAutoPrimer('t-acc', agent, '/repo', openGate()))
         await vi.advanceTimersByTimeAsync(30_000)
@@ -2468,7 +2478,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
       })
       it('a launch on an account profile with the hook types nothing', async () => {
         vi.useFakeTimers()
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row())
         renderHook(() => useAutoPrimer('t-acc', agent, '/repo', openGate()))
         await vi.advanceTimersByTimeAsync(30_000)
@@ -2476,7 +2486,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
       })
       it('a compaction on an account profile without the hook is re-primed', async () => {
         vi.useFakeTimers()
-        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        mockApi({ agentIntegrationMemoryHook: vi.fn(async () => hookOn) })
         put(row({ connection: conn(false) }))
         useTerminalStore.setState({ terminals: [{ id: 't-acc', agentAccountId: 'acc_w', launchPrimed: false } as any] })
         const { result } = renderHook(() => useCompactionReprimer('t-acc', agent, '/repo'))
@@ -2495,7 +2505,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
   it('a launch whose status read fails still types the pointer into Claude', async () => {
     vi.useFakeTimers()
     const status = vi.fn(async () => { throw new Error('ipc gone') })
-    mockApi({ agentIntegrationStatus: status })
+    mockApi({ agentIntegrationMemoryHook: status })
     useTerminalStore.setState({ terminals: [{ id: 't-readfail', agentCommand: 'claude' } as any] })
     renderHook(() => useAutoPrimer('t-readfail', agent, '/repo', openGate()))
     await vi.advanceTimersByTimeAsync(30_000)
@@ -2506,7 +2516,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
   it('a compaction in a Claude whose status read fails is re-primed', async () => {
     vi.useFakeTimers()
     const status = vi.fn(async () => ({ success: false, error: 'no handler' }))
-    mockApi({ agentIntegrationStatus: status })
+    mockApi({ agentIntegrationMemoryHook: status })
     useTerminalStore.setState({ terminals: [{ id: 't-cmp-fail', launchPrimed: false } as any] })
     const { result } = renderHook(() => useCompactionReprimer('t-cmp-fail', agent, '/repo'))
     result.current('Compacting conversation...')
@@ -2518,7 +2528,7 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
   it('a compaction in a Claude without the hook is re-primed', async () => {
     vi.useFakeTimers()
     const status = vi.fn(async () => hookOff)
-    mockApi({ agentIntegrationStatus: status })
+    mockApi({ agentIntegrationMemoryHook: status })
     useTerminalStore.setState({ terminals: [{ id: 't-cmp-off', launchPrimed: false } as any] })
     const { result } = renderHook(() => useCompactionReprimer('t-cmp-off', agent, '/repo'))
     result.current('Compacting conversation...')

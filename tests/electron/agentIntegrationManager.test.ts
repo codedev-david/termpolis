@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join, parse } from 'path'
 import {
-  bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationGranted, isFolderTrustAllowed,
+  agentMemoryHookAsync, bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationGranted, isFolderTrustAllowed,
   prepareCodexLaunch, removeCodexHomeTrust, resolveAgentIntegrationPaths, setAgentIntegration,
   trustFolderForAgents,
 } from '../../src/main/agentIntegrationManager'
@@ -312,6 +312,52 @@ describe('isAgentIntegrationGranted', () => {
   it('is false, never a throw, when the paths are unusable', () => {
     expect(isAgentIntegrationGranted({ ...sb.paths, userData: undefined as never })).toBe(false)
     expect(isAgentIntegrationGranted(undefined as never)).toBe(false)
+  })
+})
+
+// 1.63.1 review, Minor 2: the launch and compaction primes ask this once per Claude launch and once per compaction.
+// getAgentIntegrationStatus reads every agent's config on the main thread, ~/.claude.json among them (it can run to MBs);
+// this answers the same two booleans from the ledger alone, read on the thread pool.
+describe('agentMemoryHookAsync', () => {
+  const pick = (paths: AgentIntegrationPaths) => {
+    const st = getAgentIntegrationStatus(paths)
+    return { connected: st.connected, primerHook: st.primerHook }
+  }
+  it.each<[string, Record<string, unknown>]>([
+    ['granted with the hook on', { consent: 'granted', primerHook: true }],
+    ['granted with the hook off', { consent: 'granted', primerHook: false }],
+    ['declined', { consent: 'declined', primerHook: true }],
+    ['a legacy install not yet asked', { consent: null, legacy: true }],
+    ['not asked, not legacy', { consent: null }],
+    ['hand-edited values', { consent: 'maybe', primerHook: 'no' }],
+  ])('answers what the status says: %s', async (_label, fields) => {
+    writeLedger(sb, fields)
+    expect(await agentMemoryHookAsync(sb.paths)).toEqual(pick(sb.paths))
+  })
+
+  it('first call creates the ledger, as the status does, and answers as it does', async () => {
+    expect(existsSync(sb.ledgerFile)).toBe(false)
+    const first = await agentMemoryHookAsync(sb.paths)
+    expect(readText(sb.ledgerFile)).toBe(JSON.stringify(freshLedger, null, 2) + '\n')
+    expect(first).toEqual(pick(sb.paths))
+  })
+
+  it('reads the ledger anew on every call: a change made since is seen at once', async () => {
+    writeLedger(sb, { consent: 'granted', primerHook: true })
+    expect(await agentMemoryHookAsync(sb.paths)).toEqual({ connected: true, primerHook: true })
+    writeLedger(sb, { consent: 'granted', primerHook: false })
+    expect(await agentMemoryHookAsync(sb.paths)).toEqual({ connected: true, primerHook: false })
+  })
+
+  it('opens no agent config: with every one of them unreadable the answer is the same', async () => {
+    writeLedger(sb, { consent: 'granted', primerHook: true })
+    for (const f of [sb.files.claudeJson, sb.files.codex, sb.files.gemini]) mkdirSync(f, { recursive: true })
+    expect(await agentMemoryHookAsync(sb.paths)).toEqual({ connected: true, primerHook: true })
+  })
+
+  it('says not connected, never a throw, when the paths are unusable', async () => {
+    expect((await agentMemoryHookAsync({ ...sb.paths, userData: undefined as never })).connected).toBe(false)
+    expect((await agentMemoryHookAsync(undefined as never)).connected).toBe(false)
   })
 })
 

@@ -772,6 +772,8 @@ export interface TermpolisAPI {
   memoryPrepareCodexContext: (cwd: string, accountId?: string) => Promise<IpcResponse<CodexLaunchContext>>
   /** Agent integration: what Termpolis writes into agent configs, and the consent gating it. */
   agentIntegrationStatus: () => Promise<IpcResponse<AgentIntegrationStatus>>
+  /** The status's `connected` and `primerHook` alone, read from the ledger off main's thread: what a Claude launch asks. */
+  agentIntegrationMemoryHook: () => Promise<IpcResponse<Pick<AgentIntegrationStatus, 'connected' | 'primerHook'>>>
   agentIntegrationSet: (req: AgentIntegrationSetRequest) => Promise<IpcResponse<AgentIntegrationSetResult>>
   /**
    * Whether Termpolis may answer an agent's folder-trust prompt in this terminal's live

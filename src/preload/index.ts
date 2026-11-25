@@ -331,6 +331,7 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('memory:prepare-codex-context', { cwd, ...(accountId ? { accountId } : {}) }),
   // Agent integration: consent-gated writes into Claude Code / Codex / Gemini configs.
   agentIntegrationStatus: () => ipcRenderer.invoke('agents:integration-status'),
+  agentIntegrationMemoryHook: () => ipcRenderer.invoke('agents:integration-memory-hook'),
   agentIntegrationSet: (req) => ipcRenderer.invoke('agents:integration-set', req),
   agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) =>
     ipcRenderer.invoke('agents:folder-trust-allowed', { terminalId, fallbackCwd }),

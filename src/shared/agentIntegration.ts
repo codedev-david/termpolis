@@ -84,6 +84,8 @@ export interface CodexLaunchContext {
 
 export const AGENT_INTEGRATION_IPC = {
   status: 'agents:integration-status',
+  /** The status's `connected` and `primerHook` alone, from the ledger, read off the main thread (per Claude launch). */
+  memoryHook: 'agents:integration-memory-hook',
   set: 'agents:integration-set',
   folderTrustAllowed: 'agents:folder-trust-allowed',
   removeCodexHomeTrust: 'agents:remove-codex-home-trust',

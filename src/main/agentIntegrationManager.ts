@@ -1146,19 +1146,39 @@ export function isAgentIntegrationGranted(paths: AgentIntegrationPaths): boolean
  *  back to the synchronous path, which makes one once, so every later tick reads it here. */
 export async function isAgentIntegrationGrantedAsync(paths: AgentIntegrationPaths): Promise<boolean> {
   try {
-    const file = ledgerPath(paths)
-    if (file !== null) {
-      let text: string | null = null
-      try {
-        if ((await stat(file)).size <= MAX_CONFIG_BYTES) text = await readFile(file, 'utf-8')
-      } catch { /* none yet */ }
-      const saved = text === null ? null : ledgerFrom(parseJsonObjectText(text))
-      if (saved) return saved.consent === 'granted'
-    }
+    const saved = await readLedgerAsync(paths)
+    if (saved) return saved.consent === 'granted'
   } catch {
     return false
   }
   return isAgentIntegrationGranted(paths)
+}
+
+/** The saved ledger, read on the thread pool, or null when there is none this version can read. Throws when userData is
+ *  not a string, as ledgerPath does. */
+async function readLedgerAsync(paths: AgentIntegrationPaths): Promise<Ledger | null> {
+  const file = ledgerPath(paths)
+  if (file === null) return null
+  let text: string | null = null
+  try {
+    if ((await stat(file)).size <= MAX_CONFIG_BYTES) text = await readFile(file, 'utf-8')
+  } catch { /* none yet */ }
+  return text === null ? null : ledgerFrom(parseJsonObjectText(text))
+}
+
+/** The status's `connected` and `primerHook`, and nothing else: what the launch prime and the compaction re-prime ask once
+ *  per Claude launch and once per compaction, to leave a Claude alone that loads its memory through the SessionStart hook.
+ *  getAgentIntegrationStatus reads every agent's config on the main thread, ~/.claude.json among them, which can run to
+ *  megabytes; this reads the ledger alone, on the thread pool (the typing-lag rule), afresh on every call, so a change
+ *  made in Settings is seen by the next launch. Only when there is no ledger it can read does it take the synchronous
+ *  path, which makes one once. Unusable paths answer as the status does then: not connected. */
+export async function agentMemoryHookAsync(paths: AgentIntegrationPaths): Promise<{ connected: boolean; primerHook: boolean }> {
+  try {
+    const ledger = (await readLedgerAsync(paths)) ?? loadLedger(paths)
+    return { connected: isConnected(ledger), primerHook: ledger.primerHook }
+  } catch {
+    return { connected: false, primerHook: true }
+  }
 }
 
 /** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws.

@@ -88,6 +88,7 @@ const H = vi.hoisted(() => {
     bootAgentIntegration: vi.fn((_rt: unknown) => ({ status, changes: bootChanges })),
     disconnectAgentIntegration: vi.fn((_paths: unknown): Array<Record<string, string>> => []),
     getAgentIntegrationStatus: vi.fn((_paths: unknown) => status),
+    agentMemoryHookAsync: vi.fn(async (_paths: unknown) => ({ connected: true, primerHook: true })),
     setAgentIntegration: vi.fn((_rt: unknown, _req: unknown) => setResult),
     isFolderTrustAllowed: vi.fn((_paths: unknown, _cwd: string, _root?: string | null) => true),
     trustFolderForAgents: vi.fn(() => ({ changed: false, keys: [] as string[] })),
@@ -430,6 +431,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   bootAgentIntegration: H.bootAgentIntegration,
   disconnectAgentIntegration: H.disconnectAgentIntegration,
   getAgentIntegrationStatus: H.getAgentIntegrationStatus,
+  agentMemoryHookAsync: H.agentMemoryHookAsync,
   isAgentIntegrationGranted: () => true, // the saved-notes pass asks it; this suite never runs one
   setAgentIntegration: H.setAgentIntegration,
   isFolderTrustAllowed: H.isFolderTrustAllowed,
@@ -639,6 +641,24 @@ describe('agents:integration-status', () => {
   it('turns a failure into err() instead of rejecting the IPC promise', async () => {
     H.getAgentIntegrationStatus.mockImplementationOnce(() => { throw new Error('EACCES: ledger unreadable') })
     expect(await invoke(IPC.status)).toEqual({ success: false, error: 'EACCES: ledger unreadable' })
+  })
+})
+
+// ===========================================================================
+// agents:integration-memory-hook
+// ===========================================================================
+describe('agents:integration-memory-hook', () => {
+  it('returns the ledger\'s two answers for freshly resolved paths as ok(), without the full status', async () => {
+    H.getAgentIntegrationStatus.mockClear()
+    expect(await invoke(IPC.memoryHook)).toEqual({ success: true, data: { connected: true, primerHook: true } })
+    expect(H.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), H.userData, process.env)
+    expect(H.agentMemoryHookAsync).toHaveBeenCalledWith(H.agentPaths)
+    expect(H.getAgentIntegrationStatus).not.toHaveBeenCalled()
+  })
+
+  it('turns a failure into err() instead of rejecting the IPC promise', async () => {
+    H.agentMemoryHookAsync.mockImplementationOnce(async () => { throw new Error('EACCES: ledger unreadable') })
+    expect(await invoke(IPC.memoryHook)).toEqual({ success: false, error: 'EACCES: ledger unreadable' })
   })
 })
 

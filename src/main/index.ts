@@ -761,6 +761,7 @@ import {
   disconnectAgentIntegration,
   getAgentIntegrationStatus,
   isAgentIntegrationGrantedAsync,
+  agentMemoryHookAsync,
   setAgentIntegration,
   isFolderTrustAllowed,
   trustFolderForAgents,
@@ -3686,6 +3687,11 @@ ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown; account
 // configs, and taking it all back out. Everything runs in agentIntegrationManager.ts.
 ipcMain.handle(AGENT_INTEGRATION_IPC.status, async () => {
   try { return ok(getAgentIntegrationStatus(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
+})
+
+// Asked per Claude launch and per compaction (useAutoPrimer): the ledger's two answers, read on the thread pool.
+ipcMain.handle(AGENT_INTEGRATION_IPC.memoryHook, async () => {
+  try { return ok(await agentMemoryHookAsync(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequest) => {
