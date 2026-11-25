@@ -63,6 +63,18 @@ describe('worldStore', () => {
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
+  it('a saved world with an "other" floor still loads, the floor as it was (WP-LOOK Task 8)', async () => {
+    const files = Array.from({ length: 15 }, (_, i) => `src/a/f${String(i).padStart(2, '0')}.ts`)
+    const floors = [...files.slice(0, 11).map((m) => ({ name: m.slice(6, -3), tech: [], members: [m] })), { name: 'other', tech: [], members: files.slice(11) }]
+    const saved = doc()
+    saved.buildings[0] = { ...saved.buildings[0], members: files, floors }
+    const store = createWorldStore(dir)
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(saved))
+    expect(await store.load('demo')).toEqual(saved)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+  })
+
   it('corrupt file → load null + a timestamped, numbered .bad backup; earlier backups are kept (F21)', async () => {
     let clock = Date.UTC(2026, 10, 23, 9, 30, 0, 5)
     const store = createWorldStore(dir, { now: () => clock })

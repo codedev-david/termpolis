@@ -16,6 +16,8 @@ import {
   LINES_PER_BATCH,
   NO_MODEL_STRIKES,
   cheapModelFor,
+  fallbackFloors,
+  isLegacyOtherFloors,
   labelWorld,
   makeWorldLlm,
   type LabelDeps
@@ -401,7 +403,7 @@ describe('labelWorld', () => {
     expect(l.edges[edgeId(g.edges[0])].label.length).toBeLessThanOrEqual(120)
   })
 
-  it('fallback floors: capped at 12 with an "other" floor, every edge identifier kept', async () => {
+  it('fallback floors: capped at 12 with no "other" floor, every edge identifier kept', async () => {
     const files = Array.from({ length: 15 }, (_, i) => `f/${String(i).padStart(2, '0')}.ts`)
     const g: Grouping = {
       districts: [{ id: 'd', name: 'D', members: [] }],
@@ -411,7 +413,14 @@ describe('labelWorld', () => {
     const l = await labelWorld(g, { ...mkDeps(), llm: null })
     const fl = l.buildings.big.floors
     expect(fl).toHaveLength(12)
-    expect(fl[11]).toEqual({ name: 'other', tech: [], members: files.slice(11) })
+    // 15 files with no shared folder or name: the three smallest neighbours pair up, named by their first and last.
+    expect(fl.slice(0, 4)).toEqual([
+      { name: '00 – 01', tech: [], members: files.slice(0, 2) },
+      { name: '02 – 03', tech: [], members: files.slice(2, 4) },
+      { name: '04 – 05', tech: [], members: files.slice(4, 6) },
+      { name: '06', tech: [], members: ['f/06.ts'] }
+    ])
+    expect(fl.flatMap((f) => f.members)).toEqual(files)
     expect(l.edges[edgeId(g.edges[0])].label.split(', ')).toHaveLength(30)
   })
 
@@ -2247,5 +2256,99 @@ describe('label review 1: sentences, names and chips', () => {
       { name: 'Entry', tech: [], members: ['src/a/one.ts'] },
       { name: 'Rest', tech: [], members: ['src/a/two.ts'] }
     ])
+  })
+})
+
+describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Task 8)', () => {
+  const ROOT = 'src/main/brain'
+  const at = (rel: string[]): string[] => rel.map((r) => `${ROOT}/${r}`).sort()
+  const many = (dir: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${dir}/part${String.fromCharCode(65 + i)}.ts`)
+  const cap = (n: number): number => Math.ceil(n / 12) * 2
+  // The brainIpc shape: 11 single files at the root and 32 under three sub-folders (sync holds two of its own).
+  const SINGLES = ['archive.ts', 'brainIpc.test.ts', 'brainIpc.ts', 'crypto.ts', 'index.ts', 'keys.ts', 'paths.ts', 'rerank.ts', 'rerankWorker.ts', 'store.ts', 'types.ts']
+  const BRAIN = at([...SINGLES, ...many('embed', 8), ...many('memory', 8), ...many('sync/pull', 8), ...many('sync/push', 8)])
+  const names = (members: string[]): string[] => fallbackFloors(members).map((f) => f.name)
+
+  it('43 members make at most 12 floors and none is called other', () => {
+    expect(BRAIN).toHaveLength(43)
+    const floors = fallbackFloors(BRAIN)
+    expect(floors.length).toBeLessThanOrEqual(12)
+    expect(floors.map((f) => f.name)).not.toContain('other')
+    expect(floors.map((f) => f.name)).toEqual([
+      'archive', 'brainIpc*', 'crypto', 'embed/', 'index – keys', 'memory/', 'paths', 'rerank*', 'store', 'sync/pull/', 'sync/push/', 'types'
+    ])
+    // Every member is on exactly one floor, none left out.
+    expect(floors.flatMap((f) => f.members).sort()).toEqual(BRAIN)
+    for (const f of floors) expect(f.tech).toEqual([])
+  })
+
+  it('members under one sub-folder share a floor named after it', () => {
+    const floors = fallbackFloors(BRAIN)
+    expect(floors.find((f) => f.name === 'memory/')?.members).toEqual(at(many('memory', 8)))
+    expect(floors.find((f) => f.name === 'embed/')?.members).toEqual(at(many('embed', 8)))
+    // A shared name prefix of four or more letters makes a floor too; a file and its test share one.
+    expect(floors.find((f) => f.name === 'rerank*')?.members).toEqual(at(['rerank.ts', 'rerankWorker.ts']))
+    expect(floors.find((f) => f.name === 'brainIpc*')?.members).toEqual(at(['brainIpc.test.ts', 'brainIpc.ts']))
+    // A folder small enough for one floor keeps its sub-folders together under its own name.
+    expect(names(at([...SINGLES.slice(0, 10), 'sync/pull/a.ts', 'sync/pull/b.ts', 'sync/push/c.ts', 'sync/push/d.ts']))).toEqual([
+      'archive', 'brainIpc*', 'crypto', 'index', 'keys', 'paths', 'rerank*', 'store', 'sync/'
+    ])
+    // A folder holding one folder only is named down to the deepest one; a name prefix down to the longest shared one.
+    expect(names(at([...SINGLES, 'a/b/c/x.ts', 'a/b/c/y.ts', 'memoryClientA.ts', 'memoryClientB.ts']))).toEqual([
+      'a/b/c/', 'archive', 'brainIpc*', 'crypto', 'index', 'keys', 'memoryClient*', 'paths', 'rerank*', 'store', 'types'
+    ])
+    // A prefix shorter than four letters groups nothing; a folder of one file is that file's floor.
+    expect(names(at(['ab.ts', 'abC.ts', 'abD.ts', 'w/x.ts', ...many('z', 12)]))).toEqual([
+      'ab – abC', 'abD – x', 'partA – partB', 'partC – partD', 'partE', 'partF', 'partG', 'partH', 'partI', 'partJ', 'partK', 'partL'
+    ])
+  })
+
+  it('no floor holds more than ceil(n/12)*2 files when folders allow it', () => {
+    expect(Math.max(...fallbackFloors(BRAIN).map((f) => f.members.length))).toBeLessThanOrEqual(cap(43))
+    // A folder too big for one floor is split by its own name prefixes and files, the prefixes named with its path.
+    const mem = ['cacheA', 'cacheB', 'cacheC', 'queryA', 'queryB', 'queryC', 'x', 'y'].map((m) => `memory/${m}.ts`)
+    const split = fallbackFloors(at([...SINGLES, ...mem]))
+    expect(split.map((f) => f.name)).toEqual([
+      'archive', 'brainIpc*', 'crypto – index', 'keys', 'memory/cache*', 'memory/query*', 'x', 'y', 'paths', 'rerank*', 'store', 'types'
+    ])
+    expect(Math.max(...split.map((f) => f.members.length))).toBeLessThanOrEqual(cap(19))
+    // A folder of 20 look-alike files splits down to single files, which pair up again within the cap.
+    const big = at([...SINGLES, ...many('memory', 20)])
+    const floors = fallbackFloors(big)
+    expect(floors).toHaveLength(12)
+    expect(Math.max(...floors.map((f) => f.members.length))).toBeLessThanOrEqual(cap(31))
+    expect(floors.flatMap((f) => f.members).sort()).toEqual(big)
+    for (const n of [13, 25, 100, 2000]) {
+      const flat = Array.from({ length: n }, (_, i) => `src/huge/f${String(i).padStart(4, '0')}.ts`)
+      const fl = fallbackFloors(flat)
+      expect(fl).toHaveLength(12)
+      expect(Math.max(...fl.map((f) => f.members.length)), `n=${n}`).toBeLessThanOrEqual(cap(n))
+      expect(fl.flatMap((f) => f.members)).toEqual(flat)
+      expect(fl.map((f) => f.name)).not.toContain('other')
+    }
+  })
+
+  it('12 or fewer members keep one floor per file, unchanged', () => {
+    const twelve = at([...SINGLES, 'zeta.ts'])
+    expect(fallbackFloors(twelve)).toEqual(twelve.map((m) => ({ name: m.slice(m.lastIndexOf('/') + 1).replace(/\.[^.]*$/, ''), tech: [], members: [m] })))
+    expect(fallbackFloors(['Makefile', '.env'])).toEqual([
+      { name: 'Makefile', tech: [], members: ['Makefile'] },
+      { name: '.env', tech: [], members: ['.env'] }
+    ])
+    expect(fallbackFloors([])).toEqual([])
+  })
+
+  it('a saved world with an other floor still loads: its old shape is known, so the next compile replaces it', () => {
+    const files = Array.from({ length: 15 }, (_, i) => `f/${String(i).padStart(2, '0')}.ts`)
+    const legacy = [...files.slice(0, 11).map((m) => ({ name: m.slice(2, 4), tech: [], members: [m] })), { name: 'other', tech: [], members: files.slice(11) }]
+    expect(isLegacyOtherFloors(legacy, files)).toBe(true)
+    // A model's own floors, or a floor list of another shape, are never taken for the old one.
+    expect(isLegacyOtherFloors(fallbackFloors(files), files)).toBe(false)
+    expect(isLegacyOtherFloors(legacy.slice(0, 11), files)).toBe(false)
+    expect(isLegacyOtherFloors([...legacy.slice(0, 11), { ...legacy[11], name: 'Other things' }], files)).toBe(false)
+    expect(isLegacyOtherFloors([...legacy.slice(0, 11), { ...legacy[11], tech: ['TS'] }], files)).toBe(false)
+    expect(isLegacyOtherFloors([{ ...legacy[0], name: 'Entry' }, ...legacy.slice(1)], files)).toBe(false)
+    expect(isLegacyOtherFloors(legacy, [...files, 'f/15.ts'])).toBe(false)
+    expect(isLegacyOtherFloors([], [])).toBe(false)
   })
 })

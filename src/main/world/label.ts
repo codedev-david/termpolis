@@ -225,9 +225,192 @@ function floorOf(file: string): Floor {
   return { name: i > 0 ? base.slice(0, i) : base, tech: [], members: [file] }
 }
 
-function fallbackFloors(members: string[]): Floor[] {
+/** A shared start of file names that groups them: four characters or more (look spec §9.3). */
+const MIN_STEM_PREFIX = 4
+
+/** One step of a member's path in the floor tree: a folder, a start of its name, or the file itself. */
+interface FloorNode {
+  /** What the floor is called: `sync/pull/` for a folder, `memory/cache*` for a name start (its folder first). */
+  name: string
+  kind: 'dir' | 'stem' | 'file'
+  children: Map<string, FloorNode>
+  /** Its files, in the building's order. */
+  members: string[]
+}
+
+/** The starts of a file name at its word breaks (`memoryClient.test` gives `memory`, `memoryClient` and itself), the
+ *  short ones left out. A break is a `-`, `_` or `.`, or a capital after a small letter or a digit. */
+function stemPrefixes(stem: string): string[] {
+  const out: string[] = []
+  for (let i = MIN_STEM_PREFIX; i < stem.length; i++) {
+    const c = stem[i]
+    if (c === '-' || c === '_' || c === '.' || (/[A-Z]/.test(c) && /[a-z0-9]/.test(stem[i - 1]))) out.push(stem.slice(0, i))
+  }
+  if (stem.length >= MIN_STEM_PREFIX) out.push(stem)
+  return out
+}
+
+function floorNode(name: string, kind: FloorNode['kind']): FloorNode {
+  return { name, kind, children: new Map(), members: [] }
+}
+
+/** The tree of a building's files under its own folder: sub-folders, then shared name starts, then the files. */
+function floorTree(members: string[]): FloorNode {
+  const split = members.map((m) => m.split('/'))
+  let common = split[0].length - 1
+  for (const parts of split) {
+    let i = 0
+    while (i < common && i < parts.length - 1 && parts[i] === split[0][i]) i++
+    common = i
+  }
+  const root = floorNode('', 'dir')
+  members.forEach((m, n) => {
+    const parts = split[n].slice(common)
+    const base = parts[parts.length - 1]
+    const stem = floorOf(base).name
+    const dirs = parts.slice(0, -1)
+    const steps: [string, FloorNode['kind'], string][] = [
+      ...dirs.map((d, i): [string, FloorNode['kind'], string] => [`d:${d}`, 'dir', `${dirs.slice(0, i + 1).join('/')}/`]),
+      ...stemPrefixes(stem).map((p): [string, FloorNode['kind'], string] => [`s:${p}`, 'stem', `${dirs.map((d) => `${d}/`).join('')}${p}*`]),
+      [`f:${base}`, 'file', stem]
+    ]
+    let at = root
+    at.members.push(m)
+    for (const [key, kind, name] of steps) {
+      let next = at.children.get(key)
+      if (!next) {
+        next = floorNode(name, kind)
+        at.children.set(key, next)
+      }
+      next.members.push(m)
+      at = next
+    }
+  })
+  return root
+}
+
+/** A floor's name: a single file's own stem; a folder named down to the deepest folder holding all of it; a name start
+ *  down to the longest one its files share. */
+function floorName(node: FloorNode): string {
+  if (node.members.length === 1) return floorOf(node.members[0]).name
+  let at = node
+  for (;;) {
+    const only = at.children.size === 1 ? (at.children.values().next().value as FloorNode) : null
+    if (!only || only.kind === 'file' || (at.kind === 'stem') !== (only.kind === 'stem')) return at.name
+    at = only
+  }
+}
+
+/** What a group of two or more files splits into: the parts below its single-child chain. Members are distinct paths,
+ *  so the chain always ends at a node of two or more children before it reaches a file. */
+function splitFloor(node: FloorNode): FloorNode[] {
+  let at = node
+  while (at.children.size === 1) at = at.children.values().next().value as FloorNode
+  return [...at.children.values()]
+}
+
+/**
+ * The floors the code alone gives a building (look spec §9.3). Up to MAX_FLOORS files, one floor each, named by its stem.
+ * More, and the files are grouped by sub-folder, then by a shared start of their names (four characters or more); a group
+ * bigger than `ceil(n / 12) * 2` files is split by its own folders and names, down to single files when nothing else
+ * divides it; then the two neighbouring groups with the fewest files between them are merged, again and again, until
+ * MAX_FLOORS are left. A merged floor is named by its first and last group (`index – keys`). No floor is called "other",
+ * and none holds more than the cap: each merge takes the smallest pair, and while more than 12 floors are left some
+ * neighbouring pair fits the cap.
+ */
+export function fallbackFloors(members: string[]): Floor[] {
   if (members.length <= MAX_FLOORS) return members.map(floorOf)
-  return [...members.slice(0, MAX_FLOORS - 1).map(floorOf), { name: 'other', tech: [], members: members.slice(MAX_FLOORS - 1) }]
+  const cap = Math.ceil(members.length / MAX_FLOORS) * 2
+  const units: FloorNode[] = []
+  const todo = splitFloor(floorTree(members)).reverse()
+  while (todo.length > 0) {
+    const u = todo.pop() as FloorNode
+    if (u.members.length > cap) todo.push(...splitFloor(u).reverse())
+    else units.push(u)
+  }
+  return mergeFloors(units.map((u) => ({ name: floorName(u), tech: [], members: u.members })))
+}
+
+/**
+ * Merges neighbouring floors, the pair with the fewest files first (the leftmost of equals), until MAX_FLOORS are left.
+ * A heap of neighbouring pairs keeps it O(n log n) on a building of thousands of files; a pair whose side changed since
+ * it was pushed is skipped when it comes up.
+ */
+function mergeFloors(floors: Floor[]): Floor[] {
+  const n = floors.length
+  const size = floors.map((f) => f.members.length)
+  const next = floors.map((_, i) => i + 1)
+  const prev = floors.map((_, i) => i - 1)
+  const last = floors.map((_, i) => i)
+  const ver = floors.map(() => 0)
+  const heap: [number, number, number, number, number][] = []
+  const less = (a: [number, number, number, number, number], z: [number, number, number, number, number]): boolean => a[0] < z[0] || (a[0] === z[0] && a[1] < z[1])
+  const push = (i: number): void => {
+    const j = next[i]
+    if (i < 0 || j >= n) return
+    heap.push([size[i] + size[j], i, j, ver[i], ver[j]])
+    for (let k = heap.length - 1; k > 0; ) {
+      const up = (k - 1) >> 1
+      if (!less(heap[k], heap[up])) break
+      ;[heap[k], heap[up]] = [heap[up], heap[k]]
+      k = up
+    }
+  }
+  const pop = (): [number, number, number, number, number] => {
+    const top = heap[0]
+    heap[0] = heap[heap.length - 1]
+    heap.pop()
+    for (let k = 0; ; ) {
+      const a = 2 * k + 1
+      const z = a + 1
+      let m = k
+      if (a < heap.length && less(heap[a], heap[m])) m = a
+      if (z < heap.length && less(heap[z], heap[m])) m = z
+      if (m === k) break
+      ;[heap[k], heap[m]] = [heap[m], heap[k]]
+      k = m
+    }
+    return top
+  }
+  for (let i = 0; i < n - 1; i++) push(i)
+  for (let left = n; left > MAX_FLOORS; ) {
+    const [, i, j, vi, vj] = pop()
+    if (next[i] !== j || ver[i] !== vi || ver[j] !== vj) continue
+    // j joins i: i keeps its place, takes j's files and reaches j's next; every pair still holding either is stale.
+    size[i] += size[j]
+    last[i] = last[j]
+    next[i] = next[j]
+    if (next[j] < n) prev[next[j]] = i
+    ver[i]++
+    ver[j]++
+    left--
+    push(prev[i])
+    push(i)
+  }
+  // The first floor is never merged into another; each run of merged floors is contiguous, from its first to its last.
+  const out: Floor[] = []
+  for (let k = 0; k < n; k = next[k]) {
+    const run = floors.slice(k, last[k] + 1)
+    out.push({ name: run.length === 1 ? run[0].name : `${run[0].name} – ${run[run.length - 1].name}`, tech: [], members: run.flatMap((f) => f.members) })
+  }
+  return out
+}
+
+/**
+ * True for the floors the code gave a building of more than MAX_FLOORS files before look spec §9.3: one floor per file
+ * for the first 11, named by its stem, and every other file on one floor called "other". A saved world keeps them until
+ * its next compile, which gives that building the new floors (compile.ts labelAll); floors a model wrote are never these.
+ */
+export function isLegacyOtherFloors(floors: readonly Floor[], members: readonly string[]): boolean {
+  if (floors.length !== MAX_FLOORS || members.length <= MAX_FLOORS) return false
+  const rest = floors[MAX_FLOORS - 1]
+  const firsts = floors.slice(0, MAX_FLOORS - 1)
+  return (
+    rest.name === 'other' &&
+    rest.tech.length === 0 &&
+    JSON.stringify(rest.members) === JSON.stringify(members.slice(MAX_FLOORS - 1)) &&
+    firsts.every((f, i) => JSON.stringify(f) === JSON.stringify(floorOf(members[i])))
+  )
 }
 
 function fallbackBuilding(b: GroupBuilding): BuildingLabel {

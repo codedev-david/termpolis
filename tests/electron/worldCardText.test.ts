@@ -210,19 +210,30 @@ describe('cardText', () => {
     expect(cardText(doc, 'b1')).not.toContain('Why it is this big')
   })
 
-  it('a building of thousands of files stops at 12 floors, and both cards say how many files share its "other" floor (G05)', async () => {
+  it('a building of thousands of files stops at 12 floors with no "other" floor; an "other" floor saved before is still counted (G05)', async () => {
     const files = Array.from({ length: 2000 }, (_, i) => `src/huge/f${String(i).padStart(4, '0')}.ts`)
     const g = { districts: [{ id: 'd1', name: 'D', members: [] }], buildings: [{ id: 'huge', districtId: 'd1', name: 'huge', members: files, process: '', boundaries: [] }], edges: [] }
     const l = await labelWorld(g, { llm: null, cache: { get: async () => null, set: async () => undefined }, excerpt: async () => '' })
     const floors = l.buildings.huge.floors
     expect(floors).toHaveLength(12)
-    expect(floors[11]).toMatchObject({ name: 'other', members: files.slice(11) })
+    expect(floors.map((f) => f.name)).not.toContain('other')
+    expect(Math.max(...floors.map((f) => f.members.length))).toBeLessThanOrEqual(Math.ceil(2000 / 12) * 2)
+    const growth = { start: 'folder' as const, seed: 'src/huge', merged: 0, mergedFiles: 0, folded: 0, cap: 60 }
     const doc = minimal()
-    doc.buildings.push(building('huge', { members: files, floors, growth: { start: 'folder', seed: 'src/huge', merged: 0, mergedFiles: 0, folded: 0, cap: 60 } }))
-    const note = '2000 files. It started as the src/huge folder. Its "other" floor holds 1989 files.'
+    doc.buildings.push(building('huge', { members: files, floors, growth }))
+    const note = '2000 files. It started as the src/huge folder.'
     // An agent reads the floors in its own text; the 3D city opens them on a double-click.
-    expect(cardText(doc, 'huge')).toContain(`Why it is this big:\n${note} Its floors are listed under What's inside.`)
-    expect(buildingCard(doc, 'huge', 'open3d')).toContain(`<p>${note.replace(/"/g, '&quot;')} Double-click it to see its floors.</p>`)
+    expect(cardText(doc, 'huge')).toContain(`Why it is this big:
+${note} Its floors are listed under What's inside.`)
+    expect(buildingCard(doc, 'huge', 'open3d')).toContain(`<p>${note} Double-click it to see its floors.</p>`)
+    // A world saved before look spec §9.3 keeps its "other" floor until its next compile, and the cards still count it.
+    const legacy = [...files.slice(0, 11).map((m) => ({ name: m.slice(9, -3), tech: [], members: [m] })), { name: 'other', tech: [], members: files.slice(11) }]
+    const saved = minimal()
+    saved.buildings.push(building('huge', { members: files, floors: legacy, growth }))
+    const old = `${note} Its "other" floor holds 1989 files.`
+    expect(cardText(saved, 'huge')).toContain(`Why it is this big:
+${old} Its floors are listed under What's inside.`)
+    expect(buildingCard(saved, 'huge', 'open3d')).toContain(`<p>${old.replace(/"/g, '&quot;')} Double-click it to see its floors.</p>`)
   })
 
   it('a building built without any edges has no connection sections', () => {

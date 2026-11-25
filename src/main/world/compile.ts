@@ -25,7 +25,7 @@ import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { goModulePath, resolveLangImports, scanLangImports, type GoModule } from './langImports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
-import { BUILDINGS_PER_BATCH, codeLabels, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
+import { BUILDINGS_PER_BATCH, codeLabels, isLegacyOtherFloors, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
@@ -511,9 +511,17 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     const p = prevD.get(d.id)
     labels.districts[d.id] = rename.has(d.id) ? named.districts[d.id] : { name: (p as District).name, subtitle: (p as District).subtitle }
   }
-  // Every untouched building has a previous twin with the same members (a new one is touched).
+  // Every untouched building has a previous twin with the same members (a new one is touched). Its floors are kept,
+  // unless they are the old code-derived "other" floor (look spec §9.3): those give way to the code's floors today.
   for (const b of g.buildings) {
-    labels.buildings[b.id] = ids.has(b.id) ? fresh.buildings[b.id] : fromPrevious(prevB.get(b.id) as WorldDoc['buildings'][number])
+    if (ids.has(b.id)) {
+      labels.buildings[b.id] = fresh.buildings[b.id]
+      continue
+    }
+    const p = prevB.get(b.id) as WorldDoc['buildings'][number]
+    const kept = fromPrevious(p)
+    if (isLegacyOtherFloors(p.floors, p.members)) kept.floors = labels.buildings[b.id].floors
+    labels.buildings[b.id] = kept
   }
   for (const e of g.edges) {
     const id = edgeId(e)

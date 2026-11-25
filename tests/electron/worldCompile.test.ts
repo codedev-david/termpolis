@@ -1892,3 +1892,26 @@ describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOO
     expect(again.edges.map((e) => e.id).sort()).toEqual(doc.edges.map((e) => e.id).sort())
   })
 })
+
+describe('a saved world with an "other" floor (WP-LOOK Task 8)', () => {
+  const BIG = Array.from({ length: 15 }, (_, i) => `src/big/order${String.fromCharCode(65 + i)}.ts`)
+  const FILES: Record<string, string> = { ...Object.fromEntries(BIG.map((f) => [f, 'export const v = 1\n'])), 'src/small.ts': 'export const s = 1\n' }
+  const compileBig = (previous: WorldDoc | null, changed?: string[]): Promise<WorldDoc> =>
+    compileWorld({ snap: snapOf(FILES, {}), projectKey: 'floors', head: HEAD, previous, ...(changed ? { changed } : {}) }, mkDeps(FILES, { glob: async () => [] }))
+
+  it('keeps loading, and the next compile, even one that leaves the building untouched, gives it the new floors', async () => {
+    const doc = await compileBig(null)
+    const big = doc.buildings.find((b) => b.members.length === 15) as WorldDoc['buildings'][number]
+    expect(big.floors.map((f) => f.name)).not.toContain('other')
+    const legacy = [...big.members.slice(0, 11).map((m) => ({ name: m.slice(m.lastIndexOf('/') + 1, -3), tech: [], members: [m] })), { name: 'other', tech: [], members: big.members.slice(11) }]
+    const saved: WorldDoc = { ...doc, buildings: doc.buildings.map((b) => (b.id === big.id ? { ...b, floors: legacy } : b)) }
+    expectValid(saved)
+    const again = await compileBig(saved, ['src/small.ts'])
+    expectValid(again)
+    expect(again.buildings.find((b) => b.id === big.id)?.floors).toEqual(big.floors)
+    // Floors of any other shape (a model's own) are kept as they were on an untouched building.
+    const named = [{ name: 'Entry', tech: [], members: big.members.slice(0, 5) }, { name: 'other', tech: [], members: big.members.slice(5) }]
+    const kept = await compileBig({ ...doc, buildings: doc.buildings.map((b) => (b.id === big.id ? { ...b, floors: named } : b)) }, ['src/small.ts'])
+    expect(kept.buildings.find((b) => b.id === big.id)?.floors).toEqual(named)
+  })
+})
