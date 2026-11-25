@@ -111,6 +111,21 @@ export function onUnconnectedAccount(
   return !!row && !(row.isDefault || row.connect)
 }
 
+/** Does the profile this terminal's Claude runs on hold Termpolis's SessionStart memory hook? Only a registered Claude
+ *  account other than the default profile has a word here: its own settings.json, as main last read it (a missing
+ *  folder holds no hook). null for the default profile, which Agent Integration's ledger describes, and for a terminal
+ *  with no account, a stale one, another agent's or one changed by hand: the caller goes by the ledger alone then. */
+export function profileHookOf(
+  t: { id: string; agentAccountId?: string } | undefined,
+  view: { accounts: readonly AccountRowView[] } | null | undefined,
+  byHand: Readonly<Record<string, boolean>> | undefined,
+): boolean | null {
+  if (!t?.agentAccountId || byHand?.[t.id]) return null
+  const row = view?.accounts.find((r) => r.id === t.agentAccountId)
+  if (!row || row.isDefault || row.agent !== 'claude') return null
+  return row.connection?.hook === true
+}
+
 /** Why an account can't take a swarm worker over, or null when it can: it must be connected, its
  *  profile holding Termpolis's server entry with Agent Integration on, so the worker keeps
  *  Termpolis's tools (§8.3 rule 8); and for Claude Code it must skip the bypass-permissions

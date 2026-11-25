@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts, onUnconnectedAccount,
+  ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts, onUnconnectedAccount, profileHookOf,
 } from '../../src/renderer/src/lib/accountsView'
 import type { AccountsView } from '../../src/shared/agentAccounts'
 
@@ -192,5 +192,32 @@ describe('onUnconnectedAccount: a terminal whose registered account the user did
     // A record kept for a terminal of another id is no word on this one.
     expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), { u: true })).toBe(true)
     expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), undefined)).toBe(true)
+  })
+})
+
+// Review Minor 1 (1.63.1 port): Agent Integration's ledger says what Termpolis meant to install; a Claude on another
+// account's profile runs on that profile's own settings.json, which holds the memory hook only when that profile got it.
+describe('profileHookOf: whether the launching account\'s own profile holds the memory hook', () => {
+  const view = (...rows: AccountRowView[]) => ({ accounts: rows })
+  const other = row({ id: 'acc_o' })
+  it('reads the row of a Claude account other than the default profile', () => {
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), {})).toBe(true)
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, connection: { server: true, hook: false, allow: true } }), {})).toBe(false)
+  })
+  it('is false for a Claude account whose folder is missing: no file there holds the hook', () => {
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, connection: null, folderExists: false }), {})).toBe(false)
+  })
+  it('has no word (null) on the default profile, which the ledger itself describes, or on another agent\'s row', () => {
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, isDefault: true, connection: { server: true, hook: false, allow: true } }), {})).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, agent: 'codex' }), {})).toBeNull()
+  })
+  it('has no word on a terminal it knows nothing of: no account, a stale one, one changed by hand, no view', () => {
+    expect(profileHookOf({ id: 't' }, view(other), {})).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_gone' }, view(other), {})).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), { t: true })).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, null, {})).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, undefined, undefined)).toBeNull()
+    expect(profileHookOf(undefined, view(other), {})).toBeNull()
+    expect(profileHookOf({ id: 't', agentAccountId: 'acc_o' }, view(other), { u: true })).toBe(true)
   })
 })

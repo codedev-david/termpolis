@@ -4,7 +4,7 @@ import { createReprimeController, type ReprimeController } from '../lib/compacti
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
 import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
-import { onUnconnectedAccount } from '../lib/accountsView'
+import { onUnconnectedAccount, profileHookOf } from '../lib/accountsView'
 import { psQuote } from '../../../shared/shellQuote'
 import { atShellPrompt, terminalOutput } from '../lib/promptReport'
 
@@ -278,17 +278,25 @@ export function isClaudeAgent(a: { name?: string } | null | undefined): boolean 
  * silently, at launch and after every compaction. A pointer typed into a Claude that had the hook
  * after all is a duplicate the user can see. Main answers a ledger it cannot read with "not
  * connected" for the same reason (getAgentIntegrationStatus).
+ *
+ * The ledger says what Termpolis meant to install, in the default profile. A Claude on another
+ * registered account runs on that profile's own settings.json, so with `terminalId` that account's
+ * row decides as well (profileHookOf): a profile without the hook, or a folder that is missing,
+ * gets the pointer though the ledger has the hook on.
  */
-export async function claudeHookLoadsMemory(): Promise<boolean> {
+export async function claudeHookLoadsMemory(terminalId?: string): Promise<boolean> {
   const status = window.termpolis?.agentIntegrationStatus
   if (!status) return false
   try {
     const res = await status()
     if (!res?.success || !res.data) return false
-    return res.data.connected === true && res.data.primerHook === true
+    if (res.data.connected !== true || res.data.primerHook !== true) return false
   } catch {
     return false
   }
+  if (!terminalId) return true
+  const s = useTerminalStore.getState()
+  return profileHookOf(s.terminals.find((t) => t.id === terminalId), s.accountsView, s.accountsByHand) !== false
 }
 
 // Check that relevant memory exists for this project and, if so, paste a short
@@ -516,7 +524,7 @@ export async function primeOnLaunch(
     onAttempt?: () => void
     /** Claude Code gets its memory with nothing typed (claudeHookLoadsMemory). Asked once the
      *  gate has said which agent was launched, and only for Claude Code. */
-    claudeLoadsMemory?: () => Promise<boolean>
+    claudeLoadsMemory?: (terminalId: string) => Promise<boolean>
     pollMs?: number
     maxWaitMs?: number
     delayMs?: number
@@ -552,7 +560,7 @@ export async function primeOnLaunch(
     waited += pollMs
   }
   // A Claude Code that loads its own memory gets nothing typed, whichever way it was launched.
-  if (isClaudeAgent(gate.launchedAgent()) && (await claudeLoadsMemory())) return false
+  if (isClaudeAgent(gate.launchedAgent()) && (await claudeLoadsMemory(terminalId))) return false
   await sleep(delayMs)
   if (stopped()) return false
   // A folder-trust prompt the agent put up while it booted is the user's to answer. Wait for
@@ -714,7 +722,7 @@ export function useCompactionReprimer(
           isLaunchPrimed: () =>
             useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.launchPrimed === true,
           // Claude Code's SessionStart hook runs after a compaction too.
-          loadsMemoryItself: async () => isClaudeAgent({ name: agentRef.current ?? '' }) && (await claudeHookLoadsMemory()),
+          loadsMemoryItself: async () => isClaudeAgent({ name: agentRef.current ?? '' }) && (await claudeHookLoadsMemory(terminalId)),
         })
       },
     })

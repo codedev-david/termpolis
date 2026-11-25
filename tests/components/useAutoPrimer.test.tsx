@@ -2421,6 +2421,75 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
       mockApi({ agentIntegrationStatus: vi.fn(async () => { throw new Error('ipc gone') }) })
       expect(await claudeHookLoadsMemory()).toBe(false)
     })
+
+    // Review Minor 1: the ledger says what Termpolis meant to install. A Claude on another account runs on that
+    // profile's settings.json, so its own row decides there; the default profile is what the ledger describes.
+    describe('on the launching account\'s profile', () => {
+      const conn = (hook: boolean) => ({ server: true, hook, allow: true })
+      const row = (over: Record<string, unknown> = {}) => ({
+        id: 'acc_w', agent: 'claude', label: 'work', profile: '/h/.claude-work', folder: '/h/.claude-work', isDefault: false, autoOffer: false, order: 2,
+        connect: true, origin: 'adopted', folderExists: true, shares: [], lastEmail: null, connection: conn(true), bypassReady: false, terminals: 0, recopyAvailable: false, ...over,
+      })
+      const put = (r: Record<string, unknown>, byHand: Record<string, boolean> = {}) => useTerminalStore.setState({
+        accountsView: { accounts: [r], preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h' } as never,
+        accountsByHand: byHand,
+        terminals: [{ id: 't-acc', agentCommand: 'claude', agentAccountId: 'acc_w' } as any],
+      })
+      afterEach(() => useTerminalStore.setState({ accountsView: null, accountsByHand: {}, terminals: [] }))
+
+      it('is false for a Claude on an account whose profile lacks the hook, though the ledger has it on', async () => {
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row({ connection: conn(false) }))
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
+        put(row({ connection: null, folderExists: false }))
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
+      })
+      it('is true for an account profile that holds the hook, and never without the ledger saying so', async () => {
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row())
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOff) })
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(false)
+      })
+      it('goes by the ledger alone on the default profile and on an account changed by hand', async () => {
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row({ isDefault: true, connection: conn(false) }))
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
+        put(row({ connection: conn(false) }), { 't-acc': true })
+        expect(await claudeHookLoadsMemory('t-acc')).toBe(true)
+      })
+      it('a launch on an account profile without the hook types the pointer', async () => {
+        vi.useFakeTimers()
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row({ connection: conn(false) }))
+        renderHook(() => useAutoPrimer('t-acc', agent, '/repo', openGate()))
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2) // the pointer, then its Enter
+      })
+      it('a launch on an account profile with the hook types nothing', async () => {
+        vi.useFakeTimers()
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row())
+        renderHook(() => useAutoPrimer('t-acc', agent, '/repo', openGate()))
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+      })
+      it('a compaction on an account profile without the hook is re-primed', async () => {
+        vi.useFakeTimers()
+        mockApi({ agentIntegrationStatus: vi.fn(async () => hookOn) })
+        put(row({ connection: conn(false) }))
+        useTerminalStore.setState({ terminals: [{ id: 't-acc', agentAccountId: 'acc_w', launchPrimed: false } as any] })
+        const { result } = renderHook(() => useCompactionReprimer('t-acc', agent, '/repo'))
+        result.current('Compacting conversation...')
+        await vi.advanceTimersByTimeAsync(5000)
+        expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+      })
+      it('primeOnLaunch asks about the hook for its own terminal', async () => {
+        const claudeLoadsMemory = vi.fn(async (_id?: string) => true)
+        await primeOnLaunch('t-own', '/p', openGate(), { inject: async () => true, sleep: async () => {}, claudeLoadsMemory, awaiting: async () => false })
+        expect(claudeLoadsMemory).toHaveBeenCalledWith('t-own')
+      })
+    })
   })
 
   it('a launch whose status read fails still types the pointer into Claude', async () => {
