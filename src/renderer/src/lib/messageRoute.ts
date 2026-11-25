@@ -5,7 +5,9 @@ import { routerTuning } from './autoModel'
 import type { RouteEvent } from '../../../shared/smartRoute'
 import { effortOrDefault } from '../../../shared/effortLevels'
 
-export type RouterMode = 'auto-panes' | 'all' | 'off'
+// MODELHOME (2.0): one mode routes every Claude terminal Termpolis starts. One on Auto routes freely; any
+// other starts on its own model (its home) and the router only moves simple messages down to cheaper ones.
+export type RouterMode = 'every' | 'off'
 export type RouteLabel = 'keep' | 'haiku' | 'sonnet' | 'opus'
 export type RouteModel = 'haiku' | 'sonnet' | 'opus'
 
@@ -13,22 +15,27 @@ export type RouteModel = 'haiku' | 'sonnet' | 'opus'
 export type { RouteEvent }
 
 export const ROUTER_MODE_KEY = 'termpolis.agent.messageRouting'
-export const DEFAULT_ROUTER_MODE: RouterMode = 'auto-panes'
+export const DEFAULT_ROUTER_MODE: RouterMode = 'every'
 export const ROUTER_MODES: ReadonlyArray<{ value: RouterMode; label: string }> = [
-  { value: 'auto-panes', label: 'Claude terminals started on Auto, and Codex' },
-  { value: 'all', label: 'Every Claude and Codex terminal' },
+  { value: 'every', label: 'Every Claude terminal (steps down from its start model) and Codex' },
   { value: 'off', label: 'Off' },
 ]
+/** The modes saved before 2.0 ('auto-panes', 'all'): both are the one default now. */
+const OLD_MODES = ['auto-panes', 'all']
 
 const MODEL_NAME: Readonly<Record<RouteModel, string>> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus' }
 
 function isMode(v: unknown): v is RouterMode {
-  return v === 'auto-panes' || v === 'all' || v === 'off'
+  return v === 'every' || v === 'off'
 }
 
 export function getRouterMode(): RouterMode {
   try {
     const v = localStorage.getItem(ROUTER_MODE_KEY)
+    if (v !== null && OLD_MODES.indexOf(v) >= 0) {
+      try { localStorage.setItem(ROUTER_MODE_KEY, DEFAULT_ROUTER_MODE) } catch { /* read as the default anyway */ }
+      return DEFAULT_ROUTER_MODE
+    }
     return isMode(v) ? v : DEFAULT_ROUTER_MODE
   } catch {
     return DEFAULT_ROUTER_MODE
@@ -56,6 +63,8 @@ export function modelName(m: RouteModel): string {
 /** The chip: the model (and v1.57.0: the effort) this message runs on, an arrow on what moved, and how
  *  long deciding took. A subagent's task says so; a raise for failing tool calls says that instead of a time. */
 export function routeChipText(e: RouteEvent): string {
+  // MODELHOME: a terminal whose model the router cannot rank by price is not routed.
+  if (e.reason === 'unplaced') return `${unplacedName(e.unplaced)} · not routed`
   // v1.58.0: a Codex turn keeps its model; only the effort moves.
   if (e.codex) {
     const effort = e.switched && e.codex.from && e.codex.from !== e.codex.effort ? `${e.codex.from} → ${e.codex.effort}` : e.codex.effort
@@ -69,6 +78,12 @@ export function routeChipText(e: RouteEvent): string {
     effort = e.switched && before && before !== e.effort && (!e.from || e.from === e.model) ? ` · ${before} → ${e.effort}` : ` · ${e.effort}`
   }
   return `${e.agent ? 'Subagent: ' : ''}${model}${effort} · ${tail}`
+}
+
+/** The name of a model the router cannot place, as the chip shows it. */
+function unplacedName(name: string | undefined): string {
+  if (!name || name === 'other') return 'This model'
+  return name === 'fable' ? 'Fable' : name
 }
 
 const REASON: Readonly<Record<string, string>> = {
@@ -86,10 +101,15 @@ const REASON: Readonly<Record<string, string>> = {
   agent: "a subagent's task, routed on its own: its conversation is new, so nothing cached is lost",
   struggling: 'its tool calls kept failing, so it gets more thought until your next message',
   codex: 'this message fits this effort; Codex keeps its model',
+  home: 'this message is not surely simple, so it goes back to the model this terminal started on',
+  'at-home': 'this message is not surely simple, so it stays on the model this terminal started on',
 }
 
 /** The chip's tooltip: why, who decided, and what it is expected to save. */
 export function routeChipTitle(e: RouteEvent): string {
+  if (e.reason === 'unplaced') {
+    return `${unplacedName(e.unplaced)} is not one the router can rank by price, so this terminal's messages all run on it. Pick another model in the Model menu to have simple messages moved to cheaper ones.`
+  }
   const why = REASON[e.reason] ?? e.reason
   const who = e.source === 'rules' ? 'the word rules' : e.source === 'both' ? 'the local model and the word rules' : 'the local model'
   const pct = Math.round(Math.max(0, Math.min(1, e.confidence)) * 100)
@@ -104,6 +124,14 @@ export function routeChipTitle(e: RouteEvent): string {
 export function teachRoute(e: RouteEvent, label: RouteLabel): void {
   try {
     void window.termpolis.routerLearn?.({ prompt: e.prompt, label })?.catch(() => { /* a lost example */ })
+  } catch { /* API unavailable */ }
+}
+
+/** MODELHOME: the model this Claude terminal starts on and comes back to: its launch model, or the one the
+ *  user picked in its Model menu. Routing carries on from it. */
+export function setRouteHome(terminalId: string, model: string): void {
+  try {
+    void window.termpolis.routerHome?.({ terminalId, model })?.catch(() => { /* main learns it from the session */ })
   } catch { /* API unavailable */ }
 }
 

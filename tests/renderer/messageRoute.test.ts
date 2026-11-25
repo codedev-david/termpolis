@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  getRouterMode, setRouterMode, applyRouterSettings, modelName, routeChipText, routeChipTitle, teachRoute, pinRoute,
+  getRouterMode, setRouterMode, applyRouterSettings, modelName, routeChipText, routeChipTitle, teachRoute, pinRoute, setRouteHome,
   ROUTER_MODE_KEY, DEFAULT_ROUTER_MODE, ROUTER_MODES, type RouteEvent,
 } from '../../src/renderer/src/lib/messageRoute'
 
@@ -21,12 +21,25 @@ afterEach(() => { w.termpolis = had })
 
 describe('message routing setting', () => {
   it('defaults, reads and validates the stored mode', () => {
-    expect(ROUTER_MODES.map((m) => m.value)).toEqual(['auto-panes', 'all', 'off'])
+    expect(ROUTER_MODES.map((m) => m.value)).toEqual(['every', 'off'])
+    expect(DEFAULT_ROUTER_MODE).toBe('every')
+    expect(ROUTER_MODES[0].label).toBe('Every Claude terminal (steps down from its start model) and Codex')
     expect(getRouterMode()).toBe(DEFAULT_ROUTER_MODE)
-    localStorage.setItem(ROUTER_MODE_KEY, 'all')
-    expect(getRouterMode()).toBe('all')
+    localStorage.setItem(ROUTER_MODE_KEY, 'off')
+    expect(getRouterMode()).toBe('off')
     localStorage.setItem(ROUTER_MODE_KEY, 'junk')
     expect(getRouterMode()).toBe(DEFAULT_ROUTER_MODE)
+  })
+
+  it('MODELHOME: a mode saved before 2.0 reads as the one default, and is saved so', () => {
+    for (const old of ['auto-panes', 'all']) {
+      localStorage.setItem(ROUTER_MODE_KEY, old)
+      expect(getRouterMode()).toBe('every')
+      expect(localStorage.getItem(ROUTER_MODE_KEY)).toBe('every')
+    }
+    localStorage.setItem(ROUTER_MODE_KEY, 'all')
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    try { expect(getRouterMode()).toBe('every') } finally { set.mockRestore() }
   })
 
   it('setRouterMode stores it and tells main, with the tuning', () => {
@@ -42,16 +55,16 @@ describe('message routing setting', () => {
 
   it('survives a missing API, a rejecting one, and a throwing one, and blocked storage', async () => {
     api.routerConfigure = undefined
-    expect(() => applyRouterSettings('all')).not.toThrow()
+    expect(() => applyRouterSettings('every')).not.toThrow()
     api.routerConfigure = vi.fn(async () => { throw new Error('x') })
-    expect(() => applyRouterSettings('all')).not.toThrow()
+    expect(() => applyRouterSettings('every')).not.toThrow()
     api.routerConfigure = () => { throw new Error('sync') }
-    expect(() => applyRouterSettings('all')).not.toThrow()
+    expect(() => applyRouterSettings('every')).not.toThrow()
     const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
     const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
     try {
       expect(getRouterMode()).toBe(DEFAULT_ROUTER_MODE)
-      expect(setRouterMode('all')).toBe('all')
+      expect(setRouterMode('every')).toBe('every')
     } finally { get.mockRestore(); set.mockRestore() }
     await Promise.resolve()
   })
@@ -94,6 +107,40 @@ describe('the route chip', () => {
     expect(routeChipTitle(ev({ source: 'rules', saving: 0 }))).not.toContain('saving')
     expect(routeChipTitle(ev({ source: 'both', confidence: -1 }))).toContain('the local model and the word rules (0% sure)')
     expect(routeChipTitle(ev({ reason: 'mystery' }))).toContain(': mystery.')
+  })
+})
+
+describe('MODELHOME: the chip of a terminal with a home model', () => {
+  it('says a message went back home, or stayed there', () => {
+    const back = ev({ model: 'opus', from: 'haiku', effort: null, switched: true, reason: 'home', label: 'opus' })
+    expect(routeChipText(back)).toBe('Haiku → Opus · 4 ms')
+    expect(routeChipTitle(back)).toContain('goes back to the model this terminal started on')
+    const stay = ev({ model: 'opus', from: 'opus', effort: null, switched: false, reason: 'at-home', label: 'sonnet' })
+    expect(routeChipText(stay)).toBe('Opus · 4 ms')
+    expect(routeChipTitle(stay)).toContain('stays on the model this terminal started on')
+  })
+
+  it('names a home it cannot place, and says why nothing is routed', () => {
+    const e = (unplaced?: string) => ev({ reason: 'unplaced', unplaced, label: 'keep', switched: false, source: 'rules', confidence: 0, ms: 0, saving: 0 })
+    expect(routeChipText(e('fable'))).toBe('Fable · not routed')
+    expect(routeChipText(e('claude-nova-1'))).toBe('claude-nova-1 · not routed')
+    expect(routeChipText(e('other'))).toBe('This model · not routed')
+    expect(routeChipText(e())).toBe('This model · not routed')
+    expect(routeChipTitle(e('fable'))).toBe("Fable is not one the router can rank by price, so this terminal's messages all run on it. Pick another model in the Model menu to have simple messages moved to cheaper ones.")
+  })
+
+  it('setRouteHome tells main the new home, and survives a missing or failing API', async () => {
+    const home = vi.fn(async () => ({ success: true }))
+    api.routerHome = home
+    setRouteHome('t1', 'sonnet')
+    expect(home).toHaveBeenCalledWith({ terminalId: 't1', model: 'sonnet' })
+    api.routerHome = undefined
+    expect(() => setRouteHome('t1', 'opus')).not.toThrow()
+    api.routerHome = vi.fn(async () => { throw new Error('x') })
+    expect(() => setRouteHome('t1', 'opus')).not.toThrow()
+    api.routerHome = () => { throw new Error('sync') }
+    expect(() => setRouteHome('t1', 'opus')).not.toThrow()
+    await Promise.resolve()
   })
 })
 

@@ -74,7 +74,7 @@ import '@xterm/xterm/css/xterm.css'
 import { hasHardwareWebgl } from '../../lib/webglSupport'
 import { noteMisroute, routedChipText, routedChipTitle, routerTuning } from '../../lib/autoModel'
 import { rerouteOffer, runningClaudeModel, type RerouteOffer } from '../../lib/earlyReroute'
-import { pinRoute, routeChipText, routeChipTitle, teachRoute, type RouteEvent, type RouteLabel } from '../../lib/messageRoute'
+import { routeChipText, routeChipTitle, setRouteHome, teachRoute, type RouteEvent, type RouteLabel } from '../../lib/messageRoute'
 
 interface Props {
   terminalId: string
@@ -2483,8 +2483,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               // The "Model…" placeholder is not a choice: leave the picker on what it shows.
               if (!alias) return
               setReroute(null)
-              // A model picked by hand holds: the router stops moving this pane's messages.
-              if (provider === 'claude' && routeEvent) { pinRoute(terminalId); setRouteEvent(null) }
+              // MODELHOME: a model picked by hand is this pane's new home. Routing carries on from it: simple
+              // messages still step down to a cheaper model, and nothing goes above it.
+              if (provider === 'claude') { setRouteHome(terminalId, alias); setRouteEvent(null) }
               if (authoritativeProvider === provider) {
                 // Claim the terminal first: one call both checks and takes it, so two picks
                 // cannot both pass, and a pane remounted mid-switch is refused too.
@@ -2600,6 +2601,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 >
                   <i className="fa-solid fa-bolt text-[9px] text-[#d7ba7d]" aria-hidden="true"></i>
                   {routeChipText(routeEvent)}
+                  {routeEvent.reason !== 'unplaced' && (
                   <select
                     data-testid="model-route-teach"
                     aria-label="What this message should have run on"
@@ -2620,6 +2622,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     <option value="opus">{routeEvent.codex ? 'High effort' : 'Opus'}</option>
                     <option value="keep">{routeEvent.codex ? 'The effort it was on' : 'The model it was on'}</option>
                   </select>
+                  )}
                 </span>
               )}
               {provider === 'claude' && relayOffer && !relaunchInFlight && (

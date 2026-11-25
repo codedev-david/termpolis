@@ -1689,16 +1689,17 @@ describe('TerminalPane', () => {
     })
 
     // v1.56.0 per-message routing: main reports each pick; the chip shows it and learns a correction.
-    it('shows the per-message route, learns a correction, and a hand pick pins the pane', async () => {
+    it('shows the per-message route, learns a correction, and a hand pick is the new home (MODELHOME)', async () => {
       vi.useFakeTimers()
       osSaysShellAlone(false, true)
       exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
       const feed: { send?: (e: unknown) => void } = {}
       const routerLearn = vi.fn(async () => ({ success: true, data: true }))
       const routerPin = vi.fn(async () => ({ success: true }))
+      const routerHome = vi.fn(async () => ({ success: true }))
       Object.assign((window as any).termpolis, {
         onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }),
-        routerLearn, routerPin,
+        routerLearn, routerPin, routerHome,
       })
       withClaudeTerminal(`${FLAGS} --model opus`)
       render(<TerminalPane {...defaultProps} />)
@@ -1718,11 +1719,25 @@ describe('TerminalPane', () => {
       expect(routerLearn).toHaveBeenCalledWith({ prompt: 'what branch am I on', label: 'sonnet' })
       expect(mockSetMemoryNotice).toHaveBeenLastCalledWith(expect.stringContaining('The router will send messages like that one'))
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
-      expect(routerPin).toHaveBeenCalledWith({ terminalId: 'term-1', pinned: true })
+      // MODELHOME: the pick is where this pane starts from now on; routing carries on, so nothing is pinned.
+      expect(routerHome).toHaveBeenCalledWith({ terminalId: 'term-1', model: 'sonnet' })
+      expect(routerPin).not.toHaveBeenCalled()
       expect(screen.queryByTestId('model-route-chip')).toBeNull()
       await vi.runAllTimersAsync()
-      for (const k of ['onRouterMessage', 'routerLearn', 'routerPin']) delete (window as any).termpolis[k]
+      for (const k of ['onRouterMessage', 'routerLearn', 'routerPin', 'routerHome']) delete (window as any).termpolis[k]
       vi.useRealTimers()
+    })
+
+    it('MODELHOME: a home the router cannot place shows as not routed, with nothing to teach', () => {
+      const feed: { send?: (e: unknown) => void } = {}
+      Object.assign((window as any).termpolis, { onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }) })
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'x', model: 'opus', from: null, switched: false, reason: 'unplaced', unplaced: 'fable', label: 'keep', source: 'rules', confidence: 0, ms: 0, saving: 0 }))
+      expect(screen.getByTestId('model-route-chip').textContent).toBe('Fable · not routed')
+      expect(screen.getByTestId('model-route-chip').getAttribute('title')).toContain('can rank by price')
+      expect(screen.queryByTestId('model-route-teach')).toBeNull()
+      delete (window as any).termpolis.onRouterMessage
     })
 
     it('a Claude pane ignores a Codex route (v1.58.0)', () => {

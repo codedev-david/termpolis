@@ -29,6 +29,9 @@ const NO_LIST_HINT: Record<ModelProvider, string> = {
 
 const OWN_DEFAULT = "Agent's own default"
 
+/** A row's hint: a flex child that may shrink and breaks long words, so it wraps inside the panel. */
+const HINT = 'text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem] min-w-0 break-words whitespace-normal'
+
 export function DefaultModelsSettings() {
   const [defaults, setDefaults] = useState(() => getAgentModelDefaults())
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
@@ -69,7 +72,7 @@ export function DefaultModelsSettings() {
   }, [])
 
   return (
-    <div className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="settings-default-models">
+    <div className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526] min-w-0" data-testid="settings-default-models">
       <div className="flex flex-col gap-0.5">
         <span className="text-sm font-medium">Default Models</span>
         <span className="text-xs text-[#9ca3af] leading-relaxed">
@@ -105,15 +108,20 @@ export function DefaultModelsSettings() {
               </select>
             </label>
             {auto && saved === AUTO_MODEL && (
-              <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid="settings-default-model-claude-auto-hint">
-                Each new Claude terminal starts on the model and effort that fit what you type in
-                &ldquo;What&rsquo;s the task?&rdquo;: Haiku for a quick lookup, Sonnet for building, Opus for design
-                and hard bugs, Opus Plan when there is no task yet. Its subagents run on Sonnet. With
-                per-message routing on (below), each message you send then runs on the model it needs.
+              <span className={HINT} data-testid="settings-default-model-claude-auto-hint">
+                Each new Claude terminal starts on the model that fits what you type in &ldquo;What&rsquo;s the
+                task?&rdquo;, and its subagents run on Sonnet. With Model per message on (below), each message
+                then runs on whichever model it needs.
+              </span>
+            )}
+            {auto && saved !== AUTO_MODEL && (
+              <span className={HINT} data-testid="settings-default-model-claude-home-hint">
+                You pick the model each new Claude terminal starts on. With Model per message on (below), a
+                simple message moves to a cheaper model to save tokens, and the next one comes back.
               </span>
             )}
             {options.length === 0 && NO_LIST_HINT[provider] && (
-              <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid={`settings-default-model-${provider}-hint`}>
+              <span className={HINT} data-testid={`settings-default-model-${provider}-hint`}>
                 {NO_LIST_HINT[provider]}
               </span>
             )}
@@ -127,20 +135,18 @@ export function DefaultModelsSettings() {
             data-testid="settings-message-routing"
             value={routing}
             onChange={(e) => setRouting(setRouterMode(e.target.value as RouterMode))}
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden min-w-[16rem]"
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden w-[16rem] min-w-0 max-w-full"
           >
             {ROUTER_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </label>
-        <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid="settings-message-routing-hint">
-          Each message you send to Claude runs on the model it needs: Haiku for a quick question, Sonnet
-          for building, Opus for design and hard bugs. A small model on this computer decides in a few
-          milliseconds; nothing is sent anywhere to decide. It moves down only when that saves money
-          after re-reading the conversation, and a &ldquo;yes, go ahead&rdquo; stays on the model doing the work.
-          The pane header shows each pick; tell it what a message should have been and it learns.
-          Picking a model in a pane&rsquo;s Model menu turns this off for that pane. Applies to Claude
-          terminals Termpolis opens with token compression on. In Codex terminals opened from the sidebar
-          it picks each message&rsquo;s reasoning effort instead, and keeps the model.
+        <span className={HINT} data-testid="settings-message-routing-hint">
+          You pick where Claude starts: the model above, or one from a terminal&rsquo;s Model menu. A small
+          model on this computer reads each message. A simple one moves to a cheaper model when that saves
+          tokens; the next one that isn&rsquo;t goes back to where you started, and it never goes above
+          that. On Auto it picks freely. Nothing is sent anywhere to decide. The terminal header shows each
+          pick; tell it what a message should have been and it learns. Applies to Claude terminals Termpolis
+          opens with token compression on. In Codex terminals it picks the reasoning effort instead.
         </span>
       </div>
       <div className="flex items-center gap-3">

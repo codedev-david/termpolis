@@ -11,6 +11,7 @@ import { launchAccountAsked } from './launchAsk'
 import { AUTO_MODEL, catalogForLaunch, defaultModelFor, droppedDefaultNotice, getAgentModelDefaults } from './agentModelDefaults'
 import { autoLaunchArgs, carriesModelOrEffort, rememberUnavailable, skippedNotice, unavailableModels, unavailableNotice, watchModelUnavailable } from './autoModel'
 import { providerForCommand } from './modelCatalog'
+import { setRouteHome } from './messageRoute'
 import { markAgentLaunch } from './agentLaunch'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
@@ -297,8 +298,10 @@ async function launchAgentProfileSteps(
   // must agree about that, or a pin would lose to a default that reads the command more carefully.
   const pinnedModel = isClaude || providerForCommand(baseCommand) === 'claude' ? claudeModelArg(profile.model) : ''
   let routed: ReturnType<typeof autoLaunchArgs> | null = null
+  let homeArg = ''
   if (pinnedModel) {
     launchCommand = launchCommand + pinnedModel
+    homeArg = pinnedModel
   } else if (auto) {
     routed = autoLaunchArgs(deps.task, baseCommand, unavailableModels(accountId))
     launchCommand = launchCommand + routed.modelArg + routed.effortArg
@@ -306,8 +309,14 @@ async function launchAgentProfileSteps(
   } else {
     const model = defaultModelFor(baseCommand, await catalogPromise)
     launchCommand = launchCommand + model.arg
+    homeArg = model.arg
     if (model.dropped) useTerminalStore.getState().setMemoryNotice(droppedDefaultNotice(baseCommand, model.dropped))
   }
+  // MODELHOME: a Claude terminal not on Auto starts on this model (its home), and the router only steps
+  // simple messages down from it. With no model added (the agent's own default, or a command that names
+  // its own), main learns the home from the session's first request instead.
+  const home = / --model (\S+)/.exec(homeArg)?.[1]
+  if (home && !auto && (isClaude || providerForCommand(baseCommand) === 'claude')) setRouteHome(id, home)
   // The pane was added before any of this; what Auto picked joins it now, for the agent header.
   if (routed?.decision && routed.modelArg) useTerminalStore.getState().updateTerminal(id, { routed: routed.decision })
   // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the

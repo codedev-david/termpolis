@@ -84,6 +84,27 @@ describe('launchAgentProfile — single-agent model selection', () => {
       expect(launchLine()).not.toContain('haiku')
     })
 
+    it('MODELHOME: tells main the model a Claude terminal starts on, so routing steps down from it', async () => {
+      const routerHome = vi.fn(async () => ({ success: true }))
+      ;(window as unknown as { termpolis: Record<string, unknown> }).termpolis.routerHome = routerHome
+      setAgentModelDefault('claude', 'haiku')
+      await launched(profile())
+      expect(routerHome).toHaveBeenLastCalledWith({ terminalId: expect.any(String), model: 'haiku' })
+      await launched(profile({ model: 'opus' }))
+      expect(routerHome).toHaveBeenLastCalledWith({ terminalId: expect.any(String), model: 'opus' })
+      routerHome.mockClear()
+      // No model added (the agent's own default, or a command naming its own): main learns it from the session.
+      setAgentModelDefault('claude', '')
+      await launched(profile())
+      await launched(profile({ command: 'claude --model sonnet' }))
+      // Not Claude: nothing to say.
+      await launched(codex())
+      // Auto routes freely, with no home.
+      setAgentModelDefault('claude', AUTO_MODEL)
+      await launched(profile())
+      expect(routerHome).not.toHaveBeenCalled()
+    })
+
     it("falls back to the default for a path-spelled Claude command with no pin", async () => {
       setAgentModelDefault('claude', 'haiku')
       await launched(profile({ id: 'my-claude', name: 'Claude (tools)', command: 'C:\\tools\\claude.exe' }))

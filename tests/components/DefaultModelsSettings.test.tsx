@@ -204,15 +204,44 @@ describe('DefaultModelsSettings', () => {
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
   })
+  it('MODELHOME: the Claude row says where it starts and that simple messages step down', () => {
+    render(<DefaultModelsSettings />)
+    const home = screen.getByTestId('settings-default-model-claude-home-hint').textContent ?? ''
+    expect(home).toContain('starts on')
+    expect(home).toContain('cheaper model')
+    expect(home).toContain('comes back')
+    fireEvent.change(select('claude'), { target: { value: 'auto' } })
+    expect(screen.queryByTestId('settings-default-model-claude-home-hint')).toBeNull()
+    const routing = screen.getByTestId('settings-message-routing-hint').textContent ?? ''
+    expect(routing).toContain('never goes above')
+    expect(routing).not.toContain('turns this off')
+  })
+
+  it('MODELHOME: the hints wrap inside the panel at any width', () => {
+    // jsdom lays nothing out, so this pins the classes that let the text wrap: a flex child with
+    // min-width 0 that breaks long words, and a routing select that may shrink below its longest option.
+    render(<DefaultModelsSettings />)
+    const hints = ['settings-message-routing-hint', 'settings-default-model-claude-home-hint'].map((id) => screen.getByTestId(id))
+    for (const h of hints) {
+      for (const c of ['min-w-0', 'break-words', 'whitespace-normal']) expect(Array.from(h.classList)).toContain(c)
+    }
+    const sel = screen.getByTestId('settings-message-routing')
+    expect(sel.className).not.toContain('min-w-[16rem]')
+    expect(Array.from(sel.classList)).toEqual(expect.arrayContaining(['min-w-0', 'max-w-full']))
+    expect(Array.from(screen.getByTestId('settings-default-models').classList)).toContain('min-w-0')
+  })
+
   it('Model per message: shows the saved mode, stores a change and tells main', async () => {
     localStorage.setItem('termpolis.agent.messageRouting', 'all')
     const routerConfigure = vi.fn(async () => ({ success: true }))
     ;(window as any).termpolis.routerConfigure = routerConfigure
     render(<DefaultModelsSettings />)
     const sel = screen.getByTestId('settings-message-routing') as HTMLSelectElement
-    expect(values(sel)).toEqual(['auto-panes', 'all', 'off'])
-    expect(sel.value).toBe('all')
-    expect(screen.getByTestId('settings-message-routing-hint').textContent).toContain('nothing is sent anywhere')
+    // MODELHOME: one routing mode and Off; a value saved before 2.0 reads as the new default.
+    expect(values(sel)).toEqual(['every', 'off'])
+    expect(sel.value).toBe('every')
+    expect(localStorage.getItem('termpolis.agent.messageRouting')).toBe('every')
+    expect(screen.getByTestId('settings-message-routing-hint').textContent).toContain('Nothing is sent anywhere')
     fireEvent.change(sel, { target: { value: 'off' } })
     expect(sel.value).toBe('off')
     expect(localStorage.getItem('termpolis.agent.messageRouting')).toBe('off')
