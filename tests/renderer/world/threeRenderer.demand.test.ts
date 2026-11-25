@@ -731,6 +731,30 @@ describe('threeRenderer lost WebGL context', () => {
     r.dispose()
   })
 
+  it('a frame between the loss and its webglcontextlost event draws nothing and asks for no other; the event and the restore follow as ever', () => {
+    const onContextLost = vi.fn()
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, onContextLost })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(5)
+    r.setHovered('a') // a frame is asked for
+    expect(h.frames.pending()).toBe(1)
+    const n = frames(r)
+    const renders = rendererOf().renders.length
+    gpu.contextLost = true // loseContext(): the context is gone, its event not yet come
+    h.frames.step()
+    expect(frames(r)).toBe(n)
+    expect(rendererOf().renders.length).toBe(renders)
+    expect(h.frames.pending()).toBe(0)
+    expect(lose(r.canvas).defaultPrevented).toBe(true)
+    expect(onContextLost).toHaveBeenCalledTimes(1)
+    gpu.contextLost = false
+    r.canvas.dispatchEvent(new Event('webglcontextrestored'))
+    h.frames.step()
+    expect(frames(r)).toBe(n + 1)
+    r.dispose()
+  })
+
   it('a loss and restore before any world is drawn, and with no callbacks, still pauses and resumes the loop', () => {
     const r = createThreeRenderer(h.host, REDUCED)
     lose(r.canvas)

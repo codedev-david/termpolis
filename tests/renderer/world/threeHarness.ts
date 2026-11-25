@@ -40,6 +40,8 @@ export const gpu = {
    *  unmasked name) or only as RENDERER. */
   gpuName: null as unknown,
   debugInfo: true,
+  /** The context is lost (isContextLost), as it is from loseContext() on until its webglcontextrestored. */
+  contextLost: false,
   /**
    * The context's WebGL 2 fences: whether it has them (off: WebGL 1, no fenceSync), how long after it is put in a fence
    * signals (performance.now ms; null: never), the fences put in, and the ones still not deleted.
@@ -55,6 +57,7 @@ export const gpu = {
     gpu.limits = { renderbuffer: 16384, texture: 16384, viewport: [16384, 16384] }
     gpu.gpuName = null
     gpu.debugInfo = true
+    gpu.contextLost = false
     gpu.fences = { on: false, signalAfter: 0, made: [], live: new Set() }
   },
 }
@@ -138,13 +141,14 @@ export class FakeWebGLRenderer {
   }
   forceContextLoss(): void { this.contextLost++ }
   /** A context answering the buffer limits (gpu.limits), the GPU's name (gpu.gpuName) and, with gpu.fences.on, fences. */
-  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; getParameter(p: number): unknown; getExtension(name: string): unknown } {
+  getContext(): { MAX_RENDERBUFFER_SIZE: number; MAX_TEXTURE_SIZE: number; MAX_VIEWPORT_DIMS: number; RENDERER: number; getParameter(p: number): unknown; getExtension(name: string): unknown; isContextLost(): boolean } {
     // The unmasked name (0x9246) only through the extension; RENDERER (0x1f01) names it too when there is none.
     const answers: Record<number, unknown> = { 0x84e8: gpu.limits.renderbuffer, 0x0d33: gpu.limits.texture, 0x0d3a: gpu.limits.viewport, [gpu.debugInfo ? 0x9246 : 0x1f01]: gpu.gpuName }
     return {
       MAX_RENDERBUFFER_SIZE: 0x84e8, MAX_TEXTURE_SIZE: 0x0d33, MAX_VIEWPORT_DIMS: 0x0d3a, RENDERER: 0x1f01,
       getParameter: (p) => (p in answers ? answers[p] : null),
       getExtension: (name) => (name === 'WEBGL_debug_renderer_info' && gpu.debugInfo ? { UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
+      isContextLost: () => gpu.contextLost,
       ...(gpu.fences.on ? fenceCalls() : {}),
     }
   }

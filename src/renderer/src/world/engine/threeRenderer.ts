@@ -2789,6 +2789,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     raf = 0
     // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
     if (host.clientWidth === 0 || host.clientHeight === 0) return
+    // The context is lost from the moment the GPU takes it, but webglcontextlost comes as a task of its own, and a
+    // frame can run in between. That frame draws nothing (three would read a lost context's null shader log and
+    // throw): the event stops the loop, and the restore wakes it.
+    if (renderer.getContext().isContextLost()) return
     // Drawn in software: this frame is skipped while the GPU is still drawing the last (lastDrawn), and, with only
     // the looping motions moving and no change since, until loopGap after the last (the clock keeps the wall time,
     // so the motions keep their speed).
