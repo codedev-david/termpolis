@@ -151,12 +151,49 @@ async function waitForShellLine(termId: string, submitted: boolean, ms: number):
   }, { id: termId, wantIn: submitted, budget: ms })
 }
 
-/** What Agent Integration says about the profile: connected, and whether the memory hook is on. */
+/** What Agent Integration says about the profile, as the re-primer's guard reads it (agents:integration-memory-hook,
+ *  the ledger's two answers): connected, and whether the memory hook is on. */
 async function hookStatus(): Promise<{ connected: unknown; primerHook: unknown }> {
   return page.evaluate(async () => {
-    const r = await (window as any).termpolis.agentIntegrationStatus()
+    const r = await (window as any).termpolis.agentIntegrationMemoryHook()
     return { connected: r?.data?.connected, primerHook: r?.data?.primerHook }
   })
+}
+
+/** A new terminal with a real process running in it, for the OS to find there (see the first re-prime test). */
+async function terminalRunningNode(name: string): Promise<string> {
+  await createTerminal(name)
+  const termId = await lastTerminalId()
+  expect(termId).toBeTruthy()
+  // Typed once the shell's prompt is up (a line typed into a PowerShell still starting on macOS loses its Enter).
+  expect(await waitForShellLine(termId, false, 30_000), 'expected the shell to report its prompt (OSC 9;9 or OSC 7) within 30 s').toBe(true)
+  await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
+  const running = await askShellAlone(termId, 'running', 45_000)
+  if (running === null) expect(await waitForShellLine(termId, true, 15_000), 'expected the shell to take the node line in').toBe(true)
+  expect(running, 'expected the OS to see node running in the terminal').not.toBe(true)
+  return termId
+}
+
+/** Shows an agent's banner in the terminal, then a compaction marker, as the first re-prime test does. */
+async function compactionAfter(termId: string, banner: string): Promise<void> {
+  await page.evaluate(({ id, text }) => (window as any).termpolis.__testTerminalData(id, text), { id: termId, text: banner })
+  await page.waitForTimeout(1200) // let agent detection re-render (updates the re-primer's agent ref)
+  await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, '✻ Compacting conversation… (2m 30s)\r\n'), termId)
+}
+
+/** The first bracketed paste written to one terminal within `ms`, or null. */
+async function firstPaste(termId: string, ms: number): Promise<string | null> {
+  return page.evaluate(async ({ id, bp, budget }) => {
+    const api = (window as any).termpolis
+    const until = Date.now() + budget
+    while (Date.now() < until) {
+      const r = await api.__testTerminalWrites()
+      const hit = ((r && r.data) || []).find((w: any) => w.id === id && typeof w.data === 'string' && w.data.includes(bp))
+      if (hit) return hit.data
+      await new Promise((res) => setTimeout(res, 200))
+    }
+    return null
+  }, { id: termId, bp: BP_START, budget: ms })
 }
 
 /** Connects the agents with Termpolis's SessionStart memory hook on or off, and returns the status after. */
@@ -203,9 +240,10 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
         if (r?.data?.consent != null) break
         await new Promise((res) => setTimeout(res, 100))
       }
-      return { consent: r?.data?.consent, connected: r?.data?.connected, primerHook: r?.data?.primerHook }
+      return { consent: r?.data?.consent ?? null, connected: r?.data?.connected, primerHook: r?.data?.primerHook }
     })
-    console.log(`[compaction-reprime] agent integration after the tour: ${JSON.stringify(tour)}`)
+    // Without the tour's answer in, a late one could switch the hook back on after this test switched it off.
+    expect(tour.consent, `expected the tour's answer within 5 s, got ${JSON.stringify(tour)}`).not.toBeNull()
     expect(await setMemoryHook(false)).toEqual({ connected: true, primerHook: false })
   })
 
@@ -318,26 +356,26 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     // The hook loads the digest again after a compaction by itself (SessionStart, source compact).
     // The same flow as the first terminal, a process running included, so the one difference is the hook.
     expect(await setMemoryHook(true)).toEqual({ connected: true, primerHook: true })
-    await createTerminal('Reprime3')
-    const termId = await lastTerminalId()
-    expect(termId).toBeTruthy()
-    // Typed once the shell's prompt is up, as in the first test (a line typed into a PowerShell
-    // still starting on macOS loses its Enter).
-    expect(await waitForShellLine(termId, false, 30_000), 'expected the shell to report its prompt (OSC 9;9 or OSC 7) within 30 s').toBe(true)
-    await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
-    const running = await askShellAlone(termId, 'running', 45_000)
-    if (running === null) expect(await waitForShellLine(termId, true, 15_000), 'expected the shell to take the node line in').toBe(true)
-    expect(running, 'expected the OS to see node running in the terminal').not.toBe(true)
-
-    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, 'claude code v1.0 starting\r\n'),
-      termId)
-    await page.waitForTimeout(1200)
-    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, '✻ Compacting conversation… (2m 30s)\r\n'),
-      termId)
+    const termId = await terminalRunningNode('Reprime3')
+    await compactionAfter(termId, 'claude code v1.0 starting\r\n')
 
     // Longer than the first test saw the same flow take to type its pointer, as in the test above.
     await page.waitForTimeout(Math.max(12_000, rePrimeMs * 2 + 3000))
     expect(await pastesTo(termId), 'a pointer was typed into a Claude that loads its memory itself').toBe(0)
+    // What the guard read over that window: still connected with the hook on.
+    expect(await hookStatus()).toEqual({ connected: true, primerHook: true })
+  })
+
+  test('with the hook still on, the same compaction in a Codex terminal is re-primed (the hook is why the Claude got nothing)', async () => {
+    // The positive control for the test above: the same hook state, the same flow and marker, and only the agent
+    // differs. Codex has no SessionStart hook, so the guard lets its re-prime through. A paste here shows the marker is
+    // seen and the re-prime fires with the hook on, so the empty Claude terminal above is the guard's doing.
+    expect(await hookStatus()).toEqual({ connected: true, primerHook: true })
+    const termId = await terminalRunningNode('Reprime4')
+    await compactionAfter(termId, 'OpenAI Codex v0.1 starting\r\n')
+    const pasted = await firstPaste(termId, 40_000)
+    expect(pasted, 'expected the re-prime to reach a Codex terminal with the hook on').toBeTruthy()
+    expect(pasted).toContain('memory_primer')
   })
 })
 
