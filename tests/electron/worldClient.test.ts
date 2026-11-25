@@ -14,7 +14,7 @@ vi.mock('electron', () => ({
 
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
-import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
+import { HOST_STOPPED_MESSAGE, createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
 import { createLlmGate, GATE_SETTLE_GRACE_MS, WORLD_LLM_HOST_LIMIT } from '../../src/main/world/llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS } from '../../src/main/world/label'
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
@@ -214,8 +214,18 @@ describe('createWorldClient', () => {
     })
     const pending = client.compile(ROOT)
     await vi.waitFor(() => expect(spawned[0]?.calls()).toHaveLength(1))
-    spawned[0].exit(3)
-    await expect(pending).rejects.toThrow('Lumopolis host exited (code 3)')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      spawned[0].exit(3)
+      // M6: the window gets plain words, fit to show as they are; the exit code goes to the log.
+      const e = await pending.catch((x: unknown) => x)
+      expect(e).toMatchObject({ message: HOST_STOPPED_MESSAGE })
+      expect(windowMessage(e)).toBe(HOST_STOPPED_MESSAGE)
+      expect(HOST_STOPPED_MESSAGE).toBe('Lumopolis stopped responding. Try again.')
+      expect(warn).toHaveBeenCalledWith('[world] Lumopolis host exited (code 3)')
+    } finally {
+      warn.mockRestore()
+    }
     expect(client.pid).toBeUndefined()
     expect(await client.compile(ROOT)).toEqual(DOC)
     expect(spawn).toHaveBeenCalledTimes(2)
@@ -232,8 +242,14 @@ describe('createWorldClient', () => {
     })
     const p = client.get(ROOT)
     await vi.waitFor(() => expect(spawned).toHaveLength(1))
-    spawned[0].exit(9)
-    await expect(p).rejects.toThrow('code 9')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      spawned[0].exit(9)
+      await expect(p).rejects.toThrow(HOST_STOPPED_MESSAGE)
+      expect(warn).toHaveBeenCalledWith('[world] Lumopolis host exited (code 9)')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('init-error rejects, kills that host (even if kill throws), and the next call respawns', async () => {
@@ -268,8 +284,11 @@ describe('createWorldClient', () => {
     expect(spawned).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(29_999)
     expect(spawned[0].killed).toBe(0)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     await vi.advanceTimersByTimeAsync(1)
-    expect((await seen as Error).message).toBe('Lumopolis host did not start in time')
+    expect((await seen as Error).message).toBe(HOST_STOPPED_MESSAGE)
+    expect(warn).toHaveBeenCalledWith('[world] Lumopolis host did not start in time')
+    warn.mockRestore()
     expect(spawned[0].killed).toBe(1)
     const next = client.get(ROOT)
     await vi.advanceTimersByTimeAsync(0)
@@ -286,8 +305,11 @@ describe('createWorldClient', () => {
       t.autoReady = false
     })
     const seen = client.get(ROOT).catch((e: Error) => e)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     await vi.advanceTimersByTimeAsync(50)
-    expect((await seen as Error).message).toContain('did not start in time')
+    expect((await seen as Error).message).toBe(HOST_STOPPED_MESSAGE)
+    expect(warn).toHaveBeenCalledWith('[world] Lumopolis host did not start in time')
+    warn.mockRestore()
     expect(spawned[0].killed).toBe(1)
   })
 
@@ -303,7 +325,15 @@ describe('createWorldClient', () => {
     const { client } = setup({ callTimeoutMs: 5 }, (t) => {
       t.reply = null
     })
-    await expect(client.get(ROOT)).rejects.toThrow('Lumopolis host call "get" timed out')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const e = await client.get(ROOT).catch((x: unknown) => x)
+      expect(e).toMatchObject({ message: HOST_STOPPED_MESSAGE })
+      expect(windowMessage(e)).toBe(HOST_STOPPED_MESSAGE)
+      expect(warn).toHaveBeenCalledWith('[world] Lumopolis host call "get" timed out')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('a post that throws rejects that call', async () => {
@@ -979,8 +1009,11 @@ describe('createWorldClient', () => {
         uninstall()
       }
       expect(errors).toHaveLength(6)
-      expect(errors.some((e) => e.includes('timed out'))).toBe(true)
-      expect(errors.some((e) => e.includes('exited'))).toBe(true)
+      // M6: the timed-out and the crashed clone both say Lumopolis stopped responding; the log says which.
+      expect(errors.filter((e) => e === HOST_STOPPED_MESSAGE)).toHaveLength(2)
+      const logged = readAppLog(1000).map((entry) => entry.msg)
+      expect(logged.some((m) => m.includes('Lumopolis host call "cloneSource" timed out'))).toBe(true)
+      expect(logged.some((m) => m.includes('Lumopolis host exited (code 1)'))).toBe(true)
       for (const e of errors) expect(e).not.toContain(T)
       for (const entry of readAppLog(1000)) expect(entry.msg).not.toContain(T)
     })
@@ -1487,7 +1520,7 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
     await vi.advanceTimersByTimeAsync(60)
     t.emit({ kind: 'progress', projectKey: 'other', stage: 'layout', pct: 50 })
     await vi.advanceTimersByTimeAsync(60)
-    expect(await quiet).toBe('Lumopolis host call "compile" timed out')
+    expect(await quiet).toBe(HOST_STOPPED_MESSAGE)
   })
 
   it('whenCompiled resolves at once with no compile, and otherwise once every compile of the folder ended, failed or not', async () => {

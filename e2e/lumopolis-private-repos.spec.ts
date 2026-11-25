@@ -13,9 +13,13 @@
  *   2. A remembered repository whose login is gone: relaunched with the helper answering nothing
  *      (FAKE_HELPER_EMPTY=1), opening the remembered entry shows the saved world and the
  *      Sign in needed notice, never a window.
- *   3. Use a token opens a private repository: with no helper, only Use a token is offered; the pasted
- *      reply opens the world, and the saved sources file does not contain it. CI only: git hands the
- *      askpass its prompt on a command line, which this project keeps off developer machines.
+ *   3. The token dialog holds the keyboard: Tab and Shift+Tab go round it alone, never out to the clone
+ *      dialog under it, the toolbar or a terminal, and Esc gives the focus back to Use a token (F-R13).
+ *   4. Use a token opens a private repository: with no helper, only Use a token is offered; the pasted
+ *      reply opens the world, and the saved sources file does not contain it. Use this token, pressed
+ *      with Enter, greys while the token is tried, and the focus stays in the token dialog (F-R13). CI
+ *      only: git hands the askpass its prompt on a command line, which this project keeps off developer
+ *      machines.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -278,6 +282,50 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
     }
   })
 
+  test('the token dialog keeps Tab and Shift+Tab in it, and Esc gives the focus back to Use a token', async () => {
+    const ud = newUserData('token-keys')
+    const run = await launch(ud, emptyConfig)
+    app = run.app
+    const page = run.page
+    await openHome(page)
+    await startClone(page)
+    const useToken = page.locator('[data-testid="world-clone-use-token"]')
+    await expect(useToken).toBeVisible({ timeout: 60_000 })
+    await useToken.focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.locator('[data-testid="world-repo-access"]')
+    await expect(dialog.locator('[data-testid="world-repo-access-input"]')).toBeFocused()
+    // Where the focus is: inside the token dialog, or else what holds it (the clone dialog's control, the toolbar, a
+    // terminal, <body>), so a failure names where it went.
+    const where = (): Promise<string> =>
+      page.evaluate(() => {
+        const a = document.activeElement
+        if (a?.closest('[data-testid="world-repo-access"]')) return 'token dialog'
+        return a?.getAttribute('data-testid') ?? a?.getAttribute('aria-label') ?? a?.tagName ?? 'nothing'
+      })
+    const visited = new Set<string>()
+    for (const key of ['Tab', 'Shift+Tab']) {
+      for (let i = 0; i < 7; i++) {
+        await page.keyboard.press(key)
+        expect(await where(), `after ${i + 1} x ${key}`).toBe('token dialog')
+        visited.add(await page.evaluate(() => (document.activeElement as HTMLElement).outerHTML.slice(0, 80)))
+      }
+    }
+    // It went round more than one control, so the keys were not simply swallowed.
+    expect(visited.size).toBeGreaterThan(1)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(useToken).toBeFocused()
+    expect(run.errors).toEqual([])
+    await quitApp(app)
+    app = undefined
+    try {
+      fs.rmSync(ud, { recursive: true, force: true })
+    } catch {
+      /* temp dir */
+    }
+  })
+
   test('Use a token opens a private repository', async () => {
     test.skip(!inCi, 'token runs hand the askpass its prompt on a command line, so they run only in CI')
     userData = newUserData('token')
@@ -292,7 +340,28 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
     await useToken.click()
     const dialog = page.locator('[data-testid="world-repo-access"]')
     await dialog.locator('[data-testid="world-repo-access-input"]').fill(reply)
-    await dialog.getByRole('button', { name: 'Use this token' }).click()
+    const use = dialog.getByRole('button', { name: 'Use this token' })
+    await use.focus()
+    // Use this token greys while the token is tried; the focus must stay in the token dialog, both as it greys and a
+    // frame later, never falling to the page (F-R13). Watched from the page, so a fast clone cannot hide it.
+    await use.evaluate((b) => {
+      const g = window as unknown as { __greyFocus?: string[] }
+      g.__greyFocus = []
+      const where = (): string => {
+        const a = document.activeElement
+        return a?.closest('[data-testid="world-repo-access"]') ? 'token dialog' : a?.getAttribute('data-testid') ?? a?.tagName ?? 'nothing'
+      }
+      new MutationObserver((_, mo) => {
+        if (!(b as HTMLButtonElement).disabled) return
+        mo.disconnect()
+        g.__greyFocus?.push(where())
+        requestAnimationFrame(() => g.__greyFocus?.push(where()))
+      }).observe(b, { attributes: true, attributeFilter: ['disabled'] })
+    })
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __greyFocus?: string[] }).__greyFocus ?? []), { timeout: 30_000 })
+      .toEqual(['token dialog', 'token dialog'])
     await expectWorldOpen(page)
     const sources = path.join(userData, 'world', 'sources.json')
     expect(fs.existsSync(sources)).toBe(true)

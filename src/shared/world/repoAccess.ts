@@ -19,6 +19,9 @@ export interface NeedsLogin {
   /** F-R8: a git server said the repository is not there for an anonymous caller. The address may be wrong, so the
    *  sign-in choices are the second choice, and a background update never asks for one. */
   notFound?: true
+  /** M2: the host still said "not found" after a sign-in or a token. The address is the likely fault, so the words say
+   *  that, and the sign-in choices stay as the second choice for another account. */
+  stillNotFound?: true
 }
 
 /** What main answers (as success) when opening or updating a repository needs a sign-in first:

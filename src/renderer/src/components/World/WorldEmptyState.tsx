@@ -2,6 +2,7 @@
 // compile's progress), or a failure the user can retry. With no world open the pane shows the home.
 
 import { useUiZoom } from './worldPane'
+import { UI_FAILED } from './worldTargets'
 
 export type WorldEmptyMode = 'loading' | 'mapping' | 'error'
 
@@ -26,7 +27,8 @@ export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptySt
         {mode === 'error' && (
           <>
             <p className="text-sm">Lumopolis could not map this project.</p>
-            <p className="text-xs text-[#f48771] break-words" data-testid="world-error">{error}</p>
+            {/* M3: the fixed words for a call that threw would only say "couldn't" twice. */}
+            {error !== UI_FAILED && <p className="text-xs text-[#f48771] break-words" data-testid="world-error">{error}</p>}
             {onRetry && (
               <button
                 type="button"

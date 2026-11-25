@@ -24,6 +24,16 @@ import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS } from './label'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
+/** PENDING SIGN-OFF (M6): what a call says when the world host exited, did not start or did not answer in time. Which of
+ *  them, and the exit code or the call, goes to the log only. */
+export const HOST_STOPPED_MESSAGE = 'Lumopolis stopped responding. Try again.'
+
+/** The error for a host that stopped answering: logged as `detail`, shown with fixed words. */
+const hostStopped = (detail: string): Error => {
+  console.warn(`[world] ${detail}`)
+  return shownError(HOST_STOPPED_MESSAGE)
+}
+
 export interface WorldHostTransport {
   postMessage(msg: WorldHostRequest): void
   onMessage(cb: (msg: WorldHostResponse) => void): void
@@ -367,7 +377,7 @@ export function createWorldClient(
       // A host that neither answers init nor exits would otherwise hang every call forever (the
       // per-call timer only starts once init is done). Give up, kill it, and let the next call respawn.
       const initTimer = setTimeout(() => {
-        reset(tr, shownError('Lumopolis host did not start in time'))
+        reset(tr, hostStopped('Lumopolis host did not start in time'))
         try {
           tr.kill()
         } catch {
@@ -385,7 +395,7 @@ export function createWorldClient(
         }
       }
       tr.onMessage((m) => onMessage(tr, m))
-      tr.onExit((code) => reset(tr, shownError(`Lumopolis host exited (code ${code})`)))
+      tr.onExit((code) => reset(tr, hostStopped(`Lumopolis host exited (code ${code})`)))
       const askpassPath = askpassOf()
       tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...labellerOf(), ...(askpassPath ? { askpassPath } : {}) })
       // A host started after a world was removed (a restart, or a first start by a call for another world) is told at
@@ -421,7 +431,7 @@ export function createWorldClient(
       const expire = (): ReturnType<typeof setTimeout> =>
         setTimeout(() => {
           pending.delete(id)
-          reject(shownError(`Lumopolis host call "${fn}" timed out`))
+          reject(hostStopped(`Lumopolis host call "${fn}" timed out`))
         }, callTimeoutMs)
       const waiter: Waiter = { resolve: resolve as (v: unknown) => void, reject, timer: expire() }
       if (key !== undefined) {

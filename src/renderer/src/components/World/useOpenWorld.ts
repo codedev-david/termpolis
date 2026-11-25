@@ -31,7 +31,8 @@ export interface UseOpenWorld {
   listError: boolean
   refresh(): void
   /** Taken when an action starts that will open a world once it is done (the home's Map this project, a clone): it
-   *  says false once the pane has moved to another world meanwhile, or closed, so the older action no longer opens one. */
+   *  says false once the pane has moved to another world meanwhile, a newer action has started, or the pane closed, so
+   *  the older action no longer opens one. */
   ticket(): () => boolean
   /** Set when the background update of the opened repository needs a sign-in. */
   repoUpdate: RepoUpdate
@@ -64,7 +65,8 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
   const [listError, setListError] = useState(false)
   /** Grows with every list asked for: only the newest answer is shown (two can land out of order). */
   const listSeq = useRef(0)
-  /** Grows with every move to another world (open, home, a request, a followed cd): what a ticket checks. */
+  /** Grows with every move to another world (open, home, a request, a followed cd) and with every ticket taken: what a
+   *  ticket checks. */
   const moves = useRef(0)
   /** The list as last shown, for `open`, which outlives a render. */
   const shownEntries = useRef(entries)
@@ -127,8 +129,10 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     )
   }, [])
 
+  // Taking a ticket is starting an action: every older action still on its way lapses, so only the person's newest
+  // choice can move the pane (F-R4).
   const ticket = useCallback((): (() => boolean) => {
-    const at = moves.current
+    const at = ++moves.current
     return () => live.current && moves.current === at
   }, [])
 

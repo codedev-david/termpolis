@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { CARD_CLICK_GRACE_MS, CARD_FADE_PX, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
+import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
 import { SOLID_PANEL, UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
@@ -364,6 +365,12 @@ describe('WorldCard', () => {
 })
 
 describe('WorldEmptyState', () => {
+  it('M3: the fixed words for a call that threw add nothing under "could not map this project"', () => {
+    render(<WorldEmptyState mode="error" error={UI_FAILED} onRetry={vi.fn()} />)
+    expect(screen.getByTestId('world-empty')).toHaveTextContent(/^Lumopolis could not map this project\.Try again$/)
+    expect(screen.queryByTestId('world-error')).toBeNull()
+  })
+
   it('an error without a retry handler shows no retry button', () => {
     render(<WorldEmptyState mode="error" error="nope" />)
     expect(screen.getByTestId('world-error')).toHaveTextContent('nope')

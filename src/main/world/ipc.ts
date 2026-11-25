@@ -49,7 +49,7 @@ import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { TOKEN_REJECTED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
-import { AUTH_MESSAGE, NOT_FOUND_MESSAGE } from './gitSource'
+import { AUTH_MESSAGE, NOT_FOUND_MESSAGE, STILL_NOT_FOUND_MESSAGE } from './gitSource'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
@@ -66,12 +66,15 @@ export interface WorldIpcWindow {
   webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
-/** PENDING SIGN-OFF (#65): why a confirmation or the service names were not saved. The pane puts it after "Couldn't
- *  confirm:" or "Couldn't save the service names:", so it reads as the reason, never as a second "Couldn't save". */
+/** PENDING SIGN-OFF (#65): why a confirmation or the service names were not saved, in place of the raw error. The pane
+ *  shows its own sentence for the action instead (M3), so this never reaches a person there; it keeps internals off the
+ *  wire. */
 export const ANNOTATE_FAILED = "Lumopolis couldn't save it just now. Try again."
 
-/** PENDING SIGN-OFF (#65): what a settings read or change that failed answers; the reason goes to the log. */
+/** PENDING SIGN-OFF (#65): what a settings change that failed answers; the reason goes to the log. */
 export const SETTINGS_FAILED = "Lumopolis couldn't change that setting. Try again."
+/** PENDING SIGN-OFF (M4): what a settings read that failed answers; the reason goes to the log. */
+export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
 
 /** The host's coded refusals of annotate the window is told by name, because a Try again would not help. */
 const ANNOTATE_REFUSALS: Record<string, string> = { WORLD_SAVED_BY_NEWER }
@@ -82,10 +85,10 @@ const refusalOf = (e: unknown): string | null => {
   return typeof code === 'string' && Object.prototype.hasOwnProperty.call(ANNOTATE_REFUSALS, code) ? ANNOTATE_REFUSALS[code] : null
 }
 
-/** A settings failure: logged, answered with fixed words. */
-const settingsFailed = (e: unknown): ReturnType<typeof err> => {
+/** A settings failure: logged, answered with the fixed words for a read or a change. */
+const settingsFailed = (e: unknown, words: string): ReturnType<typeof err> => {
   console.warn('[world] the Lumopolis settings failed:', e)
-  return err(SETTINGS_FAILED)
+  return err(words)
 }
 
 export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'> &
@@ -263,10 +266,11 @@ const accessOf = (args: unknown): { access?: RepoAccess } | null => {
   return null
 }
 
-/** A sign-in failure as the renderer's data: the host, whether git has a helper, and the words to show. */
+/** A sign-in failure as the renderer's data: the host, whether git has a helper, and the words to show. A not-found,
+ *  first or still after a sign-in (M2), shows the sign-in choices as the second choice: the address comes first. */
 const needsLoginOf = (n: NeedsLogin, access: RepoAccess | undefined): CloneNeedsLogin =>
-  n.notFound
-    ? { needsLogin: { host: n.host, helper: n.helper, notFound: true, message: NOT_FOUND_MESSAGE } }
+  n.notFound || n.stillNotFound
+    ? { needsLogin: { host: n.host, helper: n.helper, notFound: true, message: n.stillNotFound ? STILL_NOT_FOUND_MESSAGE : NOT_FOUND_MESSAGE } }
     : { needsLogin: { host: n.host, helper: n.helper, message: access?.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE } }
 
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
@@ -328,7 +332,7 @@ export function registerWorldIpc(
       await settings.ready?.()
       return ok(settings.get())
     } catch (e) {
-      return settingsFailed(e)
+      return settingsFailed(e, SETTINGS_LOAD_FAILED)
     }
   })
   ipc.handle('world:settings-set', (_event: unknown, args?: unknown) => {
@@ -340,7 +344,7 @@ export function registerWorldIpc(
       client.applySettings()
       return ok(next)
     } catch (e) {
-      return settingsFailed(e)
+      return settingsFailed(e, SETTINGS_FAILED)
     }
   })
 

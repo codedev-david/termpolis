@@ -11,6 +11,15 @@ export type OpenTarget = { kind: 'root'; root: string; follow?: boolean; key?: s
 /** Shown when a call could not even reach main: never the raw error. */
 export const UI_FAILED = "Lumopolis couldn't do that. Try again."
 
+// M3: each action that can fail says, in one sentence of its own, what did not happen; never "Couldn't X:" before a
+// second sentence of main's. PENDING SIGN-OFF by David.
+/** A card's Confirm was not saved. */
+export const CONFIRM_FAILED = "Lumopolis couldn't save your confirmation. Try again."
+/** A card's service names were not saved. */
+export const NAMES_FAILED = "Lumopolis couldn't save the service names. Try again."
+/** Re-layout could not be asked of main at all (main's own answers are whole sentences and show alone). */
+export const RELAYOUT_FAILED = "Lumopolis couldn't redo the layout. Try again."
+
 /** Where a recent world opens: a design by its key, every other world by its folder. */
 export function targetOf(entry: WorldEntry): OpenTarget {
   const s = entry.source

@@ -7,6 +7,7 @@ import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
 import { btnCls, dialogCls, fieldCls, linkCls, primaryCls, signInLabel } from './worldTargets'
 import { RepoAccessDialog } from './RepoAccessDialog'
+import { holdFocus } from '../../hooks/useFocusTrap'
 import { useUiZoom } from './worldPane'
 
 export interface CloneDialogProps {
@@ -76,21 +77,30 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
 
   const submitToken = (value: string): void => clone({ mode: 'token', value })
 
-  const cancel = (): void => {
-    if (!cloning) { onClose(); return }
+  /** Stops the clone under way: its answer, when it comes, no longer counts. */
+  const stop = (): void => {
     gen.current++
     setCloning(false)
     setSigningIn(false)
     window.termpolis.worldCloneCancel(trimmed, ref).catch(() => undefined)
   }
+  const cancel = (): void => {
+    if (!cloning) { onClose(); return }
+    stop()
+  }
   const choiceCls = login !== null && login.notFound === true ? linkCls : btnCls
-  const closeToken = (): void => { setTokenOpen(false); setTokenError(null) }
+  // Closing the token dialog while its token is tried stops that try too: its answer would have nowhere to show (F-R5).
+  const closeToken = (): void => {
+    if (cloning) stop()
+    setTokenOpen(false)
+    setTokenError(null)
+  }
   // Esc is the Cancel of the dialog on top: the token dialog's when it is up, else this one's (which stops a clone
   // under way before it closes anything).
   const tokenShown = tokenOpen && login !== null
   if (escRef) escRef.current = tokenShown ? closeToken : cancel
   // Under the token dialog this one is inert, so Tab stays in that dialog; closed, the focus comes back to the button
-  // that opened it (F-R13).
+  // that opened it, or to this dialog while that button is grey (F-R13).
   const dialogRef = useRef<HTMLDivElement>(null)
   const useTokenRef = useRef<HTMLButtonElement>(null)
   useLayoutEffect(() => {
@@ -102,13 +112,19 @@ export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JS
     d.inert = true
     return () => {
       d.inert = false
-      back.focus()
+      if (back.disabled) d.focus()
+      else back.focus()
     }
   }, [tokenShown])
+  // A clone that starts greys the control pressed for it (Clone, Sign in, a field with Enter): the dialog keeps the
+  // focus, so Tab and Esc still work in it while it runs (F-R13).
+  useLayoutEffect(() => {
+    if (cloning) holdFocus(dialogRef.current as HTMLDivElement)
+  }, [cloning])
 
   return (
     <>
-    <div ref={dialogRef} role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls} style={zoom}>
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
         Repository URL

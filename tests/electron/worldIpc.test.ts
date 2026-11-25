@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ANNOTATE_FAILED, DESIGN_FAILED, SETTINGS_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
+import { ANNOTATE_FAILED, DESIGN_FAILED, SETTINGS_FAILED, SETTINGS_LOAD_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
@@ -88,12 +88,14 @@ describe('registerWorldIpc', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       // #65: the raw reason goes to the log only; the window gets fixed words.
-      expect(await setup(() => null, settings).invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      // M4: a read that failed says it could not load them, never that a setting could not change.
+      expect(await setup(() => null, settings).invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_LOAD_FAILED })
       expect(warn).toHaveBeenCalledWith('[world] the Lumopolis settings failed:', expect.objectContaining({ message: 'disk gone' }))
     } finally {
       warn.mockRestore()
     }
     expect(SETTINGS_FAILED).toBe("Lumopolis couldn't change that setting. Try again.")
+    expect(SETTINGS_LOAD_FAILED).toBe("Lumopolis couldn't load its settings. Try again.")
   })
 
   it('#65: world:settings-set answers fixed words when saving the change fails, and logs why', async () => {
@@ -185,7 +187,7 @@ describe('registerWorldIpc', () => {
     const { invoke } = setup(() => null, settings)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
-      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_LOAD_FAILED })
       expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: SETTINGS_FAILED })
       settings.get.mockImplementation(() => {
         throw 'odd get'
@@ -193,7 +195,7 @@ describe('registerWorldIpc', () => {
       settings.set.mockImplementation(() => {
         throw new Error('read only')
       })
-      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_FAILED })
+      expect(await invoke('world:settings-get')).toEqual({ success: false, error: SETTINGS_LOAD_FAILED })
       expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: SETTINGS_FAILED })
       expect(warn).toHaveBeenCalledWith('[world] the Lumopolis settings failed:', 'odd get')
     } finally {

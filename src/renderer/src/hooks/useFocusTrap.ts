@@ -20,10 +20,38 @@ function hiddenByDetails(x: HTMLElement, root: HTMLElement): boolean {
   return false
 }
 
-/** The controls the keyboard can reach in `el`, in order. */
+/** Is `x` inert, or inside something that is (a dialog under another dialog)? It then takes no focus. The property
+ *  is checked as well as the attribute: React sets it as a property. */
+function underInert(x: HTMLElement): boolean {
+  for (let n: HTMLElement | null = x; n; n = n.parentElement) if (n.inert === true || n.hasAttribute('inert')) return true
+  return false
+}
+
+/** The controls the keyboard can reach in `el`, in order: none that is disabled, inert or hidden. */
 export function focusables(el: HTMLElement): HTMLElement[] {
   return Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE))
-    .filter((x) => !x.hasAttribute('disabled') && x.getAttribute('tabindex') !== '-1' && !hiddenByDetails(x, el))
+    .filter((x) => !x.hasAttribute('disabled') && x.getAttribute('tabindex') !== '-1' && !hiddenByDetails(x, el) && !underInert(x))
+}
+
+/** One Tab (or Shift+Tab, `back`) inside `el`: the next control round, never one outside. A control the browser won't
+ *  focus is passed over, so the trap never stalls on it; with none at all, `el` itself keeps the focus. */
+export function stepFocus(el: HTMLElement, back: boolean): void {
+  const list = focusables(el)
+  if (list.length === 0) return el.focus()
+  const at = list.indexOf(document.activeElement as HTMLElement)
+  const step = back ? -1 : 1
+  let i = at < 0 ? (back ? list.length - 1 : 0) : (at + step + list.length) % list.length
+  for (let tried = 0; tried < list.length; tried++, i = (i + step + list.length) % list.length) {
+    list[i].focus()
+    if (document.activeElement === list[i]) return
+  }
+}
+
+/** The focus was on a control in `el` that has just gone grey (a pressed button, a field while its work runs), or it
+ *  has fallen to <body>: `el` (with tabIndex -1) takes it, so Tab and Esc still reach that dialog. */
+export function holdFocus(el: HTMLElement): void {
+  const at = document.activeElement as Element
+  if (at === document.body || (el.contains(at) && at.matches(':disabled'))) el.focus()
 }
 
 export function useFocusTrap(ref: RefObject<HTMLElement | null>): void {
@@ -36,16 +64,7 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>): void {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Tab') return
       e.preventDefault()
-      const list = focusables(el)
-      if (list.length === 0) return el.focus()
-      const at = list.indexOf(document.activeElement as HTMLElement)
-      const step = e.shiftKey ? -1 : 1
-      // The next control; one the browser won't focus is passed over, so the trap never stalls on it.
-      let i = at < 0 ? (e.shiftKey ? list.length - 1 : 0) : (at + step + list.length) % list.length
-      for (let tried = 0; tried < list.length; tried++, i = (i + step + list.length) % list.length) {
-        list[i].focus()
-        if (document.activeElement === list[i]) return
-      }
+      stepFocus(el, e.shiftKey)
     }
     el.addEventListener('keydown', onKey)
     // The control that had the focus is gone (a step changed): <body> has it now, where Esc and Tab

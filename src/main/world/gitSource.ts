@@ -54,9 +54,15 @@ export const SSH_AUTH_MESSAGE =
 export const HOST_KEY_MESSAGE = "This computer doesn't trust that server's ssh host key yet. Connect to it once with ssh in a terminal, then try again."
 /** Any other failure. Git's own line goes in the result's `detail`, never in the headline. PENDING SIGN-OFF. */
 export const UNREACHABLE_MESSAGE = "Lumopolis couldn't reach that repository. Check the address and your connection, then try again."
-/** A git server answered an anonymous https clone with "not found": a wrong address, or a private repository on a host
- *  that answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. PENDING SIGN-OFF. */
+/** A host answered an anonymous https clone with "not found": a wrong address, or a private repository on a host that
+ *  answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. PENDING SIGN-OFF. */
 export const NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, or sign in if it's private."
+/** The host still said "not found" once a sign-in or a token was used: most likely the address, so the words never blame
+ *  the login (M2). The sign-in choices stay, for another account. PENDING SIGN-OFF. */
+export const STILL_NOT_FOUND_MESSAGE = "Lumopolis still couldn't find that repository after signing in. Check the address."
+/** An ssh server said "not found": a wrong address, or a repository the ssh key can't see. Ssh logins are the ssh
+ *  agent's, so no sign-in is offered. PENDING SIGN-OFF. */
+export const SSH_NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, and that your ssh key can open it."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'
 
@@ -83,8 +89,9 @@ export const VERSION_TIMEOUT_MS = 30_000
 /** The most a `git --version` or `git rev-parse HEAD` may print. */
 const SMALL_OUTPUT_MAX = 4096
 
-/** What a host says when the account a run signed in with has no access: GitHub answers 404 rather than
- *  401, so as not to reveal that a private repository exists. */
+/** What git says when a host answered "not found" (GitHub answers 404 rather than 401, so as not to reveal that a private
+ *  repository exists; GitLab does so for an anonymous caller). Only a host that was reached says it: a host that does
+ *  not resolve or will not connect fails with "Could not resolve host" or "Failed to connect" instead (I4). */
 const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned error: 404\b/i
 /** What git's own messages say when a host wanted a login it was not given. Git 2.46 and newer, told
  *  credential.interactive=false (a no-login or background run), skip the prompt and say "unable to get
@@ -92,10 +99,6 @@ const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned
 const AUTH_RE = /terminal prompts disabled|could not read (username|password)|unable to get password from user|authentication failed|permission denied \(publickey|access denied|invalid username or/i
 /** What ssh says, as its last word, when the server's host key is not one it knows (or has changed). */
 const HOST_KEY_RE = /host key verification failed/i
-/** A line the server itself sent to git (its side band, or the plain-text body of an HTTP error): the address reached a
- *  git server. A host that does not resolve, refuses the connection or fails TLS never sends one, nor does a web server
- *  that answers a wrong address with an HTML page. */
-const SERVER_LINE_RE = /^remote: \S/m
 
 export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boolean = process.platform === 'win32'): string[] {
   return [
@@ -494,7 +497,6 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   let auth = false
   let hostKey = false
   let notFound = false
-  let fromServer = false
   let failedStep = -1
   /** The clone's HEAD commit, or null when it cannot be read in the time left. */
   const readHead = async (): Promise<string | null> => {
@@ -527,7 +529,6 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
         auth = AUTH_RE.test(r.stderr)
         hostKey = HOST_KEY_RE.test(r.stderr)
         notFound = NOT_FOUND_RE.test(r.stderr)
-        fromServer = SERVER_LINE_RE.test(r.stderr)
         failure = firstLine(r.stderr)
         break
       }
@@ -558,20 +559,24 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     // A failed update leaves the earlier complete clone alone; a failed first clone leaves nothing.
     if (!updating) await rmq(work)
     const host = httpsHost(url)
-    // "Not found" after a sign-in means that account can't see it; with no login, a sign-in is offered only once a git
-    // server said it (below: a typo'd host never asks for one), and over ssh it is the ssh agent's business.
-    const unseen = notFound && run.mode !== 'none' && host !== null
     if (hostKey) return { ok: false, error: HOST_KEY_MESSAGE, detail: failure }
-    // F-R8: some hosts answer an anonymous caller 404 for a private repository. Once a git server has said so itself (the
-    // host check), the not-found words come with the sign-in choices; a host that never answered stays a plain failure.
-    if (!auth && notFound && run.mode === 'none' && host !== null && fromServer) {
+    // A host that said "not found" was reached, whatever its 404 looked like: "couldn't reach" is never the answer (I4).
+    // Ssh logins are the ssh agent's business, so over ssh no sign-in is offered.
+    if (!auth && notFound && host === null) return { ok: false, error: SSH_NOT_FOUND_MESSAGE, detail: failure }
+    // F-R8: some hosts answer an anonymous caller 404 for a private repository, so the not-found words come with the
+    // sign-in choices, as the second choice. A typo'd host never gets here: it fails to resolve or connect.
+    if (!auth && notFound && run.mode === 'none' && host !== null) {
       return { ok: false, error: NOT_FOUND_MESSAGE, detail: failure, needsLogin: { host, helper: await hasLoginHelper(deps, host), notFound: true } }
     }
-    if (!auth && !unseen) return { ok: false, error: UNREACHABLE_MESSAGE, detail: failure }
+    // Still "not found" after a sign-in or a token: most likely the address, so that is what the words say (M2).
+    if (!auth && notFound && host !== null) {
+      return { ok: false, error: STILL_NOT_FOUND_MESSAGE, needsLogin: { host, helper: await hasLoginHelper(deps, host), stillNotFound: true } }
+    }
+    if (!auth) return { ok: false, error: UNREACHABLE_MESSAGE, detail: failure }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
-    // A token that git refused, or that cannot see the repository, is one that did not open it. A signed-in
-    // account that cannot see it gets the one sign-in message the spec gives (Flow 1 and Copy).
+    // A token that git refused is one that did not open it; a login git wanted gets the one sign-in message the spec
+    // gives (Flow 1 and Copy).
     const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
     return { ok: false, error, needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }

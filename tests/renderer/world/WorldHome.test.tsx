@@ -776,6 +776,30 @@ describe('WorldSwitcher where (F-R12)', () => {
     expect(sel.querySelector('option[value="k-dir"]')).toHaveAttribute('title', 'C:/')
     expect(sel.querySelector('option[value="k-git"]')).toHaveAttribute('title', 'https://x.dev/a.git')
     expect(sel.querySelector('option[value="design:shop"]')).not.toHaveAttribute('title')
+    // A name no other world has is shown alone.
+    expect(sel.querySelector('option[value="k-dir"]')).toHaveTextContent(/^notes$/)
+  })
+
+  // M10: a macOS select shows no option titles, so two worlds of one name carry where they are in their text.
+  it('two open worlds of one name say where each is in the option itself; a missing one, a design and a lone name do not', () => {
+    const list: WorldEntry[] = [
+      { key: 'a1', source: { kind: 'folder', root: 'C:/work/api' }, title: 'api', lastOpened: NOW },
+      { key: 'a2', source: { kind: 'git', url: 'https://x.dev/api.git', ref: 'dev', root: 'C:/data/b' }, title: 'api', lastOpened: NOW - 1 },
+      { key: 'a3', source: { kind: 'folder', root: 'api' }, title: 'api', lastOpened: NOW - 2 },
+      { key: 'g1', source: { kind: 'folder', root: 'C:/gone/web' }, title: 'web', lastOpened: NOW - 3, missing: true },
+      { key: 'w1', source: { kind: 'folder', root: 'C:/work/web' }, title: 'web', lastOpened: NOW - 4 },
+      { key: 'design:x', source: { kind: 'design', id: 'x', title: 'api' }, title: 'api', lastOpened: NOW - 5 },
+    ]
+    render(<WorldSwitcher entries={list} onOpen={vi.fn()} onHome={vi.fn()} />)
+    const sel = screen.getByLabelText('Worlds')
+    const text = (v: string) => sel.querySelector(`option[value="${v}"]`)?.textContent
+    expect(text('a1')).toBe('api \u2014 C:/work')
+    expect(text('a2')).toBe('api \u2014 https://x.dev/api.git \u00b7 dev')
+    // No folder above it to name, and a design has no place: the name alone.
+    expect(text('a3')).toBe('api')
+    expect(text('design:x')).toBe('api')
+    // The other "web" is missing, so not offered: this one's name is its own.
+    expect(text('w1')).toBe('web')
   })
 })
 
@@ -938,11 +962,13 @@ describe('WorldHome dialog keyboard (F-R13)', () => {
     expect(url).toHaveFocus()
     fireEvent.keyDown(url, { key: 'Tab', shiftKey: true })
     expect(clone).toHaveFocus()
-    // In between, Tab is the browser's own (not prevented), and other keys are left alone.
+    // In between the trap moves the focus itself, one control at a time; other keys are left alone.
     const branch = screen.getByLabelText('Branch (optional)')
     branch.focus()
-    expect(fireEvent.keyDown(branch, { key: 'Tab' })).toBe(true)
-    expect(fireEvent.keyDown(branch, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(fireEvent.keyDown(branch, { key: 'Tab' })).toBe(false)
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(branch).toHaveFocus()
     expect(fireEvent.keyDown(branch, { key: 'x' })).toBe(true)
     expect(branch).toHaveFocus()
   })
@@ -960,6 +986,124 @@ describe('WorldHome dialog keyboard (F-R13)', () => {
   })
 })
 
+describe('WorldHome token dialog keyboard (F-R13)', () => {
+  const tab = (shiftKey = false): boolean => fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey })
+  const SIGN_IN = () => ok({ needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } })
+  /** The first clone asks for a sign-in; every later one is `then`. */
+  const asksFirst = (then: () => Promise<unknown>) => {
+    let first = true
+    return vi.fn(() => {
+      if (first) { first = false; return Promise.resolve(SIGN_IN()) }
+      return then()
+    })
+  }
+  const tokenUp = async (worldClone: (...a: unknown[]) => Promise<unknown>, over: Partial<Parameters<typeof WorldHome>[0]> = {}) => {
+    bridge({ worldClone })
+    const props = home(over)
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    const useToken = await screen.findByTestId('world-clone-use-token')
+    useToken.focus()
+    fireEvent.click(useToken)
+    return { props, token: screen.getByTestId('world-repo-access') }
+  }
+
+  it('Tab and Shift+Tab go round the token dialog alone, never into the clone dialog under it', async () => {
+    const { token } = await tokenUp(vi.fn(async () => SIGN_IN()))
+    const make = within(token).getByRole('button', { name: 'Make a token on GitHub' })
+    const field = screen.getByTestId('world-repo-access-input')
+    const cancel = within(token).getByRole('button', { name: 'Cancel' })
+    const use = within(token).getByRole('button', { name: 'Use this token' })
+    expect(field).toHaveFocus()
+    tab(true)
+    expect(make).toHaveFocus()
+    tab(true)
+    expect(use).toHaveFocus()
+    tab()
+    expect(make).toHaveFocus()
+    tab()
+    expect(field).toHaveFocus()
+    tab()
+    expect(cancel).toHaveFocus()
+    for (let i = 0; i < 8; i++) {
+      tab(i % 2 === 0)
+      expect(token.contains(document.activeElement)).toBe(true)
+    }
+  })
+
+  it('Use this token turning grey while the token is tried keeps the focus in the token dialog, and Tab goes round what is left', async () => {
+    const d = deferred<Res<unknown>>()
+    const { token } = await tokenUp(asksFirst(() => d.promise))
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    const use = within(token).getByRole('button', { name: 'Use this token' })
+    use.focus()
+    fireEvent.click(use)
+    expect(use).toBeDisabled()
+    expect(token).toHaveFocus()
+    tab(true)
+    expect(within(token).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    tab()
+    expect(within(token).getByRole('button', { name: 'Make a token on GitHub' })).toHaveFocus()
+    await act(async () => { d.resolve(ok({ needsLogin: { host: 'github.com', helper: true, message: 'That token did not open it.' } })) })
+    expect(within(token).getByRole('alert')).toHaveTextContent('That token did not open it.')
+  })
+
+  it('Clone, or Enter in the address, turning grey keeps the focus in the clone dialog', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    bridge({ worldClone: vi.fn(() => d.promise) })
+    home()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    const url = screen.getByLabelText('Repository URL')
+    fireEvent.change(url, { target: { value: 'https://x.dev/a.git' } })
+    const clone = screen.getByRole('button', { name: 'Clone' })
+    clone.focus()
+    fireEvent.click(clone)
+    expect(clone).toBeDisabled()
+    const dialog = screen.getByTestId('world-clone')
+    expect(dialog).toHaveFocus()
+    tab()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    tab(true)
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    url.focus()
+    fireEvent.keyDown(url, { key: 'Enter' })
+    expect(url).toBeDisabled()
+    expect(dialog).toHaveFocus()
+  })
+
+  it('cancelling the token dialog while its token is tried stops that clone, and the focus goes back to Use a token', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    const { props } = await tokenUp(asksFirst(() => d.promise))
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(window.termpolis.worldCloneCancel).toHaveBeenCalledWith('https://github.com/o/r.git', undefined)
+    const useToken = screen.getByTestId('world-clone-use-token')
+    expect(useToken).toBeEnabled()
+    expect(useToken).toHaveFocus()
+    await act(async () => { d.resolve(ok({ key: 'k-c', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/clone' }, title: 'clone', lastOpened: NOW })) })
+    await settle()
+    expect(props.onChanged).not.toHaveBeenCalled()
+    expect(props.onOpen).not.toHaveBeenCalled()
+    expect(screen.getByTestId('world-clone')).toBeInTheDocument()
+  })
+
+  it('Esc in the token dialog while its token is tried stops that clone too', async () => {
+    const d = deferred<Res<WorldEntry>>()
+    const escRef = { current: null as (() => boolean) | null }
+    await tokenUp(asksFirst(() => d.promise), { escRef })
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    act(() => { (escRef.current as () => boolean)() })
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(window.termpolis.worldCloneCancel).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('world-clone-use-token')).toHaveFocus()
+  })
+})
+
 describe('CloneDialog token dialog keyboard (F-R13)', () => {
   it('the clone dialog under the token dialog is inert, and closing the token dialog gives the focus back to Use a token', async () => {
     bridge({ worldClone: vi.fn(async () => ok({ needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } })) })
@@ -972,6 +1116,28 @@ describe('CloneDialog token dialog keyboard (F-R13)', () => {
     fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
     expect(screen.getByTestId('world-clone').inert).toBe(false)
     expect(screen.getByTestId('world-clone-use-token')).toHaveFocus()
+  })
+
+  it('a clone dialog that closes while a token is tried gives the focus to nothing grey', async () => {
+    let first = true
+    const worldClone = vi.fn(() => {
+      if (first) { first = false; return Promise.resolve(ok({ needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } })) }
+      return new Promise(() => undefined)
+    })
+    bridge({ worldClone })
+    const r = render(<CloneDialog onCloned={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    const useToken = await screen.findByTestId('world-clone-use-token')
+    fireEvent.click(useToken)
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    expect(useToken).toBeDisabled()
+    const dialog = screen.getByTestId('world-clone')
+    const focused = vi.spyOn(dialog, 'focus')
+    r.unmount()
+    expect(focused).toHaveBeenCalled()
+    expect(useToken).not.toHaveFocus()
   })
 
   it('a clone dialog that closes with the token dialog still up focuses nothing that has gone', async () => {

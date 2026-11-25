@@ -259,8 +259,8 @@ describe('WorldView sources', () => {
     await mount('/repo')
     switchTo('design:d1')
     await settle()
-    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
-    expect(screen.getByTestId('world-error')).not.toHaveTextContent('bridge down')
+    expect(screen.getByTestId('world-empty')).toHaveTextContent('Lumopolis could not map this project.')
+    expect(screen.getByTestId('world-empty')).not.toHaveTextContent(/bridge down|couldn't do that/)
   })
 
   it('a design load that lands after the pane moved on is dropped', async () => {
@@ -516,8 +516,8 @@ describe('WorldView sign in needed', () => {
     const api = gitBridge(ok({ changed: true }), { worldCompile: vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValueOnce(ok(minimal())) })
     await openGit()
     const failed = screen.getByTestId('world-recompile-error')
-    expect(failed).toHaveTextContent('Lumopolis could not map this project.')
-    expect(failed).toHaveTextContent(UI_FAILED)
+    // M3: the thrown call adds no second "couldn't do that" after it.
+    expect(failed.textContent).toBe('Lumopolis could not map this project.Try again')
     expect(screen.queryByTestId('world-empty')).toBeNull()
     fireEvent.click(within(failed).getByRole('button', { name: 'Try again' }))
     expect(screen.queryByTestId('world-recompile-error')).toBeNull()

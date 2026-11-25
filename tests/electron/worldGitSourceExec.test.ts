@@ -11,6 +11,8 @@ import {
   SSH_AUTH_MESSAGE,
   UNREACHABLE_MESSAGE,
   NOT_FOUND_MESSAGE,
+  SSH_NOT_FOUND_MESSAGE,
+  STILL_NOT_FOUND_MESSAGE,
   VERSION_FAILED_MESSAGE,
   cloneArgs,
   cloneKey,
@@ -292,28 +294,38 @@ describe('cloneRepo login modes', () => {
   ]
   const SIGNED_IN: LoginRun[] = [{ mode: 'machine', interactive: true }, { mode: 'machine', interactive: false }, TOKEN_RUN]
 
-  // The spec gives a sign-in failure one message (design spec, Flow 1 and Copy): a signed-in account that
-  // cannot see the repository gets the same sign-in message, and the renderer shows ipc's copy of it.
-  it('a repository the signed-in account cannot see comes back as needing a sign-in, for machine and token runs', async () => {
+  // M1/M2: a host that still says "not found" once a sign-in or a token was used is most likely a wrong address, so the words
+  // name the address first and never blame the login; the sign-in choices stay, marked stillNotFound, for another account.
+  it('a repository still not found after a sign-in or a token says to check the address, for machine and token runs', async () => {
     expect('notFoundMessage' in gitSourceModule).toBe(false)
     for (const run of SIGNED_IN) {
-      // A token that cannot see the repository is a token that did not open it.
-      const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
       for (const stderr of NOT_FOUND) {
         const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
-        expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({ ok: false, error, needsLogin: { host: 'github.com', helper: true } })
+        expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({
+          ok: false,
+          error: STILL_NOT_FOUND_MESSAGE,
+          needsLogin: { host: 'github.com', helper: true, stillNotFound: true }
+        })
         expect(of('clone')).toHaveLength(1)
       }
     }
     // An update whose fetch is refused that way says the same.
     const upd = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
-    expect(await cloneRepo(HTTPS, undefined, upd.deps, TOKEN_RUN)).toEqual({ ok: false, error: TOKEN_REJECTED_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
+    expect(await cloneRepo(HTTPS, undefined, upd.deps, TOKEN_RUN)).toEqual({
+      ok: false,
+      error: STILL_NOT_FOUND_MESSAGE,
+      needsLogin: { host: 'github.com', helper: false, stillNotFound: true }
+    })
     const updMachine = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
     expect(await cloneRepo(HTTPS, undefined, updMachine.deps, { mode: 'machine', interactive: true })).toEqual({
       ok: false,
-      error: AUTH_MESSAGE,
-      needsLogin: { host: 'github.com', helper: false }
+      error: STILL_NOT_FOUND_MESSAGE,
+      needsLogin: { host: 'github.com', helper: false, stillNotFound: true }
     })
+    // A login git refused outright is still the login's fault, even with a not-found beside it.
+    const both = fakeDeps({ step: () => ({ code: 128, stderr: "remote: Repository not found.\nfatal: Authentication failed for 'https://github.com/o/r.git/'" }) })
+    expect(await cloneRepo(HTTPS, undefined, both.deps, TOKEN_RUN)).toEqual({ ok: false, error: TOKEN_REJECTED_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
+    expect(STILL_NOT_FOUND_MESSAGE).toBe("Lumopolis still couldn't find that repository after signing in. Check the address.")
   })
 
   // F-R8: a host that answers an anonymous caller 404 (GitLab does, for a private project) strands nobody once a git server
@@ -338,19 +350,40 @@ describe('cloneRepo login modes', () => {
     // The same answer to an update's fetch (a background update runs with no login unless the entry has one).
     const upd = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
     expect(await cloneRepo(HTTPS, undefined, upd.deps, { mode: 'none' })).toMatchObject({ error: NOT_FOUND_MESSAGE, needsLogin: { notFound: true } })
-    // A line that only starts like one ("remote:" with nothing after it) is not a server's message.
-    const bare = fakeDeps({ step: () => ({ code: 128, stderr: "remote:\nfatal: repository 'https://github.com/o/r.git/' not found" }) })
-    expect(await cloneRepo(HTTPS, undefined, bare.deps, { mode: 'none' })).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: 'remote:' })
     expect(NOT_FOUND_MESSAGE).toBe("Lumopolis couldn't find that repository. Check the address, or sign in if it's private.")
   })
 
-  it('with no login a missing repository no git server answered for stays a plain failure: a typo never asks for a sign-in', async () => {
+  // I4: a host that answered "not found" was reached, whatever its 404 body said. What git 2.56.1 prints (LANGUAGE=C,
+  // GIT_TERMINAL_PROMPT=0) when an http server answers 404 four ways (wp-src-review.md, re-run 2026-11-25): an HTML page or
+  // an empty body sends git no "remote:" line, and a private repository behind such a host must still be signed in to.
+  it('with no login, any not-found from a host that answered offers sign-in, with or without a remote: line', async () => {
+    const REAL = [
+      // 404 text/html, and 404 with an empty body (nginx, Apache, an SSO proxy in front of a git host)
+      "fatal: repository 'http://127.0.0.1:47811/html/r.git/' not found",
+      "fatal: repository 'http://127.0.0.1:47811/empty/r.git/' not found",
+      // 404 text/plain, GitHub's words and Go's (Gitea, Forgejo)
+      "remote: Repository not found.\nfatal: repository 'http://127.0.0.1:47811/plain/r.git/' not found",
+      "remote: 404 page not found\nfatal: repository 'http://127.0.0.1:47811/go/r.git/' not found",
+      // older git, and "remote:" with nothing after it
+      "fatal: unable to access 'https://git.example.com/o/r.git/': The requested URL returned error: 404",
+      "remote:\nfatal: repository 'https://git.example.com/o/r.git/' not found",
+    ]
+    for (const stderr of REAL) {
+      for (const helper of [true, false]) {
+        const { deps } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: helper ? 'credential.helper\nmanager\0' : '' } })
+        const r = await cloneRepo('https://git.example.com/o/r.git', undefined, deps, { mode: 'none' })
+        expect(r).toEqual({ ok: false, error: NOT_FOUND_MESSAGE, detail: stderr.split('\n')[0], needsLogin: { host: 'git.example.com', helper, notFound: true } })
+        expect(JSON.stringify(r)).not.toMatch(/reach/)
+      }
+    }
+  })
+
+  it('with no login a host that never answered stays a plain failure that says to check the address: a typo never asks for a sign-in', async () => {
     const NO_SERVER = [
-      // A host that does not resolve, or will not connect, never reaches a git server.
-      "fatal: unable to access 'https://gitub.com/o/r.git/': Could not resolve host: gitub.com",
+      // What git 2.56.1 prints for a host that does not resolve, and one that refuses the connection (re-run 2026-11-25).
+      "fatal: unable to access 'https://no-such-host.invalid/o/r.git/': Could not resolve host: no-such-host.invalid",
+      "fatal: unable to access 'http://127.0.0.1:1/o/r.git/': Failed to connect to 127.0.0.1:1 after 2 ms: Could not connect to server",
       "fatal: unable to access 'https://github.com:444/o/r.git/': Failed to connect to github.com port 444",
-      // A web server that answers a wrong address with its own 404 page sends git no message of its own.
-      ...NOT_FOUND.slice(1)
     ]
     for (const stderr of NO_SERVER) {
       const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
@@ -359,18 +392,24 @@ describe('cloneRepo login modes', () => {
       expect(r).not.toHaveProperty('needsLogin')
       expect(of('--list')).toHaveLength(0)
     }
-    // ssh is the ssh agent's business in every mode.
+    expect(UNREACHABLE_MESSAGE).toMatch(/Check the address/)
+  })
+
+  it('over ssh a not-found says so, never "couldn\'t reach", and no sign-in is offered: ssh logins are the ssh agent\'s', async () => {
     const ssh = fakeDeps({ step: () => ({ code: 128, stderr: 'ERROR: Repository not found.\nfatal: Could not read from remote repository.' }) })
-    const r = await cloneRepo('git@github.com:o/r.git', undefined, ssh.deps, { mode: 'machine', interactive: true })
-    expect(r).toEqual({ ok: false, error: UNREACHABLE_MESSAGE, detail: expect.any(String) })
-    expect(r).not.toHaveProperty('needsLogin')
+    for (const run of [{ mode: 'none' }, { mode: 'machine', interactive: true }] as LoginRun[]) {
+      const r = await cloneRepo('git@github.com:o/r.git', undefined, ssh.deps, run)
+      expect(r).toEqual({ ok: false, error: SSH_NOT_FOUND_MESSAGE, detail: 'fatal: Could not read from remote repository.' })
+      expect(r).not.toHaveProperty('needsLogin')
+    }
+    expect(SSH_NOT_FOUND_MESSAGE).toBe("Lumopolis couldn't find that repository. Check the address, and that your ssh key can open it.")
   })
 
   it('the not-found answer never carries the login from the url', async () => {
     const stderr = "remote: Repository not found.\nfatal: repository 'https://me:hunter2@GitHub.com/o/r.git/' not found"
     const { deps } = fakeDeps({ step: () => ({ code: 128, stderr }) })
     const r = await cloneRepo('https://me:hunter2@GitHub.com/o/r.git', undefined, deps, { mode: 'machine', interactive: false })
-    expect(r).toEqual({ ok: false, error: AUTH_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
+    expect(r).toEqual({ ok: false, error: STILL_NOT_FOUND_MESSAGE, needsLogin: { host: 'github.com', helper: false, stillNotFound: true } })
     expect(JSON.stringify(r)).not.toMatch(/me:|hunter2|@/)
   })
 

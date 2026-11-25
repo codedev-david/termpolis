@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { createSourceRegistry, keyForSource, type WorldSource } from '../../src/main/world/sources'
-import { WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
+import { SOURCES_READ_FAILED_MESSAGE, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import { windowMessage } from '../../src/main/world/windowError'
 import * as fsp from 'node:fs/promises'
 
@@ -295,9 +295,11 @@ describe('source registry', () => {
       vi.mocked(fsp.rename).mockRejectedValueOnce(new Error('refused'))
       const r = reg()
       const unparsed = await r.list().catch((e: unknown) => e)
-      expect(unparsed).toMatchObject({ name: 'WorldReadError', code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      expect(unparsed).toMatchObject({ name: 'WorldReadError', code: 'SOURCES_READ_FAILED', message: SOURCES_READ_FAILED_MESSAGE })
       // M-new-1: the fixed words reach the window as they are, never as WORLD_CALL_FAILED.
-      expect(windowMessage(unparsed)).toBe(WORLD_READ_FAILED)
+      expect(windowMessage(unparsed)).toBe(SOURCES_READ_FAILED_MESSAGE)
+      // M5: the list of worlds has its own words, never those for a world's saved map.
+      expect(SOURCES_READ_FAILED_MESSAGE).toBe("Lumopolis couldn't read your recent worlds. Try again in a moment.")
       expect(warn).toHaveBeenCalledWith('[world sources] the list of worlds does not parse and could not be moved aside')
       expect(await readFile(sourcesFile(), 'utf8')).toBe('x')
       expect(await backups()).toEqual([])
@@ -308,8 +310,8 @@ describe('source registry', () => {
       await mkdir(sourcesFile())
       const err = await reg().list().catch((e: unknown) => e)
       expect(err).toBeInstanceOf(WorldReadError)
-      expect(err).toMatchObject({ code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
-      expect(windowMessage(err)).toBe(WORLD_READ_FAILED)
+      expect(err).toMatchObject({ code: 'SOURCES_READ_FAILED', message: SOURCES_READ_FAILED_MESSAGE })
+      expect(windowMessage(err)).toBe(SOURCES_READ_FAILED_MESSAGE)
       expect(JSON.stringify(err) + String((err as Error).message)).not.toContain(dir)
       expect(warn.mock.calls[1][0]).toMatch(/^\[world sources\] the list of worlds could not be read: Error: EISDIR/)
     } finally {
@@ -408,7 +410,7 @@ describe('source registry', () => {
     vi.mocked(fsp.readFile).mockRejectedValue(busy('EBUSY'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
-      await expect(r.list()).rejects.toMatchObject({ code: 'SOURCES_READ_FAILED', message: WORLD_READ_FAILED })
+      await expect(r.list()).rejects.toMatchObject({ code: 'SOURCES_READ_FAILED', message: SOURCES_READ_FAILED_MESSAGE })
       expect(warn.mock.calls[0][0]).toMatch(/could not be read: .*EBUSY/)
     } finally {
       warn.mockRestore()

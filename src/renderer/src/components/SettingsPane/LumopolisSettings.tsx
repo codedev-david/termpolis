@@ -1,7 +1,20 @@
 // Settings ▸ Lumopolis: the agent Lumopolis runs on, "Describe parts with AI" and "Read Lumopolis answers aloud". They live in main
 // (world-settings.json) because main's labeller reads it; this switch reads it on mount and writes
-// it on click, optimistically, putting the old value back if the write fails.
+// it on click, optimistically, putting the old value back if the write fails. A read or a change that failed says so in
+// its own words (M4), beside what failed; main has logged why.
 import { useEffect, useState } from 'react'
+
+/** PENDING SIGN-OFF (M4): the settings could not be read; main's world:settings-get answers the same words. */
+export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
+/** PENDING SIGN-OFF (#65): a change did not go through and was put back; main's world:settings-set answers the same. */
+export const SETTINGS_CHANGE_FAILED = "Lumopolis couldn't change that setting. Try again."
+
+type Row = 'agent' | 'labelling' | 'speak' | 'ci'
+
+/** The line under a setting whose change did not go through. */
+function ChangeFailed({ shown }: { shown: boolean }): JSX.Element | null {
+  return shown ? <span role="alert" className="text-xs text-[#f48771]" data-testid="lumopolis-settings-failed">{SETTINGS_CHANGE_FAILED}</span> : null
+}
 
 type WorldAgent = 'claude' | 'codex' | 'gemini'
 const AGENT_CHOICES: { id: WorldAgent; label: string }[] = [
@@ -20,57 +33,78 @@ export function LumopolisSettings(): JSX.Element {
   // which uses its stored GitHub login.
   const [ci, setCi] = useState(true)
   const [agent, setAgent] = useState<WorldAgent>('claude')
+  // The settings could not be read: they show their defaults, with a line to read them again.
+  const [loadFailed, setLoadFailed] = useState(false)
+  // Bumped by Try again, to read the settings again.
+  const [reads, setReads] = useState(0)
+  // The setting whose last change did not go through, said beside it until a change goes through.
+  const [failedRow, setFailedRow] = useState<Row | null>(null)
 
   useEffect(() => {
     let live = true
+    const failed = (): void => { if (live) setLoadFailed(true) }
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults !== false); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
-      ?.catch(() => undefined)
+      ?.then((res) => {
+        if (!live) return
+        if (!res.success) { failed(); return }
+        setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults !== false); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent)
+      })
+      ?.catch(failed)
     return () => { live = false }
-  }, [])
+  }, [reads])
+
+  const retryLoad = (): void => { setLoadFailed(false); setReads((n) => n + 1) }
+
+  /** Writes one change: `took` keeps what main stored and says whether it did; a refusal or a throw calls `revert`. */
+  const change = (row: Row, patch: Parameters<NonNullable<typeof window.termpolis.worldSettingsSet>>[0], revert: () => void, took: (data: { worldLabelling: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: string }) => boolean): void => {
+    setFailedRow(null)
+    const back = (): void => { revert(); setFailedRow(row) }
+    window.termpolis.worldSettingsSet?.(patch)
+      ?.then((res) => { if (!res.success || !took(res.data)) back() })
+      ?.catch(back)
+  }
 
   const toggle = (): void => {
     const prev = labelling
-    const next = !prev
-    setLabelling(next)
-    const revert = (): void => setLabelling(prev)
-    window.termpolis.worldSettingsSet?.({ worldLabelling: next })
-      ?.then((res) => { if (res.success) setLabelling(res.data.worldLabelling); else revert() })
-      ?.catch(revert)
+    setLabelling(!prev)
+    change('labelling', { worldLabelling: !prev }, () => setLabelling(prev), (d) => { setLabelling(d.worldLabelling); return true })
   }
 
   const toggleSpeak = (): void => {
     const prev = speak
-    const next = !prev
-    setSpeak(next)
-    const revert = (): void => setSpeak(prev)
-    window.termpolis.worldSettingsSet?.({ worldSpeakAnswers: next })
-      ?.then((res) => { if (res.success) setSpeak(res.data.worldSpeakAnswers === true); else revert() })
-      ?.catch(revert)
+    setSpeak(!prev)
+    change('speak', { worldSpeakAnswers: !prev }, () => setSpeak(prev), (d) => { setSpeak(d.worldSpeakAnswers === true); return true })
   }
 
   const toggleCi = (): void => {
     const prev = ci
-    const next = !prev
-    setCi(next)
-    const revert = (): void => setCi(prev)
-    window.termpolis.worldSettingsSet?.({ worldCiResults: next })
-      ?.then((res) => { if (res.success) setCi(res.data.worldCiResults !== false); else revert() })
-      ?.catch(revert)
+    setCi(!prev)
+    change('ci', { worldCiResults: !prev }, () => setCi(prev), (d) => { setCi(d.worldCiResults !== false); return true })
   }
 
   const chooseAgent = (next: string): void => {
     if (!isWorldAgent(next)) return
     const prev = agent
     setAgent(next)
-    const revert = (): void => setAgent(prev)
-    window.termpolis.worldSettingsSet?.({ worldAgent: next })
-      ?.then((res) => { if (res.success && isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent); else revert() })
-      ?.catch(revert)
+    change('agent', { worldAgent: next }, () => setAgent(prev), (d) => {
+      if (!isWorldAgent(d.worldAgent)) return false
+      setAgent(d.worldAgent)
+      return true
+    })
   }
 
   return (
     <div className="flex flex-col gap-2" data-testid="lumopolis-settings-list">
+      {loadFailed && (
+        <div role="alert" className="flex items-center gap-2 text-xs text-[#f48771]" data-testid="lumopolis-settings-load-failed">
+          <span>{SETTINGS_LOAD_FAILED}</span>
+          <button
+            type="button"
+            onClick={retryLoad}
+            className="px-2 py-0.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
+          >Try again</button>
+        </div>
+      )}
       <p className="text-xs text-[#9ca3af] leading-relaxed" data-testid="lumopolis-cost-note">
         Describing parts and asking questions use tokens on your own agent account. Lumopolis shows an estimate after each one.
       </p>
@@ -95,6 +129,7 @@ export function LumopolisSettings(): JSX.Element {
           {agent === 'gemini' && (
             <span className="text-xs text-[#d7ba7d]" data-testid="lumopolis-gemini-note">Gemini: not compressed (no proxy route)</span>
           )}
+          <ChangeFailed shown={failedRow === 'agent'} />
         </div>
       </div>
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-settings">
@@ -121,6 +156,7 @@ export function LumopolisSettings(): JSX.Element {
             Names and explains the districts, buildings and connections on your project&apos;s Lumopolis
             map in plain words. Turn it off and the map still draws, with names taken from the code.
           </span>
+          <ChangeFailed shown={failedRow === 'labelling'} />
         </div>
       </div>
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-speak-settings">
@@ -146,6 +182,7 @@ export function LumopolisSettings(): JSX.Element {
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             When you ask Lumopolis a question, speak the answer with your computer&apos;s voice. Off by default.
           </span>
+          <ChangeFailed shown={failedRow === 'speak'} />
         </div>
       </div>
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-ci-settings">
@@ -173,6 +210,7 @@ export function LumopolisSettings(): JSX.Element {
             passed there shows as verified. <code>gh</code> uses the GitHub login it already has. It runs only for a project with a
             GitHub remote, when <code>gh</code> is installed. On by default; turn it off and Lumopolis never runs <code>gh</code>.
           </span>
+          <ChangeFailed shown={failedRow === 'ci'} />
         </div>
       </div>
     </div>

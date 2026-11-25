@@ -7,7 +7,7 @@ import React, { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Sheet } from '../../src/renderer/src/components/Accounts/Sheet'
-import { focusables } from '../../src/renderer/src/hooks/useFocusTrap'
+import { focusables, holdFocus, stepFocus, useFocusTrap } from '../../src/renderer/src/hooks/useFocusTrap'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 afterEach(() => {
@@ -60,6 +60,19 @@ describe('Tab with the focus on the sheet itself, no control in it having it', (
     expect(tab()).toBe('sheet-close')
     sheet.focus()
     expect(tab(true)).toBe('submit')
+  })
+})
+
+describe('a dialog with no control in it', () => {
+  function Bare() {
+    const ref = React.useRef<HTMLDivElement>(null)
+    useFocusTrap(ref)
+    return <div ref={ref} tabIndex={-1} data-testid="bare">Working…</div>
+  }
+  it('takes the focus itself, and keeps it on Tab', () => {
+    render(<Bare />)
+    expect(name(document.activeElement)).toBe('bare')
+    expect(tab()).toBe('bare')
   })
 })
 
@@ -140,6 +153,69 @@ describe('focusables: the controls a keyboard can reach', () => {
     const { container } = render(<Form open />)
     const seen = focusables(container.querySelector('[data-testid="sheet"]') as HTMLElement).map(name)
     expect(seen).toEqual(['sheet-close', 'first', 'sum', 'inner-a', 'inner-sum', 'submit'])
+  })
+})
+
+describe('focusables, stepFocus and holdFocus: a dialog over another one (F-R13)', () => {
+  const twoDialogs = (): { wrap: HTMLElement; under: HTMLElement; top: HTMLElement } => {
+    document.body.innerHTML =
+      '<div id="wrap"><div id="under"><button id="u1">u1</button><div id="deep"><input id="u2"></div></div>' +
+      '<div id="top" tabindex="-1"><button id="t1">t1</button><button id="t2">t2</button><button id="t3" disabled>t3</button></div></div>'
+    const get = (id: string): HTMLElement => document.getElementById(id) as HTMLElement
+    return { wrap: get('wrap'), under: get('under'), top: get('top') }
+  }
+  const ids = (xs: HTMLElement[]): string[] => xs.map((x) => x.id)
+
+  it('leaves out every control under an inert element, whether it was made inert by the property or the attribute', () => {
+    const { wrap, under } = twoDialogs()
+    expect(ids(focusables(wrap))).toEqual(['u1', 'u2', 't1', 't2'])
+    under.inert = true
+    expect(ids(focusables(wrap))).toEqual(['t1', 't2'])
+    under.inert = false
+    under.setAttribute('inert', '')
+    expect(ids(focusables(wrap))).toEqual(['t1', 't2'])
+  })
+
+  it('steps round only what is left, from the dialog itself too, and keeps the focus on the wrapper when nothing is', () => {
+    const { wrap, under, top } = twoDialogs()
+    under.inert = true
+    top.focus()
+    stepFocus(wrap, false)
+    expect(document.activeElement?.id).toBe('t1')
+    stepFocus(wrap, false)
+    expect(document.activeElement?.id).toBe('t2')
+    stepFocus(wrap, false)
+    expect(document.activeElement?.id).toBe('t1')
+    top.focus()
+    stepFocus(wrap, true)
+    expect(document.activeElement?.id).toBe('t2')
+    stepFocus(wrap, true)
+    expect(document.activeElement?.id).toBe('t1')
+    top.inert = true
+    wrap.tabIndex = -1
+    stepFocus(wrap, false)
+    expect(document.activeElement).toBe(wrap)
+  })
+
+  it('holdFocus gives the dialog the focus when a control of it went grey or the focus fell to <body>, and leaves it anywhere else', () => {
+    const { under, top } = twoDialogs()
+    const t1 = document.getElementById('t1') as HTMLButtonElement
+    t1.focus()
+    holdFocus(top)
+    expect(document.activeElement).toBe(t1)
+    t1.disabled = true
+    holdFocus(top)
+    expect(document.activeElement).toBe(top)
+    ;(document.activeElement as HTMLElement).blur()
+    expect(document.activeElement).toBe(document.body)
+    holdFocus(top)
+    expect(document.activeElement).toBe(top)
+    const u1 = document.getElementById('u1') as HTMLButtonElement
+    u1.focus()
+    u1.disabled = true
+    holdFocus(top)
+    expect(document.activeElement).toBe(u1)
+    expect(under.contains(u1)).toBe(true)
   })
 })
 

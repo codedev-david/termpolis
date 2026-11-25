@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { LumopolisSettings } from '../../src/renderer/src/components/SettingsPane/LumopolisSettings'
+import { LumopolisSettings, SETTINGS_CHANGE_FAILED, SETTINGS_LOAD_FAILED } from '../../src/renderer/src/components/SettingsPane/LumopolisSettings'
 
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) })
 const toggle = () => screen.getByTestId('settings-world-labelling-toggle')
@@ -60,6 +60,16 @@ describe('LumopolisSettings', () => {
     resolve({ success: true, data: { worldLabelling: false } })
     await settle()
     expect(screen.queryByTestId('settings-world-labelling-toggle')).toBeNull()
+  })
+
+  it('a read that fails after unmount shows nothing', async () => {
+    let reject!: (e: unknown) => void
+    api({ worldSettingsGet: vi.fn(() => new Promise((_r, j) => { reject = j })) })
+    const view = render(<LumopolisSettings />)
+    view.unmount()
+    reject(new Error('ipc down'))
+    await settle()
+    expect(screen.queryByTestId('lumopolis-settings-load-failed')).toBeNull()
   })
 
   it('writes the flip, and takes the value main stored', async () => {
@@ -193,6 +203,74 @@ describe('LumopolisSettings', () => {
       render(<LumopolisSettings />)
       fireEvent.click(ciToggle())
       expect(ciToggle()).toHaveAttribute('aria-checked', 'false')
+    })
+  })
+
+  // M4: a failed read or change says so in Lumopolis's own words, beside what failed; main's answer is never shown raw.
+  describe('failures', () => {
+    const failed = (row: string) => screen.getByTestId(row).querySelector('[data-testid="lumopolis-settings-failed"]')
+
+    it('words', () => {
+      expect(SETTINGS_LOAD_FAILED).toBe("Lumopolis couldn't load its settings. Try again.")
+      expect(SETTINGS_CHANGE_FAILED).toBe("Lumopolis couldn't change that setting. Try again.")
+    })
+
+    it('a read that is refused or throws says the settings did not load, and Try again reads them again', async () => {
+      const get = vi.fn()
+        .mockResolvedValueOnce({ success: false, error: 'settings patch required' })
+        .mockRejectedValueOnce(new Error('ipc down'))
+        .mockResolvedValueOnce({ success: true, data: { worldLabelling: false } })
+      api({ worldSettingsGet: get })
+      render(<LumopolisSettings />)
+      expect(screen.queryByTestId('lumopolis-settings-load-failed')).toBeNull()
+      await settle()
+      const line = screen.getByTestId('lumopolis-settings-load-failed')
+      expect(line).toHaveAttribute('role', 'alert')
+      expect(line).toHaveTextContent(/^Lumopolis couldn't load its settings\. Try again\.Try again$/)
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+      expect(screen.queryByTestId('lumopolis-settings-load-failed')).toBeNull()
+      await settle()
+      expect(screen.getByTestId('lumopolis-settings-load-failed')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+      await settle()
+      expect(screen.queryByTestId('lumopolis-settings-load-failed')).toBeNull()
+      expect(toggle()).toHaveAttribute('aria-checked', 'false')
+      expect(get).toHaveBeenCalledTimes(3)
+    })
+
+    it('a change that is refused, answers oddly or throws says so beside that setting alone, until a change goes through', async () => {
+      const set = vi.fn()
+        .mockResolvedValueOnce({ success: false, error: 'settings patch required' })
+        .mockRejectedValueOnce(new Error('ipc down'))
+        .mockResolvedValueOnce({ success: true, data: { worldLabelling: true, worldAgent: 'llama' } })
+        .mockResolvedValueOnce({ success: false, error: 'x' })
+        .mockResolvedValueOnce({ success: true, data: { worldLabelling: true, worldCiResults: false } })
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(0)
+      fireEvent.click(toggle())
+      await settle()
+      expect(failed('lumopolis-settings')).toHaveTextContent(/^Lumopolis couldn't change that setting\. Try again\.$/)
+      expect(failed('lumopolis-settings')).toHaveAttribute('role', 'alert')
+      expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(1)
+      fireEvent.click(screen.getByTestId('settings-world-speak-toggle'))
+      await settle()
+      expect(failed('lumopolis-settings')).toBeNull()
+      expect(failed('lumopolis-speak-settings')).toHaveTextContent(SETTINGS_CHANGE_FAILED)
+      fireEvent.change(screen.getByTestId('settings-world-agent'), { target: { value: 'codex' } })
+      await settle()
+      expect(failed('lumopolis-agent-settings')).toHaveTextContent(SETTINGS_CHANGE_FAILED)
+      fireEvent.click(screen.getByTestId('settings-world-ci-toggle'))
+      await settle()
+      expect(failed('lumopolis-ci-settings')).toHaveTextContent(SETTINGS_CHANGE_FAILED)
+      expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(1)
+      // A change that goes through clears the line.
+      fireEvent.click(screen.getByTestId('settings-world-ci-toggle'))
+      expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(0)
+      await settle()
+      expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(0)
+      expect(screen.queryByText(/patch required/)).toBeNull()
     })
   })
 

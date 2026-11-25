@@ -1,10 +1,11 @@
 // Lumopolis: paste a token to open a private repository. The token lives only in this dialog's field:
 // it is trimmed and checked here, handed to `onSubmit` once, and the field is emptied on submit, on
 // cancel and when the dialog goes away. Nothing outside the dialog keeps it.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { normalizeToken } from '../../../../shared/world/repoAccess'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
 import { useUiZoom } from './worldPane'
+import { holdFocus } from '../../hooks/useFocusTrap'
 
 export const TOKEN_PAGE_URL = 'https://github.com/settings/personal-access-tokens/new'
 
@@ -22,6 +23,11 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
   const [value, setValue] = useState('')
   const [refused, setRefused] = useState<string | null>(null)
   const field = useRef<HTMLInputElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  // Use this token greys while the token is tried: the dialog keeps the focus, so Tab and Esc still work in it.
+  useLayoutEffect(() => {
+    if (busy) holdFocus(dialog.current as HTMLDivElement)
+  }, [busy])
 
   // The field is emptied when the dialog goes away, whatever closed it.
   useEffect(() => {
@@ -45,7 +51,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
 
   const shown = refused ?? error
   return (
-    <div role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={dialogCls} style={zoom}>
+    <div ref={dialog} tabIndex={-1} role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Use a token</h2>
       <p className="text-xs text-[#9ca3af]">
         A token is a key you make on {host === 'github.com' ? 'GitHub' : host} that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.

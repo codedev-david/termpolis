@@ -9,7 +9,7 @@ import { DesignStart } from './DesignStart'
 import { targetOf, UI_FAILED, whereOf } from './worldTargets'
 import type { OpenTarget } from './worldTargets'
 import { useUiZoom } from './worldPane'
-import { focusables } from '../../hooks/useFocusTrap'
+import { stepFocus } from '../../hooks/useFocusTrap'
 
 export { targetOf }
 export type { OpenTarget }
@@ -86,13 +86,12 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
       if (from !== null && from.isConnected) from.focus()
     }
   }, [open])
-  /** Tab past a dialog's last control comes round to its first, and Shift+Tab the other way. */
+  /** Tab and Shift+Tab go round the dialog on top: the trap moves the focus itself, so an inert dialog under it (the
+   *  clone dialog under the token dialog) is never stepped into and the focus never leaves for the app around. */
   const trapTab = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== 'Tab') return
-    const list = focusables(e.currentTarget)
-    const at = document.activeElement
-    const to = e.shiftKey ? (at === list[0] ? list[list.length - 1] : null) : (at === list[list.length - 1] ? list[0] : null)
-    if (to) { e.preventDefault(); to.focus() }
+    e.preventDefault()
+    stepFocus(e.currentTarget, e.shiftKey)
   }
   // An action that opens a world when it is done, and the dialogs, open it only while the pane is still where the
   // person started it: a world picked meanwhile (the switcher, a terminal) stays (F-R4).

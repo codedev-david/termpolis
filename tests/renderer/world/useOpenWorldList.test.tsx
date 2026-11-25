@@ -126,6 +126,16 @@ describe('useOpenWorld open tickets (F-R4)', () => {
     await settle()
   })
 
+  it('a newer ticket lapses every older one: only the action the person started last can open its world', async () => {
+    setup(vi.fn(async () => ok<WorldEntry[]>([])))
+    const r = renderHook(() => useOpenWorld(''))
+    await settle()
+    const older = r.result.current.ticket()
+    const newer = r.result.current.ticket()
+    expect(older()).toBe(false)
+    expect(newer()).toBe(true)
+  })
+
   it('a ticket lapses when the hook unmounts', async () => {
     setup(vi.fn(async () => ok<WorldEntry[]>([])))
     const r = renderHook(() => useOpenWorld(''))

@@ -57,9 +57,9 @@ import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import { tourCard } from '../../world/engine/cards'
 import type { BuildAgent } from './BuildItDialog'
-import { UI_FAILED, type OpenTarget } from './worldTargets'
+import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED, type OpenTarget } from './worldTargets'
 import { WORLD_OPENED_EVENT } from './worldOpen'
-import { filesNotice, nextFilesNotice } from './worldNotes'
+import { filesNotice, nextFilesNotice, savedByNewerNotice } from './worldNotes'
 
 export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
@@ -124,6 +124,9 @@ const messageOf = (e: unknown): string => {
   console.warn('[world] a world call failed in the window:', e)
   return UI_FAILED
 }
+/** M3: why an annotate was not saved, in the pane's own sentence for that action. Only a world a newer Termpolis saved is
+ *  named (main refuses it with the same words as the pane's note), since trying again would not help there. */
+const annotateFailed = (error: string, sentence: string): string => (error === savedByNewerNotice() ? error : sentence)
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
 /** The toolbar's line about the last labelling run. */
 const labelCostLine = (tokens: number): string =>
@@ -791,9 +794,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .then((res) => {
         if (!still()) return
         if (res.success) setDoc(res.data)
-        else setNotice(`Couldn't confirm: ${res.error}`)
+        else setNotice(annotateFailed(res.error, CONFIRM_FAILED))
       })
-      .catch((e: unknown) => { if (still()) setNotice(`Couldn't confirm: ${messageOf(e)}`) })
+      .catch((e: unknown) => { if (still()) { messageOf(e); setNotice(CONFIRM_FAILED) } })
   }
   /** The "Service names" editor saved: the names are stored as an annotation, and the pane shows the doc that comes back. */
   const saveRuntimeNames = (itemId: string, names: string[]): void => {
@@ -803,9 +806,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .then((res) => {
         if (!still()) return
         if (res.success) setDoc(res.data)
-        else setNotice(`Couldn't save the service names: ${res.error}`)
+        else setNotice(annotateFailed(res.error, NAMES_FAILED))
       })
-      .catch((e: unknown) => { if (still()) setNotice(`Couldn't save the service names: ${messageOf(e)}`) })
+      .catch((e: unknown) => { if (still()) { messageOf(e); setNotice(NAMES_FAILED) } })
   }
   /** Opens the 2D map's item an event came from; false when it came from none. */
   const openItem = (target: Element): boolean => {
@@ -850,9 +853,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .then((res) => {
         if (!current()) return
         if (res.success) setDoc(res.data)
-        else setNotice(`Re-layout failed: ${res.error}`)
+        else setNotice(res.error)
       })
-      .catch((e: unknown) => { if (current()) setNotice(`Re-layout failed: ${messageOf(e)}`) })
+      .catch((e: unknown) => { if (current()) { messageOf(e); setNotice(RELAYOUT_FAILED) } })
       .finally(() => { if (mountedRef.current) setBusy(false) })
   }
 
@@ -1115,7 +1118,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 className="text-xs px-2 py-1 rounded border border-[#3c3c3c] flex items-center gap-2 text-[#cccccc]"
                 style={{ background: '#252526' }}
               >
-                <span>Lumopolis could not map this project. <span className="text-[#f48771] break-words">{recompileShown.message}</span></span>
+                {/* M3: a call that threw adds no second "couldn't do that" after this line. */}
+                <span>Lumopolis could not map this project.{recompileShown.message !== UI_FAILED && (
+                  <> <span className="text-[#f48771] break-words">{recompileShown.message}</span></>
+                )}</span>
                 <button
                   type="button"
                   className="px-2 py-0.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"

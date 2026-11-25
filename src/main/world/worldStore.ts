@@ -57,14 +57,18 @@ export interface WorldStoreDeps {
 /** What a stored world that cannot be read says: the raw error (its code and full path) goes to the log only. */
 export const WORLD_READ_FAILED = "Lumopolis couldn't read this world's saved map. Try again in a moment."
 
+/** PENDING SIGN-OFF (M5): what the list of recent worlds that cannot be read says; the raw error goes to the log only. */
+export const SOURCES_READ_FAILED_MESSAGE = "Lumopolis couldn't read your recent worlds. Try again in a moment."
+
 /** Which stored file could not be read: a world, its annotations, or the list of worlds. */
 export type WorldReadCode = 'WORLD_READ_FAILED' | 'ANNOTATIONS_READ_FAILED' | 'SOURCES_READ_FAILED'
 
-/** A stored file that exists but cannot be read. Its message is fixed and carries no path; its code says which file. */
+/** A stored file that exists but cannot be read. Its message is fixed and carries no path; its code says which file, and
+ *  the list of worlds has words of its own (M5). */
 export class WorldReadError extends Error {
   readonly code: WorldReadCode
   constructor(code: WorldReadCode = 'WORLD_READ_FAILED') {
-    super(WORLD_READ_FAILED)
+    super(code === 'SOURCES_READ_FAILED' ? SOURCES_READ_FAILED_MESSAGE : WORLD_READ_FAILED)
     this.name = 'WorldReadError'
     this.code = code
   }

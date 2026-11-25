@@ -43,7 +43,8 @@ import { WorldView } from '../../../src/renderer/src/components/World'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
 import { GRAPHICS_FLAT, GRAPHICS_LOST } from '../../../src/renderer/src/components/World/WorldView'
-import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
+import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
+import { savedByNewerNotice } from '../../../src/renderer/src/components/World/worldNotes'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -1077,12 +1078,14 @@ describe('WorldView', () => {
     fireEvent.click(screen.getByTestId('world-relayout'))
     fireEvent.click(screen.getByTestId('world-relayout-go'))
     await settle()
-    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-layout failed: host crashed')
+    // M3: main's answer is a whole sentence and shows alone; a call that threw shows the pane's own sentence for it.
+    expect(screen.getByTestId('world-notice')).toHaveTextContent(/^host crashed$/)
     b.api.worldRelayout.mockRejectedValueOnce(new Error('ipc down'))
     fireEvent.click(screen.getByTestId('world-relayout'))
     fireEvent.click(screen.getByTestId('world-relayout-go'))
     await settle()
-    expect(screen.getByTestId('world-notice')).toHaveTextContent(`Re-layout failed: ${UI_FAILED}`)
+    expect(screen.getByTestId('world-notice')).toHaveTextContent(/^Lumopolis couldn't redo the layout\. Try again\.$/)
+    expect(RELAYOUT_FAILED).toBe("Lumopolis couldn't redo the layout. Try again.")
   })
 
   it('opens cards from the viewer, and card links and close drive the viewer', async () => {
@@ -1264,6 +1267,48 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-project')).not.toHaveTextContent('repo')
   })
 
+  it('Map this project that finishes while the clone dialog is up leaves the dialog and the pane where they are (F-R4)', async () => {
+    const mapped = deferred<Res<WorldEntry>>()
+    const b = bridge({ worldSourcesList: vi.fn(async () => ok([])), worldMapProject: vi.fn(() => mapped.promise) })
+    await mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Worlds' }), { target: { value: '__home' } })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    expect(b.api.worldMapProject).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a git repository/ }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a' } })
+    await act(async () => { mapped.resolve(ok({ key: 'k-r', source: { kind: 'project', root: '/repo' }, title: 'repo', lastOpened: 1 } as WorldEntry)) })
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(screen.getByLabelText('Repository URL')).toHaveValue('https://x.dev/a')
+  })
+
+  it('Map this project that finishes while the folder picker is up does not stop the folder chosen after it from opening (F-R4)', async () => {
+    const mapped = deferred<Res<WorldEntry>>()
+    const picked = deferred<Res<WorldEntry | null>>()
+    const folder: WorldEntry = { key: 'k-p', source: { kind: 'folder', root: '/picked' }, title: 'picked', lastOpened: 1 } as WorldEntry
+    bridge({
+      worldSourcesList: vi.fn(async () => ok([])),
+      worldMapProject: vi.fn(() => mapped.promise),
+      worldOpenFolder: vi.fn(() => picked.promise),
+      worldTouchSource: vi.fn(async () => ok(folder)),
+    })
+    await mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Worlds' }), { target: { value: '__home' } })
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Map this project/ }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
+    await act(async () => { mapped.resolve(ok({ key: 'k-r', source: { kind: 'project', root: '/repo' }, title: 'repo', lastOpened: 1 } as WorldEntry)) })
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    await act(async () => { picked.resolve(ok(folder)) })
+    await settle()
+    expect(screen.queryByTestId('world-home')).toBeNull()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('picked')
+  })
+
   it('a world already saved, a failed compile, a refused or failing registration and a world the user picked register nothing more', async () => {
     let b = bridge({ worldMapProject: vi.fn(async () => ok({})) })
     await mount()
@@ -1352,13 +1397,17 @@ describe('WorldView', () => {
     cleanup()
     bridge({ worldGet: vi.fn(async () => { throw new Error('boom') }) })
     await mount()
-    // #65: a call that throws (no answer from main) shows fixed words, never the throw's own text.
-    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
-    expect(screen.getByTestId('world-error')).not.toHaveTextContent('boom')
+    // #65: a call that throws (no answer from main) shows fixed words, never the throw's own text; M3: "could not map this
+    // project" says it, with Try again, and no second "couldn't do that" under it.
+    expect(screen.getByTestId('world-empty')).toHaveTextContent('Lumopolis could not map this project.')
+    expect(screen.getByTestId('world-empty')).not.toHaveTextContent(/boom|couldn't do that/)
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    expect(screen.getByTestId('world-retry')).toBeInTheDocument()
     cleanup()
     bridge({ worldGet: vi.fn(() => Promise.reject('odd')) })
     await mount()
-    expect(screen.getByTestId('world-error')).toHaveTextContent(UI_FAILED)
+    expect(screen.getByTestId('world-empty')).toHaveTextContent('Lumopolis could not map this project.')
+    expect(screen.queryByTestId('world-error')).toBeNull()
   })
 
   it('answers that land after unmount are dropped (get, compile, failure)', async () => {
@@ -1527,15 +1576,22 @@ describe('WorldView card actions', () => {
     expect(viewer().load).toHaveBeenLastCalledWith(returned, expect.anything())
   })
 
-  it('Confirm that fails, by an answer or a throw, says so and keeps the doc', async () => {
-    const worldAnnotate = vi.fn().mockResolvedValueOnce(fail('No part with that id.')).mockRejectedValueOnce(new Error('boom'))
-    await open(infer(), { worldAnnotate })
-    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
-    await settle()
-    expect(screen.getByRole('status')).toHaveTextContent("Couldn't confirm: No part with that id.")
-    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
-    await settle()
-    expect(screen.getByRole('status')).toHaveTextContent(`Couldn't confirm: ${UI_FAILED}`)
+  // M3: one sentence of the pane's own for a confirmation that was not saved, by an answer or a throw; only a world a newer
+  // Termpolis saved is named as the reason, since Try again would not help there.
+  it('Confirm that fails, by an answer or a throw, says so in one sentence and keeps the doc', async () => {
+    const worldAnnotate = vi.fn()
+      .mockResolvedValueOnce(fail('No part with that id.'))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(fail(savedByNewerNotice()))
+    // Main refuses an annotate only over a world a newer Termpolis saved, which the pane already says in its files note.
+    await open({ ...infer(), savedByNewer: true }, { worldAnnotate })
+    expect(screen.getByRole('status').textContent).toBe(savedByNewerNotice())
+    for (const want of [CONFIRM_FAILED, CONFIRM_FAILED, savedByNewerNotice()]) {
+      fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+      await settle()
+      expect(screen.getByRole('status').textContent).toBe(want)
+    }
+    expect(CONFIRM_FAILED).toBe("Lumopolis couldn't save your confirmation. Try again.")
   })
 
   it('an evidence button shows what it points at under the card, and closing the card or the evidence clears it', async () => {
@@ -1566,10 +1622,11 @@ describe('WorldView card actions', () => {
     expect(viewer().load).toHaveBeenLastCalledWith(returned, expect.anything())
     save('x')
     await settle()
-    expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: nope")
+    expect(screen.getByRole('status').textContent).toBe(NAMES_FAILED)
     save('y')
     await settle()
-    expect(screen.getByRole('status')).toHaveTextContent(`Couldn't save the service names: ${UI_FAILED}`)
+    expect(screen.getByRole('status').textContent).toBe(NAMES_FAILED)
+    expect(NAMES_FAILED).toBe("Lumopolis couldn't save the service names. Try again.")
   })
 
   // U4: a Confirm or a service-names save that comes back after another world opened must not draw
@@ -2505,7 +2562,8 @@ describe('WorldView export', () => {
       expect(screen.getByTestId('world-notice')).toBeInTheDocument()
       await act(async () => { if (end === 'throw') compile.reject(new Error('down')); else compile.resolve(fail('no source files found')) })
       await settle()
-      expect(screen.getByTestId('world-error')).toHaveTextContent(end === 'throw' ? UI_FAILED : 'no source files found')
+      if (end === 'throw') expect(screen.getByTestId('world-empty')).toHaveTextContent(/^Lumopolis could not map this project\.Try again$/)
+      else expect(screen.getByTestId('world-error')).toHaveTextContent('no source files found')
       expect(screen.queryByTestId('world-notice')).toBeNull()
       m.unmount()
     }

@@ -14,6 +14,13 @@ const HOME = '__home'
 
 export function WorldSwitcher({ entries, onOpen, onHome }: WorldSwitcherProps): JSX.Element {
   const open = entries.filter((e) => !e.missing)
+  // M10: a macOS select shows no option titles, so a name two offered worlds share carries where each is in its text.
+  const uses = new Map<string, number>()
+  for (const e of open) uses.set(e.title, (uses.get(e.title) ?? 0) + 1)
+  const label = (e: WorldEntry): string => {
+    const where = whereOf(e)
+    return (uses.get(e.title) as number) > 1 && where !== '' ? `${e.title} \u2014 ${where}` : e.title
+  }
   return (
     <select
       aria-label="Worlds"
@@ -29,8 +36,8 @@ export function WorldSwitcher({ entries, onOpen, onHome }: WorldSwitcherProps): 
     >
       <option value="">Switch world…</option>
       <option value={HOME}>Home</option>
-      {/* Where each one is, as its hover title: two worlds can share a name (F-R12). */}
-      {open.map((e) => <option key={e.key} value={e.key} title={whereOf(e) || undefined}>{e.title}</option>)}
+      {/* Where each one is, as its hover title, and in its text when two share a name (F-R12, M10). */}
+      {open.map((e) => <option key={e.key} value={e.key} title={whereOf(e) || undefined}>{label(e)}</option>)}
     </select>
   )
 }
