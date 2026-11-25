@@ -185,7 +185,7 @@ import {
   type ArtifactKind, type ArtifactFile, type AgentTarget,
 } from './artifactInstaller'
 import { readZip } from './zipArchive'
-import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
+import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists, lstatSync as ghLstat } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
 import * as ghPath from 'node:path'
 import {
@@ -195,7 +195,7 @@ import {
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
-import { installHooks, uninstallHooks, hookStatus, shieldHooksAllowed, type HookDeps, type HookPaths } from './gitHooks'
+import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksAllowed, shieldNodePath, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
 import { offMainFiles } from './offMainFiles'
@@ -2113,17 +2113,22 @@ const realHookDeps: HookDeps = {
   exists: (p) => ghExists(p),
   chmod: (p, m) => { try { ghChmod(p, m) } catch { /* windows has no exec bit */ } },
   remove: (p) => { try { unlinkSync(p) } catch { /* already gone */ } },
+  // lstat, never stat: a hook that is a link is reported as one, not as the file it names (I1).
+  fileKind: (p) => hookFileKind(() => ghLstat(p)),
 }
 
+/** The person's own config files, which their git reads core.hooksPath from (gitCommand.ts GitOptions.keepEnv, M7). */
+const HOOKS_KEEP_ENV = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'] as const
+
 /** Resolve the repo's REAL hooks dir (honours worktrees / core.hooksPath), plus an absolute
- *  node and the shipped scanner. Null when `cwd` is not a git repository. */
+ *  node ('' when none is found: the install refuses) and the shipped scanner. Null when `cwd` is not a git repository. */
 async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
   try {
-    const rel = (await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000 })).trim()
+    const rel = (await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000, keepEnv: HOOKS_KEEP_ENV })).trim()
     if (!rel) return null
     return {
       hooksDir: ghResolve(cwd, rel),
-      nodePath: resolveNodeCommand(),
+      nodePath: shieldNodePath(process.env, (env) => resolveNodeCommand(env), ghPath, ghPath.delimiter) ?? '',
       scriptPath: app.isPackaged
         ? join(process.resourcesPath, 'mcp-adapter', 'termpolis-githook.cjs')
         : join(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs'),
@@ -2136,7 +2141,8 @@ async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
 const shieldMayWrite = (repo: string, hooksDir: string): Promise<boolean> => shieldHooksAllowed({
   repo,
   hooksDir,
-  git: (args) => safeGitAsync(args, { cwd: repo, timeout: 5000 }),
+  git: (args) => safeGitAsync(args, { cwd: repo, timeout: 5000, keepEnv: HOOKS_KEEP_ENV }),
+  readFile: (p) => fsPromises.readFile(p, 'utf8').then((t) => t, () => null),
   path: ghPath, // the rules ghResolve resolved hooksDir with
   platform: process.platform,
   realpath: async (p) => fsPromises.realpath(p),
@@ -2167,7 +2173,18 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
     // PENDING SIGN-OFF (new wording, #36).
     if (!(await shieldMayWrite(repo, paths.hooksDir))) return err("This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.")
+    // PENDING SIGN-OFF (new wording, M1): the hook runs node by the full path found here, never one on PATH.
+    if (paths.nodePath === '') return err('The Commit Shield was not installed: Termpolis could not find node on this computer.')
     mkdirSync(paths.hooksDir, { recursive: true })
+    // Again, now that the folder exists: a link in its path that led nowhere before is followed now (I1).
+    if (!(await shieldMayWrite(repo, paths.hooksDir))) return err("This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.")
+    // PENDING SIGN-OFF (new wording, I1): a hook file that is a link, or not a regular file, refuses the whole install.
+    const unsafe = unsafeHook(paths, realHookDeps)
+    if (unsafe) {
+      return err(unsafe.kind === 'link'
+        ? `The Commit Shield was not installed: this repository's ${unsafe.name} hook is a link to another file.`
+        : `The Commit Shield was not installed: this repository's ${unsafe.name} hook is not an ordinary file.`)
+    }
     const written = installHooks(paths, realHookDeps)
     writeShieldRepos([...readShieldRepos(), repo])
     aiSecurityAppend({ agent: 'git', event: 'commit_scan', notes: `commit shield hooks installed: ${repo}` }).catch(() => {})

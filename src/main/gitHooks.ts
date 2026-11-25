@@ -36,6 +36,36 @@ export interface HookDeps {
   exists: (p: string) => boolean
   chmod: (p: string, mode: number) => void
   remove: (p: string) => void
+  /** What the file at `p` is, without following a link (hookFileKind). */
+  fileKind: (p: string) => HookFileKind
+}
+
+/** A hook file as lstat sees it. 'link': a symbolic link (on Windows also a junction), or a hard link shared with
+ *  another file; 'other': not a regular file (a folder, a pipe, a device), or lstat failed for a reason other than
+ *  the file not being there. Install and uninstall read and write only 'file' and 'absent'. */
+export type HookFileKind = 'absent' | 'file' | 'link' | 'other'
+
+/** The fields of fs.Stats that hookFileKind reads. */
+export interface HookStat {
+  isSymbolicLink(): boolean
+  isFile(): boolean
+  nlink: number
+}
+
+/** The kind of the file `lstat` describes (index.ts hands it lstatSync of the hook file). A link is never followed:
+ *  every write follows one, so a pre-commit that links to ~/.bashrc would put the shield block and an exec bit there
+ *  (I1). A link that stays inside the repository is refused too: a link is how that attack works, and husky and
+ *  lefthook move hooks with core.hooksPath, not with links. */
+export function hookFileKind(lstat: () => HookStat): HookFileKind {
+  let s: HookStat
+  try {
+    s = lstat()
+  } catch (e) {
+    return (e as { code?: unknown } | null)?.code === 'ENOENT' ? 'absent' : 'other'
+  }
+  if (s.isSymbolicLink()) return 'link'
+  if (!s.isFile()) return 'other'
+  return s.nlink > 1 ? 'link' : 'file'
 }
 
 export interface HookPaths {
@@ -94,11 +124,15 @@ function renderBlock(name: HookName, paths: HookPaths): string {
     'termpolis_commit_shield() {',
     `  _termpolis_node=${shq(paths.nodePath)}`,
     `  _termpolis_shield=${shq(paths.scriptPath)}`,
-    '  # nvm and node upgrades move the baked path; check PATH before giving up, or the',
-    '  # shield switches itself off the day node moves and nobody ever notices.',
-    '  [ -x "$_termpolis_node" ] || _termpolis_node=$(command -v node 2>/dev/null)',
-    '  # FAIL OPEN: node gone, or Termpolis uninstalled → skip the scan, never block.',
-    '  [ -x "$_termpolis_node" ] || return 0',
+    '  # Only the full path the installer found. Never a node looked up on PATH: this runs in the',
+    '  # repository, and a PATH entry can name a folder inside it, where a planted node would run.',
+    '  # FAIL OPEN when it is gone (an nvm or node upgrade moves it), and say so: a shield that',
+    '  # switched itself off without a word is one nobody knows to protect again.',
+    '  case "$_termpolis_node" in /*|[A-Za-z]:/*) [ -x "$_termpolis_node" ] ;; *) false ;; esac || {',
+    '    echo "Termpolis Commit Shield skipped: node was not found at $_termpolis_node. Protect this repository again in Termpolis." >&2',
+    '    return 0',
+    '  }',
+    '  # FAIL OPEN: Termpolis uninstalled → skip the scan, never block.',
     '  [ -f "$_termpolis_shield" ] || return 0',
     '  # stdin is deliberately untouched: git hands a push hook its ref list there and a',
     '  # chained hook below still has to read it. The scanner takes the mode on argv.',
@@ -179,12 +213,24 @@ function composeHook(name: HookName, paths: HookPaths, existing: string): string
  *  guess about, so callers must leave it strictly alone. Overwriting it would be the
  *  exact clobber this module exists to prevent. */
 function readHook(file: string, deps: HookDeps): string | null {
-  if (!deps.exists(file)) return ''
+  const kind = deps.fileKind(file)
+  if (kind === 'absent') return ''
+  if (kind !== 'file') return null // a link or not a regular file: never read through, never written (I1)
   return deps.readFile(file)
 }
 
-/** Write both hooks. Returns what it actually wrote — a non-shell foreign hook is
- *  skipped and left byte-identical, so the caller can tell the user why it is still
+/** The first hook file the installer must not touch, with its kind: a link, or not a regular file. index.ts refuses
+ *  the whole install over one, before anything is written, so the person hears why (installHooks also skips it). */
+export function unsafeHook(paths: HookPaths, deps: HookDeps): { name: HookName; kind: 'link' | 'other' } | null {
+  for (const name of HOOK_NAMES) {
+    const kind = deps.fileKind(hookPath(paths, name))
+    if (kind === 'link' || kind === 'other') return { name, kind }
+  }
+  return null
+}
+
+/** Write both hooks. Returns what it actually wrote — a non-shell foreign hook, a link and
+ *  a file that is not a regular one are skipped and left byte-identical, so the caller can tell the user why it is still
  *  unprotected instead of us corrupting it. */
 export function installHooks(paths: HookPaths, deps: HookDeps): HookName[] {
   const written: HookName[] = []
@@ -200,8 +246,8 @@ export function installHooks(paths: HookPaths, deps: HookDeps): HookName[] {
 }
 
 /** Surgical. Ours alone → the file goes with us. Chained → strip only the block and
- *  leave a foreign hook that is still valid and still executable. Never ours → never
- *  touched. Returns what it removed or cleaned. */
+ *  leave a foreign hook that is still valid and still executable. Never ours, a link, or
+ *  not a regular file → never touched. Returns what it removed or cleaned. */
 export function uninstallHooks(paths: HookPaths, deps: HookDeps): HookName[] {
   const cleaned: HookName[] = []
   for (const name of HOOK_NAMES) {
@@ -283,18 +329,85 @@ export async function shieldMayWriteHooks(f: HooksWriteFacts): Promise<boolean> 
 /** Runs one read-only git command in the repository and prints its output (index.ts hands safeGitAsync). */
 export type HooksGit = (args: string[]) => Promise<string>
 
-/** shieldMayWriteHooks for the repository at `repo`, asking git for its common dir, top level and the scopes. A bare
- *  repository has no top level; a root git cannot name is left out. */
-export async function shieldHooksAllowed(o: { repo: string; hooksDir: string; git: HooksGit; path: PathApi; platform: NodeJS.Platform; realpath: Realpath }): Promise<boolean> {
+/** shieldMayWriteHooks for the repository at `repo`, with the roots git names, each checked (M2):
+ *  - the working tree (`--show-toplevel`), only when `repo` lies in it: a repository's own core.worktree can name
+ *    any folder as its working tree, and then nothing it names counts;
+ *  - the git folder (`--git-common-dir`), only when it belongs to this working tree. A `.git` file, or a `commondir`
+ *    file in the folder one names, can point at another repository's git folder; that folder is not this one's. It
+ *    belongs when it lies in the working tree, when this is a linked worktree of it (the git dir is
+ *    `<common>/worktrees/<name>` and its `gitdir` file names this working tree's `.git`), or when it is a submodule's
+ *    (the git dir is the common dir, and its core.worktree, relative to it, is this working tree);
+ *  - a bare repository (no working tree): the git folder, when it is the git dir and `repo` lies in it.
+ *  A root git cannot name, or one that fails its check, is left out. `git init --separate-git-dir` makes a `.git`
+ *  file that names a git folder with no core.worktree: that repository is refused, since nothing tells it apart from
+ *  a `.git` file naming another repository's git folder. */
+export async function shieldHooksAllowed(o: {
+  repo: string
+  hooksDir: string
+  git: HooksGit
+  /** A file's text, or null when it cannot be read (index.ts: fs.promises.readFile). */
+  readFile: (p: string) => Promise<string | null>
+  path: PathApi
+  platform: NodeJS.Platform
+  realpath: Realpath
+}): Promise<boolean> {
   const path = o.path
-  const roots: string[] = []
-  for (const flag of ['--git-common-dir', '--show-toplevel']) {
-    const named = await o.git(['rev-parse', flag]).then((s) => s.trim(), () => '')
-    if (named !== '') roots.push(path.resolve(o.repo, named))
+  const fold = o.platform === 'win32' || o.platform === 'darwin' ? (s: string): string => s.toLowerCase() : (s: string): string => s
+  const real = async (p: string): Promise<string> => fold(await realOrWritten(p, path, o.realpath))
+  const inside = async (child: string, parent: string): Promise<boolean> => {
+    const rel = path.relative(await real(parent), await real(child))
+    return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))
   }
+  const same = async (a: string, b: string): Promise<boolean> => (await real(a)) === (await real(b))
+  const named = (args: string[]): Promise<string> => o.git(args).then((s) => s.trim(), () => '')
+  const at = (p: string): string => path.resolve(o.repo, p)
+
+  const roots: string[] = []
+  const top = await named(['rev-parse', '--show-toplevel'])
+  const commonNamed = await named(['rev-parse', '--git-common-dir'])
+  const common = commonNamed === '' ? '' : at(commonNamed)
+  if (top !== '') {
+    const tree = at(top)
+    if (await inside(o.repo, tree)) {
+      roots.push(tree)
+      if (common !== '' && (await commonBelongs(common, tree))) roots.push(common)
+    }
+  } else if (common !== '') {
+    const gitDir = await named(['rev-parse', '--absolute-git-dir'])
+    if (gitDir !== '' && (await same(gitDir, common)) && (await inside(o.repo, common))) roots.push(common)
+  }
+
+  async function commonBelongs(c: string, tree: string): Promise<boolean> {
+    if (await inside(c, tree)) return true
+    const gitDirNamed = await named(['rev-parse', '--absolute-git-dir'])
+    if (gitDirNamed === '') return false
+    const gitDir = at(gitDirNamed)
+    if (await same(path.dirname(gitDir), path.join(c, 'worktrees'))) {
+      const back = (await o.readFile(path.join(gitDir, 'gitdir')))?.trim() ?? ''
+      return back !== '' && (await same(path.resolve(gitDir, back), path.join(tree, '.git')))
+    }
+    if (!(await same(gitDir, c))) return false
+    const worktree = await named(['config', '--local', '--get', 'core.worktree'])
+    return worktree !== '' && (await same(path.resolve(gitDir, worktree), tree))
+  }
+
   const scopes = (): Promise<string[] | null> =>
     o.git(['config', '--show-scope', '-z', '--get-all', 'core.hooksPath']).then(hooksPathScopes, () => null)
   return shieldMayWriteHooks({ hooksDir: o.hooksDir, roots, scopes, path, platform: o.platform, realpath: o.realpath })
+}
+
+/** The node the hook is baked with: resolveNodeCommand's answer with only the PATH folders written as full paths, or
+ *  null when that finds no node. A relative PATH folder names one inside whatever folder Termpolis was started in,
+ *  and resolveNodeCommand's last resort, the bare `node`, is not a full path either (M1). */
+export function shieldNodePath(
+  env: NodeJS.ProcessEnv,
+  resolve: (env: NodeJS.ProcessEnv) => string,
+  path: PathApi,
+  delimiter: string,
+): string | null {
+  const entries = (env.PATH ?? env.Path ?? '').split(delimiter).filter((d) => d.trim() !== '' && path.isAbsolute(d.trim()))
+  const found = resolve({ ...env, PATH: entries.join(delimiter), Path: undefined })
+  return path.isAbsolute(found) ? found : null
 }
 
 export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, HookState> {

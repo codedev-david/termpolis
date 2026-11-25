@@ -62,6 +62,8 @@ function anotherKeychain(): ReturnType<typeof fakeSafeStorage> {
   }
 }
 
+/** What a fake isolation adds to a job that may not write: one of the build box's own servers off. */
+const DOCS_OFF = ['-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', '-c', 'features.apps=false']
 const READ_ONLY: LinkedGrants = { run: true, write: false }
 const EDIT: LinkedGrants = { run: true, write: true }
 
@@ -564,6 +566,8 @@ describe('delegating a job', () => {
     // the build box's primer, down to the argv and options its deliver gets.
     const spawned: Array<{ bin: string; args: string[]; prompt: string; opts: DeliverOpts }> = []
     const remember = vi.fn()
+    // The build box's isolation for a job that may not write (HOLD-A I2): its other servers off.
+    const isolation = vi.fn(async () => ({ args: [...DOCS_OFF], env: { TERMPOLIS_READ_ONLY_RUN: '1' }, dispose: async () => undefined }))
     b.agent = (req) =>
       runHeadless(req, {
         deliver: async (bin, args, prompt, _token, opts) => {
@@ -572,6 +576,7 @@ describe('delegating a job', () => {
         },
         primer: async (cwd) => `Project notes for ${cwd}`,
         remember,
+        isolation,
       })
 
     const read = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Find the flaky test.', cwd: b.work })
@@ -598,12 +603,18 @@ describe('delegating a job', () => {
       'mcp_servers.termpolis.enabled=false',
       '-c',
       'mcp_servers.termpolis.command=termpolis-mcp-disabled',
+      ...DOCS_OFF,
       '-C',
       b.work,
       PROMPT_TOKEN,
     ])
+    // Only the job that may not write is isolated, keeping Termpolis's server for its marker.
+    expect(isolation).toHaveBeenCalledTimes(1)
+    expect(isolation).toHaveBeenCalledWith('codex', b.work, { TERMPOLIS_LINKED_JOB: b.execs[0].env?.TERMPOLIS_LINKED_JOB }, expect.any(Function), { keepTermpolis: true })
+    expect(codex.opts.env).toEqual({ TERMPOLIS_LINKED_JOB: b.execs[0].env?.TERMPOLIS_LINKED_JOB, TERMPOLIS_READ_ONLY_RUN: '1' })
     expect(claude.bin).toBe('claude')
     expect(claude.args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--strict-mcp-config'])
+    expect(claude.opts.env).toEqual({ TERMPOLIS_LINKED_JOB: b.execs[1].env?.TERMPOLIS_LINKED_JOB })
     for (const [run, exec] of [
       [codex, b.execs[0]],
       [claude, b.execs[1]],
@@ -779,6 +790,7 @@ describe('delegating a job', () => {
         },
         primer: async (cwd) => `Project notes for ${cwd}`,
         noPersist: probe,
+        isolation: async () => ({ args: [...DOCS_OFF], env: { TERMPOLIS_READ_ONLY_RUN: '1' }, dispose: async () => undefined }),
       })
 
     await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Find the flaky test.', cwd: b.work })

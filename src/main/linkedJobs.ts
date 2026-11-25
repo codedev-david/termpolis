@@ -683,6 +683,11 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       linkedJob: id,
       noRemember: true,
       env: { TERMPOLIS_LINKED_JOB: id },
+      // A job that may not write runs isolated (HOLD-A I2), as a Second Opinion review does: none of
+      // this computer's other MCP servers, no project hooks, agy in a home of its own. Termpolis's
+      // server stays for codex and claude, narrowed by the marker. A run that can't be isolated
+      // doesn't start, and the computer that asked is told why.
+      ...(write ? {} : { isolated: true, isolationReason: true }),
       signal: controller.signal,
     }
     // Detached: the asking machine collects the outcome with `peerResult`.

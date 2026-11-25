@@ -21,6 +21,10 @@ export interface GitOptions {
   cwd: string
   timeout?: number
   maxBuffer?: number
+  /** Inherited variables a read keeps although INHERITED_GIT_DROP names them, limited to KEEPABLE_GIT_ENV
+   *  (gitSafety.ts guardGitDropEnv). Only the Commit Shield asks, for GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM: it reads
+   *  where core.hooksPath sends the hooks, and the git that runs them, the person's own, reads those files (M7). */
+  keepEnv?: readonly string[]
 }
 
 /**
@@ -72,7 +76,7 @@ async function guardedGit(args: string[], opts: GitOptions, fold: boolean, start
       // inherited GIT_CONFIG and the variables that move it to another repository, so it reads the config its scan
       // read (gitSafety.ts). A write keeps the environment as it is.
       addEnv: guardGitEnv(args),
-      dropEnv: guardGitDropEnv(args),
+      dropEnv: guardGitDropEnv(args, opts.keepEnv),
     })
     // A status leaves each submodule's dirty state out (its own config would run); it is asked for here, one guarded
     // status per submodule, and written back in (gitSubmodules.ts). Any other command comes back as git wrote it.

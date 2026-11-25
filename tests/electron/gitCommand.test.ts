@@ -103,6 +103,30 @@ describe('safeGitAsync: git by its full path, never the bare name', () => {
     expect(bin.forgets).toBe(0)
   })
 
+  // M7: a read drops GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM (gitSafety.ts INHERITED_GIT_DROP), so it reads the default
+  // files. The Commit Shield asks to keep them: the git that runs the hooks is the person's, and it reads those files
+  // for core.hooksPath. Only the names asked for are kept.
+  it('a read drops the inherited config-file variables unless the caller keeps them by name (M7)', async () => {
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(null, '.git/hooks\n', ''))
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/home/me/other.gitconfig')
+    vi.stubEnv('GIT_CONFIG_SYSTEM', '/etc/other-gitconfig')
+    vi.stubEnv('GIT_DIR', '/elsewhere/.git')
+    try {
+      const envOf = (i: number): NodeJS.ProcessEnv => (mockExecFile.mock.calls[i][2] as { env: NodeJS.ProcessEnv }).env
+      await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd: '/repo' })
+      expect(envOf(0).GIT_CONFIG_GLOBAL).toBeUndefined()
+      expect(envOf(0).GIT_CONFIG_SYSTEM).toBeUndefined()
+      await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd: '/repo', keepEnv: ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'] })
+      expect(envOf(1).GIT_CONFIG_GLOBAL).toBe('/home/me/other.gitconfig')
+      expect(envOf(1).GIT_CONFIG_SYSTEM).toBe('/etc/other-gitconfig')
+      expect(envOf(1).GIT_DIR).toBeUndefined() // still dropped: only the names kept are kept
+      await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd: '/repo', keepEnv: [] })
+      expect(envOf(2).GIT_CONFIG_GLOBAL).toBeUndefined()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('_resetGitBinForTests forgets the cached git', () => {
     _resetGitBinForTests()
     expect(bin.forgets).toBe(1)

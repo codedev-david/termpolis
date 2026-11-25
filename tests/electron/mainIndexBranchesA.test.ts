@@ -349,6 +349,8 @@ vi.mock('fs', () => {
     readFileSync: vi.fn(() => '{}'),
     readdirSync: vi.fn(() => []),
     statSync: vi.fn(() => ({ isDirectory: () => false, isFile: () => true, mtimeMs: 0, size: 0 })),
+    // No hook file exists yet: the Commit Shield's lstat (I1) finds nothing.
+    lstatSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }),
     mkdirSync: vi.fn(),
     appendFileSync: vi.fn(),
     renameSync: vi.fn(),
@@ -872,10 +874,22 @@ describe('Commit Shield registry — path folding is Windows-only', () => {
     realFs.writeFileSync(registryPath, JSON.stringify(['C:\\Repo']), 'utf8')
     const fs = (await import('fs')) as any
     fs.readFileSync.mockReturnValue(JSON.stringify(['C:\\Repo']))
-    M.execFileSync.mockReturnValue(Buffer.from('hooks\n')) // git rev-parse --git-path hooks
+    // A plain repository at the folder asked about: git rev-parse --git-path hooks says `hooks`, the working tree is
+    // that folder and its git folder is in it (M2), and there is no core.hooksPath.
+    M.execFileSync.mockImplementation((_bin: string, args: string[], opts?: { cwd?: string }) => {
+      const k = args.slice(Math.max(args.lastIndexOf('rev-parse'), args.lastIndexOf('config'))).join(' ')
+      if (k === 'rev-parse --show-toplevel') return Buffer.from(`${opts?.cwd ?? ''}\n`)
+      if (k === 'rev-parse --git-common-dir') return Buffer.from('.git\n')
+      if (k === 'config --show-scope -z --get-all core.hooksPath') return Buffer.from('')
+      return Buffer.from('hooks\n')
+    })
+    // The hook is baked with a node found by its full path (M1): any absolute .../node is there.
+    M.existsSync.mockImplementation(((p: unknown) => /^(?:[A-Za-z]:)?[\\/](?:.*[\\/])?node(\.exe)?$/.test(String(p))) as () => boolean)
   })
 
   afterAll(async () => {
+    M.execFileSync.mockReset()
+    M.execFileSync.mockReturnValue(Buffer.from('hooks\n'))
     try { realFs.unlinkSync(registryPath) } catch { /* never created */ }
     const fs = (await import('fs')) as any
     fs.readFileSync.mockReturnValue('{}')

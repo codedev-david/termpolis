@@ -25,9 +25,9 @@
 // validation gates and the happy-path hook install; this file deliberately does not repeat
 // them and goes after the error arms, the clamps and the verdict gates instead.
 
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, delimiter } from 'node:path'
 import { createZip } from '../../src/main/zipArchive'
 import { RULES } from '../../src/main/aiSecurity'
 import { RULES as SENSITIVE_FILE_RULES } from '../../src/main/sensitiveFileWatcher'
@@ -63,6 +63,11 @@ const H = vi.hoisted(() => {
     mkdirSync: vi.fn((p: any, o?: any) => { if (inSandbox(p)) rfs.mkdirSync(p, o) }),
     readdirSync: vi.fn((p: any, o?: any) => (inSandbox(p) ? rfs.readdirSync(p, o) : [])),
     statSync: vi.fn((p: any, o?: any) => (inSandbox(p) ? rfs.statSync(p, o) : { size: 0, isDirectory: () => false })),
+    // The Commit Shield asks what a hook file is before it reads or writes one (I1); outside the sandbox nothing exists.
+    lstatSync: vi.fn((p: any, o?: any) => {
+      if (inSandbox(p)) return rfs.lstatSync(p, o)
+      throw Object.assign(new Error(`ENOENT: ${String(p)}`), { code: 'ENOENT' })
+    }),
     renameSync: vi.fn((a: any, b: any) => { if (inSandbox(a) && inSandbox(b)) rfs.renameSync(a, b) }),
     unlinkSync: vi.fn((p: any) => { if (inSandbox(p)) rfs.unlinkSync(p) }),
     rmSync: vi.fn((p: any, o?: any) => { if (inSandbox(p)) rfs.rmSync(p, o) }),
@@ -733,14 +738,27 @@ describe('gitHooks', () => {
   const REPO = join(H.SANDBOX, 'repo')
   const HOOKS = join(REPO, '.git', 'hooks')
 
-  // safeGit(['rev-parse','--git-path','hooks']) is how index.ts finds the REAL hooks dir.
-  const asRepo = () => H.mockExecFileSync.mockReturnValue(Buffer.from('.git/hooks\n'))
+  // safeGit(['rev-parse','--git-path','hooks']) is how index.ts finds the REAL hooks dir. A plain repository at the
+  // folder asked about: its working tree and git folder are where the shield looks (M2), and no core.hooksPath.
+  const asRepo = () => H.mockExecFileSync.mockImplementation((_bin: string, args: string[], opts?: { cwd?: string }) => {
+    const k = args.slice(args.lastIndexOf('rev-parse') >= 0 ? args.lastIndexOf('rev-parse') : args.lastIndexOf('config')).join(' ')
+    if (k === 'rev-parse --show-toplevel') return Buffer.from(`${opts?.cwd ?? ''}\n`)
+    if (k === 'rev-parse --git-common-dir') return Buffer.from('.git\n')
+    if (k === 'config --show-scope -z --get-all core.hooksPath') return Buffer.from('')
+    return Buffer.from('.git/hooks\n')
+  })
+  // The hook is baked with a node found by its full path (M1): one sits in the sandbox, first on PATH.
+  const NODE_DIR = join(H.SANDBOX, 'node-bin')
+  mkdirSync(NODE_DIR, { recursive: true })
+  writeFileSync(join(NODE_DIR, process.platform === 'win32' ? 'node.exe' : 'node'), '')
 
   beforeEach(() => {
     rmSync(HOOKS, { recursive: true, force: true })
     mkdirSync(HOOKS, { recursive: true })
     asRepo()
+    vi.stubEnv('PATH', `${NODE_DIR}${delimiter}${process.env.PATH ?? ''}`)
   })
+  afterEach(() => { vi.unstubAllEnvs() })
 
   it('installs both hooks, and a re-read off disk reports them installed', async () => {
     const r = await invoke('gitHooks:install', { cwd: REPO })

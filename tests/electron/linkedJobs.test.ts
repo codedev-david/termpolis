@@ -507,6 +507,35 @@ describe('running a job', () => {
     expect(h.runs[0].req).not.toHaveProperty('noPrimer')
   })
 
+  // HOLD-A I2: a job that may not write runs isolated, as a Second Opinion review does, and a run
+  // that can't be isolated says why to the computer that asked. An edit job is as it was.
+  it('runs a job that may not write isolated, with the reason a run could not be isolated going back to the asker', async () => {
+    const h = setup()
+    const { jobId } = await start(h, FROM, WRITER, { cwd: '~/repos/app', prompt: 'Review the parser.' })
+    expect(h.runs[0].req).toEqual({
+      task:
+        `[Delegated by "laptop" over Termpolis Linked machines. Working folder: ${REPO}. ` +
+        'Your final message is returned to the agent that asked.]\n\nReview the parser.',
+      agent: 'codex',
+      cwd: REPO,
+      write: false,
+      timeoutMs: expect.any(Number),
+      linkedJob: '000000000001',
+      noRemember: true,
+      env: { TERMPOLIS_LINKED_JOB: '000000000001' },
+      isolated: true,
+      isolationReason: true,
+      signal: expect.any(AbortSignal),
+    })
+    const why = "Termpolis couldn't set up a safe read-only run for this agent, so it did not start: codex mcp list did not show every MCP server off (exit 0)"
+    h.runs[0].resolve(result({ ok: false, output: '', error: why, code: -1 }))
+    await flush()
+    expect(await poll(h, jobId)).toMatchObject({ status: 'failed', error: why })
+    await start(h, FROM, WRITER, { cwd: '~/repos/app', prompt: 'Fix it.', write: true })
+    expect(h.runs[1].req).not.toHaveProperty('isolated')
+    expect(h.runs[1].req).not.toHaveProperty('isolationReason')
+  })
+
   it('answers at once with a running job, then reports what the agent said', async () => {
     const h = setup()
     const { jobId } = await start(h)

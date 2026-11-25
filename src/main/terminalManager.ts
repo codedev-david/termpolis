@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import { homedir } from 'os'
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
@@ -10,7 +10,7 @@ import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import {
-  byteLength, integrationFileBusy, integrationScriptState, isRenameRefused, logRenameRefusal, notWhole, RENAME_RETRIES, RENAME_RETRY_MS,
+  byteLength, integrationFileBusy, integrationScriptState, isRenameRefused, keptVerdict, logRenameRefusal, notWhole, RENAME_RETRIES, RENAME_RETRY_MS,
   wholeAgain, wholeFileTempName, type SpawnPrep, type WholeFileResult,
 } from './terminalSpawnPrep'
 
@@ -21,6 +21,8 @@ export interface SyncWholeFileIo {
   rm: (path: string, opts: { force: true }) => void
   exists: (path: string) => boolean
   sleep: (ms: number) => void
+  /** The file's bytes, read only on the path that would keep it (keptVerdict, terminalSpawnPrep.ts). */
+  read: (path: string) => Buffer
 }
 import { lumopolisNonce } from './world/lumopolisOpen'
 import { LUMOPOLIS_NONCE_ENV } from '../shared/world/lumopolisCommand'
@@ -645,9 +647,16 @@ export function writeWholeFileSync(path: string, content: string, io: Partial<Sy
     rm: io.rm ?? rmSync,
     exists: io.exists ?? existsSync,
     sleep: io.sleep ?? sleepSync,
+    read: io.read ?? readFileSync,
   }
   if (throughFreshTempSync(path, content, RENAME_RETRIES, all)) return wholeAgain(path)
-  if (!notWhole.has(path) && all.exists(path)) return 'kept'
+  if (!notWhole.has(path) && all.exists(path)) {
+    let bytes: Buffer | null = null
+    try { bytes = all.read(path) } catch { /* unreadable (held): kept, as before the compare */ }
+    const verdict = keptVerdict(bytes, content)
+    if (verdict === 'current') return wholeAgain(path)
+    if (verdict === 'keep') return 'kept'
+  }
   if (throughFreshTempSync(path, content, 0, all)) return wholeAgain(path)
   try {
     all.writeFile(path, content)

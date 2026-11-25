@@ -11,6 +11,7 @@ import {
   gitSubcommand,
   guardGitArgs,
   guardGitDropEnv,
+  KEEPABLE_GIT_ENV,
   INHERITED_GIT_DROP,
   withoutEnv,
   guardGitEnv,
@@ -93,6 +94,20 @@ describe('guardGitDropEnv', () => {
 
   it('a write keeps every inherited variable: it runs in the environment the person’s git would', () => {
     for (const sub of MUTATING_SUBCOMMANDS) expect(guardGitDropEnv([sub, 'x'])).toEqual([])
+  })
+
+  // HOLD-A M7: a read may keep the person's own global and system config files by name, and nothing else.
+  it('a read keeps GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM when asked by name, and never any other dropped variable', () => {
+    const read = ['config', '--show-scope', '-z', '--get-all', 'core.hooksPath']
+    expect(guardGitDropEnv(read, [])).toBe(INHERITED_GIT_DROP)
+    expect(guardGitDropEnv(read, ['GIT_DIR', 'GIT_SSH_COMMAND', 'GIT_CONFIG'])).toBe(INHERITED_GIT_DROP)
+    const kept = guardGitDropEnv(read, ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_DIR'])
+    expect(kept).toEqual(INHERITED_GIT_DROP.filter((d) => d !== 'GIT_CONFIG_GLOBAL' && d !== 'GIT_CONFIG_SYSTEM'))
+    expect(kept).toContain('GIT_DIR')
+    expect(guardGitDropEnv(read, ['GIT_CONFIG_GLOBAL'])).not.toContain('GIT_CONFIG_GLOBAL')
+    expect(guardGitDropEnv(read, ['GIT_CONFIG_GLOBAL'])).toContain('GIT_CONFIG_SYSTEM')
+    expect(guardGitDropEnv(['commit', '-m', 'x'], ['GIT_CONFIG_GLOBAL'])).toEqual([])
+    expect([...KEEPABLE_GIT_ENV].sort()).toEqual(['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'])
   })
 })
 

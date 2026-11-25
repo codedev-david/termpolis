@@ -290,7 +290,8 @@ describe('termpolis-githook — runGit starts git by its full path', () => {
     expect(hook.runGit(['rev-parse', '--is-inside-work-tree']).trim()).toBe('true') // the test runs in the checkout
   })
 
-  it('throws when the only git found lies inside the repository, and the hook then fails open', () => {
+  // M5: the shield is off for that commit, so the hook says so in one line before it fails open.
+  it('throws when the only git found lies inside the repository, and the hook then fails open with one line saying so', () => {
     const d = repo()
     mkdirSync(join(d, 'bin'))
     writeFileSync(join(d, 'bin', process.platform === 'win32' ? 'git.exe' : 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
@@ -298,6 +299,16 @@ describe('termpolis-githook — runGit starts git by its full path', () => {
     expect(() => hook.runGit(['rev-parse', '--git-dir'], d)).toThrow('git not found')
     const err = capture()
     expect(hook.main(['pre-commit'], { cwd: d, readSettings: () => ON, stderr: err.stderr })).toBe(0)
+    expect(err.text).toBe('Termpolis Commit Shield skipped: no git outside this repository\n')
+    // A stderr that cannot be written (a closed pipe) still fails open.
+    const broken = (): void => { throw new Error('EPIPE') }
+    expect(hook.main(['pre-commit'], { cwd: d, readSettings: () => ON, stderr: broken })).toBe(0)
+  })
+
+  it('any other git failure still fails open without a word (only a missing git is named)', () => {
+    const err = capture()
+    const exploded = (): string => { throw Object.assign(new Error('git exploded'), { code: 'ENOENT' }) }
+    expect(hook.main(['pre-commit'], { git: exploded, readSettings: () => ON, stderr: err.stderr })).toBe(0)
     expect(err.text).toBe('')
   })
 })

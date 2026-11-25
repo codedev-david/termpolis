@@ -99,6 +99,15 @@ describe('codexMcpListAllOff', () => {
       '[{"name":"a"}]', '[{"name":"a","enabled":"false"}]', '[{"name":"a","enabled":0}]', '[{"name":"a","enabled":false},{"name":"b","enabled":true}]',
     ]) expect([bad, codexMcpListAllOff(bad)]).toEqual([bad, false])
   })
+
+  // HOLD-A I2: a linked job's run keeps Termpolis's own server, so the server named kept may be on.
+  it('with a server named kept, passes that one on or off and still every other only off', () => {
+    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true},{"name":"docs","enabled":false}]', 'termpolis')).toBe(true)
+    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":false}]', 'termpolis')).toBe(true)
+    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true},{"name":"docs","enabled":true}]', 'termpolis')).toBe(false)
+    expect(codexMcpListAllOff('[{"name":"Termpolis","enabled":true}]', 'termpolis')).toBe(false)
+    expect(codexMcpListAllOff('[{"name":"termpolis","enabled":true}]')).toBe(false)
+  })
 })
 
 describe('agyMcpListEmpty', () => {
@@ -122,6 +131,30 @@ describe('prepareIsolatedLaunch for Codex', () => {
     expect(run).toHaveBeenCalledWith('codex', ['mcp', 'list', '--json', ...expected], { cwd: project, env: { PATH: 'p', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: MCP_LIST_TIMEOUT_MS })
     await launch.dispose()
     expect({ home: await snapshot(home), project: await snapshot(project), tmp: await snapshot(tmp) }).toEqual(before)
+  })
+
+  // HOLD-A I2: a linked job keeps Termpolis's server, which execCommand narrows with the job's marker
+  // or switches off (codexLinkedJobArgs); every other server and the connectors still go off.
+  it('with keepTermpolis, leaves Termpolis\'s own server to the run and checks every other server off', async () => {
+    await userConfig('[mcp_servers.docs]\ncommand = "d"\n[mcp_servers.termpolis]\ncommand = "t"\n')
+    const run = vi.fn<McpListRun>(async () => ({ stdout: '[{"name":"docs","enabled":false},{"name":"termpolis","enabled":true}]', code: 0 }))
+    const launch = await prepareIsolatedLaunch('codex', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: true })
+    const expected = [...OFF_CMD('docs'), ...CODEX_NO_CONNECTORS_ARGS]
+    expect(launch.args).toEqual(expected)
+    expect(launch.args.join(' ')).not.toContain('mcp_servers.termpolis')
+    expect(launch.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
+    expect(run).toHaveBeenCalledWith('codex', ['mcp', 'list', '--json', ...expected], {
+      cwd: project, env: { TERMPOLIS_LINKED_JOB: 'j1', TERMPOLIS_READ_ONLY_RUN: '1' }, timeoutMs: MCP_LIST_TIMEOUT_MS,
+    })
+    // Any other server on still fails it.
+    clearIsolationChecks()
+    const leaky: McpListRun = async () => ({ stdout: '[{"name":"docs","enabled":true},{"name":"termpolis","enabled":true}]', code: 0 })
+    await expect(prepareIsolatedLaunch('codex', project, {}, leaky, realIO(), { keepTermpolis: true })).rejects.toThrow(/did not show every MCP server off/)
+    // Without the option, Termpolis's server on fails it, and a passed keep check is not a pass for a run that keeps nothing.
+    clearIsolationChecks()
+    await prepareIsolatedLaunch('codex', project, {}, run, realIO(), { keepTermpolis: true })
+    await expect(prepareIsolatedLaunch('codex', project, {}, run, realIO())).rejects.toThrow(/did not show every MCP server off/)
+    expect(run).toHaveBeenCalledTimes(3)
   })
 
   it('still switches Termpolis\'s server and the connectors off when there is no config at all', async () => {
@@ -399,6 +432,19 @@ describe('prepareIsolatedLaunch for Claude Code', () => {
     expect(io.readText).not.toHaveBeenCalled()
     expect(io.mkdtemp).not.toHaveBeenCalled()
     expect(run).not.toHaveBeenCalled()
+  })
+
+  // HOLD-A I2: keepTermpolis is Codex's alone. Claude's linked job brings its own server file, and agy's
+  // run home holds no server at all, so an agy linked job that may not write runs without Termpolis's.
+  it('keepTermpolis changes nothing for Claude Code or agy', async () => {
+    const claude = await prepareIsolatedLaunch('claude', project, {}, passing(), realIO(), { keepTermpolis: true })
+    expect(claude.args).toEqual([...CLAUDE_ISOLATE_ARGS])
+    const run = passing()
+    const agy = await prepareIsolatedLaunch('gemini', project, { TERMPOLIS_LINKED_JOB: 'j1' }, run, realIO(), { keepTermpolis: true })
+    expect(agy.args).toEqual([])
+    expect(agy.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1', HOME: agy.env.HOME, USERPROFILE: agy.env.HOME })
+    expect(await snapshot(agy.env.HOME)).not.toHaveProperty(join('.gemini', 'config', 'mcp_config.json'))
+    await agy.dispose()
   })
 })
 

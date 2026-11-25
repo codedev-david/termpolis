@@ -11,12 +11,12 @@
 //
 // Secret samples use repeated characters: they satisfy the rule regexes while failing entropy
 // heuristics, so GitHub push protection will not block this file.
-import { describe, it, expect, beforeAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { installHooks, uninstallHooks, hookStatus, shieldHooksAllowed, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
+import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksAllowed, type HookDeps, type HookPaths } from '../../src/main/gitHooks'
 
 const AWS_KEY = 'AKIA' + 'A'.repeat(16)
 
@@ -26,6 +26,7 @@ const realDeps: HookDeps = {
   exists: (p) => fs.existsSync(p),
   chmod: (p, m) => { try { fs.chmodSync(p, m) } catch { /* windows */ } },
   remove: (p) => { try { fs.rmSync(p, { force: true }) } catch { /* ignore */ } },
+  fileKind: (p) => hookFileKind(() => fs.lstatSync(p)),
 }
 
 const SCANNER = path.resolve(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs')
@@ -195,7 +196,7 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
       execFileSync('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], { cwd, stdio: 'pipe' }).toString()
     const where = (cwd: string): string => path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd }).toString().trim())
     const allowed = (cwd: string): Promise<boolean> =>
-      shieldHooksAllowed({ repo: cwd, hooksDir: where(cwd), git: run(cwd), path, platform: process.platform, realpath: (p) => fs.promises.realpath(p) })
+      shieldHooksAllowed({ repo: cwd, hooksDir: where(cwd), git: run(cwd), readFile: readText, path, platform: process.platform, realpath: (p) => fs.promises.realpath(p) })
 
     expect(await allowed(dir)).toBe(true) // .git/hooks
     execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: dir })
@@ -230,5 +231,196 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
     // …and our shield is still armed on top of theirs.
     stage(dir, 'config.env', `AWS_ACCESS_KEY_ID=${AWS_KEY}\n`)
     expect(commit(dir, 'secret').ok).toBe(false)
+  }, 30_000)
+})
+
+const readText = (p: string): Promise<string | null> => fs.promises.readFile(p, 'utf8').then((t) => t, () => null)
+
+/** A git that reads no global or system config, so a core.hooksPath on the machine running the tests cannot decide
+ *  what these tests assert. */
+const ISOLATED_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'shield-e2e-config-'))
+const ISOLATED_CONFIG = path.join(ISOLATED_DIR, 'gitconfig')
+fs.writeFileSync(ISOLATED_CONFIG, '')
+afterAll(() => fs.rmSync(ISOLATED_DIR, { recursive: true, force: true }))
+const isolatedEnv: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: ISOLATED_CONFIG, GIT_CONFIG_NOSYSTEM: '1' }
+const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, env: isolatedEnv, stdio: 'pipe' }).toString()
+const hooksOf = (cwd: string): string => path.resolve(cwd, git(cwd, ['rev-parse', '--git-path', 'hooks']).trim())
+const allowedIn = (cwd: string, hooksDir = hooksOf(cwd)): Promise<boolean> =>
+  shieldHooksAllowed({
+    repo: cwd,
+    hooksDir,
+    git: async (args) => git(cwd, ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args]),
+    readFile: readText,
+    path,
+    platform: process.platform,
+    realpath: (p) => fs.promises.realpath(p),
+  })
+
+/** A throwaway folder, cleaned after each test. */
+function scratch(prefix: string): string {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
+  repos.push(dir)
+  return dir
+}
+
+/** A repository with one commit. */
+function committedRepo(prefix = 'shield-e2e-repo-'): string {
+  const dir = scratch(prefix)
+  git(dir, ['init', '-q'])
+  git(dir, ['config', 'user.email', 't@example.test'])
+  git(dir, ['config', 'user.name', 'Test'])
+  git(dir, ['config', 'commit.gpgsign', 'false'])
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n')
+  git(dir, ['add', 'a.txt'])
+  git(dir, ['commit', '-q', '-m', 'one'])
+  return dir
+}
+
+/** Whether this machine lets the test make a symbolic link to a file. Windows needs Developer Mode or an elevated
+ *  shell for one; a junction (a folder link) needs neither. Decided here, at load: vitest reads runIf before any
+ *  beforeAll runs. */
+const canSymlinkFile = ((): boolean => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shield-e2e-symlink-probe-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'target'), 'x')
+    fs.symlinkSync(path.join(dir, 'target'), path.join(dir, 'link'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})()
+
+// I1 on a real disk. Every write follows a link, so a hook file that links outside the repository would put the
+// shield and an exec bit into whatever it names (a shell profile). Install and uninstall leave a link alone.
+describe.skipIf(!gitAvailable)('Commit Shield — a hook file that is a link, on a real disk (I1)', () => {
+  function outsideTarget(): { file: string; bytes: string } {
+    const file = path.join(scratch('shield-e2e-outside-'), 'profile.sh')
+    const bytes = '#!/bin/sh\n# the person\'s own file, outside the repository\nexport KEEP=1\n'
+    fs.writeFileSync(file, bytes)
+    return { file, bytes }
+  }
+
+  it('a pre-commit hard-linked to a file outside the repository is never written, and uninstall leaves it', () => {
+    const { paths } = makeRepo()
+    const target = outsideTarget()
+    const hook = path.join(paths.hooksDir, 'pre-commit')
+    fs.linkSync(target.file, hook)
+    expect(unsafeHook(paths, realDeps)).toEqual({ name: 'pre-commit', kind: 'link' })
+    expect(installHooks(paths, realDeps)).toEqual(['pre-push'])
+    expect(fs.readFileSync(target.file, 'utf8')).toBe(target.bytes)
+    // Our block in the shared file (written by someone else): uninstall still does not touch it.
+    const ours = fs.readFileSync(path.join(paths.hooksDir, 'pre-push'), 'utf8')
+    fs.writeFileSync(target.file, ours)
+    expect(uninstallHooks(paths, realDeps)).toEqual(['pre-push'])
+    expect(fs.readFileSync(target.file, 'utf8')).toBe(ours)
+    expect(fs.existsSync(hook)).toBe(true)
+  }, 30_000)
+
+  it.runIf(canSymlinkFile)('a pre-commit that is a symbolic link outside the repository is never written, and uninstall leaves it (runs where this machine allows a file symlink)', () => {
+    const { paths } = makeRepo()
+    const target = outsideTarget()
+    const hook = path.join(paths.hooksDir, 'pre-commit')
+    fs.symlinkSync(target.file, hook, 'file')
+    expect(unsafeHook(paths, realDeps)).toEqual({ name: 'pre-commit', kind: 'link' })
+    expect(installHooks(paths, realDeps)).toEqual(['pre-push'])
+    expect(fs.readFileSync(target.file, 'utf8')).toBe(target.bytes)
+    const ours = fs.readFileSync(path.join(paths.hooksDir, 'pre-push'), 'utf8')
+    fs.writeFileSync(target.file, ours)
+    expect(uninstallHooks(paths, realDeps)).toEqual(['pre-push'])
+    expect(fs.readFileSync(target.file, 'utf8')).toBe(ours)
+    // A link that leads nowhere is still a link: install never creates the file it names.
+    fs.rmSync(target.file)
+    expect(installHooks(paths, realDeps)).toEqual(['pre-push'])
+    expect(fs.existsSync(target.file)).toBe(false)
+  }, 30_000)
+
+  it('a hooks folder that is a junction (a folder symlink off Windows) to a folder outside the repository is refused', async () => {
+    const repo = committedRepo()
+    const outside = scratch('shield-e2e-outside-hooks-')
+    const hooks = hooksOf(repo)
+    fs.rmSync(hooks, { recursive: true, force: true })
+    fs.symlinkSync(outside, hooks, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(await allowedIn(repo, hooks)).toBe(false)
+    // The same folder, really inside: allowed (the refusal is the link's, not the folder's).
+    fs.rmSync(hooks, { recursive: true, force: true })
+    expect(await allowedIn(repo, hooks)).toBe(true)
+  }, 30_000)
+})
+
+// M2 on a real disk. A `.git` file names the git folder, and a `commondir` file in that folder names the common one:
+// either can point at another repository, whose hooks folder is not this one's to write. git's own layouts pass.
+describe.skipIf(!gitAvailable)("Commit Shield — a `.git` file that points at another repository's git folder (M2)", () => {
+  const dotGitFile = (dir: string, gitdir: string): void => fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${gitdir}\n`)
+
+  it('allows a plain repository, a linked worktree and a submodule', async () => {
+    const repo = committedRepo()
+    expect(await allowedIn(repo)).toBe(true)
+    const wt = path.join(path.dirname(repo), path.basename(repo) + '-wt')
+    repos.push(wt)
+    git(repo, ['worktree', 'add', '-q', wt])
+    expect(hooksOf(wt)).toBe(path.join(repo, '.git', 'hooks'))
+    expect(await allowedIn(wt)).toBe(true)
+    const lib = committedRepo('shield-e2e-lib-')
+    git(repo, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub'])
+    const sub = path.join(repo, 'sub')
+    expect(hooksOf(sub)).toBe(path.join(repo, '.git', 'modules', 'sub', 'hooks'))
+    expect(await allowedIn(sub)).toBe(true)
+  }, 60_000)
+
+  it("refuses a `.git` file naming another repository's git folder, its worktree's or its submodule's", async () => {
+    const victim = committedRepo('shield-e2e-victim-')
+    const wt = path.join(path.dirname(victim), path.basename(victim) + '-wt')
+    repos.push(wt)
+    git(victim, ['worktree', 'add', '-q', wt])
+    const lib = committedRepo('shield-e2e-lib-')
+    git(victim, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub'])
+    const victimHooks = path.join(victim, '.git', 'hooks')
+
+    for (const gitdir of [path.join(victim, '.git'), path.join(victim, '.git', 'worktrees', path.basename(wt)), path.join(victim, '.git', 'modules', 'sub')]) {
+      const attacker = scratch('shield-e2e-attacker-')
+      dotGitFile(attacker, gitdir)
+      expect(hooksOf(attacker).startsWith(victim)).toBe(true) // git really does send the hooks there
+      expect(await allowedIn(attacker), gitdir).toBe(false)
+    }
+    // A git folder inside the attacker's own tree whose commondir names the victim's: git takes the victim's hooks.
+    const attacker = scratch('shield-e2e-attacker-')
+    const inner = path.join(attacker, '.gitinner')
+    fs.mkdirSync(inner)
+    fs.writeFileSync(path.join(inner, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(inner, 'commondir'), path.join(victim, '.git') + '\n')
+    dotGitFile(attacker, inner)
+    expect(hooksOf(attacker)).toBe(victimHooks)
+    expect(await allowedIn(attacker)).toBe(false)
+  }, 60_000)
+
+  it('refuses a `git init --separate-git-dir` repository (it has no core.worktree to tell it from the attack)', async () => {
+    const tree = scratch('shield-e2e-sep-')
+    const gitDir = path.join(scratch('shield-e2e-sepdir-'), 'repo.git')
+    git(tree, ['init', '-q', '--separate-git-dir', gitDir])
+    expect(await allowedIn(tree)).toBe(false)
+  }, 30_000)
+})
+
+// M1 on a real disk. The hook runs node only by the full path it was installed with. Where that is gone it skips the
+// scan with a line on stderr, and a node planted in the repository on a full PATH entry never runs.
+describe.skipIf(!gitAvailable)('Commit Shield — node moved after install (M1)', () => {
+  it('skips the scan with a stderr line and never runs a node planted on PATH inside the repository', () => {
+    const { dir, paths } = makeRepo()
+    const gone = path.join(path.dirname(dir), 'no-such-node-' + path.basename(dir), process.platform === 'win32' ? 'node.exe' : 'node')
+    installHooks({ ...paths, nodePath: gone }, realDeps)
+    const tools = path.join(dir, 'tools')
+    fs.mkdirSync(tools)
+    const marker = path.join(dir, 'planted-node-ran')
+    // A shell script named node: git's sh runs it for a bare `node` on this PATH, Git for Windows' sh included.
+    fs.writeFileSync(path.join(tools, 'node'), `#!/bin/sh\necho ran > '${marker.replace(/\\/g, '/')}'\nexit 0\n`, { mode: 0o755 })
+    stage(dir, 'config.env', `AWS_ACCESS_KEY_ID=${AWS_KEY}\n`)
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${tools}${path.delimiter}${process.env.PATH ?? process.env.Path ?? ''}` }
+    delete env.Path
+    const r = spawnSync('git', ['commit', '-m', 'moved node'], { cwd: dir, env, encoding: 'utf8' })
+    expect(fs.existsSync(marker)).toBe(false) // the planted node never ran
+    expect(r.status).toBe(0) // fail open: the commit goes through, unscanned
+    expect(r.stderr).toContain(`Termpolis Commit Shield skipped: node was not found at ${gone.replace(/\\/g, '/')}. Protect this repository again in Termpolis.`)
   }, 30_000)
 })

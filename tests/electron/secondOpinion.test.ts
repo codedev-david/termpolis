@@ -4,6 +4,7 @@ import {
   modelArgs,
   claudeReadOnlyArgs,
   agyReadOnlyArgs,
+  agyDroppedPlanMode,
   secondOpinionCommand,
   secondOpinionSpawnPlan,
   deliverWithDeadline,
@@ -130,6 +131,20 @@ describe('agyReadOnlyArgs', () => {
     expect(limit(1234)).toBe('2s')
     expect(limit(90_000)).toBe('90s')
     for (const none of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) expect(limit(none)).toBe('0s')
+  })
+})
+
+// HOLD-A M4. agy can run a `--mode plan` turn in its default mode and say so on stderr.
+describe('agyDroppedPlanMode', () => {
+  it('reads the lines agy prints when it runs a plan turn in its default mode, and nothing else', () => {
+    for (const said of [
+      '--mode plan is not supported headless, continuing in the default mode',
+      'Warning: --mode plan has no effect while slash command expansion is disabled\n',
+      'loading\r\n--MODE PLAN is not supported headless\r\n',
+      'continuing in the default mode',
+    ]) expect(agyDroppedPlanMode(said), said).toBe(true)
+    for (const quiet of ['', 'Loaded cached credentials.', '--mode plan', 'plan mode on', '--mode accept-edits is not supported here', 'the default mode is plan'])
+      expect(agyDroppedPlanMode(quiet), quiet).toBe(false)
   })
 })
 
@@ -593,6 +608,27 @@ describe('runSecondOpinion: every review is isolated before it starts (SEC-1)', 
     expect(deliver.mock.calls[0][0]).toBe('agy')
     expect(deliver.mock.calls[0][1]).toEqual(['--mode', 'plan', '--print-timeout', '90s', '-p', PROMPT_TOKEN])
     expect(deliver.mock.calls[0][4]).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: LAUNCH.gemini.env })
+  })
+
+  // HOLD-A M4: a review agy ran outside plan mode is not the review asked for, whatever it wrote.
+  it('agy: a review agy says it ran outside plan mode is dropped, and why is logged; other words, or other agents, are not', async () => {
+    const said = (stderr: string) => vi.fn<DeliverFn>(async () => ({ stdout: 'a review', stderr, code: 0 }))
+    const log = vi.fn()
+    const dropped = said('--mode plan is not supported headless, continuing in the default mode\n')
+    expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, dropped, fakeIsolate().isolate, { cwd: '/app', log }))
+      .toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^\[second-opinion\] gemini review dropped: agy ran it outside plan mode/))
+    expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, said('Loaded cached credentials.'), fakeIsolate().isolate, { cwd: '/app', log }))
+      .toEqual({ ok: true, feedback: 'a review' })
+    expect(await runSecondOpinion({ agent: 'codex', content: 'x' }, dropped, fakeIsolate().isolate, { cwd: '/app', log }))
+      .toEqual({ ok: true, feedback: 'a review' })
+    expect(log).toHaveBeenCalledTimes(1)
+    // No log given: the console is told.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(await runSecondOpinion({ agent: 'gemini', content: 'x' }, dropped, fakeIsolate().isolate, { cwd: '/app' })).toEqual({ ok: false, error: REVIEW_ISOLATION_FAILED })
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { warn.mockRestore() }
   })
 
   it("isolates in the app's own folder with no extra environment, and its check is spawned as the review is", async () => {

@@ -389,6 +389,8 @@ vi.mock('../../src/main/gitCommand', async (importOriginal) => {
 })
 vi.mock('../../src/main/gitHooks', () => ({
   installHooks: M.installHooks, uninstallHooks: M.uninstallHooks, hookStatus: M.hookStatus,
+  // hookPathsFor bakes the node it finds into the hook paths (M1); these arms never reach a real install.
+  shieldNodePath: () => '/usr/bin/node',
 }))
 vi.mock('../../src/main/importTrust', () => ({
   initImportTrust: vi.fn(),

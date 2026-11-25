@@ -213,7 +213,7 @@ describe('the integration files are written whole', () => {
   const tmpsIn = (dir: string): string[] => readdirSync(dir).filter((n) => n.endsWith('.tmp'))
   const refused = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
 
-  type Io = { writeFile?: (p: string, c: string) => void; rename?: (a: string, b: string) => void; rm?: (p: string) => void; sleep?: (ms: number) => void }
+  type Io = { writeFile?: (p: string, c: string) => void; rename?: (a: string, b: string) => void; rm?: (p: string) => void; sleep?: (ms: number) => void; read?: (p: string) => Buffer }
   for (const [name, write] of [
     ['async (prepareSpawn)', (p: string, c: string, io?: Io) => writeWholeFile(p, c, io)],
     ['sync (the fallback)', async (p: string, c: string, io?: Io) => writeWholeFileSync(p, c, io)],
@@ -376,6 +376,37 @@ describe('the integration files are written whole', () => {
       expect(readFileSync(target, 'utf8')).toBe('the whole script')
       await expect(write(target, 'a newer script', stillRefused)).resolves.toBe('kept') // whole again, so it is kept as before
       expect(readFileSync(target, 'utf8')).toBe('the whole script')
+      expect(tmpsIn(dir)).toEqual([])
+    })
+
+    // HOLD-A M3. An earlier run that crashed mid-direct-write left the start of this script, and notWhole (memory only)
+    // forgot it. With every rename refused, the bytes there are compared, on the kept path only: the start of the
+    // content is written whole, the content itself is already written, and another whole script is kept as before.
+    it(`${name}: with every rename refused, a file holding only the start of the content (a run cut short) is written whole, one holding all of it is written already, and another script is kept`, async () => {
+      const dir = mkdtempSync(join(H.root, 'keptcmp-'))
+      const target = join(dir, 'f.ps1')
+      const stillRefused = { rename: () => { throw refused('EPERM') }, sleep: () => {} }
+      for (const start of ['the who', '']) {
+        writeFileSync(target, start)
+        await expect(write(target, 'the whole script', stillRefused)).resolves.toBe('written')
+        expect(readFileSync(target, 'utf8')).toBe('the whole script')
+      }
+      const writes: string[] = []
+      const counting = { ...stillRefused, writeFile: (p: string, c: string) => { writes.push(p); writeFileSync(p, c) } }
+      await expect(write(target, 'the whole script', counting)).resolves.toBe('written')
+      expect(writes).not.toContain(target) // already all there: not written again
+      await expect(write(target, 'another script', stillRefused)).resolves.toBe('kept')
+      await expect(write(target, 'the whole script and more', stillRefused)).resolves.toBe('written') // the old one is its start
+      expect(readFileSync(target, 'utf8')).toBe('the whole script and more')
+      // Compared as bytes: a cut inside a character is still the start of the content.
+      const accented = 'café ✓ done'
+      writeFileSync(target, Buffer.from(accented, 'utf8').subarray(0, 4))
+      await expect(write(target, accented, stillRefused)).resolves.toBe('written')
+      expect(readFileSync(target, 'utf8')).toBe(accented)
+      // A file that cannot be read is kept, as before the compare.
+      writeFileSync(target, 'the who')
+      await expect(write(target, 'the whole script', { ...stillRefused, read: () => { throw refused('EBUSY') } })).resolves.toBe('kept')
+      expect(readFileSync(target, 'utf8')).toBe('the who')
       expect(tmpsIn(dir)).toEqual([])
     })
   }

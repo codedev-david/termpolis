@@ -7,18 +7,22 @@
 // half-valid script behind on uninstall, never wedge git when Termpolis is gone.
 //
 // Everything is dependency-injected — no real filesystem, no real shell.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { join, posix, win32 } from 'path'
 import {
   renderHook,
   installHooks,
   uninstallHooks,
   hookStatus,
+  hookFileKind,
+  unsafeHook,
+  shieldNodePath,
   hooksPathScopes,
   shieldMayWriteHooks,
   shieldHooksAllowed,
   type HooksWriteFacts,
   type HookDeps,
+  type HookFileKind,
   type HookPaths,
 } from '../../src/main/gitHooks'
 
@@ -27,7 +31,7 @@ const END = '# <<< termpolis commit shield <<<'
 
 /** An in-memory hooks dir. Records every write/chmod/remove so tests can assert
  *  on what was touched — and, just as importantly, on what was NOT. */
-function fakeFs(seed: Record<string, string> = {}) {
+function fakeFs(seed: Record<string, string> = {}, kinds: Record<string, HookFileKind> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
   const modes = new Map<string, number>()
   const removed: string[] = []
@@ -38,6 +42,8 @@ function fakeFs(seed: Record<string, string> = {}) {
     exists: (p) => files.has(p),
     chmod: (p, mode) => { modes.set(p, mode) },
     remove: (p) => { files.delete(p); removed.push(p) },
+    // What lstat would say: a seeded kind (a link, a pipe) first, else a regular file when seeded, else absent.
+    fileKind: (p) => kinds[p] ?? (files.has(p) ? 'file' : 'absent'),
   }
   return { deps, files, modes, removed, wrote }
 }
@@ -131,9 +137,10 @@ describe('renderHook — the script text', () => {
     expect(out).toContain("'C:/Users/O'\\''Brien/node.exe'")
   })
 
-  it('FAILS OPEN when node is missing', () => {
+  it('FAILS OPEN when node is missing, and says so on stderr', () => {
     const out = renderHook('pre-commit', PATHS)
-    expect(out).toContain('[ -x "$_termpolis_node" ] || return 0')
+    expect(out).toContain('case "$_termpolis_node" in /*|[A-Za-z]:/*) [ -x "$_termpolis_node" ] ;; *) false ;; esac || {')
+    expect(out).toContain('    echo "Termpolis Commit Shield skipped: node was not found at $_termpolis_node. Protect this repository again in Termpolis." >&2\n    return 0\n  }')
   })
 
   it('FAILS OPEN when the scanner is gone (Termpolis uninstalled)', () => {
@@ -147,10 +154,15 @@ describe('renderHook — the script text', () => {
     expect(out).toContain('-eq 127')
   })
 
-  it('falls back to node on PATH before giving up', () => {
-    // nvm / a node upgrade moves the baked path. Without this the shield would
-    // silently switch itself off forever, which is the worst possible failure.
-    expect(renderHook('pre-commit', PATHS)).toContain('command -v node')
+  it('never looks node up on PATH: only the full path it was installed with runs (M1)', () => {
+    // The hook runs in the repository, and a PATH entry can name a folder inside it: a node planted there would run
+    // as the scanner. A moved node skips the scan with a line on stderr instead (the FAILS OPEN test above).
+    const out = renderHook('pre-commit', PATHS)
+    expect(out).not.toContain('command -v')
+    expect(out).not.toContain('which ')
+    expect(out).not.toMatch(/_termpolis_node=\$\(/)
+    const assigned = [...out.matchAll(/^\s*_termpolis_node=(.*)$/gm)].map((m) => m[1])
+    expect(assigned).toEqual(["'C:/Program Files/nodejs/node.exe'"])
   })
 
   it("lets the SCANNER's exit code be what blocks the commit", () => {
@@ -360,6 +372,84 @@ describe('uninstallHooks', () => {
   })
 })
 
+// I1: every write follows a link, so a pre-commit that links to ~/.bashrc would get the shield block and an exec bit
+// there. A link (symbolic, a junction, a hard link) or a file that is not a regular one is never read, written or
+// removed; index.ts refuses the whole install over one (unsafeHook).
+describe('Commit Shield hooks — a hook file that is a link (I1)', () => {
+  it('install skips a linked hook and a hook that is not a regular file, and writes the other one', () => {
+    for (const kind of ['link', 'other'] as const) {
+      const fs = fakeFs({ [PRE_COMMIT]: 'echo target\n' }, { [PRE_COMMIT]: kind })
+      expect(installHooks(PATHS, fs.deps)).toEqual(['pre-push'])
+      expect(fs.files.get(PRE_COMMIT)).toBe('echo target\n')
+      expect(fs.wrote).toEqual([PRE_PUSH])
+      expect(fs.modes.has(PRE_COMMIT)).toBe(false)
+    }
+  })
+
+  it('install never creates the target of a link that leads nowhere (a dangling link reads as absent to exists)', () => {
+    const fs = fakeFs({}, { [PRE_COMMIT]: 'link' })
+    expect(installHooks(PATHS, fs.deps)).toEqual(['pre-push'])
+    expect(fs.files.has(PRE_COMMIT)).toBe(false)
+  })
+
+  it('uninstall leaves a linked hook that carries our block untouched', () => {
+    const ours = renderHook('pre-commit', PATHS)
+    for (const kind of ['link', 'other'] as const) {
+      const fs = fakeFs({ [PRE_COMMIT]: ours, [PRE_PUSH]: renderHook('pre-push', PATHS) }, { [PRE_COMMIT]: kind })
+      expect(uninstallHooks(PATHS, fs.deps)).toEqual(['pre-push'])
+      expect(fs.files.get(PRE_COMMIT)).toBe(ours)
+      expect(fs.removed).toEqual([PRE_PUSH])
+      expect(fs.wrote).toEqual([])
+    }
+  })
+
+  it('unsafeHook names the first hook that is a link or not a regular file, and null when there is none', () => {
+    expect(unsafeHook(PATHS, fakeFs({ [PRE_COMMIT]: HUSKY }).deps)).toBeNull()
+    expect(unsafeHook(PATHS, fakeFs({}, { [PRE_PUSH]: 'link' }).deps)).toEqual({ name: 'pre-push', kind: 'link' })
+    expect(unsafeHook(PATHS, fakeFs({}, { [PRE_COMMIT]: 'other', [PRE_PUSH]: 'link' }).deps)).toEqual({ name: 'pre-commit', kind: 'other' })
+  })
+
+  it('hookFileKind reads lstat: a symbolic link, a hard link and a non-regular file are not files; ENOENT is absent; any other failure is other', () => {
+    const st = (o: { link?: boolean; file?: boolean; nlink?: number }) => () => ({
+      isSymbolicLink: () => o.link === true, isFile: () => o.file !== false, nlink: o.nlink ?? 1,
+    })
+    expect(hookFileKind(st({}))).toBe('file')
+    expect(hookFileKind(st({ link: true, file: false }))).toBe('link')
+    expect(hookFileKind(st({ nlink: 2 }))).toBe('link')
+    expect(hookFileKind(st({ file: false }))).toBe('other')
+    const fails = (e: unknown) => () => { throw e }
+    expect(hookFileKind(fails(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })))).toBe('absent')
+    expect(hookFileKind(fails(Object.assign(new Error('ENOTDIR'), { code: 'ENOTDIR' })))).toBe('other')
+    expect(hookFileKind(fails(Object.assign(new Error('EACCES'), { code: 'EACCES' })))).toBe('other')
+    expect(hookFileKind(fails(null))).toBe('other')
+  })
+})
+
+// M1: the node the hook is baked with is a full path, found through PATH folders that are full paths.
+describe('shieldNodePath', () => {
+  const seen: NodeJS.ProcessEnv[] = []
+  const resolveWith = (answer: string) => (env: NodeJS.ProcessEnv): string => { seen.push(env); return answer }
+
+  it('hands the resolver only the PATH folders written as full paths', () => {
+    seen.length = 0
+    expect(shieldNodePath({ PATH: 'tools:/usr/bin: :./bin:/opt/node/bin', HOME: '/h' }, resolveWith('/usr/bin/node'), posix, ':')).toBe('/usr/bin/node')
+    expect(seen[0].PATH).toBe('/usr/bin:/opt/node/bin')
+    expect(seen[0].HOME).toBe('/h')
+    expect(seen[0].Path).toBeUndefined()
+    seen.length = 0
+    shieldNodePath({ Path: 'tools;C:\\Program Files\\nodejs;.' }, resolveWith('C:\\Program Files\\nodejs\\node.exe'), win32, ';')
+    expect(seen[0].PATH).toBe('C:\\Program Files\\nodejs')
+    seen.length = 0
+    shieldNodePath({}, resolveWith('/usr/local/bin/node'), posix, ':')
+    expect(seen[0].PATH).toBe('')
+  })
+
+  it('is null when the resolver finds no node and falls back to the bare name, or answers a relative path', () => {
+    expect(shieldNodePath({ PATH: '/usr/bin' }, resolveWith('node'), posix, ':')).toBeNull()
+    expect(shieldNodePath({ PATH: '/usr/bin' }, resolveWith('tools/node'), posix, ':')).toBeNull()
+  })
+})
+
 describe('hookStatus', () => {
   it('reports absent for an empty hooks dir', () => {
     const fs = fakeFs()
@@ -494,15 +584,16 @@ describe('Commit Shield hooks — where the installer may write (#36)', () => {
       if (a instanceof Error) throw a
       return a
     }
-    const base = { path: posix, platform: 'linux' as NodeJS.Platform, realpath: noLinks }
+    const base = { path: posix, platform: 'linux' as NodeJS.Platform, realpath: noLinks, readFile: async () => null }
     expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/repo/.git/hooks', git, ...base })).toBe(true)
-    expect(asked).toEqual(['rev-parse --git-common-dir', 'rev-parse --show-toplevel'])
+    expect(asked).toEqual(['rev-parse --show-toplevel', 'rev-parse --git-common-dir'])
     expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/elsewhere', git, ...base })).toBe(false)
     answers['config --show-scope -z --get-all core.hooksPath'] = 'global\0/elsewhere\0'
     expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/elsewhere', git, ...base })).toBe(true)
     // A bare repository has no top level; its hooks are in the folder itself.
     answers['rev-parse --show-toplevel'] = new Error('fatal: this operation must be run in a work tree')
     answers['rev-parse --git-common-dir'] = '.\n'
+    answers['rev-parse --absolute-git-dir'] = '/repo.git\n'
     expect(await shieldHooksAllowed({ repo: '/repo.git', hooksDir: '/repo.git/hooks', git, ...base })).toBe(true)
     // A git that cannot read the scopes refuses the outside folder.
     answers['config --show-scope -z --get-all core.hooksPath'] = new Error('error: unknown option `show-scope\'')
@@ -510,5 +601,32 @@ describe('Commit Shield hooks — where the installer may write (#36)', () => {
     // An empty answer names no folder: nothing is inside.
     answers['rev-parse --git-common-dir'] = '  \n'
     expect(await shieldHooksAllowed({ repo: '/repo', hooksDir: '/repo/.git/hooks', git, ...base })).toBe(false)
+  })
+
+  it('shieldHooksAllowed takes a git folder outside the working tree only when its worktree link is read back (M2)', async () => {
+    const answers: Record<string, string | Error> = {
+      'rev-parse --show-toplevel': '/repo\n',
+      'rev-parse --git-common-dir': '/main/.git\n',
+      'rev-parse --absolute-git-dir': '/main/.git/worktrees/w\n',
+      'config --show-scope -z --get-all core.hooksPath': '',
+    }
+    const git = async (args: string[]): Promise<string> => {
+      const a = answers[args.join(' ')]
+      if (a instanceof Error) throw a
+      return a
+    }
+    let gitdirFile: string | null = '/repo/.git\n'
+    const readFile = vi.fn(async () => gitdirFile)
+    const o = { repo: '/repo', hooksDir: '/main/.git/hooks', git, readFile, path: posix, platform: 'linux' as NodeJS.Platform, realpath: noLinks }
+    // A linked worktree whose gitdir file names this working tree's .git: its main repository's hooks are its own.
+    expect(await shieldHooksAllowed(o)).toBe(true)
+    expect(readFile).toHaveBeenCalledWith('/main/.git/worktrees/w/gitdir')
+    // A gitdir file that can't be read names nothing.
+    gitdirFile = null
+    expect(await shieldHooksAllowed(o)).toBe(false)
+    // A git that names no git dir leaves the outside folder out.
+    gitdirFile = '/repo/.git\n'
+    answers['rev-parse --absolute-git-dir'] = new Error('fatal: not a git repository')
+    expect(await shieldHooksAllowed(o)).toBe(false)
   })
 })

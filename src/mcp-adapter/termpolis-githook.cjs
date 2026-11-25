@@ -93,11 +93,13 @@ function readSettings(file) {
 // Never the bare name either: this runs in the repository being committed, and a relative
 // or empty PATH entry names a folder inside it, so a git planted there would run instead
 // (#1). binPath.cjs finds git by its full path with the app's rules; no git, or one inside
-// the repository, throws, which fails open like any other error.
+// the repository, throws, which fails open like any other error. That throw carries NO_GIT so
+// main can say the shield was skipped (M5): unlike a git failure, it repeats on every commit.
+const NO_GIT = 'TERMPOLIS_NO_GIT'
 function runGit(args, cwd) {
   const where = cwd || process.cwd()
   const bin = gitFor(where)
-  if (bin === null) throw new Error('git not found')
+  if (bin === null) throw Object.assign(new Error('git not found'), { code: NO_GIT })
   return execFileSync(bin, args, {
     cwd: where,
     encoding: 'utf8',
@@ -258,7 +260,11 @@ function main(argv, deps) {
 
     emit(formatBlock(res, mode) + '\n')
     return 1
-  } catch {
+  } catch (e) {
+    // PENDING SIGN-OFF (HOLD-A M5): the one line a commit shows when no git outside the repository was found.
+    if (e && e.code === NO_GIT) {
+      try { emit('Termpolis Commit Shield skipped: no git outside this repository\n') } catch { /* fail open regardless */ }
+    }
     return 0 // FAIL OPEN. Only a positive match above may ever reach exit 1.
   }
 }

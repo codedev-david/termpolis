@@ -152,6 +152,9 @@ describe('binPath.cjs on the real disk', () => {
     const root = mkdtempSync(join(tmpdir(), 'tp-binpath-'))
     roots.push(root)
     const found = twin.gitFor(root)
-    if (found !== null) expect(found).toMatch(win ? /^(?:[A-Za-z]:\\|\\\\)/ : /^\//)
+    // Every machine this suite runs on has git (the CI images on all three systems, and a developer's checkout), so
+    // none found is a failure, not a pass (M6).
+    expect(found).not.toBeNull()
+    expect(found).toMatch(win ? /^(?:[A-Za-z]:\\|\\\\)/ : /^\//)
   })
 })

@@ -12,7 +12,7 @@
 // false` will fail because the mock returns empty output and the handler
 // reports success.
 
-import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 import { scanOf } from './_gitArgv'
 
@@ -353,6 +353,8 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(() => '{}'), readdirSync: vi.fn(() => []),
   mkdirSync: vi.fn(), appendFileSync: vi.fn(),
   renameSync: vi.fn(), unlinkSync: vi.fn(),
+  // No hook file exists yet: the Commit Shield's lstat (I1) finds nothing.
+  lstatSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }),
   promises: fsPromisesMock(),
   default: {
     writeFileSync: vi.fn(), existsSync: vi.fn(() => false),
@@ -576,9 +578,27 @@ describe('IPC handler security — git read handlers pass argv safely', () => {
 // layer — the thing that makes it cover `git commit` typed into a terminal, which is how most
 // people actually commit.
 describe('IPC handler security — Commit Shield git hooks', () => {
-  beforeEach(() => {
+  // A plain repository at the folder asked about: its working tree and git folder are where the shield looks (M2),
+  // and there is no core.hooksPath.
+  const asRepo = (): void => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[], opts?: { cwd?: string }) => {
+      const k = args.slice(Math.max(args.lastIndexOf('rev-parse'), args.lastIndexOf('config'))).join(' ')
+      if (k === 'rev-parse --show-toplevel') return Buffer.from(`${opts?.cwd ?? ''}\n`)
+      if (k === 'rev-parse --git-common-dir') return Buffer.from('.git\n')
+      if (k === 'config --show-scope -z --get-all core.hooksPath') return Buffer.from('')
+      return Buffer.from('.git/hooks\n')
+    })
+  }
+  beforeEach(async () => {
     mockExecFileSync.mockClear()
-    mockExecFileSync.mockImplementation(() => Buffer.from('.git/hooks\n'))
+    asRepo()
+    // The hook is baked with a node found by its full path (M1): any absolute .../node is there.
+    const fs = await import('fs')
+    vi.mocked(fs.existsSync).mockImplementation((p) => /^(?:[A-Za-z]:)?[\\/](?:.*[\\/])?node(\.exe)?$/.test(String(p)))
+  })
+  afterEach(async () => {
+    const fs = await import('fs')
+    vi.mocked(fs.existsSync).mockImplementation(() => false)
   })
 
   it('lists protected repos (none before any are installed)', async () => {
@@ -626,7 +646,7 @@ describe('IPC handler security — Commit Shield git hooks', () => {
 
   it('installs into the folder the user picks', async () => {
     mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/picked-repo'] })
-    mockExecFileSync.mockImplementation(() => Buffer.from('.git/hooks\n'))
+    asRepo()
     const r = await invoke('gitHooks:install', {})
     expect(r.success).toBe(true)
     expect(r.data.repo).toBe('/picked-repo')

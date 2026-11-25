@@ -24,6 +24,12 @@
 // Every agent also gets TERMPOLIS_READ_ONLY_RUN, which narrows Termpolis's own MCP server and memory
 // hook to read-only wherever one is still reached.
 //
+// A Linked machines job that may not write is isolated too (HOLD-A I2), with `keepTermpolis`: Codex
+// then leaves Termpolis's own server to the run, which the job's marker narrows to its read-only tools
+// (or switches off, codexLinkedJobArgs in headlessExec.ts), and its check lets that one server be on.
+// Claude's linked job brings its own server file; agy's run home has no server, so an agy job that may
+// not write runs without Termpolis's.
+//
 // The person's files are only ever read: config.toml for the server names. Nothing here writes outside
 // the run's own temp folder, and the startup sweep removes only the run homes a crash left behind.
 
@@ -91,6 +97,12 @@ export const MCP_LIST_TIMEOUT_MS = 10_000
 export const MCP_LIST_PASS_MS = 60_000
 /** What `agy mcp list` prints when it has no server (agy 1.5.15). Anything else fails the check. */
 export const AGY_NO_MCP_SERVERS = 'No MCP servers configured.'
+
+/** How a run is isolated. */
+export interface IsolationOptions {
+  /** Codex only: leave Termpolis's own MCP server to the run (a Linked machines job, which narrows it). */
+  keepTermpolis?: boolean
+}
 
 export interface IsolatedLaunch {
   /** Options for the agent's argv, placed with its other options (Codex and Claude). */
@@ -349,8 +361,9 @@ export function clearIsolationChecks(): void {
 }
 
 /** `codex mcp list --json` output that lists every server off: a JSON array of objects, each with a
- *  string `name` and `enabled: false`. Any other shape fails. Pure. */
-export function codexMcpListAllOff(stdout: string): boolean {
+ *  string `name` and `enabled: false`, but for the one named `kept`, which may be on. Any other shape
+ *  fails. Pure. */
+export function codexMcpListAllOff(stdout: string, kept?: string): boolean {
   let listed: unknown
   try {
     listed = JSON.parse(stdout)
@@ -358,7 +371,8 @@ export function codexMcpListAllOff(stdout: string): boolean {
     return false
   }
   return Array.isArray(listed) && listed.every((s: unknown) =>
-    typeof s === 'object' && s !== null && !Array.isArray(s) && typeof (s as { name?: unknown }).name === 'string' && (s as { enabled?: unknown }).enabled === false)
+    typeof s === 'object' && s !== null && !Array.isArray(s) && typeof (s as { name?: unknown }).name === 'string' &&
+    ((s as { enabled?: unknown }).enabled === false || (s as { name: string }).name === kept))
 }
 
 /** `agy mcp list` output that reports no server. Pure. */
@@ -394,18 +408,22 @@ export async function prepareIsolatedLaunch(
   runEnv: Readonly<Record<string, string>>,
   run: McpListRun,
   io: IsolationIO = defaultIsolationIO,
+  opts: IsolationOptions = {},
 ): Promise<IsolatedLaunch> {
   if (agent === 'codex') {
     const found = await codexServers(cwd, runEnv, io)
+    const keep = opts.keepTermpolis === true
     // Termpolis's own server is switched off with its placeholder command too, as every isolated Codex
-    // run already does, so it is off even when no config file names it.
+    // run already does, so it is off even when no config file names it; unless it is kept for the run.
     const args = [
       ...found.names.filter((n) => n !== 'termpolis').flatMap((n) => CODEX_MCP_SERVER_OFF(n, found.url.includes(n))),
-      ...CODEX_ISOLATE_MCP_ARGS,
+      ...(keep ? [] : CODEX_ISOLATE_MCP_ARGS),
       ...CODEX_NO_CONNECTORS_ARGS,
     ]
     const env = { ...runEnv, ...READ_ONLY_RUN_ENV }
-    await checkMcpList([agent, cwd, args, env, found.read, found.layers], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env }, codexMcpListAllOff, run, io)
+    const kept = keep ? 'termpolis' : undefined
+    await checkMcpList([agent, cwd, args, env, found.read, found.layers, keep], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env },
+      (stdout) => codexMcpListAllOff(stdout, kept), run, io)
     return { args, env: { ...READ_ONLY_RUN_ENV }, dispose: noop }
   }
   if (agent === 'gemini') {

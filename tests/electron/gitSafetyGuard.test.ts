@@ -276,13 +276,19 @@ const gitCallingFiles = (): Source[] => SOURCES.filter((s) => /\b(safeGitAsync|c
 /** Subcommands gitSafety.ts classes as writes as whole commands that also have read forms (stash list and show, tag -l,
  *  worktree list, submodule status). A write gets no prefix, so any literal command with one of these runs with the
  *  repository's hooks, fsmonitor and log settings, read form or not (WPS M5). Each form Termpolis runs on purpose is
- *  listed under its subcommand by its first argument ('' for none), with the reason beside it. None today. */
-const WRITES_WITH_READ_FORMS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['stash', new Set<string>()], ['tag', new Set<string>()], ['worktree', new Set<string>()], ['submodule', new Set<string>()]
+ *  listed under its subcommand by its first argument ('' for none), mapped to the reason it runs as a write (HOLD-A
+ *  M8: the reason is data, and formsWithoutReason fails an empty one). None today. */
+type PlacedForms = ReadonlyMap<string, ReadonlyMap<string, string>>
+const WRITES_WITH_READ_FORMS: PlacedForms = new Map([
+  ['stash', new Map<string, string>()], ['tag', new Map<string, string>()], ['worktree', new Map<string, string>()], ['submodule', new Map<string, string>()]
 ])
 
+/** The placed forms ('sub first') whose reason is empty or blank. */
+const formsWithoutReason = (placed: PlacedForms): string[] =>
+  [...placed].flatMap(([sub, forms]) => [...forms].filter(([, why]) => why.trim() === '').map(([first]) => [sub, first].filter((w) => w !== '').join(' ')))
+
 /** What is wrong with `argv` once guardGitArgs has been applied, or null. */
-function guardProblem(argv: string[], isWindows: boolean, placed: ReadonlyMap<string, ReadonlySet<string>> = WRITES_WITH_READ_FORMS): string | null {
+function guardProblem(argv: string[], isWindows: boolean, placed: PlacedForms = WRITES_WITH_READ_FORMS): string | null {
   const sub = gitSubcommand(argv)
   if (sub === null) return null
   const forms = placed.get(sub.name) ?? WRITES_WITH_READ_FORMS.get(sub.name)
@@ -381,7 +387,7 @@ describe('git safety guard: who may start git', () => {
 
   it('safeGitAsync puts every argument list through guardGitArgs, and cachedGit goes through safeGitAsync', () => {
     const cmd = SOURCES.find((s) => s.rel === 'src/main/gitCommand.ts')!
-    expect(cmd.text).toMatch(/execOffThread\(bin, guardGitArgs\(args, isWindows, overrides\), \{[^}]*addEnv: guardGitEnv\(args\),[^}]*dropEnv: guardGitDropEnv\(args\)/)
+    expect(cmd.text).toMatch(/execOffThread\(bin, guardGitArgs\(args, isWindows, overrides\), \{[^}]*addEnv: guardGitEnv\(args\),[^}]*dropEnv: guardGitDropEnv\(args, opts\.keepEnv\)/)
     const cache = SOURCES.find((s) => s.rel === 'src/main/gitCache.ts')!
     expect(cache.text).toMatch(/safeGitAsync\(args, opts\)/)
     expect(namesGitBinary(cache)).toEqual([])
@@ -545,9 +551,13 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
     const s = parse('src/main/x.ts', "safeGitAsync(['tag', '-l'], o)")
     expect(literalCommands(s).map((c) => guardProblem(c.argv, false))).toEqual([expect.stringContaining("'tag -l' runs as a write")])
     // A form placed on purpose passes; another form of the same subcommand still needs placing.
-    const placed = new Map([['worktree', new Set(['add'])]])
+    const placed: PlacedForms = new Map([['worktree', new Map([['add', 'adding a worktree writes the repository']])]])
     expect(guardProblem(['worktree', 'add', 'p'], false, placed)).toBeNull()
     expect(guardProblem(['worktree', 'list'], false, placed)).toMatch(/runs as a write/)
+    // Every placed form carries its reason (HOLD-A M8): an empty or blank one is named.
+    expect(formsWithoutReason(WRITES_WITH_READ_FORMS)).toEqual([])
+    expect(formsWithoutReason(placed)).toEqual([])
+    expect(formsWithoutReason(new Map([['stash', new Map([['', ''], ['list', '  '], ['show', 'shown to the person']])]]))).toEqual(['stash', 'stash list'])
     // The other writes are untouched, and each listed subcommand is still a whole-command write in gitSafety.ts.
     expect(guardProblem(['add', '.'], false)).toBeNull()
     expect(guardProblem(['commit', '-m', 'x'], false)).toBeNull()

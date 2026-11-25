@@ -40,9 +40,17 @@ const H = vi.hoisted(() => {
   // same permissive default the other main-process suites use, so module init can't explode on an
   // unseeded path.
   const files = new Map<string, string>()
+  // What lstat says of a seeded path that is not a plain file: a link, or not a regular file (I1).
+  const kinds = new Map<string, 'link' | 'hardlink' | 'fifo'>()
+  const lstatOf = (p: unknown) => {
+    const kind = kinds.get(norm(p))
+    if (kind === undefined && !files.has(norm(p))) throw Object.assign(new Error(`ENOENT: ${norm(p)}`), { code: 'ENOENT' })
+    return { isSymbolicLink: () => kind === 'link', isFile: () => kind !== 'link' && kind !== 'fifo', nlink: kind === 'hardlink' ? 2 : 1 }
+  }
 
   const fs = {
     existsSync: vi.fn((p: unknown) => files.has(norm(p))),
+    lstatSync: vi.fn(lstatOf),
     readFileSync: vi.fn((p: unknown) => (files.has(norm(p)) ? files.get(norm(p))! : '{}')),
     readdirSync: vi.fn(() => [] as unknown[]),
     statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })),
@@ -75,6 +83,8 @@ const H = vi.hoisted(() => {
   return {
     norm,
     files,
+    kinds,
+    lstatOf,
     fs,
     execSync: vi.fn(),
     execFileSync: vi.fn(),
@@ -420,10 +430,21 @@ const PRE_PUSH = pJoin(HOOKS_DIR, 'pre-push')
 const SHIELD_REPOS = pJoin(USER_DATA, 'commit-shield-repos.json')
 
 const SENTINEL = '# >>> termpolis commit shield >>>'
+/** resolveNodeCommand's fixed backstop for this platform; beforeEach puts a node there in the virtual fs. */
+const NODE_AT = process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/local/bin/node'
 const HUSKY_HOOK = '#!/usr/bin/env sh\n. "$(dirname -- "$0")/_/husky.sh"\nnpx lint-staged\n'
 
 /** Seed a file into the virtual fs. */
 const seed = (p: string, content: string): void => { H.files.set(H.norm(p), content) }
+/** git in a plain repository at REPO: its working tree and git folder where the shield looks (M2), HOOKS_REL for the
+ *  rest (the hooks folder), and no core.hooksPath. */
+const inRepo = (argv: string[]): string => {
+  const k = argv.join(' ')
+  if (k === 'rev-parse --show-toplevel') return `${REPO}\n`
+  if (k === 'rev-parse --git-common-dir') return '.git\n'
+  if (k === 'config --show-scope -z --get-all core.hooksPath') return ''
+  return HOOKS_REL
+}
 /** Read back what a handler wrote (the mocked fs.writeFileSync stores into the same map). */
 const wrote = (p: string): string | undefined => H.files.get(H.norm(p))
 
@@ -474,6 +495,10 @@ beforeEach(async () => {
   H.fs.existsSync.mockImplementation((p: unknown) => H.files.has(H.norm(p)))
   H.fs.readFileSync.mockImplementation((p: unknown) => (H.files.has(H.norm(p)) ? H.files.get(H.norm(p))! : '{}'))
   H.files.clear()
+  H.kinds.clear()
+  H.fs.lstatSync.mockImplementation(H.lstatOf)
+  // The node the hook is baked with: resolveNodeCommand's fixed backstop, which exists in the virtual fs (M1).
+  seed(NODE_AT, '')
   git(() => '')
   shell('')
   // The read handlers share answers for 1.5 s (src/main/gitCache.ts) so a rail repaint does not
@@ -825,7 +850,7 @@ describe('Commit Shield hooks — repo resolution', () => {
     app.isPackaged = true
     proc.resourcesPath = '/opt/Termpolis/resources'
     try {
-      git(() => HOOKS_REL)
+      git(inRepo)
       const r = await invoke('gitHooks:install', { cwd: REPO })
 
       expect(r.success).toBe(true)
@@ -840,7 +865,7 @@ describe('Commit Shield hooks — repo resolution', () => {
   })
 
   it('points the installed hook at the source scanner in a dev build', async () => {
-    git(() => HOOKS_REL)
+    git(inRepo)
 
     const r = await invoke('gitHooks:install', { cwd: REPO })
 
@@ -884,6 +909,151 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toContain(SENTINEL)
   })
 
+  // I1: a hook file that is a link (or not a regular file) refuses the whole install before anything is written.
+  it('refuses to install over a hook file that is a link, names the hook, and writes nothing', async () => {
+    for (const [hook, kind, name] of [[PRE_COMMIT, 'link', 'pre-commit'], [PRE_PUSH, 'hardlink', 'pre-push']] as const) {
+      H.files.clear(); H.kinds.clear(); seed(NODE_AT, '')
+      git(inRepo)
+      seed(hook, 'echo the file it links to\n')
+      H.kinds.set(H.norm(hook), kind)
+      H.fs.writeFileSync.mockClear()
+      const r = await invoke('gitHooks:install', { cwd: REPO })
+      expect(r).toEqual({ success: false, error: `The Commit Shield was not installed: this repository's ${name} hook is a link to another file.` })
+      expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+      expect(wrote(hook)).toBe('echo the file it links to\n')
+      expect(H.fs.chmodSync).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses to install over a hook that is not an ordinary file (a pipe), and writes nothing', async () => {
+    git(inRepo)
+    H.kinds.set(H.norm(PRE_COMMIT), 'fifo')
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+    expect(r).toEqual({ success: false, error: "The Commit Shield was not installed: this repository's pre-commit hook is not an ordinary file." })
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('uninstall leaves a linked hook that carries the shield untouched, and removes the plain one', async () => {
+    git(inRepo)
+    await invoke('gitHooks:install', { cwd: REPO })
+    H.kinds.set(H.norm(PRE_COMMIT), 'link')
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+    expect(r).toEqual({ success: true, data: { removed: ['pre-push'] } })
+    expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(PRE_COMMIT)
+    expect(wrote(PRE_COMMIT)).toContain(SENTINEL)
+  })
+
+  // The hooks folder is checked again once it exists: a link in its path that led nowhere before is followed now.
+  it('checks where the hooks folder is again after creating it, and writes nothing when that is outside', async () => {
+    let tops = 0
+    git((argv) => {
+      const k = argv.join(' ')
+      if (k === 'rev-parse --git-path hooks') return HOOKS_REL
+      if (k === 'rev-parse --git-common-dir') return '.git\n'
+      if (k === 'rev-parse --show-toplevel') return ++tops === 1 ? `${REPO}\n` : new Error('fatal: not a work tree')
+      if (k === 'config --show-scope -z --get-all core.hooksPath') return ''
+      return new Error(`unrouted: ${k}`)
+    })
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+    expect(tops).toBe(2)
+    expect(H.fs.mkdirSync).toHaveBeenCalledWith(HOOKS_DIR, { recursive: true })
+    expect(r).toEqual({ success: false, error: expect.stringContaining('core.hooksPath') })
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  // M7: where the hooks are, and the scopes of core.hooksPath, are read with the person's own config files, which the
+  // git that runs the hooks reads too. Any other read still drops them.
+  it("reads the hooks folder and core.hooksPath with the person's GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM", async () => {
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/home/me/work.gitconfig')
+    vi.stubEnv('GIT_CONFIG_SYSTEM', '/etc/work-gitconfig')
+    try {
+      git(hooksPathIn('global\0/home/me/.githooks\0'))
+      expect((await invoke('gitHooks:install', { cwd: REPO })).success).toBe(true)
+      const envFor = (k: string): NodeJS.ProcessEnv[] => H.execFile.mock.calls
+        .filter((c) => isGitBin(c[0]) && writtenGitArgs(c[1] as string[])?.join(' ') === k)
+        .map((c) => (c[2] as { env: NodeJS.ProcessEnv }).env)
+      for (const k of ['rev-parse --git-path hooks', 'config --show-scope -z --get-all core.hooksPath', 'rev-parse --show-toplevel']) {
+        expect(envFor(k).length, k).toBeGreaterThan(0)
+        for (const env of envFor(k)) {
+          expect(env.GIT_CONFIG_GLOBAL, k).toBe('/home/me/work.gitconfig')
+          expect(env.GIT_CONFIG_SYSTEM, k).toBe('/etc/work-gitconfig')
+        }
+      }
+      H.execFile.mockClear()
+      await invoke('git:status-parsed', { cwd: REPO })
+      const other = H.execFile.mock.calls.filter((c) => isGitBin(c[0]))
+      expect(other.length).toBeGreaterThan(0)
+      for (const c of other) expect((c[2] as { env?: NodeJS.ProcessEnv }).env?.GIT_CONFIG_GLOBAL).toBeUndefined()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // M1: the hook runs node only by a full path; with none found, nothing is installed and the person is told.
+  it('refuses to install when no node is found by a full path, and writes nothing', async () => {
+    H.files.delete(H.norm(NODE_AT))
+    git(inRepo)
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+    expect(r).toEqual({ success: false, error: 'The Commit Shield was not installed: Termpolis could not find node on this computer.' })
+    expect(H.fs.mkdirSync).not.toHaveBeenCalled()
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('bakes the full path of the node it found into the hook', async () => {
+    git(inRepo)
+    expect((await invoke('gitHooks:install', { cwd: REPO })).success).toBe(true)
+    expect(wrote(PRE_COMMIT)).toContain(`_termpolis_node='${NODE_AT.split('\\').join('/')}'`)
+  })
+
+  // M2: the git folder counts only when it belongs to this working tree; the reads go through the runner given.
+  it('asks git where its git folder is, and reads the worktree back-link, when the common dir lies outside the working tree', async () => {
+    const asked: string[] = []
+    git((argv) => {
+      const k = argv.join(' ')
+      asked.push(k)
+      if (k === 'rev-parse --git-path hooks') return '../victim/.git/hooks'
+      if (k === 'rev-parse --git-common-dir') return '../victim/.git\n'
+      if (k === 'rev-parse --show-toplevel') return `${REPO}\n`
+      if (k === 'rev-parse --absolute-git-dir') return `${pResolve(REPO, '../victim/.git')}\n`
+      if (k === 'config --local --get core.worktree') return new Error('exit 1')
+      if (k === 'config --show-scope -z --get-all core.hooksPath') return ''
+      return new Error(`unrouted: ${k}`)
+    })
+    const r = await invoke('gitHooks:install', { cwd: REPO })
+    expect(r).toEqual({ success: false, error: expect.stringContaining('core.hooksPath') })
+    expect(asked).toContain('rev-parse --absolute-git-dir')
+    expect(asked).toContain('config --local --get core.worktree')
+    expect(H.fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('a linked worktree whose gitdir file names this working tree is allowed (read through fs.promises.readFile)', async () => {
+    const common = pResolve(REPO, '../main/.git')
+    const gitDir = pJoin(common, 'worktrees', 'repo')
+    H.fs.promises.readFile.mockImplementation(async (p: unknown) => {
+      if (H.norm(p) === H.norm(pJoin(gitDir, 'gitdir'))) return `${pJoin(REPO, '.git')}\n`
+      return '{}'
+    })
+    try {
+      git((argv) => {
+        const k = argv.join(' ')
+        if (k === 'rev-parse --git-path hooks') return pJoin(common, 'hooks')
+        if (k === 'rev-parse --git-common-dir') return `${common}\n`
+        if (k === 'rev-parse --show-toplevel') return `${REPO}\n`
+        if (k === 'rev-parse --absolute-git-dir') return `${gitDir}\n`
+        if (k === 'config --show-scope -z --get-all core.hooksPath') return ''
+        return new Error(`unrouted: ${k}`)
+      })
+      const r = await invoke('gitHooks:install', { cwd: REPO })
+      expect(r.success).toBe(true)
+      expect(wrote(pJoin(common, 'hooks', 'pre-commit'))).toContain(SENTINEL)
+      // A gitdir file that cannot be read names nothing: refused.
+      H.fs.promises.readFile.mockImplementation(async () => { throw new Error('EACCES') })
+      expect((await invoke('gitHooks:install', { cwd: REPO })).success).toBe(false)
+    } finally {
+      H.fs.promises.readFile.mockImplementation(async () => '{}')
+    }
+  })
+
   it("uninstall leaves a hooks folder outside the repository alone, and still drops the repository from the list", async () => {
     git(hooksPathIn('local\0../elsewhere/hooks\0'))
     seed(SHIELD_REPOS, JSON.stringify([REPO]))
@@ -902,7 +1072,7 @@ describe('Commit Shield hooks — repo resolution', () => {
 // Commit Shield hooks — a foreign hook is chained, never clobbered
 // =========================================================================
 describe('Commit Shield hooks — foreign hooks', () => {
-  beforeEach(() => { git(() => HOOKS_REL) })
+  beforeEach(() => { git(inRepo) })
 
   it('reports an existing husky hook as foreign, not as ours', async () => {
     seed(PRE_COMMIT, HUSKY_HOOK)
@@ -1009,7 +1179,7 @@ describe('Commit Shield hooks — foreign hooks', () => {
 describe('Commit Shield hooks — protected-repo list', () => {
   it('persists the repo on install, de-duplicated', async () => {
     seed(SHIELD_REPOS, JSON.stringify([REPO]))
-    git(() => HOOKS_REL)
+    git(inRepo)
 
     const r = await invoke('gitHooks:install', { cwd: REPO })
 
@@ -1046,7 +1216,7 @@ describe('Commit Shield hooks — protected-repo list', () => {
 
   it('drops the repo from the protected list on uninstall', async () => {
     seed(SHIELD_REPOS, JSON.stringify(['/other-repo', REPO]))
-    git(() => HOOKS_REL)
+    git(inRepo)
 
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
 

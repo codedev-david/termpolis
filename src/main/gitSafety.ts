@@ -178,11 +178,18 @@ export function withoutEnv(env: NodeJS.ProcessEnv, drop: readonly string[]): Rec
   return out
 }
 
+/** The dropped variables a read may keep by name: the person's own global and system config files, which are where
+ *  their core.hooksPath lives (HOLD-A M7). Nothing else is ever kept: the rest name a repository or run a program. */
+export const KEEPABLE_GIT_ENV: ReadonlySet<string> = new Set(['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'])
+
 /** The inherited variables a run of `args` leaves out (procHost.ts ProcOptions.dropEnv): INHERITED_GIT_DROP for a
- *  read, none for a write, which runs in the environment the person's own git would. */
-export function guardGitDropEnv(args: readonly string[]): readonly string[] {
+ *  read, none for a write, which runs in the environment the person's own git would. A read keeps the names in `keep`
+ *  that KEEPABLE_GIT_ENV allows; any other name in it is still dropped. */
+export function guardGitDropEnv(args: readonly string[], keep?: readonly string[]): readonly string[] {
   const sub = gitSubcommand(args)
-  return sub !== null && MUTATING_SUBCOMMANDS.has(sub.name) ? [] : INHERITED_GIT_DROP
+  if (sub !== null && MUTATING_SUBCOMMANDS.has(sub.name)) return []
+  const kept = (keep ?? []).filter((k) => KEEPABLE_GIT_ENV.has(k))
+  return kept.length === 0 ? INHERITED_GIT_DROP : INHERITED_GIT_DROP.filter((d) => !kept.includes(d))
 }
 
 /** The flags a read of `sub` adds after the subcommand. */

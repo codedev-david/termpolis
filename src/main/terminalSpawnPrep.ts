@@ -57,6 +57,8 @@ export interface WholeFileIo {
   rm: (path: string) => unknown
   exists: (path: string) => boolean | Promise<boolean>
   sleep: (ms: number) => unknown
+  /** The file's bytes, read only on the path that would keep it (keptVerdict). */
+  read: (path: string) => Buffer | Promise<Buffer>
 }
 
 const realIo: WholeFileIo = {
@@ -65,6 +67,7 @@ const realIo: WholeFileIo = {
   rm: (p) => fsp.rm(p, { force: true }),
   exists: (p) => fsp.access(p).then(() => true, () => false),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  read: (p) => fsp.readFile(p),
 }
 
 /**
@@ -109,6 +112,20 @@ export const byteLength = (content: string): number => Buffer.byteLength(content
 export const wholeAgain = (path: string): WholeFileResult => { notWhole.delete(path); return 'written' }
 
 /**
+ * What a refused rename does with the file it would keep, from its bytes (HOLD-A M3), asked on that path only, so no
+ * spawn that renames pays for a read. 'current': it already holds `content`. 'partial': it holds only the start of
+ * `content`, as a direct write of this script that an earlier run crashed in leaves it (notWhole, in memory, forgot it),
+ * so it is replaced like a missing one. 'keep': another script, kept as whole; or `bytes` null (it could not be read),
+ * kept as before. A part of another version's script is not told from a whole one, and is kept until a rename succeeds.
+ */
+export function keptVerdict(bytes: Buffer | null, content: string): 'current' | 'partial' | 'keep' {
+  if (bytes === null) return 'keep'
+  const want = Buffer.from(content, 'utf8')
+  if (bytes.equals(want)) return 'current'
+  return bytes.length < want.length && want.subarray(0, bytes.length).equals(bytes) ? 'partial' : 'keep'
+}
+
+/**
  * Write `content` to `path` whole: to a temp file in the same folder, then renamed over it, so a shell starting while
  * another terminal rewrites the file reads the old one or the new one, never half of one. A refused rename is tried
  * again; still refused, it keeps a whole file that is there ('kept'). With none there (a fresh install), or only part of
@@ -120,7 +137,13 @@ export const wholeAgain = (path: string): WholeFileResult => { notWhole.delete(p
 export async function writeWholeFile(path: string, content: string, io: Partial<WholeFileIo> = {}): Promise<WholeFileResult> {
   const all: WholeFileIo = { ...realIo, ...io }
   if (await throughFreshTemp(path, content, RENAME_RETRIES, all)) return wholeAgain(path)
-  if (!notWhole.has(path) && await all.exists(path)) return 'kept'
+  if (!notWhole.has(path) && await all.exists(path)) {
+    let bytes: Buffer | null = null
+    try { bytes = await all.read(path) } catch { /* unreadable (held): kept, as before the compare */ }
+    const verdict = keptVerdict(bytes, content)
+    if (verdict === 'current') return wholeAgain(path)
+    if (verdict === 'keep') return 'kept'
+  }
   if (await throughFreshTemp(path, content, 0, all)) return wholeAgain(path) // the first temp file may be the one a scanner holds
   try {
     await all.writeFile(path, content) // first run, nothing to keep: a direct write beats a terminal with no integration

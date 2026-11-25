@@ -130,6 +130,13 @@ export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number): s
   return ['--mode', 'plan', '--print-timeout', `${secs}s`, ...modelArgs('gemini', model), '-p', PROMPT_TOKEN]
 }
 
+/** Whether agy's stderr says it ran a `--mode plan` turn in its default mode instead ("--mode plan is not supported
+ *  headless, continuing in the default mode", or "has no effect" with slash commands off). Such a run is not the
+ *  read-only run asked for, so its answer is dropped (HOLD-A M4); the run home's deny rules still held it. Pure. */
+export function agyDroppedPlanMode(stderr: string): boolean {
+  return /--mode\s+plan\b[^\r\n]*\b(?:not supported|no effect)\b|continuing in the default mode/i.test(stderr)
+}
+
 /**
  * Full argv (binary + args, with PROMPT_TOKEN where the prompt goes) for a one-shot headless
  * review. Per-agent because the CLIs differ; none of them gets a bypass/yolo flag:
@@ -370,6 +377,10 @@ export async function runSecondOpinion(
       env: launch.env,
     })
     const out = cleanReviewText(stdout || '').trim()
+    if (opts.agent === 'gemini' && agyDroppedPlanMode(stderr ?? '')) {
+      ;(deps.log ?? console.warn)(`[second-opinion] gemini review dropped: agy ran it outside plan mode`)
+      return { ok: false, error: REVIEW_ISOLATION_FAILED }
+    }
     if (code === 0 && out.length > 0) return { ok: true, feedback: out }
     const errText = cleanReviewText(stderr || '').trim() || out
     return { ok: false, error: errText ? errText.slice(0, 600) : `${bin} exited with code ${code} and produced no output` }

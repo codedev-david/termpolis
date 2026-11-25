@@ -34,6 +34,7 @@ import {
   secondOpinionSpawnPlan,
   claudeReadOnlyArgs,
   agyReadOnlyArgs,
+  agyDroppedPlanMode,
   modelArgs,
   deliverWithDeadline,
   DELIVER_GRACE_MS,
@@ -44,7 +45,7 @@ import {
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
-import { prepareIsolatedLaunch, ISOLATION_SETUP_FAILED, type IsolatedLaunch, type McpListRun } from './readOnlyIsolation'
+import { prepareIsolatedLaunch, ISOLATION_SETUP_FAILED, type IsolatedLaunch, type IsolationOptions, type McpListRun } from './readOnlyIsolation'
 import { CODEX_AUTO_APPROVED_TOOLS, RESTRICTED_RUN_TOOLS } from '../shared/agentIntegration'
 import { PRIMER_CLOSE, PRIMER_OPEN, PRIMER_PREFACE } from '../shared/headlessPrompt'
 
@@ -76,6 +77,11 @@ export { isMissingCli }
 /** What `termpolis exec` and `agent_exec` say when a read-only run can't be isolated, ahead of the
  *  reason: their caller is a script or an agent, which reads the error itself. */
 export const EXEC_ISOLATION_FAILED = "Termpolis couldn't set up a safe read-only run for this agent, so it did not start:"
+
+/** PENDING SIGN-OFF (HOLD-A M4): what a read-only agy run answers when agy says it ran outside plan mode
+ *  (agyDroppedPlanMode). A Lumopolis map's isolated run gets ISOLATION_SETUP_FAILED, the words it shows for a run
+ *  it could not make safe. */
+export const EXEC_PLAN_MODE_DROPPED = "agy ran this read-only task outside its plan mode, so Termpolis did not use its answer."
 
 /** The MCP list check found the agent's CLI isn't installed: the run answers as a run of a missing CLI does. */
 class MissingCli extends Error {}
@@ -371,8 +377,9 @@ export interface ExecDeps {
    *  and the job runs without the flag, as on a CLI that has none. */
   noPersist?: (agent: ExecAgent) => Promise<boolean>
   /** Sets up an isolated run's launch (ExecRequest.isolated); `run` spawns its MCP list check through
-   *  `deliver`, as the run itself is spawned. Test seam; prepareIsolatedLaunch when absent. */
-  isolation?: (agent: ExecAgent, cwd: string, env: Readonly<Record<string, string>>, run: McpListRun) => Promise<IsolatedLaunch>
+   *  `deliver`, as the run itself is spawned. A linked job's run keeps Termpolis's server (`opts`).
+   *  Test seam; prepareIsolatedLaunch when absent. */
+  isolation?: (agent: ExecAgent, cwd: string, env: Readonly<Record<string, string>>, run: McpListRun, opts: IsolationOptions) => Promise<IsolatedLaunch>
   /** Where a setup failure's reason is written. console.warn (the app log) when absent. */
   log?: (line: string) => void
 }
@@ -445,7 +452,11 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
       return { stdout: res.stdout, code: res.code }
     }
     try {
-      isolation = await (deps.isolation ?? prepareIsolatedLaunch)(agent, cwd, req.env ?? {}, run)
+      // A linked job keeps Termpolis's own server, which its marker narrows (HOLD-A I2).
+      const opts: IsolationOptions = { keepTermpolis: req.linkedJob !== undefined }
+      isolation = await (deps.isolation
+        ? deps.isolation(agent, cwd, req.env ?? {}, run, opts)
+        : prepareIsolatedLaunch(agent, cwd, req.env ?? {}, run, undefined, opts))
     } catch (err) {
       if (err instanceof MissingCli) return { ok: false, agent, output: '', error: err.message, code: -1, durationMs: now() - started, primerChars }
       // The reason is for the log: a path or a Node error code means nothing on a map. A caller that
@@ -482,6 +493,11 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
 
   try {
     const { stdout, stderr, code } = await deliverWithDeadline(deps.deliver, bin, args, prompt, timeoutMs, DELIVER_GRACE_MS, extra)
+    if (agent === 'gemini' && req.write !== true && agyDroppedPlanMode(stderr ?? '')) {
+      ;(deps.log ?? console.warn)(`[exec] gemini run dropped: agy ran it outside plan mode`)
+      const error = req.isolated && !req.isolationReason ? ISOLATION_SETUP_FAILED : EXEC_PLAN_MODE_DROPPED
+      return { ok: false, agent, output: '', error, code, durationMs: now() - started, primerChars }
+    }
     const ok = code === 0
     const output = stdout.trim()
 

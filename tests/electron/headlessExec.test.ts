@@ -13,6 +13,7 @@ import {
   execRequestFromVerb,
   EXEC_DEFAULT_TIMEOUT_MS,
   EXEC_ISOLATION_FAILED,
+  EXEC_PLAN_MODE_DROPPED,
   EXEC_MIN_TIMEOUT_MS,
   EXEC_MAX_TIMEOUT_MS,
   AGY_HOME_STALE_MS,
@@ -701,7 +702,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
       { deliver, isolation, isDirectory: anyDir },
     )
     expect(res.ok).toBe(true)
-    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' }, expect.any(Function))
+    expect(isolation).toHaveBeenCalledWith('codex', '/r', { A: '1' }, expect.any(Function), { keepTermpolis: false })
     const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(bin).toBe('codex')
     expect(args).toEqual([
@@ -731,7 +732,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     const isolation = vi.fn(async () => launch())
     const deliver = okDeliver('ok')
     await runHeadless({ task: 't', agent: 'claude', cwd: '/r', isolated: true }, { deliver, isolation, isDirectory: anyDir })
-    expect(isolation).toHaveBeenCalledWith('claude', '/r', {}, expect.any(Function))
+    expect(isolation).toHaveBeenCalledWith('claude', '/r', {}, expect.any(Function), { keepTermpolis: false })
     expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 
@@ -783,7 +784,7 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
       const isolation = vi.fn(async () => launch())
       const deliver = okDeliver('ok')
       await runHeadless(execRequestFromVerb({ prompt: 'summarise', agent }), { deliver, isolation, isDirectory: anyDir })
-      expect(isolation).toHaveBeenCalledWith(agent, process.cwd(), {}, expect.any(Function))
+      expect(isolation).toHaveBeenCalledWith(agent, process.cwd(), {}, expect.any(Function), { keepTermpolis: false })
       expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][4].env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
     }
     const isolation = vi.fn(async () => launch())
@@ -854,6 +855,37 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     expect(AGY_HOME_STALE_MS).toBe(EXEC_MAX_TIMEOUT_MS + 10 * 60_000)
   })
 
+  // HOLD-A M4: a read-only agy run that agy says ran outside plan mode is not the run asked for: its answer goes.
+  it('drops a read-only agy run that agy says ran outside plan mode, and never remembers it; a write run, or another agent, is not', async () => {
+    const said = (agentStderr: string): ExecDeps['deliver'] => vi.fn(async () => ({ stdout: 'did things', stderr: agentStderr, code: 0 }))
+    const dropped = said('--mode plan is not supported headless, continuing in the default mode\n')
+    const remember = vi.fn(async () => undefined)
+    const log = vi.fn()
+    const deps = { deliver: dropped, isolation: async () => launch(), isDirectory: anyDir, remember, log }
+    // A caller that reads the error itself (and a run with no isolation) is told what happened; a map's run gets the map's words.
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true, isolationReason: true }, deps))
+      .toMatchObject({ ok: false, output: '', error: EXEC_PLAN_MODE_DROPPED, code: 0 })
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r' }, deps)).toMatchObject({ ok: false, output: '', error: EXEC_PLAN_MODE_DROPPED })
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, deps)).toMatchObject({ ok: false, output: '', error: ISOLATION_SETUP_FAILED })
+    expect(remember).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledTimes(3)
+    expect(log).toHaveBeenCalledWith('[exec] gemini run dropped: agy ran it outside plan mode')
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', write: true }, deps)).toMatchObject({ ok: true, output: 'did things' })
+    expect(await runHeadless({ task: 't', agent: 'codex', cwd: '/r', isolated: true }, deps)).toMatchObject({ ok: true, output: 'did things' })
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { ...deps, deliver: said('Loaded cached credentials.') }))
+      .toMatchObject({ ok: true, output: 'did things' })
+    // A deliver that hands back no stderr at all.
+    expect(await runHeadless({ task: 't', agent: 'gemini', cwd: '/r' }, { ...deps, deliver: vi.fn(async () => ({ stdout: 'did things', code: 0 })) }))
+      .toMatchObject({ ok: true, output: 'did things' })
+    expect(EXEC_PLAN_MODE_DROPPED).toBe("agy ran this read-only task outside its plan mode, so Termpolis did not use its answer.")
+    // No log given: the console is told.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runHeadless({ task: 't', agent: 'gemini', cwd: '/r' }, { deliver: dropped, isDirectory: anyDir })
+      expect(warn).toHaveBeenCalledWith('[exec] gemini run dropped: agy ran it outside plan mode')
+    } finally { warn.mockRestore() }
+  })
+
   it('ignores isolated on a write run', async () => {
     const isolation = vi.fn(async () => launch())
     const deliver = okDeliver('ok')
@@ -870,6 +902,89 @@ describe('headlessExec/an isolated read-only run (isolated)', () => {
     expect(iso.dispose).toHaveBeenCalledTimes(1)
     const ok = await runHeadless({ task: 't', agent: 'gemini', cwd: '/r', isolated: true }, { deliver: okDeliver('fine'), isolation: async () => iso, isDirectory: anyDir })
     expect(ok).toMatchObject({ ok: true, output: 'fine' })
+  })
+
+  // HOLD-A I2: a linked job that may not write (linkedJobs.ts sets isolated) keeps Termpolis's server,
+  // narrowed by its marker, and loses everything else; an edit job is as it was.
+  it('isolates a linked read-only job keeping Termpolis\'s server, per agent, down to the argv and environment; an edit job is not isolated', async () => {
+    const CONFIG = '/tmp/termpolis-linked-job1.mcp.json'
+    const RESTRICTED = RESTRICTED_RUN_TOOLS.map((t) => `mcp__termpolis__${t}`).join(',')
+    const APPROVALS = RESTRICTED_RUN_TOOLS.filter((t) => !t.startsWith('memory_'))
+      .flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`])
+    const ISO: Record<'codex' | 'claude' | 'gemini', IsolatedLaunch> = {
+      codex: launch({ args: ['-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', '-c', 'features.apps=false'] }),
+      claude: launch({ args: ['--setting-sources', 'user'] }),
+      gemini: launch({ env: { TERMPOLIS_READ_ONLY_RUN: '1', HOME: '/tmp/agy-h', USERPROFILE: '/tmp/agy-h' } }),
+    }
+    const isolation = vi.fn(async (agent: 'codex' | 'claude' | 'gemini') => ISO[agent])
+    const linkedJobMcp = vi.fn((_id: string, agent: string) => agent === 'claude' ? { claudeMcpConfig: CONFIG } : agent === 'codex' ? { codexHasTermpolis: true } : null)
+    const run = async (agent: 'codex' | 'claude' | 'gemini', write = false) => {
+      const deliver = okDeliver('ok')
+      const res = await runHeadless(
+        { task: 't', agent, cwd: '/r', write, linkedJob: 'job1', noRemember: true, env: { TERMPOLIS_LINKED_JOB: 'job1' }, isolated: true, isolationReason: true, timeoutMs: 60_000 },
+        { deliver, isolation, linkedJobMcp, isDirectory: anyDir },
+      )
+      expect(res.ok).toBe(true)
+      const [bin, args, , , opts] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+      return { bin, args, env: opts.env }
+    }
+
+    const codex = await run('codex')
+    expect(isolation).toHaveBeenLastCalledWith('codex', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), { keepTermpolis: true })
+    expect(codex).toEqual({
+      bin: 'codex',
+      args: [
+        'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
+        '-c', 'mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-job1', ...APPROVALS,
+        '-c', 'mcp_servers.docs.enabled=false', '-c', 'mcp_servers.docs.command=termpolis-mcp-disabled', '-c', 'features.apps=false',
+        '-C', '/r', PROMPT_TOKEN,
+      ],
+      env: { TERMPOLIS_LINKED_JOB: 'job1', TERMPOLIS_READ_ONLY_RUN: '1' },
+    })
+
+    const claude = await run('claude')
+    expect(isolation).toHaveBeenLastCalledWith('claude', '/r', { TERMPOLIS_LINKED_JOB: 'job1' }, expect.any(Function), { keepTermpolis: true })
+    expect(claude).toEqual({
+      bin: 'claude',
+      args: [
+        '--permission-mode', 'default',
+        '--tools', 'Read,Grep,Glob',
+        '--disallowedTools', 'Bash,PowerShell,Edit,Write,NotebookEdit',
+        '--mcp-config', CONFIG,
+        '--strict-mcp-config',
+        '--allowedTools', RESTRICTED,
+        '--setting-sources', 'user',
+        '-p', PROMPT_TOKEN,
+      ],
+      env: { TERMPOLIS_LINKED_JOB: 'job1', TERMPOLIS_READ_ONLY_RUN: '1' },
+    })
+
+    const agy = await run('gemini')
+    expect(agy).toEqual({
+      bin: 'agy',
+      args: ['--mode', 'plan', '--print-timeout', '60s', '-p', PROMPT_TOKEN],
+      env: { TERMPOLIS_LINKED_JOB: 'job1', TERMPOLIS_READ_ONLY_RUN: '1', HOME: '/tmp/agy-h', USERPROFILE: '/tmp/agy-h' },
+    })
+    expect(isolation).toHaveBeenCalledTimes(3)
+    for (const iso of Object.values(ISO)) expect(iso.dispose).toHaveBeenCalledTimes(1)
+
+    // An edit job: no isolation, its launch as before.
+    for (const agent of ['codex', 'claude', 'gemini'] as const) {
+      const edit = await run(agent, true)
+      expect(edit.args.join(' ')).not.toMatch(/features\.apps|setting-sources|mcp_servers\.docs/)
+      expect(edit.env).toEqual({ TERMPOLIS_LINKED_JOB: 'job1' })
+    }
+    expect(isolation).toHaveBeenCalledTimes(3)
+  })
+
+  it('a linked read-only job that can\'t be isolated does not start, and says why', async () => {
+    const deliver = okDeliver('ok')
+    const res = await runHeadless(
+      { task: 't', agent: 'codex', cwd: '/r', linkedJob: 'job1', env: { TERMPOLIS_LINKED_JOB: 'job1' }, isolated: true, isolationReason: true },
+      { deliver, isolation: async () => { throw new Error('codex mcp list did not show every MCP server off (exit 0)') }, isDirectory: anyDir, log: () => {} },
+    )
+    expect(res).toMatchObject({ ok: false, error: `${EXEC_ISOLATION_FAILED} codex mcp list did not show every MCP server off (exit 0)` })
+    expect(deliver).not.toHaveBeenCalled()
   })
 
   it('sets the run up with prepareIsolatedLaunch when no isolation is given', async () => {
