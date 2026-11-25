@@ -239,9 +239,24 @@ The renderer feeds it each drawn frame's rAF gap. `drawnCounts().perf` exposes `
 
 CI runners have no real GPU: Linux runs SwiftShader, Windows usually WARP, and macOS a paravirtual GPU. So the **blocking** assertions test behaviour, and have wide margins:
 - **Auto-drop works on real slow frames.** Force High in software at 1080p. The governor must reach Flat within 8 s, through Low, with no rise during the run.
-- **Software floor.** At Flat in software, the 1080p interaction frames (the orbit) have a p95 at or under the floor written in this spec. Task 2 measures the baseline (3 runs of 3 copies on ubuntu-24.04). The floor is set at 1.5 × that median and recorded here, filled in by Task 2: `SOFTWARE_FLOOR_P95_MS = ____`.
+- **Software floor.** At Flat in software, the 1080p interaction frames (the orbit) have a p95 at or under the floor written in this spec. Task 2 measures the baseline (3 runs of 3 copies on ubuntu-24.04). The floor is set at 1.5 × that median and recorded here, filled in by Task 2: `SOFTWARE_FLOOR_P95_MS = { termpolis: 685, big: 393 }` (one per world, see the baseline below).
 - **First frame:** `firstFrameMs` ≤ 3 s in software.
 - **No blank map**, as in §5.3.
+
+**Baseline (Task 2, 2026-11-25, commit 17cea296).** The orbit at 1920x1080, in software at the **High** tier: the renderer had no Flat tier yet (Task 3 adds it), so the floor is measured at High and bounds Flat from above until Task 3 re-measures it. Each row is the median over its copies; the p95 range is the lowest and highest copy.
+
+| OS (soak run ids) | Renderer (`UNMASKED_RENDERER_WEBGL`) | World | Copies | p50 ms | p95 ms | p95 range ms | Frames in 10 s | Draw calls | Triangles | First frame ms (max) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ubuntu-24.04 (45562373003, 45562384134, 45562403486) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | Termpolis | 9 | 325.6 | 456.9 | 383.2-533.2 | 30 | 727 | 564,110 | 338 (384) |
+| ubuntu-24.04 | same | big (168 files) | 9 | 178.2 | 262.1 | 229.5-288.7 | 56 | 110 | 53,654 | 1086 (1160) |
+| windows-latest (45562415525) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | Termpolis | 3 | 291.8 | 318.4 | 236.5-321.9 | 38 | 728 | 566,822 | 406 (444) |
+| windows-latest | same | big | 3 | 180.7 | 202.1 | 157.2-209.9 | 65 | 110 | 53,654 | 577 (687) |
+| macos-latest (45562426781) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver) | Termpolis | 3 | 337.0 | 483.3 | 227.0-859.1 | 26 | 728 | 566,822 | 1328 (1546) |
+| macos-latest | same | big | 3 | 104.6 | 226.5 | 110.8-257.5 | 88 | 110 | 53,654 | 2160 (2334) |
+
+- The floor is one value per world, at 1.5 × that world's ubuntu median p95: Termpolis 1.5 × 456.9 = **685 ms**, big 1.5 × 262.1 = **393 ms**. A single floor (1.5 × 335.9 ms, the median of all 18 Linux orbits, = 504 ms) would sit under the Termpolis orbit's own spread (up to 533 ms).
+- It is asserted on Linux only, where it was measured. Every runner draws on SwiftShader, because the e2e launch forces `--use-angle=swiftshader` (so Windows is not on WARP here). macOS uses the LLVM backend, not Subzero, and its Termpolis p95 spread (227 to 859 ms) is wider than any floor taken from Linux, so there it is reported only.
+- High in software draws the Termpolis world at about 3 fps and the big world at about 5.5 fps: what the governor's drop to Flat (Task 3) is for.
 
 Absolute fps on CI hardware is **reported, not asserted**. Real-GPU proof comes from a hardware run (`npm run perf:world`: Playwright on the built app with the GPU on). The JSON is committed under `docs/perf/lumopolis/`. Three runs are needed: David's laptop (Intel Arc), david-linux (a linked machine), and the low-end device in D3.
 

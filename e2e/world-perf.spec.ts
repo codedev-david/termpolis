@@ -6,7 +6,7 @@
  *     (window.__worldPerf, the counted frames between begin() and end()). The numbers are written to
  *     test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a `world-perf {...}` line. Reported only: no
  *     assertion on the frame rate, which a hosted runner (no GPU, SwiftShader) cannot speak for;
- *   - in software, the orbit's p95 stays at or under SOFTWARE_FLOOR_P95_MS, measured on ubuntu-24.04 (§6.2).
+ *   - in software, the orbit's p95 stays at or under that world's SOFTWARE_FLOOR_P95_MS, measured on ubuntu-24.04 (§6.2).
  *
  * Metrics only: no screenshot here is a golden image.
  */
@@ -17,10 +17,15 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, paletteType, removeDirs } from './helpers/world'
 
 /**
- * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software. 1.5 x the
- * median p95 of the baseline (3 soak runs x 3 copies on ubuntu-24.04); null until the baseline is in.
+ * The software floor (look spec §6.2): the most the orbit's p95 may reach when the map is drawn in software, one per
+ * world. Each is 1.5 x the median p95 of that world's baseline orbits: 3 soak runs x 3 copies on ubuntu-24.04 at
+ * 17cea296 (runs 45562373003, 45562384134, 45562403486), SwiftShader at the High tier, as software had no Flat tier
+ * yet: Termpolis median 456.9 ms (383.2-533.2), big 262.1 ms (229.5-288.7). One floor for both (1.5 x 335.9 ms, the
+ * median of all 18) would sit under the Termpolis orbit's own spread. Task 3 starts software at Flat, under these.
+ * Asserted on Linux, where it was measured: macOS's runner draws on another SwiftShader backend (LLVM, not Subzero) and
+ * its Termpolis orbit's p95 ran 227-859 ms over three copies, so there it is reported only.
  */
-const SOFTWARE_FLOOR_P95_MS = null as number | null
+const SOFTWARE_FLOOR_P95_MS: Record<string, number> = { termpolis: 685, big: 393 }
 /** The first frame's bound: in software, and on a GPU (wider than the spec's 400 ms, which Task 20 proves on real GPUs). */
 const FIRST_FRAME_SOFTWARE_MS = 3000
 const FIRST_FRAME_HARDWARE_MS = 1000
@@ -206,12 +211,14 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       expect(stats.frames, `${fx.label}: the orbit counted no frames`).toBeGreaterThan(0)
     })
 
-    // Pending until the baseline is in (SOFTWARE_FLOOR_P95_MS). Software starts at Flat once Task 3 lands.
-    test.fixme(`software starts at Flat and its orbit stays within the floor (${fx.label})`, async () => {
+    // The floor only, for now: that software starts at Flat is asserted here once Task 3 gives it a Flat tier.
+    test(`in software the orbit stays within the floor (${fx.label})`, async () => {
       const r = orbits.get(fx.label)
       expect(r, 'the orbit test did not run').toBeDefined()
       test.skip(!r!.software, 'drawn on a GPU: the floor is for software')
-      expect(r!.p95, `${fx.label}: the orbit p95 is over the software floor`).toBeLessThanOrEqual(SOFTWARE_FLOOR_P95_MS as number)
+      test.skip(OS_NAME !== 'linux', 'the floor was measured on ubuntu-24.04: reported only on this system')
+      const floor = SOFTWARE_FLOOR_P95_MS[fx.label]
+      expect(r!.p95, `${fx.label}: the orbit p95 ${r!.p95} ms is over the software floor ${floor} ms`).toBeLessThanOrEqual(floor)
     })
   }
 
