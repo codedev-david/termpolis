@@ -189,6 +189,8 @@ describe('codeGraphExtract', () => {
         ['Ann.kt', (n) => fill('@a\n', n), none],
         ['AnnLine.kt', (n) => fill('@a ', n), none],
         ['AnnArgs.kt', (n) => fill('@a(b) ', n) + '\n', none],
+        ['AnnUse.kt', (n) => fill('@get:a ', n), none],
+        ['AnnUseLines.kt', (n) => fill('@field:a\n', n), none],
         ['Mods.kt', (n) => fill('public\n', n), none],
         ['Long.kt', (n) => 'fun ' + 'a'.repeat(n), none]
       ])('%s', (file, make, check) => linear(make, symbols(file), N, file, check))
@@ -202,6 +204,10 @@ describe('codeGraphExtract', () => {
         const mixed = extractFile('Mixed.kt', '@A\n@B(x = 1) ' + nine.join(' ') + ' private fun g() {}')!.symbols
         expect(mixed.map((s) => [s.name, s.startLine])).toEqual([['g', 1]])
         expect(names(extractFile('Above.kt', nine.join('\n') + '\nfun h() {}')!.symbols)).toEqual(['h'])
+      })
+      it('finds a function after use-site annotations (`@get:`, `@field:`), as the world reads them (minors review m7)', () => {
+        expect(names(extractFile('Use.kt', '@get:JvmName("x") fun h() {}\n@field:Inject @param:Named("p") fun i() {}')!.symbols)).toEqual(['h', 'i'])
+        expect(names(extractFile('Use.kt', '@file:JvmName("U")\n  @set:JvmStatic internal fun j() {}')!.symbols)).toEqual(['j'])
       })
     })
 

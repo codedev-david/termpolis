@@ -428,13 +428,14 @@ const JAVA: LangRules = {
 // newline, and annotations and the receiver are bounded, so a line is matched in time linear in its length: a `\s` in
 // the modifier loop, or an unbounded receiver, made a run of blank or modifier-only lines, or one long line, quadratic.
 // Annotations that may each end their own line are bounded at eight; any number more on the `fun`'s own line are read
-// (WP7 #89 N5), since that run cannot cross a newline.
+// (WP7 #89 N5), since that run cannot cross a newline. A use-site target (`@get:JvmName`, `@field:Inject`) is part of
+// an annotation's name, as in the world's reading of it (langImports.ts KT_TOP, minors review m7).
 const KOTLIN_MOD = '(?:(?:companion|public|private|protected|internal|open|final|abstract|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun)[ \\t]+)*'
 const KOTLIN: LangRules = {
   lang: 'kotlin',
   block: 'brace',
   defs: [
-    { kind: 'function', re: /^[ \t]*(?:@[\w.]+(?:\([^)\n]*\))?\s+){0,8}(?:@[\w.]+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|operator|infix|inline|tailrec|external|expect|actual)[ \t]+)*fun[ \t]+(?:<[^>\n]*>[ \t]*)?(?:[A-Za-z_][\w.<>?, ]{0,200}\.)?([A-Za-z_]\w*)[ \t]*\(/gm },
+    { kind: 'function', re: /^[ \t]*(?:@[\w.:]+(?:\([^)\n]*\))?\s+){0,8}(?:@[\w.:]+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|private|protected|internal|open|final|abstract|override|suspend|operator|infix|inline|tailrec|external|expect|actual)[ \t]+)*fun[ \t]+(?:<[^>\n]*>[ \t]*)?(?:[A-Za-z_][\w.<>?, ]{0,200}\.)?([A-Za-z_]\w*)[ \t]*\(/gm },
     { kind: 'class', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}(?:class|object)[ \\t]+([A-Za-z_]\\w*)`, 'gm') },
     { kind: 'interface', re: new RegExp(`^[ \\t]*${KOTLIN_MOD}interface[ \\t]+([A-Za-z_]\\w*)`, 'gm') },
   ],

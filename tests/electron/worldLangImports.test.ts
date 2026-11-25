@@ -615,4 +615,26 @@ describe('hostile input stays linear', TIMED, () => {
     grows((n) => fill('@a ', n), none)
     grows((n) => fill('@a(b) ', n) + '\n', none)
   })
+
+  // The spaces after the keyword were shared with the head, so about 200 starts each rescanned a long `<...>` part:
+  // 115 ms on a file at the snapshot cap, 18 times a plain line of its length (minors review m6). On main, and now, it
+  // takes what the plain line takes (about 6 ms). Both are timed in turn, best of seven, so a loaded runner slows both.
+  it('reads a Kotlin keyword, a run of spaces and a long `<<` head as fast as a plain line of its length, as main did', () => {
+    const N = 512 * 1024
+    const hostile = 'class' + ' '.repeat(199) + '<<' + 'a'.repeat(N) + '>><'
+    const plain = 'class' + ' '.repeat(199) + 'a'.repeat(N + 5)
+    expect(plain.length).toBe(hostile.length)
+    const best = { hostile: Infinity, plain: Infinity }
+    for (let k = 0; k < 7; k++) {
+      for (const [name, src] of [['hostile', hostile], ['plain', plain]] as const) {
+        const t = performance.now()
+        scanLangImports('a.kt', src)
+        best[name] = Math.min(best[name], performance.now() - t)
+      }
+    }
+    expect(best.hostile).toBeLessThan(3 * best.plain + 2)
+    grows((n) => 'class' + ' '.repeat(199) + '<<' + 'a'.repeat(n) + '>><', { read: (x) => scanLangImports('a.kt', x), check: () => undefined })
+    // The names around it are read as before.
+    expect(scanLangImports('a.kt', 'class   <T> Box\nclass Box2<T : Any>\n@Ser data class Z\n')).toEqual({ refs: [], decls: ['Box', 'Box2', 'Z'] })
+  })
 })

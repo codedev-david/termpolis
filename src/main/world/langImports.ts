@@ -335,9 +335,10 @@ const JV_IMPORT = /^import\s+(?:static\s+)?([A-Za-z_][\w.]*?(?:\.\*)?)(?:\s+as\s
 // (bounds and one level of nesting included: `class Box<T : Any>`, WP7 #89 N3) and a receiver: `fun <T : Any>
 // List<T>.second(` names `second`. A head of more than 200 parts is no declaration anyone imports, and is not read. Each
 // annotation, and each part of the head, is told from the next by its first character, so a line that is no
-// declaration is given up in time linear in its length.
+// declaration is given up in time linear in its length. The spaces after the keyword are all its own (`(?![ \t])`):
+// shared with the head, each of up to 200 starts rescanned a long `<...>` part (minors review m6).
 const KT_TOP =
-  /^(?:@[\w.:]+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|internal|private|protected|open|final|abstract|sealed|data|enum|annotation|value|inline|suspend|operator|infix|tailrec|external|const|lateinit|expect|actual|fun)[ \t]+)*(?:fun|val|var|class|interface|object|typealias)[ \t]+((?:<(?:[^\n<>]|<[^\n<>]*>){0,200}>[ \t]*)?(?:[^\n(:={<]|<(?:[^\n<>]|<[^\n<>]*>){0,200}>){1,200})(?=[\n(:={]|$)/gm
+  /^(?:@[\w.:]+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|internal|private|protected|open|final|abstract|sealed|data|enum|annotation|value|inline|suspend|operator|infix|tailrec|external|const|lateinit|expect|actual|fun)[ \t]+)*(?:fun|val|var|class|interface|object|typealias)[ \t]+(?![ \t])((?:<(?:[^\n<>]|<[^\n<>]*>){0,200}>[ \t]*)?(?:[^\n(:={<]|<(?:[^\n<>]|<[^\n<>]*>){0,200}>){1,200})(?=[\n(:={]|$)/gm
 
 /** A Kotlin file's top-level names, at most MAX_KT_NAMES. */
 function kotlinNames(t: string): string[] {
