@@ -94,7 +94,7 @@ const WATCH_SCRIPT = `(() => {
  * so everything about the stage animation is read while it runs).
  */
 const TIMING_SCRIPT = `(() => {
-  const m = window.__introTiming = { firstAt: null, firstStage: null, firstCard: null, lastStage: null, lastStageTime: null, frames: 0, startTime: null, stageEnd: null, stageDelay: null, stageEasing: null, stageKeyframes: null, detachedAt: null }
+  const m = window.__introTiming = { firstAt: null, firstFrameTime: null, firstStage: null, firstCard: null, lastStage: null, lastStageTime: null, frames: 0, startTime: null, stageEnd: null, stageDelay: null, stageEasing: null, stageKeyframes: null, detachedAt: null }
   let stageAnim = null
   let attached = false
   new MutationObserver(() => {
@@ -107,7 +107,12 @@ const TIMING_SCRIPT = `(() => {
     if (root) {
       const stage = Number(getComputedStyle(root).opacity)
       if (m.firstAt === null && stage > 0) {
-        m.firstAt = at
+        // When the page computed that frame: now, as its callbacks run. Not the callback's argument,
+        // the frame's begin time on the timeline, which a launch that holds the page before its first
+        // frame leaves behind by as long as it held it (a Windows runner: 0.6 to 2 s). That begin time
+        // is kept too: the stage animation's start is a frame time on the same timeline.
+        m.firstAt = performance.now()
+        m.firstFrameTime = at
         m.firstStage = stage
         m.firstCard = Number(getComputedStyle(root.querySelector('[data-testid="launch-intro-termpolis"]')).opacity)
       }
@@ -200,6 +205,7 @@ interface StageKeyframe { offset: number; opacity: number; easing: string }
 
 interface Timing {
   firstAt: number | null
+  firstFrameTime: number | null
   firstStage: number
   firstCard: number
   lastStage: number
@@ -347,7 +353,8 @@ test.describe('launch intro', () => {
     expect(visible).toBeGreaterThanOrEqual(INTRO_BUDGET_MS - LOWER_SLACK_MS)
     // The overlay reaches the screen after the page first computes it (never before), and within
     // NOT_PAINTED_MS, or it would never have been shown; so it is in the page no longer than the hard cap.
-    expect(shownAt).toBeGreaterThanOrEqual(firstAt)
+    // (Never before: the start is a frame time, so it is held to that frame's own time.)
+    expect(shownAt).toBeGreaterThanOrEqual(m.firstFrameTime as number)
     expect(shownAt - firstAt).toBeLessThan(NOT_PAINTED_MS)
     expect(detachedAt - firstAt).toBeLessThanOrEqual(INTRO_HARD_CAP_MS + UPPER_SLACK_MS)
     // Its first frame covers the app completely: the starting app is never seen before the intro.
