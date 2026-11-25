@@ -16,7 +16,8 @@ import type { GraphSnapshot } from '../codeGraph'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
-import { isIgnoredPath, listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
+import { listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
+import { isIgnored } from './group'
 import { access, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
@@ -128,7 +129,7 @@ async function walkSources(root: string, cap?: number): Promise<WalkResult> {
   const base = slashBase(root)
   const ignored = await readRootIgnore(root)
   return walkFolder(root, {
-    keep: (rel) => !isIgnoredPath(rel) && isSourceFile(`${base}/${rel}`),
+    keep: (rel) => !isIgnored(rel) && isSourceFile(`${base}/${rel}`),
     ...(ignored ? { ignored } : {}),
     ...(cap === undefined ? {} : { cap })
   })
@@ -211,7 +212,7 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
   const seen = new Set<string>()
   for (const raw of new Set(listing.files)) {
     const rel = safeRelative(raw)
-    if (rel === null || seen.has(rel) || isIgnoredPath(rel) || !isSourceFile(`${base}/${rel}`)) continue
+    if (rel === null || seen.has(rel) || isIgnored(rel) || !isSourceFile(`${base}/${rel}`)) continue
     seen.add(rel)
     candidates.push(rel)
   }

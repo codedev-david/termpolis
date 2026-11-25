@@ -136,6 +136,19 @@ describe('snapshotFromFiles reads (WP4a)', () => {
     expect(reads.every((r) => r[1] === 40)).toBe(true)
   })
 
+  it('files under a top-level dot-folder (tooling) are neither listed nor read, so they never take a read from the cap (WP-LOOK Task 6)', async () => {
+    const reads: string[] = []
+    const snap = await snapshotFromFiles(ROOT, {
+      listFiles: async () => ['.superpowers/sdd/run.ts', '.claude/hooks/h.py', '.github/scripts/x.js', 'src/a.ts', 'src/.generated/t.ts', '.eslintrc.cjs'],
+      read: async (p) => {
+        reads.push(p)
+        return 'export const v = 1\n'
+      }
+    })
+    expect(snap.files).toEqual(['.eslintrc.cjs', 'src/.generated/t.ts', 'src/a.ts'])
+    expect(reads.sort()).toEqual([`${ROOT}/.eslintrc.cjs`, `${ROOT}/src/.generated/t.ts`, `${ROOT}/src/a.ts`])
+  })
+
   it('a capped listing says how many it maps; with no concurrency given the default bounds the reads', async () => {
     const files = Array.from({ length: 100 }, (_, i) => `f${i}.ts`)
     const t = tracker()

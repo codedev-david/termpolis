@@ -132,10 +132,21 @@ export function idSlug(s: string): string {
   return slug(s) || (s ? `u${shortHash(s)}` : '')
 }
 
-/** True for files under dependency, virtual-environment, cache and build output folders, and minified or bundled files. */
+/**
+ * True for a file under a top-level dot-folder (`.superpowers`, `.claude`, `.github`, `.husky`, `.vscode`, `.idea` and
+ * the like): tooling, not the project's own code (look spec §9.1). A dot-folder deeper down (`src/.generated`) is the
+ * project's, and a top-level dot-file (`.env`, `.eslintrc.cjs`) is no folder of tooling. The world alone leaves these
+ * out: repoFileList.ts SKIP_DIRS keeps them, so memory ingest and the file tree still see them.
+ */
+export function isToolingPath(rel: string): boolean {
+  return rel.charCodeAt(0) === 46 && rel.indexOf('/') > 0
+}
+
+/** True for files under dependency, virtual-environment, cache and build output folders, minified or bundled files,
+ *  and files under a top-level dot-folder (isToolingPath). */
 export function isIgnored(path: string): boolean {
   // One list for every reader (repoFileList.ts): the git listing and the folder walk leave out what no world shows.
-  return isIgnoredPath(path)
+  return isIgnoredPath(path) || isToolingPath(path)
 }
 
 const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/')))

@@ -409,7 +409,8 @@ function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Recor
     }
   }
   const fileSet = new Set(g.buildings.flatMap((b) => b.members))
-  const tests = [...new Set(snap.files.filter((f) => TEST_FILE.test(f)))].sort()
+  // A test the world leaves out (one kept with the tooling, say) links to nothing: it is no test of a part.
+  const tests = [...new Set(snap.files.filter((f) => TEST_FILE.test(f) && !isIgnored(f)))].sort()
   const byStem = new Map<string, string[]>()
   const add = (m: Map<string, string[]>, k: string, t: string): void => {
     const list = m.get(k)

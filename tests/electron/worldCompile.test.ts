@@ -20,7 +20,7 @@ import {
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
 import { BUILTIN_TECH } from '../../src/main/world/techStack'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
-import { edgeId, shortHash, type GroupBuilding, type Grouping } from '../../src/main/world/group'
+import { edgeId, isToolingPath, shortHash, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
 import { edgeSummary } from '../../src/shared/world/edgeText'
@@ -1742,5 +1742,71 @@ describe('ids and keys (WP5: G09, G10, F03 and the one-time rename)', () => {
     )
     expect(retry.mock.calls[0][0]).toEqual(failing.mock.calls[0][0])
     expect(retried.layout.positions[dot]).toEqual([500, 12, 500])
+  })
+})
+
+describe('tooling dot-folders are left out of the world (WP-LOOK Task 6)', () => {
+  const TOOLING: Record<string, string> = {
+    '.superpowers/sdd/x.md': '# notes\n',
+    '.superpowers/sdd/run.ts': "import { a } from '../../src/a'\nfetch('https://api.github.com/x')\nexport const r = a\n",
+    '.claude/hooks/h.py': 'import os\n',
+    '.github/workflows/ci.yml': 'on: push\n',
+    'src/a.ts': "import { r } from '../.superpowers/sdd/run'\nexport const a = 1\nexport const b = r\n",
+    '.env.production': 'OTEL_SERVICE_NAME=shop\n'
+  }
+  const TOOLING_IMPORTS: Record<string, string[]> = {
+    '.superpowers/sdd/run.ts': ['../../src/a'],
+    'src/a.ts': ['../.superpowers/sdd/run']
+  }
+  const compileTooling = (files: Record<string, string>, imports: Record<string, string[]>, over: Partial<CompileDeps> = {}): Promise<WorldDoc> =>
+    compileWorld({ snap: snapOf(files, imports), projectKey: 'tooling', head: HEAD, previous: null }, mkDeps(files, { glob: async () => [], ...over }))
+  const allMembers = (doc: WorldDoc): string[] => [
+    ...doc.buildings.flatMap((b) => [...b.members, ...b.floors.flatMap((f) => f.members)]),
+    ...doc.districts.flatMap((d) => d.members)
+  ]
+
+  it('a top-level dot-folder never becomes a district, even with code files in it', async () => {
+    const doc = await compileTooling(TOOLING, TOOLING_IMPORTS)
+    expectValid(doc)
+    expect(doc.districts.map((d) => d.id).filter((id) => /superpowers|claude|github/.test(id))).toEqual([])
+    const members = doc.buildings.flatMap((b) => b.members)
+    expect(members.filter((m) => m.startsWith('.') && m.includes('/'))).toEqual([])
+    expect(allMembers(doc).some((m) => /^\.(superpowers|claude|github)\//.test(m))).toBe(false)
+    // The real code and a top-level dot-file (not a folder) are still parts.
+    expect(members).toEqual(expect.arrayContaining(['src/a.ts', '.env.production']))
+    // A tooling file's boundaries make no orb.
+    expect(doc.externals).toEqual([])
+  })
+
+  it('a dot-folder deeper down (src/.generated) is not treated as tooling', async () => {
+    const files = { ...TOOLING, 'src/.generated/types.ts': 'export type T = 1\n' }
+    const doc = await compileTooling(files, { ...TOOLING_IMPORTS, 'src/a.ts': ['../.superpowers/sdd/run', './.generated/types'] })
+    expectValid(doc)
+    expect(doc.buildings.flatMap((b) => b.members)).toContain('src/.generated/types.ts')
+    expect(isToolingPath('src/.generated/types.ts')).toBe(false)
+    expect(isToolingPath('.github/workflows/ci.yml')).toBe(true)
+    expect(isToolingPath('.superpowers/sdd/x.md')).toBe(true)
+    // A top-level dot-file is not a folder of tooling.
+    expect(isToolingPath('.env.production')).toBe(false)
+    expect(isToolingPath('.eslintrc.cjs')).toBe(false)
+  })
+
+  it('an import from src into .superpowers makes no conduit', async () => {
+    const doc = await compileTooling(TOOLING, TOOLING_IMPORTS)
+    expect(doc.edges).toEqual([])
+    const ends = new Set(doc.edges.flatMap((e) => [e.from, e.to]))
+    for (const b of doc.buildings) if (b.members.some((m) => m.startsWith('.superpowers/'))) expect(ends.has(b.id)).toBe(false)
+  })
+
+  it('a test kept in a tooling folder links to no part, so it never marks one verified', async () => {
+    const files = { 'src/a.ts': 'export const a = 1\n', '.claude/hooks/a.test.ts': "import { a } from '../../src/a'\n" }
+    const report = JSON.stringify({ testResults: [{ name: `${ROOT}/.claude/hooks/a.test.ts`, status: 'passed', endTime: 10 }] })
+    const doc = await compileTooling(files, { '.claude/hooks/a.test.ts': ['../../src/a'] }, {
+      glob: async () => [REPORT],
+      readFile: async (p) => (p === REPORT ? report : p === `${ROOT}/src/a.ts` ? files['src/a.ts'] : null)
+    })
+    expectValid(doc)
+    expect(doc.buildings.map((b) => b.members)).toEqual([['src/a.ts']])
+    expect(doc.buildings[0].status).toBe('gap')
   })
 })
