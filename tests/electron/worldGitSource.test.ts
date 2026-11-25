@@ -1083,6 +1083,14 @@ describe('real deps', () => {
     expect(invalid.stderr).not.toBe('')
   })
 
+  it('a stop of a program that never started (no pid, no tree to end) still resolves', async () => {
+    const ctl = new AbortController()
+    ctl.abort()
+    const r = await nodeExecFile(join(dir, 'no-such-binary'), [], { env, timeout: 20_000, signal: ctl.signal, killGraceMs: 200 })
+    expect(r.code).toBe(1)
+    expect(r.stderr).not.toBe('')
+  })
+
   it('nodeExecFile with stdoutMax collects stdout, fails past the cap, and says when the program is missing', async () => {
     expect(await node('process.stdout.write("a.ts\\nb.ts\\n")', { stdoutMax: 1000 })).toEqual({ code: 0, stderr: '', stdout: 'a.ts\nb.ts\n', missing: false })
     // A failed run hands back no partial listing.

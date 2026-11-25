@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { hideValue, normalizeToken, TOKEN_REJECTED_MESSAGE, type NeedsLogin } from '../../shared/world/repoAccess'
 import { binInside } from '../binPath'
+import { endProcessTree } from '../processTree'
 import {
   configEnv,
   gitNewEnough,
@@ -228,7 +229,14 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
     const stop = (): void => {
       if (stopped) return
       stopped = true
-      child.kill()
+      // The whole tree goes, not only git: a sign-in's login helper (Git Credential Manager can hold a window up) is
+      // git's child, and outlived git when only git was killed (WP4b F-R6). Windows: taskkill /T /F, tried once more
+      // while git is still ours and running. POSIX: git leads its own process group (detached below), so the group is
+      // signalled, and git alone through its handle if the group was never made.
+      const running = (): boolean => child.exitCode === null && child.signalCode === null
+      void endProcessTree(child.pid, { canRetry: running, leader: child.kill.bind(child) }).then((sent) => {
+        if (!sent && running()) child.kill()
+      })
       graceTimer = setTimeout(() => finish(1, timedOut ? 'it took too long' : stderr || 'it was stopped'), opts.killGraceMs ?? KILL_GRACE_MS)
     }
     const runTimer = setTimeout(() => {
@@ -236,7 +244,15 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
       stop()
     }, opts.timeout)
     try {
-      child = spawn(cmd, args, { env: opts.env, cwd: opts.cwd, windowsHide: true, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe'] })
+      // POSIX: its own process group, so a stop reaches git's children too. Windows has no groups (detached there is a
+      // new console); taskkill /T walks the tree instead.
+      child = spawn(cmd, args, {
+        env: opts.env,
+        cwd: opts.cwd,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe']
+      })
     } catch (e) {
       return finish(1, (e as Error).message)
     }
