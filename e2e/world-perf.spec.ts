@@ -48,11 +48,11 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
  * (1.1-1.5 s on a fresh macOS runner, the compositor holding the swaps meanwhile: FLAKES, soak 45591853353) and
  * SwiftShader compiling each shader, which its LLVM backend on macOS does again for every new view. On one commit
  * (c81e0a7f) macOS's Termpolis first frame was 539 ms on one runner and 5707 ms on another. Timing each world after
- * the warm-up open did not remove that spread (a287b581: 2.7-4.6 s on macOS; on Linux 1.1-2.4 s, where the same worlds
+ * the warm-up open did not remove that spread (a287b581: 2.2-4.6 s on macOS; on Linux 1.1-2.4 s, where the same worlds
  * took 0.4-1.6 s without it), so the time alone is not asserted. The ratio is: on one runner the warm-up's first frame
- * and the worlds' move together (macOS 3.6-3.9 s and 2.7-4.6 s, Linux 1.1-1.9 s and 1.1-2.4 s, Windows 0.25-0.65 s and
- * 0.25-0.39 s). The worst ratio seen is 1.53 (Windows, the big world, soak 45646568734) over 18 first frames on the
- * three systems (soaks 45646550636, 45646568734, 45646589568); x 1.3 is 1.99, and the bound is 2.5 because 18 is a
+ * and the worlds' move together (macOS 3.6-4.0 s and 2.2-4.6 s, Linux 1.1-1.9 s and 1.1-2.4 s, Windows 0.25-0.65 s and
+ * 0.25-0.39 s). The worst ratio seen is 1.53 (Windows, the big world, soak 45646568734) over 20 first frames on the
+ * three systems (soaks 45646550636, 45646568734, 45646589568); x 1.3 is 1.99, and the bound is 2.5 because 20 is a
  * small sample and one world's ratio on one system spans 0.5-1.5. It grows when the app's first frame costs more for a
  * bigger world (building, uploading and drawing it); a cost that every first frame pays alike is Task 20's to find on
  * real hardware. Above it all, the first frame must come before
