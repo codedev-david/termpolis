@@ -625,6 +625,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
     setSoftware(v.drawn().software)
+    console.info(`[probe] setViewer wall=${Date.now()}`)
     setViewer(v)
     return () => {
       offSelect()
@@ -657,8 +658,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     // keeps the camera, the open building and the selection across it (a labelled follow-up, a
     // watched change), so nothing is opened again here; a Re-layout, which moves the parts, closes the
     // open building and flies to the selection's new spot or the overview.
+    const probeT = performance.now()
     if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held })
     else viewer.load(doc)
+    console.info(`[probe] viewer.load ms=${Math.round(performance.now() - probeT)} wall=${Date.now()}`)
   }, [viewer, doc])
 
   // A tour waiting for the complete world (whenComplete) goes once the doc is no first map: it was loaded just above.

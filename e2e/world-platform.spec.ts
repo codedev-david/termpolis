@@ -494,7 +494,8 @@ test.describe.serial('Lumopolis on this platform', () => {
     if (!(await pane().count())) {
       await paletteType(page, 'Open Lumopolis')
       await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
-      await expect(pane()).toBeVisible()
+      console.log(`[probe-spec] t9 clicked wall=${Date.now()}`)
+      try { await expect(pane()).toBeVisible() } finally { console.log(`[probe-spec] t9 pane check end wall=${Date.now()}`) }
     }
     const home = page.locator('[data-testid="world-home"]')
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption('__home')

@@ -13,6 +13,13 @@ import App from './App'
 import { seedAutoDefault } from './lib/autoModel'
 import { applyRouterSettings } from './lib/messageRoute'
 
+// THROWAWAY PROBE: every main-thread block over 50 ms, with its wall-clock start.
+try {
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) console.info(`[probe] longtask start=${Math.round(performance.timeOrigin + e.startTime)} dur=${Math.round(e.duration)}`)
+  }).observe({ type: 'longtask', buffered: true })
+} catch { /* no long-task timing here */ }
+
 // Mirror this side's console into the app log BEFORE anything else runs, so a failure
 // during the very first render still ends up somewhere a user can read it (Ctrl+Shift+O).
 // Sentry only sees crashes, and only with crash reports on and a DSN configured; this sees
