@@ -167,12 +167,16 @@ describe('zsh, started for real with the integration', () => {
   const cases = [
     { withOwnZdotdir: false, dataDir: DATA_DIRS[0] },
     { withOwnZdotdir: true, dataDir: DATA_DIRS[0] },
-    // The ß of this one is UTF-8 C3 9F, a byte zsh 5.9 drops from $ZDOTDIR as it opens .zshenv (see ZSH_DIR_ENV).
+    // The ß of this one is UTF-8 C3 9F, a byte zsh 5.9 drops from $ZDOTDIR as it opens .zshenv (see ZSH_ZSHENV).
     { withOwnZdotdir: false, dataDir: DATA_DIRS[1] },
     { withOwnZdotdir: true, dataDir: DATA_DIRS[1] },
+    // No UTF-8 locale: .zshenv finds its own folder through prompt expansion (%x), which then prints ß as \M-C\M-^_
+    // unless print_eight_bit is on (see ZSH_ZSHENV). The start-up files and what is left set are checked here; the
+    // folder-name round trips of exercise() are the UTF-8 cases' job.
+    { withOwnZdotdir: true, dataDir: DATA_DIRS[1], lang: 'C' },
   ]
-  for (const { withOwnZdotdir, dataDir } of cases) {
-    it.skipIf(!!zshSkip)(`runs the person's four files in order, then OSC 7 and lumopolis (${withOwnZdotdir ? 'their own ZDOTDIR' : 'no ZDOTDIR'}; data folder "${dataDir}")`, async () => {
+  for (const { withOwnZdotdir, dataDir, lang } of cases) {
+    it.skipIf(!!zshSkip)(`runs the person's four files in order, then OSC 7 and lumopolis (${withOwnZdotdir ? 'their own ZDOTDIR' : 'no ZDOTDIR'}; data folder "${dataDir}"${lang ? `; LANG=${lang}` : ''})`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'tp-zsh-'))
       roots.push(root)
       const home = join(root, 'home')
@@ -195,7 +199,7 @@ describe('zsh, started for real with the integration', () => {
       const belDir = belFolder(root)
       const spacedDir = spacedFolder(root)
       const script = writeIntegration(root, 'zsh', dataDir)
-      const env0 = { ...baseEnv(home, belDir, spacedDir), ...(withOwnZdotdir ? { ZDOTDIR: userDir } : {}) }
+      const env0 = { ...baseEnv(home, belDir, spacedDir), ...(withOwnZdotdir ? { ZDOTDIR: userDir } : {}), ...(lang ? { LANG: lang } : {}) }
       const env = { ...env0, ...integrationEnv('zsh', env0, script) }
       // As terminalManager: --login (getShellArgs, for a path ending in zsh), then the integration's own args (none).
       const sh = start(zshPath!, ['--login', ...integrationArgs('zsh', script)], env, root)
@@ -204,9 +208,11 @@ describe('zsh, started for real with the integration', () => {
         const seen = withOwnZdotdir ? userDir : 'none'
         expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([`zshenv:${seen}`, `zprofile:${seen}`, `zshrc:${seen}`, `zlogin:${seen}`])
 
-        const cd = sh.out().length
-        await exercise(sh, belDir, spacedDir)
-        expect(sh.out().slice(cd)).toContain('USERPRECMD')
+        if (!lang) {
+          const cd = sh.out().length
+          await exercise(sh, belDir, spacedDir)
+          expect(sh.out().slice(cd)).toContain('USERPRECMD')
+        }
         expect(sh.out()).not.toContain('ALIASED')
 
         const at = sh.out().length

@@ -16,7 +16,6 @@ import {
   integrationFile,
   integrationFileSet,
   LUMOPOLIS_USAGE,
-  ZSH_DIR_ENV,
   ZSH_USER_ZDOTDIR_ENV,
   ZSH_ZSHENV,
   ZSH_ZPROFILE,
@@ -149,22 +148,21 @@ describe('integrationEnv', () => {
   })
 
   it("zsh: ZDOTDIR points at Termpolis's folder, and a ZDOTDIR of the person's own travels beside it", () => {
-    // The folder travels twice: ZDOTDIR for zsh to find the files, and a copy of our own for .zshenv to read back,
-    // because zsh 5.9 rewrites ZDOTDIR's stored value in place as it opens $ZDOTDIR/.zshenv (getsparam_u in
-    // sourcehome): a letter with a byte in zsh's meta range (ß, č, П) then reads back with that byte gone.
+    // The folder travels once, in ZDOTDIR, for zsh to find the files. .zshenv never reads it back from there, because
+    // zsh 5.9 rewrites ZDOTDIR's stored value in place as it opens $ZDOTDIR/.zshenv (getsparam_u in sourcehome): a
+    // letter with a byte in zsh's meta range (ß, č, П) then reads back with that byte gone. It asks zsh for its own
+    // file's folder instead (%x). No copy of the folder travels in the environment (#73 N4): when a system zshenv
+    // points ZDOTDIR elsewhere, none of Termpolis's files run, and such a copy would stay set in that terminal.
     expect(integrationEnv('zsh', {}, '/home/a/.config/Termpolis/termpolis-zsh/.zshenv')).toEqual({
       ZDOTDIR: '/home/a/.config/Termpolis/termpolis-zsh',
-      [ZSH_DIR_ENV]: '/home/a/.config/Termpolis/termpolis-zsh',
       [INTEGRATION_MARKER]: '1',
     })
     expect(integrationEnv('zsh', { ZDOTDIR: '/home/a/.config/zsh' }, '/d/termpolis-zsh/.zshenv')).toEqual({
       ZDOTDIR: '/d/termpolis-zsh',
-      [ZSH_DIR_ENV]: '/d/termpolis-zsh',
       [ZSH_USER_ZDOTDIR_ENV]: '/home/a/.config/zsh',
       [INTEGRATION_MARKER]: '1',
     })
     expect(ZSH_USER_ZDOTDIR_ENV).toBe('TERMPOLIS_USER_ZDOTDIR')
-    expect(ZSH_DIR_ENV).toBe('TERMPOLIS_ZSH_DIR')
     // Inherited from a parent that was itself one of ours: not the person's, so not passed on as theirs.
     expect(integrationEnv('zsh', { ZDOTDIR: '/d/termpolis-zsh' }, '/d/termpolis-zsh/.zshenv')[ZSH_USER_ZDOTDIR_ENV]).toBeUndefined()
     // An empty ZDOTDIR means $HOME to zsh, the same as none.
@@ -363,11 +361,14 @@ describe('zsh start-up files', () => {
   }
 
   it(".zshenv: remembers Termpolis's folder, takes the person's ZDOTDIR from the environment, runs their .zshenv", () => {
+    expect(ZSH_ZSHENV).not.toContain('TERMPOLIS_ZSH_DIR')
     inOrder(ZSH_ZSHENV, [
-      // Our own copy of the folder, never $ZDOTDIR (see the integrationEnv test): zsh has already rewritten that.
-      '__termpolis_zdotdir="${TERMPOLIS_ZSH_DIR:-$ZDOTDIR}"',
+      // The folder of this very file, never $ZDOTDIR (see the integrationEnv test): zsh has already rewritten that.
+      // %x under a locale that is not UTF-8 prints ß as \M-C\M-^_ unless print_eight_bit is on: on for that line only.
+      'if [[ -o printeightbit ]]; then __termpolis_zdotdir="${${(%):-%x}:h}"; ' +
+        'else builtin setopt printeightbit; __termpolis_zdotdir="${${(%):-%x}:h}"; builtin unsetopt printeightbit; fi',
       '__termpolis_user_zdotdir="${TERMPOLIS_USER_ZDOTDIR-}"',
-      'builtin unset TERMPOLIS_ZSH_DIR TERMPOLIS_USER_ZDOTDIR',
+      'builtin unset TERMPOLIS_USER_ZDOTDIR',
       RESTORE,
       source('.zshenv'),
       // Only a shell that will read more start-up files (and has not switched them off) is handed back.

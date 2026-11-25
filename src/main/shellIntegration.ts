@@ -178,12 +178,6 @@ export const CMD_LUMOPOLIS_MACROS =
 
 /** Where Termpolis passes a ZDOTDIR of the person's own to its zsh start-up files. */
 export const ZSH_USER_ZDOTDIR_ENV = 'TERMPOLIS_USER_ZDOTDIR'
-/**
- * Termpolis's zsh folder again, for .zshenv to read back instead of $ZDOTDIR: zsh 5.9 rewrites ZDOTDIR's stored value
- * in place as it opens $ZDOTDIR/.zshenv (getsparam_u in sourcehome), so a folder with a letter whose UTF-8 has a byte
- * in zsh's meta range (ß, č, П) reads back with that byte gone, and every hand-back would then point at no folder.
- */
-export const ZSH_DIR_ENV = 'TERMPOLIS_ZSH_DIR'
 
 // The pieces of Termpolis's zsh start-up files. zsh reads $ZDOTDIR/.zshenv, then .zprofile (login shells), .zshrc
 // (interactive) and .zlogin (login), and looks ZDOTDIR up again before each. Each file of ours puts the person's
@@ -196,10 +190,20 @@ const ZSH_HANDBACK = '__termpolis_user_zdotdir="${ZDOTDIR-}"; ZDOTDIR="$__termpo
 const ZSH_DONE = 'builtin unset __termpolis_zdotdir __termpolis_user_zdotdir'
 const ZSH_HEADER = '# Termpolis shell integration for zsh, written by Termpolis on each run. It runs your own file first.\n'
 
+/**
+ * .zshenv remembers Termpolis's folder as the folder of this very file (`%x`, the file zsh is running), never as
+ * $ZDOTDIR: zsh 5.9 rewrites ZDOTDIR's stored value in place as it opens $ZDOTDIR/.zshenv (getsparam_u in sourcehome),
+ * so a folder with a letter whose UTF-8 has a byte in zsh's meta range (ß, č, П) reads back with that byte gone, and
+ * every hand-back would then point at no folder; %x keeps it whole. Under a locale that is not UTF-8 (LANG unset, C,
+ * POSIX) prompt expansion prints those bytes as \M-C\M-^_ unless print_eight_bit is on, so it is on for that one line
+ * and goes back as the person had it. (The folder used to travel again in TERMPOLIS_ZSH_DIR, which stayed set in the
+ * terminal whenever a system zshenv pointed ZDOTDIR elsewhere and none of these files ran.)
+ */
+const ZSH_OWN_FOLDER = '__termpolis_zdotdir="${${(%):-%x}:h}"'
 export const ZSH_ZSHENV = ZSH_HEADER +
-  `__termpolis_zdotdir="\${${ZSH_DIR_ENV}:-$ZDOTDIR}"\n` +
+  `if [[ -o printeightbit ]]; then ${ZSH_OWN_FOLDER}; else builtin setopt printeightbit; ${ZSH_OWN_FOLDER}; builtin unsetopt printeightbit; fi\n` +
   `__termpolis_user_zdotdir="\${${ZSH_USER_ZDOTDIR_ENV}-}"\n` +
-  `builtin unset ${ZSH_DIR_ENV} ${ZSH_USER_ZDOTDIR_ENV}\n` +
+  `builtin unset ${ZSH_USER_ZDOTDIR_ENV}\n` +
   `${ZSH_RESTORE}\n` +
   `${zshSource('.zshenv')}\n` +
   // A shell that reads nothing more (a script; start-up files switched off) keeps the person's ZDOTDIR.
@@ -385,7 +389,6 @@ export function integrationEnv(
       const file = unixish(scriptPath)
       const dir = file.slice(0, Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')))
       out.ZDOTDIR = dir
-      out[ZSH_DIR_ENV] = dir
       const theirs = existing.ZDOTDIR
       if (theirs && theirs !== dir) out[ZSH_USER_ZDOTDIR_ENV] = theirs
       break
