@@ -273,10 +273,23 @@ function literalCommands(s: Source): Array<{ at: string; argv: string[] }> {
 /** Files whose literal commands go to git: the ones that call safeGitAsync or cachedGit, or hand a `git` dependency. */
 const gitCallingFiles = (): Source[] => SOURCES.filter((s) => /\b(safeGitAsync|cachedGit|guardGitArgs)\b|\bgit:\s*\(args/.test(s.text) || s.rel === 'src/main/commitScan.ts')
 
+/** Subcommands gitSafety.ts classes as writes as whole commands that also have read forms (stash list and show, tag -l,
+ *  worktree list, submodule status). A write gets no prefix, so any literal command with one of these runs with the
+ *  repository's hooks, fsmonitor and log settings, read form or not (WPS M5). Each form Termpolis runs on purpose is
+ *  listed under its subcommand by its first argument ('' for none), with the reason beside it. None today. */
+const WRITES_WITH_READ_FORMS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['stash', new Set<string>()], ['tag', new Set<string>()], ['worktree', new Set<string>()], ['submodule', new Set<string>()]
+])
+
 /** What is wrong with `argv` once guardGitArgs has been applied, or null. */
-function guardProblem(argv: string[], isWindows: boolean): string | null {
+function guardProblem(argv: string[], isWindows: boolean, placed: ReadonlyMap<string, ReadonlySet<string>> = WRITES_WITH_READ_FORMS): string | null {
   const sub = gitSubcommand(argv)
   if (sub === null) return null
+  const forms = placed.get(sub.name) ?? WRITES_WITH_READ_FORMS.get(sub.name)
+  const first = argv[sub.index + 1] ?? ''
+  if (forms !== undefined && !forms.has(first)) {
+    return `'${[sub.name, first].filter((w) => w !== '').join(' ')}' runs as a write, with the repository's hooks, fsmonitor and log settings: place it in WRITES_WITH_READ_FORMS with its reason, or run it as a read`
+  }
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return null
   if (!KNOWN_READS.has(sub.name)) return `subcommand '${sub.name}' is neither a known read nor a write`
   const run = guardGitArgs(argv, isWindows, EMPTY_SCAN)
@@ -519,6 +532,27 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
     ]) {
       expect(callsGuardUnscanned(parse('src/main/x.ts', text)), text).toBe(true)
     }
+  })
+
+  it('a read form of a whole-command write (stash list, tag -l, worktree list, submodule status) must be placed on purpose (WPS M5)', () => {
+    const forms = [['stash', 'list'], ['stash'], ['stash', 'show', '-p'], ['tag', '-l'], ['tag', '--list', 'v*'], ['worktree', 'list', '--porcelain'], ['submodule', 'status'], ['-C', 'r', 'submodule']]
+    for (const argv of forms) {
+      for (const isWindows of [true, false]) expect(guardProblem(argv, isWindows), argv.join(' ')).toMatch(/runs as a write/)
+    }
+    expect(guardProblem(['stash', 'list'], true)).toBe("'stash list' runs as a write, with the repository's hooks, fsmonitor and log settings: place it in WRITES_WITH_READ_FORMS with its reason, or run it as a read")
+    expect(guardProblem(['-C', 'r', 'submodule'], false)).toContain("'submodule' runs as a write")
+    // The sweep reads such a command out of a source and reports it.
+    const s = parse('src/main/x.ts', "safeGitAsync(['tag', '-l'], o)")
+    expect(literalCommands(s).map((c) => guardProblem(c.argv, false))).toEqual([expect.stringContaining("'tag -l' runs as a write")])
+    // A form placed on purpose passes; another form of the same subcommand still needs placing.
+    const placed = new Map([['worktree', new Set(['add'])]])
+    expect(guardProblem(['worktree', 'add', 'p'], false, placed)).toBeNull()
+    expect(guardProblem(['worktree', 'list'], false, placed)).toMatch(/runs as a write/)
+    // The other writes are untouched, and each listed subcommand is still a whole-command write in gitSafety.ts.
+    expect(guardProblem(['add', '.'], false)).toBeNull()
+    expect(guardProblem(['commit', '-m', 'x'], false)).toBeNull()
+    expect([...WRITES_WITH_READ_FORMS.keys()].sort()).toEqual(['stash', 'submodule', 'tag', 'worktree'])
+    for (const sub of WRITES_WITH_READ_FORMS.keys()) expect(MUTATING_SUBCOMMANDS.has(sub), sub).toBe(true)
   })
 
   it('a filter scan made anywhere but inside gitCommand.ts repoFilterOverrides is caught', () => {
