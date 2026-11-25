@@ -302,8 +302,10 @@ function splitFloor(node: FloorNode): FloorNode[] {
  * More, and the files are grouped by sub-folder, then by a shared start of their names (four characters or more); a group
  * bigger than `ceil(n / 12) * 2` files is split by its own folders and names, down to single files when nothing else
  * divides it; then the two neighbouring groups with the fewest files between them are merged, again and again, until
- * MAX_FLOORS are left. A merged floor is named by its two groups (`index, keys`), or by the first and last of three or
- * more (`a – c`); a file name two floors share is told apart by its folders (`m03/index`). No floor is called "other",
+ * MAX_FLOORS are left. The files are taken in natural order (y2 before y10), so a range of numbered files is a true one.
+ * A merged floor is named by its two groups (`index, keys`), by the first and last of three or more (`a – c`) when no
+ * other floor's name sorts between them, or else by its first group and a count (`a + 2 more`); a file name two floors
+ * share is told apart by its folders (`m03/index`). No floor is called "other",
  * and none holds more than the cap: each merge takes the smallest pair, and while more than 12 floors are left some
  * neighbouring pair fits the cap.
  */
@@ -311,7 +313,7 @@ export function fallbackFloors(members: string[]): Floor[] {
   if (members.length <= MAX_FLOORS) return distinctNames(members.map(floorOf))
   const cap = Math.ceil(members.length / MAX_FLOORS) * 2
   const units: FloorNode[] = []
-  const todo = splitFloor(floorTree(members)).reverse()
+  const todo = splitFloor(floorTree([...members].sort(natural))).reverse()
   while (todo.length > 0) {
     const u = todo.pop() as FloorNode
     if (u.members.length > cap) todo.push(...splitFloor(u).reverse())
@@ -353,10 +355,22 @@ function distinctNames(floors: Floor[]): Floor[] {
   return out
 }
 
-/** A merged floor's name: its two parts ("a, b"), or the first and last of three or more ("a – c"), never a range it is not. */
-function runName(names: readonly string[]): string {
+/** Natural order, numbers by value (y2 before y10), the same on every machine; names it calls equal ("y01", "y1") keep
+ *  their code-point order. */
+const NATURAL = new Intl.Collator('en', { numeric: true })
+function natural(a: string, z: string): number {
+  return NATURAL.compare(a, z) || Number(a > z) - Number(a < z)
+}
+
+/**
+ * A merged floor's name: its two parts ("a, b"); the first and last of three or more ("a – c") when the run is a range,
+ * every floor whose name sorts between its ends in it (`ranks` are the floors' places in natural name order); or else its
+ * first part and how many more it holds ("a + 2 more"). Never a range it is not (review R2-3).
+ */
+function runName(names: readonly string[], ranks: readonly number[]): string {
   if (names.length === 1) return names[0]
-  return names.length === 2 ? `${names[0]}, ${names[1]}` : `${names[0]} – ${names[names.length - 1]}`
+  if (names.length === 2) return `${names[0]}, ${names[1]}`
+  return ranks.every((r, i) => r === ranks[0] + i) ? `${names[0]} – ${names[names.length - 1]}` : `${names[0]} + ${names.length - 1} more`
 }
 
 /**
@@ -416,10 +430,12 @@ function mergeFloors(floors: Floor[]): Floor[] {
     push(i)
   }
   // The first floor is never merged into another; each run of merged floors is contiguous, from its first to its last.
+  const rank = new Map([...floors.map((f) => f.name)].sort(natural).map((name, r) => [name, r]))
   const out: Floor[] = []
   for (let k = 0; k < n; k = next[k]) {
     const run = floors.slice(k, last[k] + 1)
-    out.push({ name: runName(run.map((f) => f.name)), tech: [], members: run.flatMap((f) => f.members) })
+    const names = run.map((f) => f.name)
+    out.push({ name: runName(names, names.map((name) => rank.get(name) as number)), tech: [], members: run.flatMap((f) => f.members) })
   }
   return out
 }

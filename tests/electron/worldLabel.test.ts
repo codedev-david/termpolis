@@ -2347,6 +2347,39 @@ describe('fallback floors by folder and name, not one "other" floor (WP-LOOK Tas
     expect(names(files)).toEqual(['a – c', 'd01/, d02/', ...dirs.slice(2).map((d) => `${d}/`)])
   })
 
+  it('files numbered in their names are merged in number order, so a range names every file between its ends (review R2-3)', () => {
+    // As git lists them: y0, y1, y10, y11, …, y19, y2, y20, …
+    const files = Array.from({ length: 30 }, (_, i) => `src/y${i}.ts`).sort()
+    const floors = fallbackFloors(files)
+    expect(floors).toHaveLength(12)
+    const numbers = floors.map((f) => f.members.map((m) => Number(/y(\d+)/.exec(m)?.[1])))
+    expect(numbers.flat()).toEqual(Array.from({ length: 30 }, (_, i) => i))
+    for (const [k, f] of floors.entries()) {
+      const ns = numbers[k]
+      expect(ns).toEqual(Array.from({ length: ns.length }, (_, i) => ns[0] + i))
+      const first = `y${ns[0]}`
+      const last = `y${ns[ns.length - 1]}`
+      expect(f.name).toBe(ns.length === 1 ? first : ns.length === 2 ? `${first}, ${last}` : `${first} – ${last}`)
+    }
+    expect(floors[0].name).toBe('y0 – y3')
+  })
+
+  it('names natural order calls equal (y1, y01, y001) keep one order, whatever order they come in (review R2-3)', () => {
+    const rest = Array.from({ length: 12 }, (_, i) => `src/z${i + 1}.ts`)
+    const want = fallbackFloors(['src/y001.ts', 'src/y01.ts', 'src/y1.ts', ...rest])
+    expect(want.flatMap((f) => f.members).slice(0, 3)).toEqual(['src/y001.ts', 'src/y01.ts', 'src/y1.ts'])
+    expect(fallbackFloors(['src/y1.ts', 'src/y01.ts', 'src/y001.ts', ...[...rest].reverse()])).toEqual(want)
+    expect(fallbackFloors(['src/y01.ts', 'src/y1.ts', 'src/y001.ts', ...rest])).toEqual(want)
+  })
+
+  it('a merged run whose names are not a range in name order is named by its first part and a count (review R2-3)', () => {
+    // The tree keeps src/b/zed.ts between a.ts and c.ts, so the run a, zed, c is no range "a – c": zed sorts after d12/.
+    const dirs = Array.from({ length: 12 }, (_, i) => `d${String(i + 1).padStart(2, '0')}`)
+    const files = ['src/a.ts', 'src/b/zed.ts', 'src/c.ts', ...dirs.flatMap((d) => [`src/${d}/x.ts`, `src/${d}/y.ts`])]
+    expect(names(files)).toEqual(['a + 2 more', 'd01/, d02/', ...dirs.slice(2).map((d) => `${d}/`)])
+    expect(fallbackFloors(files)[0].members).toEqual(['src/a.ts', 'src/b/zed.ts', 'src/c.ts'])
+  })
+
   it('12 or fewer members keep one floor per file, unchanged', () => {
     const twelve = at([...SINGLES, 'zeta.ts'])
     expect(fallbackFloors(twelve)).toEqual(twelve.map((m) => ({ name: m.slice(m.lastIndexOf('/') + 1).replace(/\.[^.]*$/, ''), tech: [], members: [m] })))
