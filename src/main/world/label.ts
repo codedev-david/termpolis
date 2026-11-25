@@ -11,6 +11,7 @@ import type { Claim, Evidence, EvidenceKind, Floor } from '../../shared/world/ty
 import type { BoundaryKind } from './detectors/common'
 import { LUMOPOLIS_RUN, lumopolisClaudeExec } from './agentProfile'
 import { cargoOf } from './cargoTypes'
+import { KIND_WORD } from './kindWords'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
 import {
   buildLabelPrompt,
@@ -138,19 +139,6 @@ const MAX_LIST = 8
 const MAX_ITEM = 40
 const MAX_EVIDENCE = 5
 const MAX_CARGO = 40
-
-const KIND_WORD: Record<BoundaryKind, string> = {
-  ipc: 'IPC',
-  port: 'TCP',
-  fork: 'Process',
-  worker: 'Worker',
-  spawn: 'Spawn',
-  'http-out': 'HTTP client',
-  'http-listen': 'HTTP server',
-  env: 'Config',
-  mcp: 'MCP',
-  watch: 'Watcher'
-}
 
 // ---------- model selection ----------
 

@@ -14,6 +14,7 @@ import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WorldDoc } from '../../shared/world/types'
 import { isNewerWorld, migrateWorld, validateWorld, WORLD_VERSION, type DroppedItem } from '../../shared/world/validate'
+import { upgradeSavedWords } from './kindWords'
 import { isStageCache, type StageCache } from './stageCache'
 import { copyAside, moveAside, retryLocked, sleepMs, type Sleep } from './storeFiles'
 
@@ -244,7 +245,8 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       // untouched (once per distinct content). Without that backup the world is not handed out to be saved over.
       if (view.dropped && !(await copyAside(file, { now, sleep }))) refuse(name, 'left items out and could not be backed up first')
       ours()
-      return view.doc
+      // A word an older compiler gave wrongly (TCP for a message port) is brought up to date as the world loads.
+      return upgradeSavedWords(view.doc)
     }
     // Kept for inspection. A broken file that cannot be moved aside is not read as absent: a compile would then save
     // over it. Until it can be moved aside (each load and save tries again) or reads, loads and saves are refused.

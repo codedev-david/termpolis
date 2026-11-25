@@ -21,6 +21,7 @@ import {
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
 import { BUILTIN_TECH } from '../../src/main/world/techStack'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
+import { KIND_WORD, upgradeSavedWords } from '../../src/main/world/kindWords'
 import { edgeId, isToolingPath, shortHash, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
@@ -1913,5 +1914,119 @@ describe('a saved world with an "other" floor (WP-LOOK Task 8)', () => {
     const named = [{ name: 'Entry', tech: [], members: big.members.slice(0, 5) }, { name: 'other', tech: [], members: big.members.slice(5) }]
     const kept = await compileBig({ ...doc, buildings: doc.buildings.map((b) => (b.id === big.id ? { ...b, floors: named } : b)) }, ['src/small.ts'])
     expect(kept.buildings.find((b) => b.id === big.id)?.floors).toEqual(named)
+  })
+})
+
+describe('message ports are called message ports, not TCP (WP-LOOK Task 9)', () => {
+  // The ptyHost shape: the utility process posts on its parentPort, the host side opens the channel.
+  const PTY: Record<string, string> = {
+    'src/main/ptyHost.ts': "import { parentPort } from 'node:worker_threads'\nparentPort.postMessage({ kind: 'data' })\n",
+    'src/host/channel.ts': 'export const parentPort = new MessageChannel()\n'
+  }
+  const minimalWorld = (): WorldDoc => ({
+    version: 1,
+    projectKey: 'p',
+    generatedAt: 1,
+    sourceRevision: { head: 'h', dirty: false },
+    districts: [],
+    buildings: [
+      { id: 'b-a', districtId: 'd-a', name: 'a', techLabel: '', process: '', floors: [], stack: [], how: [], why: [], status: 'gap', members: ['a.ts'], claims: [], nameState: 'observed' }
+    ],
+    edges: [],
+    externals: [],
+    glossary: {},
+    cargo: {},
+    processes: {},
+    tours: [],
+    layout: { seed: 1, positions: {} },
+    runtimeNames: {},
+    layers: { plan: [] }
+  })
+  const edgeOf = (from: string, to: string): WorldEdge => ({
+    id: edgeId({ from, to }), from, to, cargo: '', label: '', how: [], why: [], tech: [], rate: '', twoWay: false, claims: []
+  })
+  const compilePty = (): Promise<WorldDoc> =>
+    compileWorld({ snap: snapOf(PTY, {}), projectKey: 'pty', head: HEAD, previous: null }, mkDeps(PTY, { glob: async () => [] }))
+
+  it('parentPort.postMessage gives a Message port tech chip, not TCP', async () => {
+    const doc = await compilePty()
+    expectValid(doc)
+    const host = doc.buildings.find((b) => b.members.includes('src/main/ptyHost.ts')) as WorldDoc['buildings'][number]
+    expect(host.techLabel).toBe('Message port')
+    const lines = doc.edges.filter((e) => e.label.startsWith('port '))
+    expect(lines.length).toBeGreaterThan(0)
+    for (const e of lines) expect(e.tech).toEqual(['Message port'])
+    expect(JSON.stringify(doc)).not.toContain('TCP')
+  })
+
+  it('the glossary explains Message port', async () => {
+    const doc = await compilePty()
+    expect(doc.glossary['Message port']).toBe('Messages passed over a channel between two parts of the app')
+    expect(BUILTIN_GLOSSARY['Message port']).toBe(doc.glossary['Message port'])
+    expect(Object.hasOwn(BUILTIN_GLOSSARY, 'TCP')).toBe(false)
+    // Every word the code gives a kind of boundary has a builtin definition.
+    for (const w of Object.values(KIND_WORD)) expect(Object.hasOwn(BUILTIN_GLOSSARY, w), w).toBe(true)
+  })
+
+  it('a saved world with TCP on a port-only building shows Message port', async () => {
+    const doc = await compilePty()
+    const host = doc.buildings.find((b) => b.members.includes('src/main/ptyHost.ts')) as WorldDoc['buildings'][number]
+    const line = doc.edges.find((e) => e.label.startsWith('port ')) as WorldEdge
+    const OLD = 'A network connection on a numbered port'
+    // A world the older compiler saved: TCP on the part, on its line, and in the glossary.
+    const saved: WorldDoc = {
+      ...doc,
+      buildings: doc.buildings.map((b) => (b.id === host.id ? { ...b, techLabel: 'TCP' } : b)),
+      edges: doc.edges.map((e) => (e.id === line.id ? { ...e, tech: ['TCP'] } : e)),
+      glossary: Object.fromEntries([...Object.entries(doc.glossary).filter(([k]) => k !== 'Message port'), ['TCP', OLD]])
+    }
+    expectValid(saved)
+    const up = upgradeSavedWords(saved)
+    expectValid(up)
+    expect(up.buildings.find((b) => b.id === host.id)?.techLabel).toBe('Message port')
+    expect(up.edges.find((e) => e.id === line.id)?.tech).toEqual(['Message port'])
+    expect(up.glossary['Message port']).toBe(BUILTIN_GLOSSARY['Message port'])
+    expect(Object.hasOwn(up.glossary, 'TCP')).toBe(false)
+    // Nothing else moves, and the saved copy is left as it was.
+    expect({ ...up, buildings: saved.buildings, edges: saved.edges, glossary: saved.glossary }).toEqual(saved)
+    expect(saved.buildings.find((b) => b.id === host.id)?.techLabel).toBe('TCP')
+    // The next compile, from the loaded world, keeps the new words even on a part and a line it leaves untouched.
+    const again = await compileWorld({ snap: snapOf(PTY, {}), projectKey: 'pty', head: HEAD, previous: up, changed: [] }, mkDeps(PTY, { glob: async () => [] }))
+    expect(JSON.stringify(again)).not.toContain('TCP')
+  })
+
+  it('a code-made label with TCP among other kind words is renamed; a model\'s own TCP is kept, with its definition', () => {
+    const base = { ...minimalWorld() }
+    const b = base.buildings[0]
+    const OLD = 'A network connection on a numbered port'
+    const saved: WorldDoc = {
+      ...base,
+      buildings: [
+        { ...b, id: 'b-mixed', techLabel: 'IPC · TCP · Process' },
+        { ...b, id: 'b-model', techLabel: 'TCP server' },
+        { ...b, id: 'b-stack', techLabel: 'Redis · TCP', stack: ['TCP'] },
+        { ...b, id: 'b-plain', techLabel: 'IPC · Worker' }
+      ],
+      edges: [
+        { ...edgeOf('b-mixed', 'b-model'), label: 'ipc a, port b', tech: ['IPC', 'TCP'] },
+        { ...edgeOf('b-model', 'b-stack'), label: 'Streams terminal data', tech: ['TCP'] },
+        { ...edgeOf('b-stack', 'b-plain'), label: 'http-out h', tech: ['HTTP client', 'TCP'] }
+      ],
+      glossary: { IPC: 'x', Process: 'x', 'HTTP client': 'x', TCP: OLD }
+    }
+    const up = upgradeSavedWords(saved)
+    expect(up.buildings.map((x) => x.techLabel)).toEqual(['IPC · Message port · Process', 'TCP server', 'Redis · TCP', 'IPC · Worker'])
+    expect(up.buildings[2].stack).toEqual(['TCP'])
+    // Only a line the code wrote with a port on it had its TCP from the port.
+    expect(up.edges.map((e) => e.tech)).toEqual([['IPC', 'Message port'], ['TCP'], ['HTTP client', 'TCP']])
+    // TCP is still in use, so its definition stays, and Message port gains one.
+    expect(up.glossary).toEqual({ IPC: 'x', Process: 'x', 'HTTP client': 'x', TCP: OLD, 'Message port': BUILTIN_GLOSSARY['Message port'] })
+    // A model's own definition of TCP is never dropped; a world with no TCP comes back as the same object.
+    const own = upgradeSavedWords({ ...saved, edges: [saved.edges[0]], buildings: [saved.buildings[0]], glossary: { ...saved.glossary, TCP: 'Our wire' } })
+    expect(own.glossary.TCP).toBe('Our wire')
+    const none = { ...saved, buildings: [saved.buildings[3]], edges: [], glossary: { IPC: 'x' } }
+    expect(upgradeSavedWords(none)).toBe(none)
+    // An old definition nothing uses any more is dropped even when nothing was renamed.
+    expect(upgradeSavedWords({ ...none, glossary: { IPC: 'x', TCP: OLD } }).glossary).toEqual({ IPC: 'x' })
   })
 })

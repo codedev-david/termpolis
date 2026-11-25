@@ -75,6 +75,17 @@ describe('worldStore', () => {
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
   })
 
+  it('a saved world with TCP on a port-only building loads with Message port (WP-LOOK Task 9)', async () => {
+    const saved = doc()
+    saved.buildings[0] = { ...saved.buildings[0], techLabel: 'TCP' }
+    saved.glossary = { TCP: 'A network connection on a numbered port' }
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'demo.json'), JSON.stringify(saved))
+    const loaded = await createWorldStore(dir).load('demo')
+    expect(loaded?.buildings[0].techLabel).toBe('Message port')
+    expect(loaded?.glossary).toEqual({ 'Message port': 'Messages passed over a channel between two parts of the app' })
+  })
+
   it('corrupt file → load null + a timestamped, numbered .bad backup; earlier backups are kept (F21)', async () => {
     let clock = Date.UTC(2026, 10, 23, 9, 30, 0, 5)
     const store = createWorldStore(dir, { now: () => clock })

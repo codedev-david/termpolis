@@ -393,7 +393,7 @@ describe('labelWorld', () => {
       ]
     }
     const l = await labelWorld(g, mkDeps({ llm: null }))
-    expect(l.buildings.many.techLabel).toBe('IPC · TCP · Process')
+    expect(l.buildings.many.techLabel).toBe('IPC · Message port · Process')
     expect(l.buildings.ext.techLabel).toBe('TS')
     expect(l.buildings.tie.techLabel).toBe('JS')
     expect(l.buildings.none.techLabel).toBe('')

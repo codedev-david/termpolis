@@ -25,6 +25,7 @@ import { idRenames, renameClaims, renameDoc } from './idMigration'
 import { relativeImports, withImports } from './imports'
 import { goModulePath, resolveLangImports, scanLangImports, type GoModule } from './langImports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
+import { MESSAGE_PORT, MESSAGE_PORT_MEANS } from './kindWords'
 import { BUILDINGS_PER_BATCH, codeLabels, isLegacyOtherFloors, labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
@@ -77,7 +78,7 @@ export interface CompileInput {
 /** One plain-English line per code-derived tech word. Wins over a model's definition of the same term. */
 export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
   IPC: "Messages passed between the app's processes",
-  TCP: 'A network connection on a numbered port',
+  [MESSAGE_PORT]: MESSAGE_PORT_MEANS,
   Process: 'A separate program the app starts and talks to',
   Worker: 'A background thread that runs work off the main thread',
   Spawn: 'Starts an outside command-line program',
