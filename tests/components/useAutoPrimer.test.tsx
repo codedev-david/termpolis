@@ -2546,6 +2546,21 @@ describe('a Claude Code with the SessionStart memory hook gets nothing typed', (
     expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
   })
 
+  // Port review, Minor 5: the hook is Claude Code's. A Codex with the same hook state is re-primed, and the hook is
+  // never asked about for it.
+  it('a compaction in a Codex is re-primed with the hook on, without asking about the hook', async () => {
+    vi.useFakeTimers()
+    const status = vi.fn(async () => hookOn)
+    mockApi({ agentIntegrationMemoryHook: status })
+    useTerminalStore.setState({ terminals: [{ id: 't-cmp-codex', launchPrimed: false } as any] })
+    const { result } = renderHook(() => useCompactionReprimer('t-cmp-codex', { name: 'OpenAI Codex' } as any, '/repo'))
+    result.current('Compacting conversation...')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(status).not.toHaveBeenCalled()
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    expect((window as any).termpolis.writeToTerminal.mock.calls.some(([, d]: [string, string]) => d.includes('memory_primer'))).toBe(true)
+  })
+
   it('isClaudeAgent reads the agent name', () => {
     expect(isClaudeAgent({ name: 'Claude Code' })).toBe(true)
     expect(isClaudeAgent({ name: 'OpenAI Codex' })).toBe(false)
