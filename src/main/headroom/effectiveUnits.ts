@@ -12,7 +12,7 @@
  * produces is denominated in those units rather than in raw tokens.
  */
 
-import { PRICE, type RouteFamily } from '../../shared/switchEconomics'
+import { PRICE, ratesAt, type RouteFamily } from '../../shared/switchEconomics'
 
 /** Cache reads, as a share of a fresh input token, for a bill whose model is not known: Haiku's 0.1x, the
  *  dearest share any family has. Opus and Sonnet read at 0.05x and Fable at 0.025x (Anthropic published
@@ -165,9 +165,13 @@ export const MODEL_WEIGHTS: Readonly<Record<ModelFamily, number>> = {
 }
 export const MODEL_WEIGHT_NOTE = 'API-price weighting; subscription weights unpublished'
 
-/** Effective units of a set of billed tokens, weighted for the model family that billed them. */
-export function modelUnits(t: BillableTokens, model: string): number {
+/** Effective units of a set of billed tokens, weighted for the model family that billed them. `prompt` is
+ *  the request's prompt size (input, cache reads and writes), when the bill is one request's: above a
+ *  family's long-prompt line (Haiku's 100K) it weighs at that tier's rate (ratesAt), as it is billed.
+ *  Without it (a bill summed over requests) the family's base rate stands. */
+export function modelUnits(t: BillableTokens, model: string, prompt?: number): number {
   const f: ModelFamily = Object.prototype.hasOwnProperty.call(MODEL_WEIGHTS, model) ? (model as ModelFamily) : modelFamily(model)
   const units = t.cacheReadTokens * cardOf(f).cacheRead + t.cacheCreationTokens * W_CACHE_WRITE + t.inputTokens * W_INPUT + t.outputTokens * W_OUTPUT
-  return units * MODEL_WEIGHTS[f]
+  const weight = f !== 'other' && prompt !== undefined ? ratesAt(f, prompt).in / PRICE.opus.in : MODEL_WEIGHTS[f]
+  return units * weight
 }

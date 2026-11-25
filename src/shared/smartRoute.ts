@@ -233,8 +233,12 @@ export interface RouteEvent {
    *  not-sure-enough, context-too-big; agent (a subagent's task); struggling (tool
    *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort).
    *  MODELHOME: home (back on the home model after a step-down), at-home (stayed on it), unplaced (the
-   *  home is a model the router cannot rank by price, so nothing is routed). */
+   *  home is a model the router cannot rank by price, so nothing is routed), nothing-cheaper (surely
+   *  simple, but no cheaper model than home is open to it). */
   reason: string
+  /** MODELHOME: the home, when the message runs on another model the session itself asks for (a /model
+   *  typed in it, opusplan outside plan mode). */
+  home?: RouteFamily
   /** MODELHOME: the home model the router could not place (its family or a short name); the model
    *  field is then just a placeholder. */
   unplaced?: string

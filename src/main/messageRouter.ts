@@ -29,7 +29,7 @@
 import { routeMessage, routeSubagent, fromHome, clampEffort, DOWN_MIN_CONFIDENCE, TOP_LABEL, type RouteEvent } from '../shared/smartRoute'
 import { decideSwitch, emptyEconomy, warmKey, cheaper, priceRank, BY_PRICE, TTL_1H, TTL_5M, type Economy, type RouteFamily } from '../shared/switchEconomics'
 import { modelFamily } from './headroom/effectiveUnits'
-import { effortOrDefault, isEffort, type EffortLevel } from '../shared/effortLevels'
+import { effortOrDefault, effortRank, isEffort, type EffortLevel } from '../shared/effortLevels'
 import type { ClassifyResult } from './routerModel'
 import type { RouterTuning } from '../shared/taskRouter'
 import type { CodexEffort } from '../shared/smartRoute'
@@ -98,6 +98,9 @@ interface TerminalState {
   unplaced: string | null
   /** The cheaper model it has been stepped down to, while it is. */
   routed: RouteFamily | null
+  /** What the session's own requests last asked for (a /model typed in it moves this, not the home):
+   *  what a message left alone runs on. null = not seen since the home was set. */
+  asks: RouteFamily | null
 }
 
 /** Codex's efforts for the router's: it has no max, so max asks for its highest. */
@@ -137,7 +140,7 @@ function isFamily(v: unknown): v is RouteFamily {
 function stateOf(id: string): TerminalState {
   let s = terminals.get(id)
   if (!s) {
-    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, effort: null, sent: false, escalated: 0, last: null, codex: false, codexEffort: null, home: null, explicit: false, unplaced: null, routed: null }
+    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, effort: null, sent: false, escalated: 0, last: null, codex: false, codexEffort: null, home: null, explicit: false, unplaced: null, routed: null, asks: null }
     terminals.set(id, s)
   }
   return s
@@ -156,6 +159,7 @@ export function registerTerminal(id: unknown, auto: boolean, codex = false): voi
   s.explicit = false
   s.unplaced = null
   s.routed = null
+  s.asks = null
 }
 
 /** A model name as a home: a family the router ranks by price, or the name it shows for one it cannot. */
@@ -183,6 +187,7 @@ export function setTerminalHome(id: unknown, model: unknown): void {
   const s = terminals.get(id)
   if (!s) return
   s.auto = false
+  s.asks = null
   const name = model.trim()
   s.explicit = name !== ''
   if (!name) { s.home = null; s.unplaced = null }
@@ -200,11 +205,28 @@ export function setTerminalHome(id: unknown, model: unknown): void {
 function learnHome(id: string, s: TerminalState, asked: unknown): void {
   if (typeof asked !== 'string' || !asked) return
   const p = placeOf(asked)
-  if (!s.explicit && s.home === null && s.unplaced === null) {
+  const learned = !s.explicit && s.home === null && s.unplaced === null
+  if (learned) {
     if ('unplaced' in p) { s.unplaced = p.unplaced; unroute(id, s, false); return }
     s.home = p.home
   }
-  if ('home' in p && s.routed && !cheaper(s.routed, p.home)) s.routed = null
+  if ('home' in p && s.routed && !cheaper(s.routed, p.home)) {
+    s.routed = null
+    // The message routed before the home was known picked a model not under it, so the proxy ran it on
+    // what the session asked for: its chip is put right (review M-1).
+    const last = s.last
+    if (learned && last?.switched && deps) {
+      const e: RouteEvent = { ...last, model: p.home, effort: null, switched: false, saving: 0,
+        reason: surelySimple(last.label, last.confidence, p.home) ? 'nothing-cheaper' : 'at-home' }
+      s.last = e
+      deps.notify(e)
+    }
+  }
+}
+
+/** A vote sure enough to step down from home that names no model above it. */
+function surelySimple(label: 'keep' | RouteFamily, confidence: number, home: RouteFamily): boolean {
+  return label !== 'keep' && label !== TOP_LABEL && confidence >= DOWN_MIN_CONFIDENCE && !cheaper(home, label)
 }
 
 export function forgetTerminal(id: unknown): void {
@@ -242,7 +264,11 @@ export function noteProxyResult(r: ProxyResultLike, now = Date.now()): void {
     if (s.routed === r.refused) s.routed = null
   }
   // MODELHOME: a home terminal's home is what its own requests ask for.
-  if (!r.agent && r.main && !s.auto && !s.codex) learnHome(id, s, r.asked ?? r.model)
+  if (!r.agent && r.main && !s.auto && !s.codex) {
+    const asked = r.asked ?? r.model
+    learnHome(id, s, asked)
+    s.asks = isFamily(asked) ? asked : null
+  }
   // A subagent's context is its own: it says nothing of the session's size or warm caches.
   if (r.agent || !r.main || !isFamily(r.model)) return
   const u = r.usage ?? {}
@@ -279,6 +305,13 @@ function eligible(s: TerminalState | undefined): s is TerminalState {
  *  the classifier's top class, so nothing is ever routed up to Fable. */
 function allowed(f: RouteFamily, refused: Set<RouteFamily>, ceiling: RouteFamily): RouteFamily | null {
   for (let r = Math.min(priceRank(f), priceRank(ceiling)); r <= priceRank(ceiling); r++) if (!refused.has(BY_PRICE[r])) return BY_PRICE[r]
+  return null
+}
+
+/** A home pane's last resort once the climb to its ceiling is refused: the first model down from the
+ *  ceiling the API has not refused this pane. null when every one at or below it is. */
+function allowedBelow(ceiling: RouteFamily, refused: Set<RouteFamily>): RouteFamily | null {
+  for (let r = priceRank(ceiling); r >= 0; r--) if (!refused.has(BY_PRICE[r])) return BY_PRICE[r]
   return null
 }
 
@@ -382,11 +415,17 @@ function routeFromHome(d: RouterDeps, id: string, s: TerminalState, prompt: stri
     if (s.routed) { s.routed = null; s.sent = true; d.setRoute(id, { family: null, effort: null }) } else stay()
     // Home not known yet: the message runs on what the session asks for, and there is nothing to say.
     if (!s.home) return null
-    return done({ ...base, model: home, effort: null, switched, reason, saving })
+    // Left alone, the message runs on what the session asks for. A /model typed in it (which Termpolis
+    // does not see) or opusplan outside plan mode asks for another model than home: the chip names that
+    // one, with the home beside it.
+    const runs = s.asks ?? home
+    return done({ ...base, model: runs, effort: null, switched, reason, saving, ...(runs !== home ? { home } : {}) })
   }
   let want = route.label === home ? null : allowed(route.label, s.refused, home)
   if (want && !cheaper(want, home)) want = null
-  if (!want) return back(s.routed ? 'home' : 'at-home', s.routed !== null)
+  // Surely simple, and no cheaper model is open to it (nothing is cheaper than home, or the one it fits
+  // is refused): it stays home, but not for being hard.
+  if (!want) return back(s.routed ? 'home' : surelySimple(raw.label, raw.confidence, home) ? 'nothing-cheaper' : 'at-home', s.routed !== null)
   let model: RouteFamily
   let effort: EffortLevel | null
   let switched = true
@@ -427,11 +466,17 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
   if (route.label === 'keep') { set(id, key, { family: null, effort: null }); return null }
   // MODELHOME: a home terminal's subagent never runs above its home, or above what it asked for: the
   // ceiling is the cheaper of the two. An Auto pane's may go up, as far as Opus (or Fable, if it asked
-  // for Fable).
+  // for Fable). Past a refused model, a home pane's looks down from the ceiling before it gives up and
+  // runs as it asked.
   const ceiling = s.auto ? (cheaper(asked, TOP_LABEL) ? TOP_LABEL : asked) : (s.home && cheaper(s.home, asked) ? s.home : asked)
-  const model = allowed(route.label, s.refused, ceiling) ?? asked
+  const model = allowed(route.label, s.refused, ceiling) ?? (s.auto ? null : allowedBelow(ceiling, s.refused)) ?? asked
   const askedEffort = isEffort(q.effort) ? q.effort : null
-  const effort = model === route.label ? route.effort : clampEffort(model, route.effort)
+  let effort = model === route.label ? route.effort : clampEffort(model, route.effort)
+  // Nor does it think harder than it asked (its model's default when it named no effort).
+  if (!s.auto) {
+    const cap = effortOrDefault(model, askedEffort)
+    if (effortRank(effort) > effortRank(cap)) effort = cap
+  }
   set(id, key, { family: model, effort })
   const e: RouteEvent = {
     terminalId: id, prompt: task.slice(0, 2000), model, from: asked, effort, fromEffort: askedEffort, agent: true,

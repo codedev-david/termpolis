@@ -83,6 +83,20 @@ describe('switchEconomics', () => {
     expect(d).toEqual({ model: 'opus', effort: null, switched: false, reason: 'switch-costs-more', saving: 0 })
   })
 
+  it('the break-evens DOCUMENTATION.md quotes for a step down from a warm home', () => {
+    const at = (current: 'opus' | 'fable' | 'sonnet', currentEffort: 'medium' | 'high', want: 'haiku' | 'sonnet', ctx: number) =>
+      decideSwitch({ current, want, confidence: 0.9, economy: econ(ctx, { [`${current}:${currentEffort}`]: NOW - 1_000 }), now: NOW, currentEffort, wantEffort: want === 'haiku' ? 'low' : 'medium' }).switched
+    // To Haiku: just under 100,000, where its long-prompt rate starts.
+    expect([at('opus', 'medium', 'haiku', 98_000), at('opus', 'medium', 'haiku', 99_000)]).toEqual([true, false])
+    expect([at('sonnet', 'high', 'haiku', 98_000), at('sonnet', 'high', 'haiku', 99_000)]).toEqual([true, false])
+    // Opus to Sonnet: below about 25,000, about 40,000 from Opus at high.
+    expect([at('opus', 'medium', 'sonnet', 24_000), at('opus', 'medium', 'sonnet', 25_500)]).toEqual([true, false])
+    expect([at('opus', 'high', 'sonnet', 40_000), at('opus', 'high', 'sonnet', 41_500)]).toEqual([true, false])
+    // Fable to Sonnet about 110,000, to Haiku about 130,000.
+    expect([at('fable', 'high', 'sonnet', 112_000), at('fable', 'high', 'sonnet', 113_500)]).toEqual([true, false])
+    expect([at('fable', 'high', 'haiku', 128_500), at('fable', 'high', 'haiku', 130_000)]).toEqual([true, false])
+  })
+
   it('a big conversation does not move to a cold Haiku: the long-prompt re-read costs more than it saves', () => {
     // Haiku 5.5 holds 1M tokens, so there is no size limit; the price is what stops it.
     const big = econ(150_000, { 'opus:medium': NOW - 1_000 })

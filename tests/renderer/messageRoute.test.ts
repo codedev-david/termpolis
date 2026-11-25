@@ -120,6 +120,25 @@ describe('MODELHOME: the chip of a terminal with a home model', () => {
     expect(routeChipTitle(stay)).toContain('stays on the model this terminal started on')
   })
 
+  it('says when a surely simple message has nothing cheaper to go to', () => {
+    const e = ev({ model: 'haiku', from: 'haiku', effort: null, switched: false, reason: 'nothing-cheaper', label: 'haiku', confidence: 0.95 })
+    expect(routeChipText(e)).toBe('Haiku · 4 ms')
+    expect(routeChipTitle(e)).toContain('no cheaper model your account allows fits it, so it stays on the model this terminal started on')
+    expect(routeChipTitle(e)).not.toContain('not surely simple')
+  })
+
+  it('names the model the session itself asks for, with the home beside it', () => {
+    const e = ev({ model: 'opus', from: 'opus', home: 'haiku', effort: null, switched: false, reason: 'at-home', label: 'opus' })
+    expect(routeChipText(e)).toBe('Opus (home Haiku) · 4 ms')
+    const title = routeChipTitle(e)
+    expect(title).toContain('This message runs on Opus: the session itself asks for Opus')
+    expect(title).toContain('not for Haiku, this terminal')
+    expect(title).toContain('Pick Opus in the Model menu to make it the home')
+    expect(title).not.toContain('stays on the model this terminal started on')
+    // Back from a step down onto what the session asks for.
+    expect(routeChipText(ev({ model: 'sonnet', from: 'haiku', home: 'opus', effort: null, switched: true, reason: 'home', label: 'opus' }))).toBe('Haiku → Sonnet (home Opus) · 4 ms')
+  })
+
   it('names a home it cannot place, and says why nothing is routed', () => {
     const e = (unplaced?: string) => ev({ reason: 'unplaced', unplaced, label: 'keep', switched: false, source: 'rules', confidence: 0, ms: 0, saving: 0 })
     expect(routeChipText(e('claude-nova-1'))).toBe('claude-nova-1 · not routed')

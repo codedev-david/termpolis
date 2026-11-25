@@ -72,13 +72,19 @@ export function routeChipText(e: RouteEvent): string {
     return `Codex · ${effort} · ${Math.max(0, Math.round(e.ms))} ms`
   }
   const tail = e.reason === 'struggling' ? 'more thought' : `${Math.max(0, Math.round(e.ms))} ms`
-  const model = e.switched && e.from && e.from !== e.model ? `${modelName(e.from)} → ${modelName(e.model)}` : modelName(e.model)
+  const model = (e.switched && e.from && e.from !== e.model ? `${modelName(e.from)} → ${modelName(e.model)}` : modelName(e.model)) + offHome(e)
   let effort = ''
   if (e.effort) {
     const before = e.from ? effortOrDefault(e.from, e.fromEffort) : null
     effort = e.switched && before && before !== e.effort && (!e.from || e.from === e.model) ? ` · ${before} → ${e.effort}` : ` · ${e.effort}`
   }
   return `${e.agent ? 'Subagent: ' : ''}${model}${effort} · ${tail}`
+}
+
+/** MODELHOME: the session itself asks for another model than the terminal's home (a /model typed in it,
+ *  opusplan outside plan mode): the chip names the home beside the model that runs. */
+function offHome(e: RouteEvent): string {
+  return e.home && e.home !== e.model ? ` (home ${modelName(e.home)})` : ''
 }
 
 /** The name of a model the router cannot place, as the chip shows it. */
@@ -102,12 +108,17 @@ const REASON: Readonly<Record<string, string>> = {
   codex: 'this message fits this effort; Codex keeps its model',
   home: 'this message is not surely simple, so it goes back to the model this terminal started on',
   'at-home': 'this message is not surely simple, so it stays on the model this terminal started on',
+  'nothing-cheaper': 'no cheaper model your account allows fits it, so it stays on the model this terminal started on',
 }
 
 /** The chip's tooltip: why, who decided, and what it is expected to save. */
 export function routeChipTitle(e: RouteEvent): string {
   if (e.reason === 'unplaced') {
     return `${unplacedName(e.unplaced)} is not one the router can rank by price, so this terminal's messages all run on it. Pick another model in the Model menu to have simple messages moved to cheaper ones.`
+  }
+  if (e.home && e.home !== e.model && !e.agent) {
+    const runs = modelName(e.model)
+    return `This message runs on ${runs}: the session itself asks for ${runs} (a /model typed in it, or opusplan outside plan mode), not for ${modelName(e.home)}, this terminal's home, and the router never moves a message up. Pick ${runs} in the Model menu to make it the home, so simple messages step down from it.`
   }
   const why = REASON[e.reason] ?? e.reason
   const who = e.source === 'rules' ? 'the word rules' : e.source === 'both' ? 'the local model and the word rules' : 'the local model'

@@ -100,6 +100,12 @@ describe('the model of every request', () => {
     expect(modelUnits(t, 'fable')).toBe(520) // (25 + 125 + 10 + 100) x 2
     expect(modelUnits(t, 'unknown')).toBe(285)
     expect(modelUnits(t, 'constructor')).toBe(285) // an object key that is not a family
+    // With the request's prompt size: Haiku bills its long-prompt rate (0.50 in, 5x) above 100K of prompt.
+    expect(modelUnits(t, 'haiku', 150_000)).toBeCloseTo(41.875)
+    expect(modelUnits(t, 'claude-haiku-5-5', 150_000)).toBeCloseTo(41.875)
+    expect(modelUnits(t, 'haiku', 100_000)).toBeCloseTo(8.375)
+    expect(modelUnits(t, 'opus', 150_000)).toBe(285)
+    expect(modelUnits(t, 'unknown', 150_000)).toBe(285)
   })
 })
 
