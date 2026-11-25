@@ -113,6 +113,7 @@ const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
   if (isExecAgent(a.worldAgent)) patch.worldAgent = a.worldAgent
   if (typeof a.worldOpened === 'boolean') patch.worldOpened = a.worldOpened
   if (typeof a.worldHintDismissed === 'boolean') patch.worldHintDismissed = a.worldHintDismissed
+  if (typeof a.showFrameRate === 'boolean') patch.showFrameRate = a.showFrameRate
   return patch
 }
 

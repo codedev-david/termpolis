@@ -153,6 +153,14 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists Show frame rate (showFrameRate) as a boolean', async () => {
+    const { invoke, settings } = setup()
+    await invoke('world:settings-set', { showFrameRate: true })
+    expect(settings.set).toHaveBeenLastCalledWith({ showFrameRate: true })
+    await invoke('world:settings-set', { showFrameRate: 'yes' })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set hands the new setting to the live world host after storing it', async () => {
     const { invoke, settings, client } = setup()
     await invoke('world:settings-set', { worldLabelling: false })

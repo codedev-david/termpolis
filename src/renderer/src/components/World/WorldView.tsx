@@ -59,7 +59,7 @@ import { rightInset } from '../../world/engine/viewMath'
 import { tourCard } from '../../world/engine/cards'
 import type { BuildAgent } from './BuildItDialog'
 import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED, type OpenTarget } from './worldTargets'
-import { WORLD_OPENED_EVENT } from './worldOpen'
+import { FRAME_RATE_EVENT, WORLD_OPENED_EVENT } from './worldOpen'
 import { filesNotice, nextFilesNotice, savedByNewerNotice } from './worldNotes'
 
 export interface WorldViewProps {
@@ -119,6 +119,18 @@ export interface WorldProbe {
   /** Runs one world action (focus, tour step...) as the agent would. */
   apply(a: WorldAction): Promise<void>
 }
+
+/** The e2e harness's frame-time window on window.__worldPerf (look spec §6.1): the counted frames between begin() and end(). */
+export interface WorldPerfProbe {
+  begin(): void
+  end(): ReturnType<WorldViewer['perfEnd']>
+}
+
+/** How often the frame-rate readout reads the viewer's frame times. */
+const FRAME_RATE_EVERY_MS = 500
+/** The frame-rate readout (look spec §6.1): fps from the median frame, the p95 frame in ms, and the tier. */
+const frameRateLine = (p: WorldDrawn['perf']): string =>
+  p.frames === 0 ? `-- fps · -- ms · ${p.tier}` : `${Math.round(1000 / p.p50)} fps · ${p.p95.toFixed(1)} ms · ${p.tier}`
 
 /** #65: a world call that threw (main never answered) shows fixed words; the throw's own text names internals. */
 const messageOf = (e: unknown): string => {
@@ -260,13 +272,21 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // settings answer (or for good if they can't be read): the cost line still shows, and the export dialog names no
   // step that depends on the setting.
   const [labelling, setLabelling] = useState<boolean | null>(null)
+  // Settings ▸ Lumopolis ▸ Show frame rate (look spec §6.1): off until the settings say a literal true; Settings tells an
+  // open map of each flip.
+  const [frameRate, setFrameRate] = useState(false)
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) setLabelling(res.data.worldLabelling) })
+      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setFrameRate(res.data.showFrameRate === true) } })
       ?.catch(() => undefined)
     return () => { live = false }
   }, [doc])
+  useEffect(() => {
+    const onRate = (e: Event): void => setFrameRate((e as CustomEvent<unknown>).detail === true)
+    window.addEventListener(FRAME_RATE_EVENT, onRate)
+    return () => window.removeEventListener(FRAME_RATE_EVENT, onRate)
+  }, [])
   // The open world: a folder (its key is the resolved root) or a design.
   const target = world.kind === 'root' ? world.root : ''
   const follow = world.kind === 'root' && world.follow
@@ -665,6 +685,29 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc
   useEffect(() => { viewer?.setPaused(covered || shows2d || !shown) }, [viewer, covered, shows2d, shown])
+
+  // The frame-time window for e2e/world-perf.spec.ts, while this viewer is up (and only under the test flag).
+  useEffect(() => {
+    if (!viewer || !exposesWorldProbe()) return
+    const pw = window as unknown as { __worldPerf?: WorldPerfProbe }
+    const perf: WorldPerfProbe = { begin: () => viewer.perfBegin(), end: () => viewer.perfEnd() }
+    pw.__worldPerf = perf
+    return () => { if (pw.__worldPerf === perf) delete pw.__worldPerf }
+  }, [viewer])
+
+  // The frame-rate readout, read from the viewer while it is on and the 3D map shows.
+  const [rateLine, setRateLine] = useState<string | null>(null)
+  const rateShown = frameRate && viewer !== null && !shows2d
+  useEffect(() => {
+    if (!rateShown || !viewer) {
+      setRateLine(null)
+      return
+    }
+    const read = (): void => setRateLine(frameRateLine(viewer.drawn().perf))
+    read()
+    const timer = window.setInterval(read, FRAME_RATE_EVERY_MS)
+    return () => window.clearInterval(timer)
+  }, [rateShown, viewer])
 
   useEffect(() => {
     if (!viewer || !doc) return
@@ -1083,6 +1126,17 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
             onWheel={cancelBookmark}
           />
+        )}
+        {rateLine !== null && doc && (
+          <div
+            data-testid="world-frame-rate"
+            // A small corner readout over the canvas (look spec §6.1): it is for looking at, so screen readers skip it,
+            // and it never takes a click from the map.
+            aria-hidden="true"
+            style={{ position: 'absolute', top: 6, left: 8, zIndex: 1, pointerEvents: 'none', font: '11px ui-monospace, Consolas, monospace', color: '#9ca3af', background: 'rgba(3, 5, 10, 0.6)', padding: '1px 6px', borderRadius: 3, ...zoom }}
+          >
+            {rateLine}
+          </div>
         )}
         {flat && doc && (
           <div

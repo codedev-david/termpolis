@@ -1,15 +1,16 @@
-// Settings ▸ Lumopolis: the agent Lumopolis runs on, "Describe parts with AI" and "Read Lumopolis answers aloud". They live in main
+// Settings ▸ Lumopolis: the agent Lumopolis runs on, "Describe parts with AI", "Read Lumopolis answers aloud" and "Show frame rate". They live in main
 // (world-settings.json) because main's labeller reads it; this switch reads it on mount and writes
 // it on click, optimistically, putting the old value back if the write fails. A read or a change that failed says so in
 // its own words (M4), beside what failed; main has logged why.
 import { useEffect, useState } from 'react'
+import { FRAME_RATE_EVENT } from '../World/worldOpen'
 
 /** PENDING SIGN-OFF (M4): the settings could not be read; main's world:settings-get answers the same words. */
 export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
 /** PENDING SIGN-OFF (#65): a change did not go through and was put back; main's world:settings-set answers the same. */
 export const SETTINGS_CHANGE_FAILED = "Lumopolis couldn't change that setting. Try again."
 
-type Row = 'agent' | 'labelling' | 'speak' | 'ci'
+type Row = 'agent' | 'labelling' | 'speak' | 'ci' | 'rate'
 
 /** The line under a setting whose change did not go through. */
 function ChangeFailed({ shown }: { shown: boolean }): JSX.Element | null {
@@ -39,6 +40,12 @@ export function LumopolisSettings(): JSX.Element {
   const [reads, setReads] = useState(0)
   // The setting whose last change did not go through, said beside it until a change goes through.
   const [failedRow, setFailedRow] = useState<Row | null>(null)
+  // OFF by default, as in main: only a stored `true` turns it on. An open map hears each change at once.
+  const [rate, setRateState] = useState(false)
+  const setRate = (v: boolean): void => {
+    setRateState(v)
+    window.dispatchEvent(new CustomEvent(FRAME_RATE_EVENT, { detail: v }))
+  }
 
   useEffect(() => {
     let live = true
@@ -47,7 +54,7 @@ export function LumopolisSettings(): JSX.Element {
       ?.then((res) => {
         if (!live) return
         if (!res.success) { failed(); return }
-        setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults !== false); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent)
+        setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults !== false); setRateState(res.data.showFrameRate === true); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent)
       })
       ?.catch(failed)
     return () => { live = false }
@@ -56,7 +63,7 @@ export function LumopolisSettings(): JSX.Element {
   const retryLoad = (): void => { setLoadFailed(false); setReads((n) => n + 1) }
 
   /** Writes one change: `took` keeps what main stored and says whether it did; a refusal or a throw calls `revert`. */
-  const change = (row: Row, patch: Parameters<NonNullable<typeof window.termpolis.worldSettingsSet>>[0], revert: () => void, took: (data: { worldLabelling: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: string }) => boolean): void => {
+  const change = (row: Row, patch: Parameters<NonNullable<typeof window.termpolis.worldSettingsSet>>[0], revert: () => void, took: (data: { worldLabelling: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; showFrameRate?: boolean; worldAgent?: string }) => boolean): void => {
     setFailedRow(null)
     const back = (): void => { revert(); setFailedRow(row) }
     window.termpolis.worldSettingsSet?.(patch)
@@ -80,6 +87,12 @@ export function LumopolisSettings(): JSX.Element {
     const prev = ci
     setCi(!prev)
     change('ci', { worldCiResults: !prev }, () => setCi(prev), (d) => { setCi(d.worldCiResults !== false); return true })
+  }
+
+  const toggleRate = (): void => {
+    const prev = rate
+    setRate(!prev)
+    change('rate', { showFrameRate: !prev }, () => setRate(prev), (d) => { setRate(d.showFrameRate === true); return true })
   }
 
   const chooseAgent = (next: string): void => {
@@ -211,6 +224,33 @@ export function LumopolisSettings(): JSX.Element {
             GitHub remote, when <code>gh</code> is installed. On by default; turn it off and Lumopolis never runs <code>gh</code>.
           </span>
           <ChangeFailed shown={failedRow === 'ci'} />
+        </div>
+      </div>
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-frame-rate-settings">
+        <button
+          onClick={toggleRate}
+          role="switch"
+          aria-checked={rate}
+          aria-label="Toggle the Lumopolis frame rate readout"
+          data-testid="settings-world-frame-rate-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+            rate ? 'bg-[#0078d4]' : 'bg-[#555]'
+          }`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+            rate ? 'translate-x-5' : 'translate-x-0.5'
+          }`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">
+            <i className="fa-solid fa-gauge-high text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
+            Show frame rate
+          </span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            Shows how smoothly the 3D map draws in a corner of the pane: frames per second, the slow-frame time and the
+            graphics level. Off by default.
+          </span>
+          <ChangeFailed shown={failedRow === 'rate'} />
         </div>
       </div>
     </div>

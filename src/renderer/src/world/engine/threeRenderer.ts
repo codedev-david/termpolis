@@ -18,6 +18,7 @@ import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { shrunk, tierPixelRatio, type TierName } from './tierBudget'
+import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -142,7 +143,7 @@ export interface ThreeRenderer {
    * frames have been drawn since the renderer was built (nothing is drawn while nothing changes). `software`: the
    * context is drawn in software (softwareRenderer), as read when it was made or last came back.
    */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean; perf: RendererPerf }
   /**
    * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
@@ -170,6 +171,10 @@ export interface ThreeRenderer {
    * something moves or has just changed (an idle city draws nothing).
    */
   setPaused(paused: boolean): void
+  /** Starts a frame-time window for the e2e harness (look spec §6.1): the counted gaps from now on. */
+  perfBegin(): void
+  /** Ends the window perfBegin started, and gives its frame times (no frames when none was started). */
+  perfEnd(): FrameStats
   dispose(): void
 }
 
@@ -360,6 +365,17 @@ const EASED = 1e-3
  * on one frame settles on the next (placeLabels keeps the ones shown), and the batches refill once a change ends.
  */
 export const SETTLE_FRAMES = 6
+/** A counted frame gap over this missed a 60 Hz frame (1.5 times its 16.7 ms): a dropped frame (look spec §6.1). */
+export const DROPPED_FRAME_MS = 25
+/** Frames not counted after a wake, a resize, a tier change or a restore (look spec §5.1). */
+const SAMPLER_SKIP_FRAMES = 5
+/** The frame times drawnCounts reports (look spec §6.1); createWorldViewer adds whether the tier is chosen for you. */
+export interface RendererPerf extends FrameStats {
+  tier: TierName
+  drops: number
+  firstFrameMs: number | null
+  resizeWorstMs: number
+}
 /** The fog is put on its density once it is within this share of it (an ease never quite arrives). */
 const FOG_SETTLED = 1e-3
 /** Whether two lists of boxes are the same boxes, in the same order. */
@@ -818,6 +834,26 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let frameNo = 0
   /** Frames whose render returned: a first-frame watchdog waits for one (look spec §5.3). */
   let presented = 0
+  // The frame-time sampler (look spec §6.1): each drawn frame's gap from the one before, counted only when the two were
+  // drawn back to back. A wake from sleep (an idle city, a pause, a hidden pane, a lost context) breaks the chain, as a
+  // resize or a new pixel ratio does (fitBuffer), and the five frames after each are not counted.
+  const sampler = createFrameSampler()
+  /** The counted gaps since perfBegin, or null with no window open. */
+  let bench: number[] | null = null
+  let lastFrameAt = 0
+  let chained = false
+  /** Counted frames that missed a 60 Hz frame (a gap over DROPPED_FRAME_MS). */
+  let drops = 0
+  /** When the first draw() asked for a city, and the time from then to the first frame after it. */
+  let drawAskedAt: number | null = null
+  let firstFrameMs: number | null = null
+  /** When the view was last resized (0 once a frame has drawn it), and the longest a resize waited for its frame. */
+  let resizedAt = 0
+  let resizeWorstMs = 0
+  const breakChain = (): void => {
+    chained = false
+    sampler.skip(SAMPLER_SKIP_FRAMES)
+  }
   let drawCalls = 0 // the last frame's GL draw calls, every pass
   let tier: ZoomTier = 'districts'
   /** Every building's floors and block, with the batches' bookkeeping (batchFrame). */
@@ -1295,6 +1331,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const districtDropPx = (id: string): number => (districtLabel(id)?.h ?? 0) / 2
 
   function draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void {
+    if (drawAskedAt === null) drawAskedAt = performance.now()
     lastModel = model
     lastText = text
     allLabels = allEdgeLabels
@@ -2247,6 +2284,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * old size needs, too), one that goes up does so after.
    */
   const fitBuffer = (): void => {
+    breakChain() // a new buffer: the next frames redraw at its size
     const ratio = pixelRatio()
     setRatio(Math.min(ratio, bufferRatio(shown.ratio, shown.width, shown.height, bufferCap)))
     shown.width = width
@@ -2272,6 +2310,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   fitShrunk() // the buffer made at build
   const resize = (): void => {
+    // A resize once the view has drawn (the observer's first call, on open, is the first frame's to time).
+    if (presented > 0) resizedAt = Math.max(1, performance.now())
     solids = null
     ;[width, height] = size()
     applyView()
@@ -2798,6 +2838,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     idleLeft = SETTLE_FRAMES
     if (!drawing) changed = true
     if (raf !== 0 || !started || disposed || paused || lost) return
+    // The loop slept: the next gap is the sleep, not a frame. (A wake from inside a frame only asks for the next one.)
+    if (!drawing) breakChain()
     // The time spent idle is not a frame: nothing jumps on the first frame back. (The very first frame starts the clock.)
     if (clock.running) clock.getDelta()
     raf = requestAnimationFrame(animate)
@@ -2824,10 +2866,22 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // the looping motions moving and no change since, until loopGap after the last (the clock keeps the wall time,
     // so the motions keep their speed).
     const now = performance.now()
-    if (software && (!lastDrawn(now) || (loopOnly && !changed && now - drawnAt < loopGap))) {
-      raf = requestAnimationFrame(animate)
-      return
+    if (software) {
+      const busy = !lastDrawn(now)
+      if (busy || (loopOnly && !changed && now - drawnAt < loopGap)) {
+        // A wait for the GPU is part of the next frame's time; a frame held back to loopGap's pace is not a slow one.
+        if (!busy) chained = false
+        raf = requestAnimationFrame(animate)
+        return
+      }
     }
+    const gap = now - lastFrameAt
+    lastFrameAt = now
+    if (sampler.add(gap, chained)) {
+      if (gap > DROPPED_FRAME_MS) drops++
+      bench?.push(gap)
+    }
+    chained = true
     changed = false
     let motion: FrameMotion = 'moving' // a frame that throws keeps the loop going, as it always did
     drawing = true
@@ -2998,6 +3052,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (composer) composer.render()
     else renderer.render(scene, camera)
     presented++
+    const done = performance.now()
+    if (firstFrameMs === null && drawAskedAt !== null) firstFrameMs = done - drawAskedAt
+    if (resizedAt > 0) {
+      resizeWorstMs = Math.max(resizeWorstMs, done - resizedAt)
+      resizedAt = 0
+    }
     drawCalls = renderer.info.render.calls
     labelRenderer.render(scene, camera)
     return moving ? 'moving' : looping || turning ? 'looping' : 'still'
@@ -3124,6 +3184,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       tickChanges()
       return {
         processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
+        perf: { tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs },
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
         slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
@@ -3207,6 +3268,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       wake()
     },
     requestFrame: () => { wake() },
+    perfBegin: () => { bench = [] },
+    perfEnd: () => {
+      const st = frameStats(bench ?? [])
+      bench = null
+      return st
+    },
     setPaused(p) {
       if (disposed || p === paused) return
       paused = p

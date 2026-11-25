@@ -758,9 +758,9 @@ export interface TermpolisAPI {
   worldOpenFile: (path: string) => Promise<IpcResponse<boolean>>
   onWorldExportProgress: (cb: (e: WorldExportProgressEvent) => void) => () => void
   /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
-  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean }>>
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean; showFrameRate?: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean }>>
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean; showFrameRate?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean; showFrameRate?: boolean }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */

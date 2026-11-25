@@ -3,7 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
-import { createThreeRenderer, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
@@ -1023,6 +1023,115 @@ describe('threeRenderer: nothing waits on a frame that will not come (U5, U6)', 
     await r.frame(['c'], false)
     await r.pulse(['e1'], false)
     expect(r.motionState().flight.active).toBe(false)
+    r.dispose()
+  })
+})
+
+// The frame-time sampler fed by the loop (look spec 6.1, plan Task 1): each drawn frame's gap, counted only when the
+// frame before it was drawn back to back with it.
+describe('threeRenderer frame times (look spec 6.1)', () => {
+  const perf = (r: ThreeRenderer) => r.drawnCounts().perf
+  /** Stubs the ResizeObserver; returns a call that reports the host resized. */
+  const observeResizes = (): (() => void) => {
+    let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    return () => { (observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }]) }
+  }
+
+  it('feeds each drawn frame: p50/p95 of the gaps, a frame over DROPPED_FRAME_MS is a drop, and the first frame is timed', () => {
+    gpu.gpuName = GEFORCE
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS) // the looping motions never stop: a frame every 16 ms
+    boxCanvas(r.canvas, 800, 600)
+    expect(perf(r)).toEqual({ tier: 'high', frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
+    h.frames.step() // a frame before any city: no first frame yet
+    expect(perf(r).firstFrameMs).toBeNull()
+    r.draw(smallCity(), smallText(), false)
+    h.frames.step(20)
+    expect(perf(r).firstFrameMs).toBe(20)
+    h.frames.run(3) // the five frames after the view opened (a new buffer) are not counted, these two included
+    expect(perf(r).frames).toBe(0)
+    h.frames.run(100)
+    expect(perf(r)).toMatchObject({ tier: 'high', frames: 100, p50: 16, p95: 16, worst: 16, drops: 0, firstFrameMs: 20 })
+    h.frames.step(DROPPED_FRAME_MS) // at the line: not a drop
+    h.frames.step(40)
+    expect(perf(r)).toMatchObject({ frames: 102, worst: 40, drops: 1 })
+    // The ring holds the last 600 gaps.
+    h.frames.run(700)
+    expect(perf(r)).toMatchObject({ frames: 600, p50: 16, p99: 16, worst: 16, drops: 1, firstFrameMs: 20 })
+    r.dispose()
+  })
+
+  it('an idle sleep is never a slow frame: the gap of the frame that wakes it, and the five after, are not counted', () => {
+    gpu.gpuName = GEFORCE
+    const r = idle()
+    const n = perf(r).frames
+    h.frames.advance(2000)
+    r.setHovered('a')
+    const ran = settle(h.frames)
+    // The frame that wakes it is the first of the five not counted.
+    expect(ran).toBeGreaterThan(5)
+    expect(perf(r).frames).toBe(n + ran - 5)
+    expect(perf(r).worst).toBeLessThan(2000)
+    expect(perf(r).drops).toBe(0)
+    r.dispose()
+  })
+
+  it('a resize breaks the chain, and its time to the next frame is kept, the longest', () => {
+    gpu.gpuName = GEFORCE
+    const resized = observeResizes()
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    resized() // the observer's first call, as the view opens: not a resize to time
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(20)
+    expect(perf(r).resizeWorstMs).toBe(0)
+    const n = perf(r).frames
+    resizeHost(h.host, 640, 480)
+    resized()
+    h.frames.step(90) // the frame at the new size: a slow one, but not counted
+    h.frames.run(4) // and the four after it: five not counted
+    expect(perf(r).resizeWorstMs).toBe(90)
+    expect(perf(r).frames).toBe(n)
+    expect(perf(r).worst).toBe(16)
+    h.frames.step()
+    expect(perf(r).frames).toBe(n + 1)
+    resizeHost(h.host, 700, 500)
+    resized()
+    h.frames.step(30)
+    expect(perf(r).resizeWorstMs).toBe(90)
+    r.dispose()
+  })
+
+  it('perfBegin/perfEnd: the counted frames between them; perfEnd with none begun has no frames', () => {
+    gpu.gpuName = GEFORCE
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(20)
+    expect(r.perfEnd()).toEqual({ frames: 0, p50: 0, p95: 0, p99: 0, worst: 0 })
+    r.perfBegin()
+    h.frames.run(9)
+    h.frames.step(30)
+    expect(r.perfEnd()).toEqual({ frames: 10, p50: 16, p95: 30, p99: 30, worst: 30 })
+    h.frames.run(5)
+    expect(r.perfEnd().frames).toBe(0)
+    r.dispose()
+  })
+
+  it('in software, a frame held back to the loop pace is not counted; a wait for the GPU is part of the next frame', () => {
+    gpu.gpuName = SWIFTSHADER
+    const r = idle(DEFAULT_OPTS) // the looping motions alone: drawn every SOFTWARE_LOOP_MS
+    const n = perf(r).frames
+    const drawn = frames(r)
+    h.frames.run(100)
+    expect(frames(r)).toBeGreaterThan(drawn)
+    expect(perf(r).frames).toBe(n)
+    expect(perf(r).worst).toBeLessThan(SOFTWARE_LOOP_MS)
     r.dispose()
   })
 })

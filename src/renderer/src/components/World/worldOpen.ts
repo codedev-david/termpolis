@@ -11,6 +11,8 @@ import type { WorldRequest } from './useOpenWorld'
 export const OPEN_WORLD_EVENT = 'termpolis:openWorld'
 /** Dispatched when the pane opens, so the sidebar's New badge and first-run hint go at once. */
 export const WORLD_OPENED_EVENT = 'termpolis:worldOpened'
+/** Dispatched when Settings ▸ Lumopolis ▸ Show frame rate flips (detail: the new value), so an open map shows or hides its readout. */
+export const FRAME_RATE_EVENT = 'termpolis:worldFrameRate'
 
 /** Dispatched for LumopolisNotice (App): one short line about a `lumopolis` request, with an Open button when it names a folder. */
 export const LUMOPOLIS_NOTICE_EVENT = 'termpolis:lumopolisNotice'

@@ -2,6 +2,7 @@ import React from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { LumopolisSettings, SETTINGS_CHANGE_FAILED, SETTINGS_LOAD_FAILED } from '../../src/renderer/src/components/SettingsPane/LumopolisSettings'
+import { FRAME_RATE_EVENT } from '../../src/renderer/src/components/World/worldOpen'
 
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) })
 const toggle = () => screen.getByTestId('settings-world-labelling-toggle')
@@ -271,6 +272,70 @@ describe('LumopolisSettings', () => {
       await settle()
       expect(screen.queryAllByTestId('lumopolis-settings-failed')).toHaveLength(0)
       expect(screen.queryByText(/patch required/)).toBeNull()
+    })
+  })
+
+  describe('show frame rate (look plan Task 1)', () => {
+    const rateToggle = () => screen.getByTestId('settings-world-frame-rate-toggle')
+    const heard = (): boolean[] => {
+      const got: boolean[] = []
+      window.addEventListener(FRAME_RATE_EVENT, (e) => got.push((e as CustomEvent<boolean>).detail))
+      return got
+    }
+
+    it('is labelled, off until main says otherwise, and only a literal true turns it on', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, showFrameRate: true } })) })
+      const a = render(<LumopolisSettings />)
+      expect(screen.getByText('Show frame rate')).toBeInTheDocument()
+      expect(rateToggle()).toHaveAttribute('aria-label', 'Toggle the Lumopolis frame rate readout')
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'false')
+      await settle()
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'true')
+      a.unmount()
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, showFrameRate: 'yes' } })) })
+      render(<LumopolisSettings />)
+      await settle()
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('writes only its own field, takes the value main stored, and tells an open map', async () => {
+      const got = heard()
+      const set = vi.fn(async () => ({ success: true, data: { worldLabelling: true, showFrameRate: true } }))
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      fireEvent.click(rateToggle())
+      expect(set).toHaveBeenCalledWith({ showFrameRate: true })
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'true')
+      await settle()
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'true')
+      expect(got).toEqual([true, true])
+    })
+
+    it('puts the old value back, and tells the map, when the write is refused or fails', async () => {
+      const got = heard()
+      const set = vi.fn()
+        .mockResolvedValueOnce({ success: false, error: 'disk full' })
+        .mockRejectedValueOnce(new Error('ipc down'))
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, showFrameRate: false } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      fireEvent.click(rateToggle())
+      await settle()
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'false')
+      const line = screen.getByTestId('lumopolis-frame-rate-settings').querySelector('[data-testid="lumopolis-settings-failed"]')
+      expect(line).toHaveTextContent(SETTINGS_CHANGE_FAILED)
+      fireEvent.click(rateToggle())
+      await settle()
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'false')
+      expect(got).toEqual([true, false, true, false])
+    })
+
+    it('flips locally when the bridge has no write call', async () => {
+      api({})
+      render(<LumopolisSettings />)
+      fireEvent.click(rateToggle())
+      expect(rateToggle()).toHaveAttribute('aria-checked', 'true')
     })
   })
 

@@ -288,7 +288,7 @@ const api: TermpolisAPI = {
   worldCompile: (root: string) => ipcRenderer.invoke('world:compile', { root }),
   worldRelayout: (root: string) => ipcRenderer.invoke('world:relayout', { root }),
   worldSettingsGet: () => ipcRenderer.invoke('world:settings-get'),
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean }) => ipcRenderer.invoke('world:settings-set', patch),
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean; showFrameRate?: boolean }) => ipcRenderer.invoke('world:settings-set', patch),
   worldAsk: (req) => ipcRenderer.invoke('world:ask', req),
   worldAskCancel: (askId: string) => ipcRenderer.invoke('world:ask-cancel', { askId }),
   worldDesignDraft: (description: string, cancelKey?: string, model?: string) => ipcRenderer.invoke('world:design-draft', { description, ...(cancelKey === undefined ? {} : { cancelKey }), ...(model === undefined ? {} : { model }) }),

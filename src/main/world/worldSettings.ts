@@ -28,9 +28,11 @@ export interface WorldSettings {
   worldOpened: boolean
   /** The "New in 2.0" hint was dismissed: it never shows again. Only a literal `true` counts. */
   worldHintDismissed: boolean
+  /** Settings ▸ Lumopolis ▸ Show frame rate: the 3D map's corner readout of fps, p95 and tier (look spec §6.1). Off by default. */
+  showFrameRate: boolean
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -50,7 +52,7 @@ function parse(text: string): WorldSettings | null {
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as Record<string, unknown>
-  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude', worldOpened: rec.worldOpened === true, worldHintDismissed: rec.worldHintDismissed === true }
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude', worldOpened: rec.worldOpened === true, worldHintDismissed: rec.worldHintDismissed === true, showFrameRate: rec.showFrameRate === true }
 }
 
 let tmpCounter = 0
@@ -121,6 +123,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       if (isExecAgent(patch?.worldAgent)) next.worldAgent = patch.worldAgent
       if (typeof patch?.worldOpened === 'boolean') next.worldOpened = patch.worldOpened
       if (typeof patch?.worldHintDismissed === 'boolean') next.worldHintDismissed = patch.worldHintDismissed
+      if (typeof patch?.showFrameRate === 'boolean') next.showFrameRate = patch.showFrameRate
       settings = { ...settings, ...next }
       if (!loaded) early = { ...early, ...next }
       queueWrite()

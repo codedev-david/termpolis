@@ -14,7 +14,8 @@ import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
 import type { SlabSignals } from './slabSignals'
-import { createThreeRenderer, type MotionState, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
+import { createThreeRenderer, type MotionState, type RenderFocus, type RenderPick, type RendererPerf, type SceneText, type ThreeRenderer } from './threeRenderer'
+import { frameStats, type FrameStats } from './frameSampler'
 import { THEMES, type ThemeName } from './themes'
 import type { ZoomTier } from './viewMath'
 
@@ -100,6 +101,10 @@ export interface WorldViewer {
    * capture of the canvas (an image of the city) asks for one first. Nothing in 2D.
    */
   requestFrame(): void
+  /** Starts a frame-time window for the e2e harness (__worldPerf.begin, look spec §6.1). Nothing in 2D. */
+  perfBegin(): void
+  /** Ends the window perfBegin started and gives its frame times (none in 2D, or with no window started). */
+  perfEnd(): FrameStats
   /** The project's display name changed: the 2D map's heading and the 3D map's text alternative follow. */
   setTitle(title: string): void
   /** Removes every listener and frees the renderer. Later calls to load() are ignored. */
@@ -142,6 +147,11 @@ const noVisual = (): WorldDrawnVisual => ({
   floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0,
 })
 
+/** The 3D map's frame times (look spec §6.1), and whether its tier is chosen for you (no quality was asked for). */
+export interface WorldPerf extends RendererPerf {
+  auto: boolean
+}
+
 export interface WorldDrawn {
   layers: LayerState
   processShells: number
@@ -158,6 +168,8 @@ export interface WorldDrawn {
   presented: number
   /** The WebGL context is lost now, its event come or not (false in 2D). */
   contextLost: boolean
+  /** The frame times the 3D map drew at (look spec §6.1; no frames in 2D, at the 'flat' tier). */
+  perf: WorldPerf
   /**
    * The 3D map is drawn in software: no GPU draws it (a virtual machine, a remote session, a blocked driver), so the
    * page is composited by the CPU too (false in 2D). A host then draws its panels over the map opaque rather than
@@ -752,6 +764,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   /** Time counted toward the deadline: the view shown, not paused, no loss waited out. */
   let watched = 0
   let lostTicks = 0
+  /** The counts with whether the tier is chosen for you added to their frame times. */
+  const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: opts.quality === undefined } })
   function watchTick(): void {
     // dropToFlat and dispose clear the timer, so the renderer is still there.
     const d = (r3 as ThreeRenderer).drawnCounts()
@@ -1037,7 +1051,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: { tier: 'flat' as const, ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 } }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()
@@ -1056,6 +1070,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     requestFrame() {
       if (!disposed) r3?.requestFrame()
     },
+    perfBegin() {
+      r3?.perfBegin()
+    },
+    perfEnd: () => (r3 ? r3.perfEnd() : frameStats([])),
     setTitle(t) {
       if (disposed || t === title) return
       title = t

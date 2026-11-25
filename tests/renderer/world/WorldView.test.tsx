@@ -6,7 +6,7 @@ import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
 import { minimal, rich } from './helpers'
 
 // The engine is real except the two things jsdom cannot do: a WebGL probe and a WebGL viewer.
-const h = vi.hoisted(() => ({ webgl: true, software: false, viewers: [] as any[] }))
+const h = vi.hoisted(() => ({ webgl: true, software: false, viewers: [] as any[], perf: null as Record<string, unknown> | null }))
 vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../../src/renderer/src/world/engine')>()
   return {
@@ -29,7 +29,8 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
         linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
-        drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software })),
+        drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software, ...(h.perf ? { perf: h.perf } : {}) })),
+        perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })),
         cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
         setCamera: vi.fn(async () => undefined),
       }
@@ -46,6 +47,7 @@ import { GRAPHICS_FLAT, GRAPHICS_LOST, GRAPHICS_WATCHDOG } from '../../../src/re
 import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { savedByNewerNotice } from '../../../src/renderer/src/components/World/worldNotes'
 import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE } from '../../../src/shared/world/types'
+import { FRAME_RATE_EVENT } from '../../../src/renderer/src/components/World/worldOpen'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -99,6 +101,7 @@ beforeEach(() => {
   h.webgl = true
   h.software = false
   h.viewers.length = 0
+  h.perf = null
   localStorage.clear()
   vi.clearAllMocks()
 })
@@ -1288,6 +1291,73 @@ describe('WorldView', () => {
       bridge()
       await mount()
       expect(probe()).toBeUndefined()
+    })
+  })
+
+  describe('frame times (look plan Task 1)', () => {
+    const perf = () => (window as any).__worldPerf
+    const readout = () => screen.queryByTestId('world-frame-rate')
+    const at = (p50: number, p95: number, frames = 120, tier = 'high') =>
+      ({ tier, auto: true, frames, p50, p95, p99: p95, worst: p95, drops: 0, firstFrameMs: 40, resizeWorstMs: 0 })
+    afterEach(() => {
+      delete (window as any).termpolisTestFlags
+      delete (window as any).__worldPerf
+      vi.useRealTimers()
+    })
+
+    it('__worldPerf exists only with the probe flag', async () => {
+      bridge()
+      const a = await mount()
+      expect(viewer()).toBeTruthy()
+      expect(perf()).toBeUndefined()
+      a.unmount()
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      bridge()
+      const { unmount } = await mount()
+      perf().begin()
+      expect(viewer().perfBegin).toHaveBeenCalledTimes(1)
+      expect(perf().end()).toEqual({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })
+      expect(viewer().perfEnd).toHaveBeenCalledTimes(1)
+      unmount()
+      expect(perf()).toBeUndefined()
+      // A hook a later pane put up stays.
+      const b = await mount()
+      const other = { begin: () => undefined, end: () => null }
+      ;(window as any).__worldPerf = other
+      b.unmount()
+      expect(perf()).toBe(other)
+    })
+
+    it('the readout shows fps, p95 and tier only when Show frame rate is on', async () => {
+      h.perf = at(16.7, 20.46)
+      bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: false })) })
+      await mount()
+      expect(readout()).toBeNull()
+      // Settings flips it on: the open map shows it at once, from the viewer's frame times.
+      act(() => { window.dispatchEvent(new CustomEvent(FRAME_RATE_EVENT, { detail: true })) })
+      expect(readout()).toHaveTextContent('60 fps · 20.5 ms · high')
+      expect(readout()).toHaveAttribute('aria-hidden', 'true')
+      // It follows the frame times as they change.
+      h.perf = at(11.4, 12, 600, 'low')
+      await waitFor(() => expect(readout()).toHaveTextContent('88 fps · 12.0 ms · low'), { timeout: 2000 })
+      // No counted frames yet: no number to show.
+      h.perf = at(0, 0, 0, 'flat')
+      await waitFor(() => expect(readout()).toHaveTextContent('-- fps · -- ms · flat'), { timeout: 2000 })
+      // Anything but a literal true turns it off.
+      act(() => { window.dispatchEvent(new CustomEvent(FRAME_RATE_EVENT, { detail: 'yes' })) })
+      expect(readout()).toBeNull()
+    })
+
+    it('reads Show frame rate from the stored settings, and never shows over the 2D map', async () => {
+      h.perf = at(16.7, 17)
+      bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: true })) })
+      const a = await mount()
+      expect(readout()).toHaveTextContent('60 fps · 17.0 ms · high')
+      a.unmount()
+      h.webgl = false
+      bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: true })) })
+      await mount()
+      expect(readout()).toBeNull()
     })
   })
 
