@@ -301,6 +301,19 @@ describe('memoryHost RPC — the child dies', () => {
     expect(memoryHostMode()).toBe('host')
   })
 
+  it('a respawned host is warmed: the embedder probe and the router seeds are sent to it again, and not to the first host (RESP fix-1 F-2)', async () => {
+    const { hosts } = await startWithFake()
+    const calls = (h: FakeHost): string[] => h.posted.flatMap((m) => (m.kind === 'call' ? [m.fn] : []))
+    await memoryCount()
+    expect(calls(hosts[0])).toEqual(['memoryCount']) // the app warms its first host itself (index.ts)
+    hosts[0].crash()
+    await vi.waitFor(() => expect(hosts.length).toBe(2))
+    await memoryCount()
+    await vi.waitFor(() => expect(calls(hosts[1])).toEqual(expect.arrayContaining(['warmProbeEmbeddings', 'routerWarm'])))
+    const warm = hosts[1].posted.find((m) => m.kind === 'call' && m.fn === 'routerWarm')
+    expect(warm && warm.kind === 'call' ? warm.args : null).toEqual([tmp])
+  })
+
   it('a crash LOOP stops flapping and falls back to in-process (the app keeps working)', async () => {
     // Every call to memoryCount kills the child. Four crashes inside the window trips the limit.
     const { hosts } = await startWithFake({ crashOnFn: 'memoryCount' })

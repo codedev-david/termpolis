@@ -432,6 +432,9 @@ describe('unavailable — the client retries in the background on a capped expon
     expect(memoryHostMode()).toBe('host')
     expect(await memoryCount()).toBe(5)            // answered by the child
     expect(s.last().posted.some((m) => m.kind === 'call' && m.fn === 'memoryCount')).toBe(true)
+    // It came up after the app's own warm-up, so the client warms it (RESP fix-1 F-2).
+    const warmed = s.last().posted.flatMap((m) => (m.kind === 'call' ? [m.fn] : []))
+    expect(warmed).toEqual(expect.arrayContaining(['warmProbeEmbeddings', 'routerWarm']))
 
     await vi.advanceTimersByTimeAsync(60 * 60_000) // an hour
     expect(s.attempts()).toBe(3)                   // the retry loop is over
@@ -620,6 +623,19 @@ describe('an episode of failures: when the backoff starts over and when it keeps
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 describe('unavailable — shutdown and stale children', () => {
+  it("a respawn that comes up after the client was torn down warms nothing: its ready is a stale child's (RESP fix-1 F-2)", async () => {
+    const s = scripted(['ready', 'silent'])
+    setMemoryHostSpawner(s.spawner)
+    await startMemoryHost({ userDataPath: tmp })
+    s.last().exit(1) // an ordinary crash: respawned at once, and the new child is slow to come up
+    await tick()
+    expect(s.attempts()).toBe(2)
+    _resetMemoryClientForTests()
+    s.last().ready()
+    await tick()
+    expect(s.last().posted.filter((m) => m.kind === 'call')).toEqual([])
+  })
+
   it('stopMemoryHost() cancels the pending retry: nothing is spawned after the app quit', async () => {
     vi.useFakeTimers()
     storeIs(400 * MB)

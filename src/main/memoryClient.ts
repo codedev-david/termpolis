@@ -536,6 +536,7 @@ async function retryStart(): Promise<void> {
     unavailableSince = 0
     publishUnavailable() // the mode is 'host' now, so this clears the record
     logLoud(`memory is back (failed starts before it: ${attemptNo}): the store is OFF the main thread again`)
+    warmLateHost()
   } catch (err) {
     if (stopped || gen !== clientGen) return
     abandonChild()
@@ -610,10 +611,19 @@ function onChildExit(code: number, from: MemoryHostTransport): void {
   // child reloads the same store from disk. Only genuinely in-flight calls are lost, and those
   // rejected loudly in (a).
   mode = 'starting' // a respawn is a start: 'host' with no child would be a lie, and a call waits on readyPromise
-  readyPromise = spawnAndInit().catch((err) => {
+  readyPromise = spawnAndInit().then(warmLateHost, (err) => {
     abandonChild() // a respawn that hung is killed, not left running beside whatever takes over
     return fallBack(`respawn failed: ${(err as Error)?.message}`)
   })
+}
+
+/** Warm a host that came up after the app's own start-up warm-up (index.ts): a respawn after a crash, or a background retry.
+ *  Its embedder and router seeds are cold, and the first Ask, agent search or routerClassify (5 s) would pay that load
+ *  (RESP fix-1 F-2). Neither call is awaited, and a failure is only a cold model. It runs only once a host this client
+ *  started with initParams is ready (a stale child's ready is ignored), hence the cast. */
+function warmLateHost(): void {
+  void callRaw('warmProbeEmbeddings', []).catch(() => false)
+  void callRaw('routerWarm', [(initParams as HostInitMsg).userDataPath]).catch(() => false)
 }
 
 interface SpawnOptions {

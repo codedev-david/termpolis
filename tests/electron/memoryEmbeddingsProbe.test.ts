@@ -16,6 +16,7 @@ import {
   _setEmbeddingsAvailable,
   _setEmbedFnForTests,
 } from '../../src/main/swarmMemory'
+import { _setBackendForTests, _resetEmbedderForTests, embedText, isEmbedderReady } from '../../src/main/localEmbedder'
 
 let dir: string
 beforeEach(() => {
@@ -62,6 +63,32 @@ describe('warmProbeEmbeddings', () => {
     expect(await warmProbeEmbeddings()).toBe(false) // stays unavailable
     expect(embeddingsStatus()).toBe('unavailable')
     expect(embed).not.toHaveBeenCalled() // short-circuits before embedding
+  })
+
+  it("still embeds when an embed already worked but this thread's model is not loaded: a background embed on the worker sets ready, and leaves the model the interactive embeds use cold (RESP fix-1 F-2)", async () => {
+    initSwarmMemory(dir)
+    _resetEmbedderForTests()
+    _setEmbeddingsAvailable(true) // a background embed on the worker came back first
+    expect(isEmbedderReady()).toBe(false)
+    const embed = vi.fn(async () => new Array(384).fill(0.01))
+    _setEmbedFnForTests(embed)
+    expect(await warmProbeEmbeddings()).toBe(true)
+    expect(embed).toHaveBeenCalledTimes(1)
+    _resetEmbedderForTests()
+  })
+
+  it("is a no-op once this thread's model is loaded and an embed worked", async () => {
+    initSwarmMemory(dir)
+    _resetEmbedderForTests()
+    _setBackendForTests(async (texts: string[]) => texts.map(() => [1]))
+    await embedText('load it')
+    expect(isEmbedderReady()).toBe(true)
+    _setEmbeddingsAvailable(true)
+    const embed = vi.fn(async () => new Array(384).fill(0.01))
+    _setEmbedFnForTests(embed)
+    expect(await warmProbeEmbeddings()).toBe(true)
+    expect(embed).not.toHaveBeenCalled()
+    _resetEmbedderForTests()
   })
 
   it('does not false-latch unavailable on a transient probe failure', async () => {

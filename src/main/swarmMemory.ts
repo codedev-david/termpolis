@@ -3323,7 +3323,11 @@ export function embeddingsStatus(): EmbeddingsStatus {
  *  not doing this at init). Idempotent; only latches TRUE on success (a transient failure is left
  *  for the normal dead-model detection to latch, so we never false-downgrade to keyword-only). */
 export async function warmProbeEmbeddings(): Promise<boolean> {
-  if (embeddingsAvailable !== null) return embeddingsAvailable === true // already probed
+  // Done once the model is known dead, or loaded on this thread. An embed that worked is not enough: a background embed the
+  // worker ran sets embeddingsAvailable while this thread's model, the one every interactive embed uses, is still cold
+  // (RESP fix-1 F-2).
+  if (embeddingsAvailable === false) return false
+  if (embeddingsAvailable === true && isEmbedderReady()) return true
   try {
     const vec = await embed('warm probe', true)
     if (vec && vec.length > 0 && embeddingsAvailable === null) embeddingsAvailable = true
