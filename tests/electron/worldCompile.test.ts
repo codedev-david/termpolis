@@ -1854,7 +1854,7 @@ describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOO
     expect(orbNames(helpers)).toEqual(['five.io', 'four.io'])
   })
 
-  it('test files and folders are found in any case and in other languages; source named like them still counts (review M-3)', async () => {
+  it('test files and folders are found in any case and in other languages; source named like them still counts (review M-3, R2-2)', async () => {
     const doc = await compileHosts({
       'TESTS/net.ts': "fetch('https://one.io/x')\n",
       'src/Fixtures/net.ts': "fetch('https://two.io/x')\n",
@@ -1864,8 +1864,15 @@ describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOO
       'svc/net_test.go': "fetch('https://six.io/x')\n",
       'py/test_net.py': "fetch('https://seven.io/x')\n",
       'py/net_test.py': "fetch('https://eight.io/x')\n",
-      'java/NetTest.java': "fetch('https://nine.io/x')\n",
-      'cs/NetTests.cs': "fetch('https://ten.io/x')\n",
+      // A Java, Kotlin or C# test class counts by the folder it sits in, never by its name alone (review R2-2).
+      'app/src/test/java/NetTest.java': "fetch('https://nine.io/x')\n",
+      'Net.Tests/NetTests.cs': "fetch('https://ten.io/x')\n",
+      'Net.UnitTests/Client.cs': "fetch('https://eleven.io/x')\n",
+      'py/conftest.py': "fetch('https://twelve.io/x')\n",
+      'svc/testdata/net.go': "fetch('https://thirteen.io/x')\n",
+      'src/__mocks__/net.ts': "fetch('https://fourteen.io/x')\n",
+      'lib/net_spec.rb': "fetch('https://fifteen.io/x')\n",
+      'app/tests/tests.py': "fetch('https://sixteen.io/x')\n",
       // Look-alikes: source, so their hosts are orbs.
       'py/latest.py': "fetch('https://a1.io/x')\n",
       'py/contest_net.py': "fetch('https://a2.io/x')\n",
@@ -1873,9 +1880,20 @@ describe('outside orbs: hosts only tests call, and reserved test domains (WP-LOO
       'java/Testing.java': "fetch('https://a4.io/x')\n",
       'cs/Latest.cs': "fetch('https://a5.io/x')\n",
       'src/inspector/net.ts': "fetch('https://a6.io/x')\n",
-      'src/specs.ts': "fetch('https://a7.io/x')\n"
+      'src/specs.ts': "fetch('https://a7.io/x')\n",
+      // Real source named like a test class: a speed-test app, a trading backtester, an A/B test client (review R2-2).
+      'app/SpeedTest.kt': "fetch('https://a8.io/x')\n",
+      'trade/BackTest.java': "fetch('https://a9.io/x')\n",
+      'web/ABTest.cs': "fetch('https://b1.io/x')\n",
+      // Django's tests.py counts only in a test folder; names that only contain the test words are source.
+      'shop/tests.py': "fetch('https://b2.io/x')\n",
+      'py/myconftest.py': "fetch('https://b3.io/x')\n",
+      'src/testdatabase/net.ts': "fetch('https://b4.io/x')\n",
+      'lib/inspec.rb': "fetch('https://b5.io/x')\n",
+      'Contests/net.cs': "fetch('https://b6.io/x')\n",
+      'Net.Testsuite/net.cs': "fetch('https://b7.io/x')\n"
     })
-    expect(orbNames(doc)).toEqual(['a1.io', 'a2.io', 'a3.io', 'a4.io', 'a5.io', 'a6.io', 'a7.io'])
+    expect(orbNames(doc)).toEqual(['a1.io', 'a2.io', 'a3.io', 'a4.io', 'a5.io', 'a6.io', 'a7.io', 'a8.io', 'a9.io', 'b1.io', 'b2.io', 'b3.io', 'b4.io', 'b5.io', 'b6.io', 'b7.io'])
   })
 
   it('a host named like a fixture is still an orb when source code calls it', async () => {
