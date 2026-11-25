@@ -315,6 +315,69 @@ describe('planRequest: struggling', () => {
   })
 })
 
+describe('planRequest: a struggling subagent (review R2-I1)', () => {
+  const fail = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'boom', is_error: true }] }
+  const call = { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: {} }] }
+  const four = Array(STRUGGLE_TWO).fill([call, fail]).flat()
+  const main = (effort: string | null): void => {
+    const o: Record<string, unknown> = { model: 'claude-sonnet-5-5', max_tokens: 10, tools: [{ name: 'Bash', input_schema: {} }], messages: [{ role: 'user', content: 'the session' }] }
+    if (effort) o.output_config = { effort }
+    const b = JSON.stringify(o)
+    expect(planRequest(b, H(), readConversation(JSON.parse(b))).main).toBe(true)
+  }
+  /** The conductor's reviewer: a Sonnet subagent at medium, failing four tool turns in a row. */
+  const reviewer = (home: boolean | undefined): ReturnType<typeof planRequest> => {
+    const o = { model: 'claude-sonnet-5-5', max_tokens: 10, tools: [{ name: 'Bash', input_schema: {} }], messages: [{ role: 'user', content: 'review the diff' }, ...four], output_config: { effort: 'medium' } }
+    const b = JSON.stringify(o)
+    const c = readConversation(JSON.parse(b))!
+    setAgentRoute('t', c.key, 'sonnet', 'medium', true, home)
+    return planRequest(b, H(), c)
+  }
+  beforeEach(() => setRoute('t', null, null, true))
+
+  it('on a Sonnet home at high, the reviewer at medium is raised to high, not xhigh', () => {
+    main('high')
+    const p = reviewer(true)
+    expect(p).toMatchObject({ agent: true, used: 'sonnet', effort: 'high', effortChanged: true, escalated: 1 })
+    expect(bodyEffort(p.body)).toBe('high')
+  })
+
+  it('with no effort written, the home is the model\'s default (high for Sonnet)', () => {
+    main(null)
+    expect(reviewer(true)).toMatchObject({ effort: 'high', escalated: 1 })
+  })
+
+  it('on a home at medium it stays at medium', () => {
+    main('medium')
+    const p = reviewer(true)
+    expect(p).toMatchObject({ agent: true, used: 'sonnet', effort: 'medium' })
+    expect(p.escalated).toBeUndefined()
+    expect(p.original).toBeUndefined()
+  })
+
+  it('while the pane\'s own effort is unknown (a main the router does not route), a home subagent is not raised', () => {
+    const m = body('claude-nova-1')
+    expect(planRequest(m, H(), conv(m)).main).toBe(true)
+    const p = reviewer(true)
+    expect(p).toMatchObject({ agent: true, used: 'sonnet', effort: 'medium' })
+    expect(p.escalated).toBeUndefined()
+  })
+
+  it('an Auto pane\'s subagent keeps today\'s raise, as far as xhigh', () => {
+    main('high')
+    const p = reviewer(undefined)
+    expect(p).toMatchObject({ agent: true, used: 'sonnet', effort: 'xhigh', escalated: 2 })
+    expect(agentRouteOf('t', readConversation(JSON.parse(p.original!))!.key)).not.toHaveProperty('home')
+  })
+
+  it('setAgentRoute marks only a true home', () => {
+    setAgentRoute('t', 9, 'sonnet', 'low', true, true)
+    expect(agentRouteOf('t', 9)).toEqual({ family: 'sonnet', effort: 'low', home: true })
+    setAgentRoute('t', 9, 'sonnet', 'low', true, 'yes')
+    expect(agentRouteOf('t', 9)).toEqual({ family: 'sonnet', effort: 'low' })
+  })
+})
+
 describe('wireCompress hands the parsed body to a reader', () => {
   it('calls inspect once with the parsed body, and survives one that throws', () => {
     const raw = body('claude-opus-5-5')

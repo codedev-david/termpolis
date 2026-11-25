@@ -123,7 +123,9 @@ describe('MODELHOME: the chip of a terminal with a home model', () => {
   it('says when a surely simple message has nothing cheaper to go to', () => {
     const e = ev({ model: 'haiku', from: 'haiku', effort: null, switched: false, reason: 'nothing-cheaper', label: 'haiku', confidence: 0.95 })
     expect(routeChipText(e)).toBe('Haiku · 4 ms')
-    expect(routeChipTitle(e)).toContain('no cheaper model your account allows fits it, so it stays on the model this terminal started on')
+    expect(routeChipTitle(e)).toContain('nothing is cheaper than the model this terminal started on, so it stays there')
+    expect(routeChipTitle(e)).not.toContain('refused')
+    expect(routeChipTitle({ ...e, model: 'opus', reason: 'refused' })).toContain('the cheaper model it fits was refused by the API earlier in this terminal')
     expect(routeChipTitle(e)).not.toContain('not surely simple')
   })
 

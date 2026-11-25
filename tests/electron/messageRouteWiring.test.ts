@@ -96,9 +96,11 @@ describe('the supervisor keeps the routes', () => {
     startProxy({ port: 7503 })
     setProxyAgentRoute('t1', 9, 'sonnet', null)
     setProxyAgentRoute('t1', 11, null, null, false)
+    setProxyAgentRoute('t1', 13, 'sonnet', 'medium', true, true) // a home pane's subagent (R2-I1)
     expect(children[0].posted.filter((m) => m.kind === 'agent-route')).toEqual([
       { kind: 'agent-route', terminal: 't1', key: 9, family: 'sonnet', effort: null, on: true },
       { kind: 'agent-route', terminal: 't1', key: 11, family: null, effort: null, on: false },
+      { kind: 'agent-route', terminal: 't1', key: 13, family: 'sonnet', effort: 'medium', on: true, home: true },
     ])
     const seen: unknown[] = []
     const q = { kind: 'agent-task', terminal: 't1', key: 9, task: 'grep the repo', asked: 'opus', effort: null }

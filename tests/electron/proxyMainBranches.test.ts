@@ -70,7 +70,8 @@ describe('proxyMain branches', () => {
   it('a Codex upstream that resets after its answer began cuts the client off, without a second head', async () => {
     target = { hostname: '127.0.0.1', port: (resetter.address() as { port: number }).port, https: false }
     const r = await send()
-    // The head was already sent: the proxy can only drop the connection.
-    expect(r).not.toMatchObject({ status: 502 })
+    // The head was already sent: the proxy can only drop the connection, so the answer is cut off
+    // mid-body (an end() here would read as a whole, short answer).
+    expect(r).toEqual({ error: 'aborted' })
   })
 })

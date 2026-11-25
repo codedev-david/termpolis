@@ -114,8 +114,8 @@ describe('messageRouter: home model (MODELHOME)', () => {
     registerTerminal('t', false)
     setTerminalHome('t', 'opus')
     noteProxyResult({ terminal: 't', refused: 'sonnet' })
-    // Surely simple, but the one cheaper model it fits is refused: the tooltip says so, not "not surely simple".
-    expect(await routePrompt({ terminalId: 't', prompt: BUILD })).toMatchObject({ model: 'opus', reason: 'nothing-cheaper' })
+    // Surely simple, but the one cheaper model it fits is refused: the tooltip says so, not "not surely simple" (R2-M2).
+    expect(await routePrompt({ terminalId: 't', prompt: BUILD })).toMatchObject({ model: 'opus', reason: 'refused' })
     expect(d.setRoute).toHaveBeenLastCalledWith('t', { family: null, effort: null })
   })
 
@@ -400,22 +400,22 @@ describe('messageRouter: home model (MODELHOME)', () => {
     // No effort asked: Opus's default is medium, so a design task is sent at medium, not xhigh.
     const o = await routeAgentTask({ terminal: 'o', key: 1, task: DEEP, asked: 'opus', effort: null })
     expect(o).toMatchObject({ model: 'opus', effort: 'medium', switched: false })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('o', 1, { family: 'opus', effort: 'medium' })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('o', 1, { family: 'opus', effort: 'medium', home: true })
     // Asked for low: it stays at low.
     await routeAgentTask({ terminal: 'o', key: 2, task: DEEP, asked: 'opus', effort: 'low' })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('o', 2, { family: 'opus', effort: 'low' })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('o', 2, { family: 'opus', effort: 'low', home: true })
     registerTerminal('s', false)
     setTerminalHome('s', 'sonnet')
     // Sonnet's default is high.
     await routeAgentTask({ terminal: 's', key: 3, task: DEEP, asked: 'sonnet', effort: null })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 3, { family: 'sonnet', effort: 'high' })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 3, { family: 'sonnet', effort: 'high', home: true })
     // Asked for medium (the conductor's reviewers): never above it.
     await routeAgentTask({ terminal: 's', key: 4, task: DEEP, asked: 'sonnet', effort: 'medium' })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 4, { family: 'sonnet', effort: 'medium' })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 4, { family: 'sonnet', effort: 'medium', home: true })
     // A lighter effort the route picked stays lighter.
     d.classify.mockResolvedValueOnce(vote('haiku', 0.95))
     await routeAgentTask({ terminal: 's', key: 5, task: 'list the files in src', asked: 'sonnet', effort: 'high' })
-    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 5, { family: 'haiku', effort: 'low' })
+    expect(d.setAgentRoute).toHaveBeenLastCalledWith('s', 5, { family: 'haiku', effort: 'low', home: true })
     // An Auto pane's subagent may still think harder than it asked.
     registerTerminal('a', true)
     await routeAgentTask({ terminal: 'a', key: 6, task: DEEP, asked: 'opus', effort: null })
@@ -450,6 +450,34 @@ describe('messageRouter: home model (MODELHOME)', () => {
     setTerminalHome('t', 'sonnet')
     d.classify.mockResolvedValueOnce(null as unknown as ClassifyResult)
     expect(await routePrompt({ terminalId: 't', prompt: GUESS })).toMatchObject({ model: 'sonnet', reason: 'at-home' })
+  })
+
+  it('a session asking for a model cheaper than home is never named a step up to one above it (R2-M1)', async () => {
+    const d = deps()
+    registerTerminal('t', false)
+    setTerminalHome('t', 'opus')
+    main('t', 'haiku', 'haiku') // /model haiku typed in the session
+    d.setRoute.mockClear()
+    // A sure Sonnet vote is under home but above what runs: the proxy would not apply it, so it is not one.
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.9))
+    const e = await routePrompt({ terminalId: 't', prompt: BUILD })
+    expect(e).toMatchObject({ model: 'haiku', home: 'opus', switched: false, reason: 'same' })
+    expect(d.setRoute.mock.calls.every(([, p]) => p?.family == null)).toBe(true)
+    // A sure Haiku vote fits what runs too.
+    d.classify.mockResolvedValueOnce(vote('haiku', 0.95))
+    expect(await routePrompt({ terminalId: 't', prompt: QUICK })).toMatchObject({ model: 'haiku', home: 'opus', switched: false, reason: 'same' })
+    // The session back on Opus: the same Sonnet vote steps down again.
+    main('t', 'opus', 'opus')
+    d.classify.mockResolvedValueOnce(vote('sonnet', 0.9))
+    expect(await routePrompt({ terminalId: 't', prompt: BUILD })).toMatchObject({ model: 'sonnet', switched: true })
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', expect.objectContaining({ family: 'sonnet', down: true }))
+  })
+
+  it('a surely simple message that fits a Sonnet home says it fits, not that nothing is cheaper (R2-M2)', async () => {
+    deps({ classify: vi.fn(async () => vote('sonnet', 0.9)) })
+    registerTerminal('t', false)
+    setTerminalHome('t', 'sonnet')
+    expect(await routePrompt({ terminalId: 't', prompt: BUILD })).toMatchObject({ model: 'sonnet', switched: false, reason: 'same' })
   })
 
   it('a first message routed before the home was known gets its chip put right once the home is learned', async () => {

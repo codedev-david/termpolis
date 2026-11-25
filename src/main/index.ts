@@ -1018,7 +1018,7 @@ configureRouter({
   classify: (text) => routerClassify(app.getPath('userData'), text),
   setRoute: (terminal, pick) => setProxyRoute(terminal, pick?.family ?? null, pick?.effort ?? null, pick !== null, pick?.down === true),
   // v1.57.0: a subagent's task is routed on its own (its first request waits briefly for this).
-  setAgentRoute: (terminal, key, pick) => setProxyAgentRoute(terminal, key, pick?.family ?? null, pick?.effort ?? null, pick !== null),
+  setAgentRoute: (terminal, key, pick) => setProxyAgentRoute(terminal, key, pick?.family ?? null, pick?.effort ?? null, pick !== null, pick?.home === true),
   // v1.58.0: a Codex turn's effort (codexRoute.ts in the proxy waits briefly for it).
   setCodexRoute: (terminal, key, effort) => setProxyCodexRoute(terminal, key, effort),
   forgetCodex: (terminal) => forgetProxyCodexTerminal(terminal),

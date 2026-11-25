@@ -70,7 +70,9 @@ export interface RouteTarget {
    *  pricier model than "family"; any other request goes out as it asked (still routed). */
   down?: boolean
 }
-type AgentTarget = RouteTarget & { off?: boolean }
+/** `home`: a home pane's subagent. Struggling raises it no higher than the effort the pane's own
+ *  conversation runs at (review R2-I1). */
+type AgentTarget = RouteTarget & { off?: boolean; home?: true }
 
 /** A subagent's task, for main to route. */
 export interface AgentAsk { terminal: string; key: number; task: string; asked: RouteFamily; effort: EffortLevel | null }
@@ -90,7 +92,10 @@ export interface ConvInfo {
 }
 
 const routes = new Map<string, RouteTarget>()
-const mains = new Map<string, { session: string | null; family: ModelFamily; key: number }>()
+/** Each terminal's main conversation. `effort`: the effort it runs at, what its requests ask for or that
+ *  model's default when they name none; a home pane's subagent is raised no higher (review R2-I1). */
+type MainConv = { session: string | null; family: ModelFamily; key: number; effort?: EffortLevel }
+const mains = new Map<string, MainConv>()
 const seenIds = new Map<RouteFamily, string>()
 const refused = new Set<string>()
 const refusedEffort = new Set<string>()
@@ -138,12 +143,12 @@ export function routeTargetOf(terminal: string): RouteTarget | undefined {
 export function setAgentAsker(fn: ((q: AgentAsk) => void) | null): void { asker = fn }
 
 /** Main's answer for a subagent. `on` false = leave that subagent alone. */
-export function setAgentRoute(terminal: unknown, key: unknown, family: unknown, effort: unknown, on: unknown = true): void {
+export function setAgentRoute(terminal: unknown, key: unknown, family: unknown, effort: unknown, on: unknown = true, home: unknown = false): void {
   if (typeof terminal !== 'string' || !TERMINAL_RE.test(terminal) || typeof key !== 'number' || !Number.isInteger(key) || key <= 0) return
   const id = `${terminal}:${key}`
   const target: AgentTarget = on === false
     ? { family: null, effort: null, off: true }
-    : { family: isRouteFamily(family) ? family : null, effort: isEffort(effort) ? effort : null }
+    : { family: isRouteFamily(family) ? family : null, effort: isEffort(effort) ? effort : null, ...(home === true ? { home: true as const } : {}) }
   capped(agents, id, target)
   const w = waiters.get(id)
   waiters.delete(id)
@@ -308,6 +313,8 @@ function isMain(terminal: string, session: string | null, asked: ModelFamily, ke
   return main
 }
 
+const lower = (a: EffortLevel, b: EffortLevel): EffortLevel => (effortRank(a) <= effortRank(b) ? a : b)
+
 /** What to send for one /v1/messages request. Total: anything unexpected sends the body as it came.
  *  `conv` is what wireCompress's parse of the same body found (readConversation); without it a
  *  subagent on the session's own model counts as main, and struggling is not seen. */
@@ -325,6 +332,7 @@ export function planRequest(body: string, headers: Record<string, string | strin
   let target: RouteTarget | undefined
   const agent = !main && key > 0
   if (main) {
+    ;(mains.get(terminal) as MainConv).effort = effortOrDefault(asked, askedEffort) // isMain has set it
     target = routes.get(terminal)
     // MODELHOME: a step down never moves the session up, nor sideways: asked at or below it, it runs as asked.
     if (target?.down && target.family && !cheaper(target.family, asked)) target = { family: null, effort: null }
@@ -356,7 +364,11 @@ export function planRequest(body: string, headers: Record<string, string | strin
   const level = escalation(terminal, conv, body.length)
   const have = effortOrDefault(used, askedEffort)
   const base: EffortLevel = target.effort ?? (used === asked ? have : effortOrDefault(used, null))
-  const want = level > 0 ? bumpEffort(base, level, ESCALATE_CAP) : base
+  // A home pane's subagent is raised no higher than the pane's own conversation runs at: struggling
+  // never makes it think harder than the terminal does. Not raised at all while that is unknown (a main
+  // on a model the router does not route).
+  const ceiling = agent && (target as AgentTarget).home ? lower(ESCALATE_CAP, mains.get(terminal)?.effort ?? base) : ESCALATE_CAP
+  const want = level > 0 ? bumpEffort(base, level, ceiling) : base
   let effortChanged = false
   if (want !== have && !refusedEffort.has(terminal)) {
     const next = withEffort(out, want)

@@ -55,7 +55,9 @@ export type { RouteEvent }
 
 /** What a terminal's (or a subagent's) requests run on; a null field leaves the request's own. down =
  *  MODELHOME's step down from home: the proxy applies it only to a request that asks for a pricier model. */
-export interface RoutePick { family: RouteFamily | null; effort: EffortLevel | null; down?: true }
+/** `home` (a subagent's pick): it is a home pane's, so struggling raises it no higher than the pane's own
+ *  effort. */
+export interface RoutePick { family: RouteFamily | null; effort: EffortLevel | null; down?: true; home?: true }
 
 export interface RouterDeps {
   classify: (text: string) => Promise<ClassifyResult>
@@ -217,16 +219,22 @@ function learnHome(id: string, s: TerminalState, asked: unknown): void {
     const last = s.last
     if (learned && last?.switched && deps) {
       const e: RouteEvent = { ...last, model: p.home, effort: null, switched: false, saving: 0,
-        reason: surelySimple(last.label, last.confidence, p.home) ? 'nothing-cheaper' : 'at-home' }
+        reason: stayReason(last.label, last.confidence, p.home) }
       s.last = e
       deps.notify(e)
     }
   }
 }
 
-/** A vote sure enough to step down from home that names no model above it. */
-function surelySimple(label: 'keep' | RouteFamily, confidence: number, home: RouteFamily): boolean {
-  return label !== 'keep' && label !== TOP_LABEL && confidence >= DOWN_MIN_CONFIDENCE && !cheaper(home, label)
+/** Why a message that is not stepped down stays home. Only a vote sure enough to step down, naming no
+ *  model above home, has a reason other than at-home ("not surely simple"): nothing-cheaper when home is
+ *  the cheapest model there is, same when the message fits what runs (home, or the cheaper model the
+ *  session asks for: `top`), refused when the cheaper models it fits were refused by the API in this
+ *  terminal (review R2-M2). */
+function stayReason(label: 'keep' | RouteFamily, confidence: number, home: RouteFamily, top: RouteFamily = home): string {
+  if (label === 'keep' || label === TOP_LABEL || confidence < DOWN_MIN_CONFIDENCE || cheaper(home, label)) return 'at-home'
+  if (priceRank(home) === 0) return 'nothing-cheaper'
+  return cheaper(label, top) ? 'refused' : 'same'
 }
 
 export function forgetTerminal(id: unknown): void {
@@ -421,11 +429,13 @@ function routeFromHome(d: RouterDeps, id: string, s: TerminalState, prompt: stri
     const runs = s.asks ?? home
     return done({ ...base, model: runs, effort: null, switched, reason, saving, ...(runs !== home ? { home } : {}) })
   }
+  // A step down must be under what the message would run on left alone: home, or a cheaper model the
+  // session itself asks for (a /model typed in it). The proxy never moves a request up, so a target above
+  // that would name a switch that is not made (review R2-M1).
+  const top = s.asks && cheaper(s.asks, home) ? s.asks : home
   let want = route.label === home ? null : allowed(route.label, s.refused, home)
-  if (want && !cheaper(want, home)) want = null
-  // Surely simple, and no cheaper model is open to it (nothing is cheaper than home, or the one it fits
-  // is refused): it stays home, but not for being hard.
-  if (!want) return back(s.routed ? 'home' : surelySimple(raw.label, raw.confidence, home) ? 'nothing-cheaper' : 'at-home', s.routed !== null)
+  if (want && !cheaper(want, top)) want = null
+  if (!want) return back(s.routed ? 'home' : stayReason(raw.label, raw.confidence, home, top), s.routed !== null)
   let model: RouteFamily
   let effort: EffortLevel | null
   let switched = true
@@ -441,7 +451,7 @@ function routeFromHome(d: RouterDeps, id: string, s: TerminalState, prompt: stri
     const dec = decideSwitch({ current: s.current, want, confidence: route.confidence, economy: s.economy, now, currentEffort: s.effort, wantEffort: route.effort })
     model = dec.model; effort = dec.effort; switched = dec.switched; reason = dec.reason; saving = dec.saving
   }
-  if (!cheaper(model, home)) return back(reason, s.current !== home, saving)
+  if (!cheaper(model, top)) return back(reason, s.current !== home, saving)
   s.sent = true
   s.routed = model
   d.setRoute(id, { family: model, effort, down: true })
@@ -463,7 +473,7 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
   const res = await classifyWithin(task, Math.max(deps.budgetMs ?? DEFAULT_BUDGET_MS, AGENT_BUDGET_MS))
   if (!eligible(s) || terminals.get(id) !== s || (!s.auto && s.unplaced)) { set(id, key, null); return null }
   const route = routeSubagent(task, res?.cls ?? null, asked, deps.tuning?.())
-  if (route.label === 'keep') { set(id, key, { family: null, effort: null }); return null }
+  if (route.label === 'keep') { set(id, key, { family: null, effort: null, ...(s.auto ? {} : { home: true as const }) }); return null }
   // MODELHOME: a home terminal's subagent never runs above its home, or above what it asked for: the
   // ceiling is the cheaper of the two. An Auto pane's may go up, as far as Opus (or Fable, if it asked
   // for Fable). Past a refused model, a home pane's looks down from the ceiling before it gives up and
@@ -477,7 +487,7 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
     const cap = effortOrDefault(model, askedEffort)
     if (effortRank(effort) > effortRank(cap)) effort = cap
   }
-  set(id, key, { family: model, effort })
+  set(id, key, { family: model, effort, ...(s.auto ? {} : { home: true as const }) })
   const e: RouteEvent = {
     terminalId: id, prompt: task.slice(0, 2000), model, from: asked, effort, fromEffort: askedEffort, agent: true,
     switched: model !== asked || effort !== effortOrDefault(asked, askedEffort), reason: 'agent',

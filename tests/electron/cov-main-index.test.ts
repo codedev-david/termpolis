@@ -1413,8 +1413,14 @@ describe('headroom proxy wiring', () => {
     M.setProxyAgentRoute.mockClear()
     // an unrouted pane: told to leave the subagent alone
     onTask({ terminal: 'nope', key: 3, task: 'find the callers', asked: 'opus' })
-    await vi.waitFor(() => expect(M.setProxyAgentRoute).toHaveBeenCalledWith('nope', 3, null, null, false))
+    await vi.waitFor(() => expect(M.setProxyAgentRoute).toHaveBeenCalledWith('nope', 3, null, null, false, false))
     const mr = await import('../../src/main/messageRouter')
+    // A home pane's subagent reaches the proxy marked as one, so struggling is held under its effort (R2-I1).
+    mr.registerTerminal('home-2', false)
+    mr.setTerminalHome('home-2', 'opus')
+    onTask({ terminal: 'home-2', key: 5, task: 'find every caller of routePrompt', asked: 'opus' })
+    await vi.waitFor(() => expect(M.setProxyAgentRoute).toHaveBeenCalledWith('home-2', 5, expect.anything(), expect.anything(), true, true))
+    mr.forgetTerminal('home-2')
     // MODELHOME: a step down from a terminal's home reaches the proxy flagged as one (setRoute's down).
     mr.registerTerminal('home-1', false)
     mr.setTerminalHome('home-1', 'opus')

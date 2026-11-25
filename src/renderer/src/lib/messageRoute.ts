@@ -108,7 +108,8 @@ const REASON: Readonly<Record<string, string>> = {
   codex: 'this message fits this effort; Codex keeps its model',
   home: 'this message is not surely simple, so it goes back to the model this terminal started on',
   'at-home': 'this message is not surely simple, so it stays on the model this terminal started on',
-  'nothing-cheaper': 'no cheaper model your account allows fits it, so it stays on the model this terminal started on',
+  'nothing-cheaper': 'nothing is cheaper than the model this terminal started on, so it stays there',
+  refused: 'the cheaper model it fits was refused by the API earlier in this terminal, so it stays on the model this terminal started on',
 }
 
 /** The chip's tooltip: why, who decided, and what it is expected to save. */

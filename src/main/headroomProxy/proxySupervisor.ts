@@ -131,8 +131,8 @@ export function setProxyRoute(terminal: string, family: string | null, effort: s
 
 /** Main's answer for one subagent (modelRoute.setAgentRoute); `on` false leaves it alone. Not kept for a
  *  respawn: a new child asks again on the subagent's next request. */
-export function setProxyAgentRoute(terminal: string, key: number, family: string | null, effort: string | null, on = true): void {
-  try { transport?.postMessage({ kind: 'agent-route', terminal, key, family, effort, on }) } catch { /* it runs as it asked */ }
+export function setProxyAgentRoute(terminal: string, key: number, family: string | null, effort: string | null, on = true, home = false): void {
+  try { transport?.postMessage({ kind: 'agent-route', terminal, key, family, effort, on, ...(home ? { home: true } : {}) }) } catch { /* it runs as it asked */ }
 }
 
 /** v1.58.0: main's effort for one Codex turn (codexRoute.setCodexRoute); null runs it as Codex asked. */

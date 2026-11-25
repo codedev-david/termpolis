@@ -234,7 +234,8 @@ export interface RouteEvent {
    *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort).
    *  MODELHOME: home (back on the home model after a step-down), at-home (stayed on it), unplaced (the
    *  home is a model the router cannot rank by price, so nothing is routed), nothing-cheaper (surely
-   *  simple, but no cheaper model than home is open to it). */
+   *  simple, on the cheapest model there is), same (surely simple, and fits what runs), refused (the
+   *  cheaper model it fits was refused in this terminal). */
   reason: string
   /** MODELHOME: the home, when the message runs on another model the session itself asks for (a /model
    *  typed in it, opusplan outside plan mode). */

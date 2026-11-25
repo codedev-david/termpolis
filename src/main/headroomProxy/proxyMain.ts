@@ -338,7 +338,7 @@ if (parentPort) {
     if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown; down?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on, r.down); return } // v1.56.0 per-message routing
     if (msg.kind === 'codex-route') { const r = msg as { terminal?: unknown; key?: unknown; effort?: unknown }; setCodexRoute(r.terminal, r.key, r.effort); return } // v1.58.0 Codex effort
     if (msg.kind === 'codex-forget') { forgetCodexTerminal((msg as { terminal?: unknown }).terminal); return }
-    if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on); return } // v1.57.0 subagents
+    if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown; home?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on, r.home); return } // v1.57.0 subagents
     if (msg.kind !== 'init' || server) return
     applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     // v1.57.0: a subagent's task goes to main, where the local classifier routes it (agent-route back).
