@@ -37,9 +37,11 @@ export interface GitHttps {
 /** The fake login helper, a POSIX sh script. */
 export const FAKE_HELPER_PATH = resolve('tests', 'fixtures', 'gitHttps', 'fake-helper.sh')
 
-/** The git config text that names the fake helper as the login helper (git runs a `!` helper through sh). */
+/** The git config text that names the fake helper as the login helper. git runs a `!` helper through sh with the operation
+ *  after it; the function reads the script into that same shell, so the script's $1 is the operation and no second shell
+ *  starts (git's documented `!f() { ...; }; f` form, HOLD-B #106). */
 export function fakeHelperConfig(): string {
-  return `[credential]\n\thelper = "!sh '${FAKE_HELPER_PATH.replace(/\\/g, '/')}'"\n`
+  return `[credential]\n\thelper = "!f() { . '${FAKE_HELPER_PATH.replace(/\\/g, '/')}'; }; f"\n`
 }
 
 /** The user a token run gives git (gitLogin.ts TOKEN_USER); the server takes the reply beside it too. */
@@ -53,13 +55,21 @@ export function opensslBin(): string {
   return isWindows && fs.existsSync(gitOpenssl) ? gitOpenssl : 'openssl'
 }
 
+/** git's own http-backend program, from git's exec path (null when there is no git). The server runs it directly:
+ *  `git http-backend` starts git first, and on Windows the git on PATH is a launcher that starts git, so every request
+ *  cost three processes instead of one, and the clones here missed their budgets on a loaded machine (HOLD-B #106). */
+export function httpBackendBin(): string | null {
+  const exec = spawnSync('git', ['--exec-path'], { encoding: 'utf8', windowsHide: true, env: baseEnv(join(tmpdir(), 'no-such.gitconfig')) })
+  if (exec.error || exec.status !== 0) return null
+  return join(exec.stdout.trim(), isWindows ? 'git-http-backend.exe' : 'git-http-backend')
+}
+
 /** Why this fixture cannot run here (no openssl, no git, or a git without http-backend), else null. */
 export function fixtureToolsMissing(): string | null {
   const ssl = spawnSync(opensslBin(), ['version'], { encoding: 'utf8', windowsHide: true })
   if (ssl.error || ssl.status !== 0) return 'openssl was not found, so the local https git server cannot make its certificate'
-  const exec = spawnSync('git', ['--exec-path'], { encoding: 'utf8', windowsHide: true, env: baseEnv(join(tmpdir(), 'no-such.gitconfig')) })
-  if (exec.error || exec.status !== 0) return 'git was not found'
-  const backend = join(exec.stdout.trim(), isWindows ? 'git-http-backend.exe' : 'git-http-backend')
+  const backend = httpBackendBin()
+  if (backend === null) return 'git was not found'
   if (!fs.existsSync(backend)) return `this git has no http-backend (${backend}), so the local https git server cannot serve`
   return null
 }
@@ -87,12 +97,13 @@ function baseEnv(globalConfig: string): Record<string, string> {
   return env
 }
 
-function run(cmd: string, args: string[], opts: { cwd?: string; env: Record<string, string> }): Promise<void> {
+function run(cmd: string, args: string[], opts: { cwd?: string; env: Record<string, string>; input?: string }): Promise<void> {
   return new Promise((done, fail) => {
-    execFile(cmd, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, timeout: 60_000 }, (err, _out, stderr) => {
+    const child = execFile(cmd, args, { cwd: opts.cwd, env: opts.env, windowsHide: true, timeout: 60_000 }, (err, _out, stderr) => {
       if (err) fail(new Error(`${cmd} ${args[0]} failed: ${String(stderr).trim() || err.message}`))
       else done()
     })
+    if (opts.input !== undefined) child.stdin?.end(opts.input)
   })
 }
 
@@ -189,6 +200,8 @@ export async function startGitHttps(opts: { user: string; reply: string; dir: st
       GIT_COMMITTER_EMAIL: 'fixture@example.invalid'
     }
     const git = (args: string[], cwd?: string): Promise<void> => run('git', args, { cwd, env: gitEnv })
+    const backend = httpBackendBin()
+    if (backend === null) throw new Error('git was not found, so the local https git server cannot serve')
     const bare = join(opts.dir, REPO)
     const work = join(opts.dir, 'work')
     await git(['init', '--bare', '-q', '-b', 'main', bare])
@@ -226,7 +239,7 @@ export async function startGitHttps(opts: { user: string; reply: string; dir: st
       if (req.headers['content-length'] !== undefined) env.CONTENT_LENGTH = String(req.headers['content-length'])
       if (req.headers['content-encoding'] !== undefined) env.HTTP_CONTENT_ENCODING = String(req.headers['content-encoding'])
       if (req.headers['git-protocol'] !== undefined) env.GIT_PROTOCOL = String(req.headers['git-protocol'])
-      const child = spawn('git', ['http-backend'], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      const child = spawn(backend, [], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
       children.add(child)
       child.on('close', () => children.delete(child))
       child.stdin.on('error', () => undefined)
@@ -285,11 +298,21 @@ export async function startGitHttps(opts: { user: string; reply: string; dir: st
       url: `https://127.0.0.1:${port}/${REPO}`,
       caFile,
       async pushCommit(msg: string) {
+        // One git run writes the commit straight into the served repository, on top of its main: an add, a commit
+        // and a push took three git runs and the push's own helpers, about ten processes (HOLD-B #106).
         commits++
-        await fsp.writeFile(join(work, 'src', `change${commits}.ts`), `export const change${commits} = ${commits}\n`)
-        await git(['add', '-A'], work)
-        await git(['commit', '-q', '-m', msg], work)
-        await git(['push', '-q', bare, 'HEAD:refs/heads/main'], work)
+        const content = `export const change${commits} = ${commits}\n`
+        const stream = [
+          'commit refs/heads/main',
+          `committer Lumopolis Fixture <fixture@example.invalid> ${Math.floor(Date.now() / 1000)} +0000`,
+          `data ${Buffer.byteLength(msg)}`,
+          msg,
+          'from refs/heads/main^0',
+          `M 100644 inline src/change${commits}.ts`,
+          `data ${Buffer.byteLength(content)}`,
+          content
+        ].join('\n')
+        await run('git', ['--git-dir', bare, 'fast-import', '--quiet'], { env: gitEnv, input: stream })
       },
       async stop() {
         if (stopped) return

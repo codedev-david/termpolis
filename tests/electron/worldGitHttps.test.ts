@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveGitBin } from '../../src/main/binPath'
-import { cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type LoginRun } from '../../src/main/world/gitSource'
+import { AUTH_MESSAGE, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import { fakeHelperConfig, fixtureSkipReason, FAKE_HELPER_PATH, startGitHttps, type GitHttps } from '../fixtures/gitHttps/server'
 
@@ -104,6 +104,19 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     (await fsp.readFile(helperLog, 'utf8').catch(() => '')).split('\n').filter((l) => l.trim() !== '')
   const clearLog = (): Promise<void> => fsp.rm(helperLog, { force: true })
 
+  // HOLD-B #106: a first clone is the costliest run here (about 12 s alone on Windows, three times that on a loaded
+  // machine), and three tests each made one of the same repository, so two of them missed their budgets under load.
+  // The interactive sign-in makes one, and the tests that update a saved clone update that one: each leaves it as
+  // current as the server, so whichever runs first, alone or in any order, finds it so.
+  let saved: Promise<{ deps: CloneDeps; first: CloneResult; lines: string[] }> | null = null
+  const signedInClone = (): Promise<{ deps: CloneDeps; first: CloneResult; lines: string[] }> =>
+    (saved ??= (async () => {
+      const deps = await depsFor(envFor(helperConfig))
+      await clearLog()
+      const first = await cloneRepo(server.url, undefined, deps, { mode: 'machine', interactive: true })
+      return { deps, first, lines: await helperLines() }
+    })())
+
   it('none mode cannot open the private repo and asks for a sign-in', async () => {
     await clearLog()
     for (const [config, helper] of [
@@ -120,19 +133,17 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
   }, 60_000)
 
   it('machine interactive opens it through the helper', async () => {
-    await clearLog()
-    const r = await cloneRepo(server.url, undefined, await depsFor(envFor(helperConfig)), { mode: 'machine', interactive: true })
+    const { first: r, lines } = await signedInClone()
     expect(r).toMatchObject({ ok: true, changed: true })
-    const lines = await helperLines()
     expect(lines.some((l) => l.startsWith('get '))).toBe(true)
     expect(lines.filter((l) => l.includes('GCM_INTERACTIVE=never'))).toEqual([])
     if (r.ok) expect(fs.existsSync(join(r.root, 'src', 'index.ts'))).toBe(true)
   }, 60_000)
 
   it('a background machine update never prompts', async () => {
-    const deps = await depsFor(envFor(helperConfig))
+    const { deps, first } = await signedInClone()
     const background: LoginRun = { mode: 'machine', interactive: false }
-    expect(await cloneRepo(server.url, undefined, deps, { mode: 'machine', interactive: true })).toMatchObject({ ok: true })
+    expect(first).toMatchObject({ ok: true })
 
     await clearLog()
     expect(await cloneRepo(server.url, undefined, deps, background)).toMatchObject({ ok: true, changed: false })
@@ -140,13 +151,13 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     expect(lines.some((l) => l.startsWith('get '))).toBe(true)
     expect(lines.filter((l) => l.startsWith('get ')).every((l) => l.includes('GCM_INTERACTIVE=never'))).toBe(true)
 
-    // The login is gone: the helper answers nothing, and the update ends at once asking for a sign-in.
+    // The login is gone: the helper answers nothing, and git itself ends the update asking for a sign-in. A run held by
+    // a prompt would end only at its deadline, as TIMEOUT_MESSAGE with no sign-in offered, so this needs no clock
+    // (HOLD-B #106: a 10 s wall-clock bound here failed on a loaded machine).
     await clearLog()
     const gone = { ...deps, env: envFor(helperConfig, { FAKE_HELPER_EMPTY: '1' }) }
-    const started = Date.now()
     const r = await cloneRepo(server.url, undefined, gone, background)
-    expect(Date.now() - started).toBeLessThan(10_000)
-    expect(r.ok).toBe(false)
+    expect(r).toMatchObject({ ok: false, error: AUTH_MESSAGE })
     if (!r.ok) expect(r.needsLogin).toEqual({ host: new URL(server.url).host, helper: true })
     const goneLines = await helperLines()
     // The helper was asked (so the check below cannot pass on an empty log), and never allowed to prompt.
@@ -195,11 +206,12 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     expect(fs.existsSync(trace)).toBe(true)
   }, 60_000)
 
+  // An update with nothing new reports changed: false in the background test above, on this same saved clone; this
+  // one does not repeat it (HOLD-B #106: each update starts about eight git processes).
   it('a pushed commit makes the next update report changed', async () => {
-    const deps = await depsFor(envFor(helperConfig))
+    const { deps, first } = await signedInClone()
     const background: LoginRun = { mode: 'machine', interactive: false }
-    expect(await cloneRepo(server.url, undefined, deps, { mode: 'machine', interactive: true })).toMatchObject({ ok: true })
-    expect(await cloneRepo(server.url, undefined, deps, background)).toMatchObject({ ok: true, changed: false })
+    expect(first).toMatchObject({ ok: true })
     await server.pushCommit('A second commit')
     expect(await cloneRepo(server.url, undefined, deps, background)).toMatchObject({ ok: true, changed: true })
   }, 60_000)
