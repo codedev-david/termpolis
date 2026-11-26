@@ -68,7 +68,9 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
  *     so 2.6.
  * Twice the work on every frame doubles the measure: over the bound on every Windows launch seen, and on Linux, where
  * the orbit swings 1.7x against glMs from one runner to the next, on 14 of 17 Termpolis and 14 of 15 big launches.
- * A staged 2x (every frame drawn twice) failed it on every copy of each system, in both worlds (look-a2 report).
+ * A staged 2x (every frame drawn twice) failed it on every Windows run in both worlds, and on Linux on 5 of 7 Termpolis
+ * and 2 of 3 big runs (9.59-16.64 / 4.97-6.77): a known limit on Linux, whose SwiftShader is not timed by glMs closely
+ * enough to see every 2x there (look-a2 report). Task 20 measures the orbit on real machines.
  * macOS is reported only, as SOFTWARE_FLOOR_P95_MS says (0.54-2.23 in soaks 45763276618 and 45765636039).
  */
 const ORBIT_PER_GL: Record<string, Record<string, number>> = {
