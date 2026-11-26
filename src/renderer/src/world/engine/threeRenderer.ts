@@ -512,9 +512,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * cap, then by the steps a shrunk buffer took (fitShrunk).
    */
   const look: TierName = high ? 'high' : 'low'
-  /** The steps down a drawing buffer the browser shrank has taken: 0.75 each, kept across fits until a new context. */
+  /**
+   * The scale a drawing buffer the browser shrank brought the ratio down by (fitShrunk steps it 0.75 at a time). Each
+   * later fit sets it again from the pixels the browser gave that shrunk buffer (budgetPixels): the largest scale whose
+   * buffer is no bigger, and 1 once the whole ratio fits (a smaller view), so the map gets its sharpness back.
+   */
   let shrinkScale = 1
-  const pixelRatio = (): number => tierPixelRatio(look, window.devicePixelRatio || 1, width, height, bufferCap, software) * shrinkScale
+  /** The pixels the browser gave the last drawing buffer it shrank: what it can allocate (null: none shrunk yet). */
+  let budgetPixels: number | null = null
+  const fullRatio = (): number => tierPixelRatio(look, window.devicePixelRatio || 1, width, height, bufferCap, software)
+  const pixelRatio = (): number => fullRatio() * shrinkScale
   /** The size and pixel ratio the drawing buffer has now (fitBuffer). */
   const shown = { width, height, ratio: pixelRatio() }
   renderer.setPixelRatio(shown.ratio)
@@ -548,6 +555,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     software = readSoftware()
     loopGap = SOFTWARE_LOOP_MS
     shrinkScale = 1
+    budgetPixels = null
     fitBuffer()
     if (lastModel && lastText) draw(lastModel, lastText, allLabels)
     wake()
@@ -834,7 +842,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const boxRect = [NaN, NaN, NaN, NaN]
   const corner = new THREE.Vector3()
   let frameNo = 0
-  /** Frames whose render returned: a first-frame watchdog waits for one (look spec §5.3). */
+  /**
+   * Frames whose render returned: a first-frame watchdog waits for one (look spec §5.3). This is the frame handed to
+   * WebGL, not the frame on screen. WebGL has no signal for a presented frame: the browser composites the canvas after
+   * the task that drew it, and nothing tells the page when. gl.finish() or a readPixels would only prove the GPU ran
+   * the commands, and each stalls the pipeline for every frame. So a context lost or a compositor stuck after render()
+   * returned is not seen here: the lost context has its own handler, and the e2e painted checks read real pixels.
+   * firstFrameMs is timed at the same point, so it is the time to a frame drawn, not shown.
+   */
   let presented = 0
   // The frame-time sampler (look spec §6.1): each drawn frame's gap from the one before, counted only when the two were
   // drawn back to back. A wake from sleep (an idle city, a pause, a hidden pane, a lost context) breaks the chain, as a
@@ -2289,6 +2304,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    */
   const fitBuffer = (): void => {
     breakChain() // a new buffer: the next frames redraw at its size
+    if (budgetPixels !== null) shrinkScale = Math.min(1, Math.sqrt(budgetPixels / Math.max(1, fullRatio() ** 2 * width * height)))
     const ratio = pixelRatio()
     setRatio(Math.min(ratio, bufferRatio(shown.ratio, shown.width, shown.height, bufferCap)))
     shown.width = width
@@ -2301,12 +2317,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * Chromium gives a smaller drawing buffer, without an error, when it cannot allocate the one asked for (look spec
    * §5.3); a frame then draws part of the view, or nothing. The ratio steps down by a quarter until the buffer is
-   * whole, at most four times; still shrunk, the viewer is told (onBufferShrunk). A lost context is not tested.
+   * whole, at most four times; still shrunk, the viewer is told (onBufferShrunk). A lost context is not tested. The
+   * pixels each shrunk buffer was given are kept (budgetPixels), so a later fit asks for no more than that at once.
    */
   function fitShrunk(): void {
     const gl = renderer.getContext()
     if (gl.isContextLost()) return
     for (let i = 0; i < 4 && shrunk(gl, renderer.domElement); i++) {
+      budgetPixels = Math.max(1, gl.drawingBufferWidth * gl.drawingBufferHeight)
       shrinkScale *= 0.75
       setRatio(pixelRatio())
     }

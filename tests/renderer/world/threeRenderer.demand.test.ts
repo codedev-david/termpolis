@@ -851,15 +851,19 @@ describe('threeRenderer: a 4K canvas is never blank (look spec 5.3)', () => {
     expect(onBufferShrunk).not.toHaveBeenCalled()
     const gl = rendererOf().getContext()
     expect([gl.drawingBufferWidth, gl.drawingBufferHeight]).toEqual([r.canvas.width, r.canvas.height])
-    // Nothing fits now: four more steps, then it gives up and says so, once for this fit.
+    // Nothing fits now. The fit asks first for the pixels the browser gave the last shrunk buffer (half of 4K at 2x: a
+    // ratio of about 0.707), then four more steps, then it gives up and says so, once for this fit.
     gpu.allocMax = 1000
     const from = rendererOf().pixelRatios.length
     ro.fire()
-    expect(rendererOf().pixelRatios.slice(from)).toEqual([0.5625 * 0.75, 0.5625 * 0.75 ** 2, 0.5625 * 0.75 ** 3, 0.5625 * 0.75 ** 4])
+    const asked = rendererOf().pixelRatios.slice(from)
+    expect(asked).toHaveLength(5)
+    expect(asked[0]).toBeCloseTo(Math.SQRT1_2, 3)
+    asked.slice(1).forEach((x, i) => expect(x).toBeCloseTo(asked[0] * 0.75 ** (i + 1), 9))
     expect(onBufferShrunk).toHaveBeenCalledTimes(1)
     // A frame does not test the buffer again: only a fit does.
     h.frames.run(10)
-    expect(rendererOf().pixelRatios.length).toBe(from + 4)
+    expect(rendererOf().pixelRatios.length).toBe(from + 5)
     expect(onBufferShrunk).toHaveBeenCalledTimes(1)
     // The steps hold for later fits; a context that comes back starts from the full ratio again.
     gpu.allocMax = null
@@ -873,6 +877,34 @@ describe('threeRenderer: a 4K canvas is never blank (look spec 5.3)', () => {
     expect(rendererOf().getPixelRatio()).toBe(1)
     expect(onBufferShrunk).toHaveBeenCalledTimes(1)
     gpu.contextLost = false
+    r.dispose()
+  })
+
+  it('a shrunk buffer gets its sharpness back: a later fit asks for what the browser gave, and the whole ratio once that fits', () => {
+    const ro = withObserver()
+    vi.stubGlobal('devicePixelRatio', 2)
+    resizeHost(h.host, 3840, 2160)
+    gpu.allocMax = (3840 * 2160) / 2
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(rendererOf().pixelRatios).toEqual([1, 0.75, 0.5625])
+    const whole = (): void => {
+      const gl = rendererOf().getContext()
+      expect([gl.drawingBufferWidth, gl.drawingBufferHeight]).toEqual([r.canvas.width, r.canvas.height])
+    }
+    // A smaller view: the whole ratio (2) fits in the pixels the browser gave, so the map is drawn at it again.
+    resizeHost(h.host, 1280, 720)
+    ro.fire()
+    expect(last(rendererOf().pixelRatios)).toBe(2)
+    whole()
+    // Back to 4K: the most the browser gives is asked for at once (about 0.707, sharper than the 0.5625 the steps
+    // reached), and it fits with no step down.
+    resizeHost(h.host, 3840, 2160)
+    const from = rendererOf().pixelRatios.length
+    ro.fire()
+    const ratio = last(rendererOf().pixelRatios)
+    expect(ratio).toBeCloseTo(Math.SQRT1_2, 3)
+    expect(rendererOf().pixelRatios.slice(from).every((x) => x >= ratio)).toBe(true)
+    whole()
     r.dispose()
   })
 
