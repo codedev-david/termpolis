@@ -64,9 +64,12 @@ describe('src/main/index.ts footprint', () => {
       }
       return null
     }
-    expect(callsTo(text, 'whenNotShed').map(channelOf).sort()).toEqual([
-      'code-graph:build', 'memory:ingest-code', 'memory:ingest-code', 'memory:reflect-session',
-    ])
+    // A code-graph sweep's own pause is sweepPause (./sweepPause), which waits for the governor and for typing quiet:
+    // so whenNotShed is called directly only before memory:ingest-code's sweep and by memory:reflect-session, and each
+    // sweep (memory:ingest-code's, and buildGraphFor's for code-graph:build) is handed sweepPause.
+    expect(callsTo(text, 'whenNotShed').map(channelOf).sort()).toEqual(['memory:ingest-code', 'memory:reflect-session'])
+    expect(importsFrom(text, './sweepPause')).toHaveLength(1)
+    expect(callsTo(text, 'sweepPause').map(channelOf).sort()).toEqual(['code-graph:build', 'memory:ingest-code'])
   })
 
   it('registers the other lanes’ pausables once, right after the governor is installed (shedRegistrations.ts)', () => {
