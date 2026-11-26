@@ -27,7 +27,7 @@
 // E2E only (TERMPOLIS_TEST_WORLD_PROBE): window.__termpolis_world, a read-only probe of the map
 // (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
 // without guessing at the 3D scene. Off in every normal run.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
@@ -242,9 +242,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** The stop the 3D map's tour shows (the viewer's onTourStop): the pane says it to a screen reader (T5). */
   const [tourStop3d, setTourStop3d] = useState<TourStop | null>(null)
   /** A tour on the 2D map, which the person steps through: its stops on the map, and the one shown (A11Y Y2). */
-  const [tour2d, setTour2d] = useState<{ stops: Tour['steps']; i: number } | null>(null)
+  const [tour2d, setTour2d] = useState<{ stops: Tour['steps']; i: number; title?: string } | null>(null)
   const tour2dRef = useRef(tour2d)
   tour2dRef.current = tour2d
+  // A 3D tour's stop is forgotten when the 2D map takes over (the graphics lost, a switch): the 3D map's tour stopped,
+  // so the stop is not said again when the graphics come back (A11Y fix round 1).
+  useEffect(() => { if (flat) setTourStop3d(null) }, [flat])
   /** The parts lit on the 2D map: a tour stop's, a technology's uses, or what an answer highlights (A11Y Y2). */
   const [lit2d, setLit2d] = useState<string[]>([])
   const unlight = (): void => setLit2d((l) => (l.length === 0 ? l : []))
@@ -837,8 +840,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const cardTour: CardTour | undefined = flat && tour2d ? {
     n: tour2d.i + 1,
     of: tour2d.stops.length,
-    onBack: () => showStop2d(tour2d.stops, tour2d.i - 1),
-    onNext: () => showStop2d(tour2d.stops, tour2d.i + 1),
+    ...(tour2d.title !== undefined ? { title: tour2d.title } : {}),
+    onBack: () => showStop2d(tour2d.stops, tour2d.i - 1, tour2d.title),
+    onNext: () => showStop2d(tour2d.stops, tour2d.i + 1, tour2d.title),
     onEnd: () => { setCard(null); unlight() },
   } : undefined
 
@@ -905,21 +909,22 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const onTour = (tour: Tour): void => {
     armedRef.current = false
     if (viewer && !shows2d) { void viewer.play([{ type: 'tour', steps: tour.steps }]); return }
-    startTour2d(tour.steps)
+    startTour2d(tour.steps, tour.title)
   }
   /**
    * A tour on the 2D map (A11Y Y2): there is no camera to fly, so the card shows one stop at a time with Back and Next,
    * its parts lit on the map, and the stop said to a screen reader. Its stops are those with a part on the map, as on
    * the 3D map; a tour with none shows nothing.
    */
-  const startTour2d = (steps: Tour['steps']): void => {
+  const startTour2d = (steps: Tour['steps'], title?: string): void => {
     const stops = steps.filter((st) => shownOn2d(docRef.current as WorldDoc, st.ids).length > 0)
-    if (stops.length > 0) showStop2d(stops, 0)
+    if (stops.length > 0) showStop2d(stops, 0, title)
   }
-  const showStop2d = (stops: Tour['steps'], i: number): void => {
+  /** `title`: the tour's, which names the card's tour controls ("Tour: How a request flows"); an answer's tour has none. */
+  const showStop2d = (stops: Tour['steps'], i: number, title?: string): void => {
     armedRef.current = false
     fallbackIdRef.current = null
-    setTour2d({ stops, i })
+    setTour2d({ stops, i, ...(title !== undefined ? { title } : {}) })
     setCard(`<p class="tour-caption">${escapeHtml(stops[i].caption)}</p>`)
     setLit2d(shownOn2d(docRef.current as WorldDoc, stops[i].ids))
   }
@@ -1142,10 +1147,28 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
    */
   /** Export or Build it is open: the toolbar's buttons for both are off, so a running export is never cut short. */
   const dialogOpen = building || exporting !== null
+  /**
+   * A dialog of the pane is up (Build it, Export, Documentation, the re-layout question, the token dialog): the pane
+   * behind it is inert under a scrim, so a click on the map, the Ask box, the card or the toolbar does nothing, and two
+   * of them are never up together (A11Y fix round 1, I1). The terminals beside the pane are left alone: the dialogs
+   * are no aria-modal ones, which would hide them from VoiceOver too.
+   */
+  const paneModal = dialogOpen || confirmRelayout || (repoUpdate !== null && tokenOpen)
+  // With a dialog of the pane up, everything on the stage but the dialogs on it (the re-layout question, the token
+  // dialog) is inert: the map, its 2D stand-in, the card, the notices and the Ask box (A11Y fix round 1, I1). Each child
+  // is set apart, as the stage's children are the panels the map's labels keep clear of. React 18 does not pass
+  // `inert` through, so it is set on the elements, after every render (a child may come or go with the dialog up).
+  useLayoutEffect(() => {
+    for (const el of Array.from((stageRef.current as HTMLDivElement).children) as HTMLElement[]) {
+      const role = el.getAttribute('role')
+      const off = paneModal && role !== 'dialog' && role !== 'alertdialog'
+      if (el.inert !== off) el.inert = off
+    }
+  })
   /** Returns false when a dialog is already open: a palette ask then is dropped, not queued. */
   const openExport = (kind: ExportKind): boolean => {
     // The palette can still ask while a dialog is open: that ask is dropped, and the open dialog keeps going.
-    if (dialogOpen) return false
+    if (paneModal) return false
     cancelAnimationFrame(pictureFrame.current)
     pictureRef.current = null
     const canvas = flat ? null : hostRef.current?.querySelector('canvas') ?? null
@@ -1222,14 +1245,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onTour={onTour}
         onResetView={resetView}
         onRelayout={() => setConfirmRelayout(true)}
-        relayoutDisabled={worldRoot === null || !doc || busy}
+        relayoutDisabled={worldRoot === null || !doc || busy || dialogOpen}
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onExport={doc && doc.provisional !== true && worldKey !== null ? openExport : undefined}
         onBuildIt={designKey !== null && buildIt && doc ? openBuildIt : undefined}
         dialogOpen={dialogOpen}
         menuMaxHeight={stageSize[1] > 0 ? Math.floor(stageSize[1] / scale) - MENU_GAP_PX : undefined}
-        inert={home && homeDialog}
+        inert={(home && homeDialog) || paneModal}
         bookmarks={bookmarks}
         onSaveBookmark={onSaveBookmark}
         onBookmark={onBookmark}
@@ -1377,6 +1400,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           onClose={() => setBuilding(false)}
         />
       )}
+      {paneModal && <div data-testid="world-pane-scrim" aria-hidden="true" className="absolute inset-0 bg-black/50" style={{ zIndex: 9 }} />}
       {exporting === 'world' && (
         <ExportDialog root={worldRoot ?? undefined} designKey={designKey ?? undefined} mapRun={mapRun} describeOn={labelling} onSaved={onSaved} onClose={() => setExporting(null)} />
       )}

@@ -19,12 +19,11 @@ export function RelayoutConfirm({ zoom, onCancel, onConfirm }: RelayoutConfirmPr
       ref={box}
       tabIndex={-1}
       role="alertdialog"
-      aria-modal="true"
       aria-label="Confirm re-layout"
       aria-describedby="world-relayout-text"
       data-testid="world-relayout-confirm"
       className="p-3 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-2 text-xs focus:outline-none"
-      style={{ position: 'absolute', top: 12, right: 12, width: 320, maxWidth: 'calc(100% - 24px)', boxSizing: 'border-box', zIndex: 5, background: '#252526', ...zoom }}
+      style={{ position: 'absolute', top: 12, right: 12, width: 320, maxWidth: 'calc(100% - 24px)', boxSizing: 'border-box', zIndex: 10, background: '#252526', ...zoom }}
     >
       <p id="world-relayout-text">Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
       <div className="flex flex-wrap justify-end gap-2">

@@ -179,7 +179,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
   }
 
   return (
-    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Export Lumopolis world</h2>
       {info === null && error === null && (
         <p data-testid="world-export-loading" className="text-xs text-[#9ca3af]">Reading the world…</p>

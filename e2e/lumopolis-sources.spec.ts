@@ -201,12 +201,13 @@ async function terminalText(): Promise<string> {
 }
 
 /**
- * A dialog of the pane is modal in it (A11Y Y4, #43): it says so, holds the focus on Tab and Shift+Tab, brings back a
- * focus moved behind it, and Esc closes it alone, the home or the world under it still open, the focus back on
- * `opener`.
+ * A dialog of the pane is modal in it (A11Y Y4, #43): it is a dialog, holds the focus on Tab and Shift+Tab, brings back
+ * a focus moved behind it, and Esc closes it alone, the home or the world under it still open, the focus back on
+ * `opener`. It is no aria-modal one, which would hide the terminals beside the pane from VoiceOver (fix round 1).
  */
 async function holdsAndCloses(dialog: Locator, opener: Locator, under: Locator): Promise<void> {
-  await expect(dialog).toHaveAttribute('aria-modal', 'true')
+  await expect(dialog).toHaveAttribute('role', 'dialog')
+  await expect(dialog).not.toHaveAttribute('aria-modal', /.*/)
   const inside = (): Promise<boolean> => dialog.evaluate((d) => d.contains(document.activeElement))
   await expect.poll(inside, 'the dialog took the focus').toBe(true)
   for (const key of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {

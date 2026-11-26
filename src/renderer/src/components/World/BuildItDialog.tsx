@@ -62,7 +62,7 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
   }
 
   return (
-    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Build it" data-testid="world-build-it" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-label="Build it" data-testid="world-build-it" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Build “{title}”</h2>
       <p className="text-xs text-[#9ca3af]">
         Choose the folder the app goes in. Lumopolis links the design to it and opens your agent there with the design as its brief.

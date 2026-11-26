@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { useState } from 'react'
 
-// A11Y Y4: every Lumopolis dialog is modal inside the pane. It says so (aria-modal), takes the focus as it opens, keeps
-// Tab and Shift+Tab on its own controls, brings back a focus moved to the pane behind it (a click on the map) while the
-// terminal beside the pane may still take it, and closed gives the focus back to the control that opened it, or to
-// the pane when that control went with its menu. The home's dialogs (Design, Clone) and the token dialog leave the give
+// A11Y Y4: every Lumopolis dialog is modal inside the pane. It is a dialog, but no aria-modal one: that would hide the
+// terminals beside the pane from VoiceOver too (the pane makes what is behind it inert instead, fix round 1). It takes
+// the focus as it opens, keeps Tab and Shift+Tab on its own controls, brings back a focus moved to the pane behind it
+// (a click on the map) while the terminal beside the pane may still take it, and closed gives the focus back to the
+// control that opened it, or to the pane when that control went with its menu. The home's dialogs (Design, Clone) and the token dialog leave the give
 // back to the home or the clone dialog, which choose the control themselves (WorldHome.test, CloneDialog tests).
 
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
@@ -63,7 +64,7 @@ function Pane({ dialog }: { dialog: Dialog }) {
   )
 }
 
-const box = (): HTMLElement => document.querySelector('[aria-modal="true"]') as HTMLElement
+const box = (): HTMLElement => document.querySelector('[role="dialog"], [role="alertdialog"]') as HTMLElement
 const open = (id: string): void => {
   screen.getByTestId(id).focus()
   act(() => { fireEvent.click(screen.getByTestId(id)) })
@@ -82,6 +83,7 @@ describe.each(dialogs)('the %s dialog in the pane (A11Y Y4)', (_name, dialog, gi
     open('opener')
     const b = box()
     expect(['dialog', 'alertdialog']).toContain(b.getAttribute('role'))
+    expect(b).not.toHaveAttribute('aria-modal')
     expect(b.getAttribute('aria-label')).toBeTruthy()
     expect(b.contains(document.activeElement)).toBe(true)
     for (let i = 0; i < 12; i++) { tab(); expect(b.contains(document.activeElement)).toBe(true) }

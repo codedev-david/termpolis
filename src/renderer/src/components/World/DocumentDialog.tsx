@@ -81,7 +81,7 @@ export function DocumentDialog({ root, designKey, projectName, picture, onSaved,
   }
 
   return (
-    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Generate Lumopolis documentation" data-testid="world-document-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-label="Generate Lumopolis documentation" data-testid="world-document-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Generate Lumopolis documentation</h2>
       <p className="text-xs text-[#9ca3af]">One page that explains the project: its parts, how they connect, and its tours.</p>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">

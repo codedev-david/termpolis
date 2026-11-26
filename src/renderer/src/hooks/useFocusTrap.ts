@@ -57,8 +57,8 @@ export function holdFocus(el: HTMLElement): void {
 /** How a dialog that is modal inside a pane, not over the whole window, holds the focus (Lumopolis, A11Y Y4). */
 export interface FocusTrapOptions {
   /** The pane the dialog is modal in, found from the dialog as it opens. The focus moved anywhere else in it (a click
-   *  on the map, a screen reader's cursor) comes back to the dialog, unless a dialog opened over it (aria-modal) takes
-   *  it; outside the pane (the terminal beside it) it is left alone. On close, with the control that opened the dialog
+   *  on the map, a screen reader's cursor) comes back to the dialog, unless a dialog opened over or beside it takes
+   *  it (a pane's dialogs are no aria-modal ones: the pane makes what is behind them inert, A11Y fix round 1); outside the pane (the terminal beside it) it is left alone. On close, with the control that opened the dialog
    *  gone (a menu item), the pane takes the focus instead of the terminal. */
   within?: (el: HTMLElement) => HTMLElement | null
   /** false: the focus is not moved on close, as the caller gives it back itself (the Lumopolis home does). */
@@ -91,7 +91,7 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, options: FocusT
     const onFocusIn = (e: FocusEvent): void => {
       const to = e.target as HTMLElement
       if (el.contains(to)) { last = to; return }
-      if (!(pane as HTMLElement).contains(to) || to.closest('[aria-modal="true"]') !== null) return
+      if (!(pane as HTMLElement).contains(to) || to.closest('[role="dialog"], [role="alertdialog"]') !== null) return
       ;(last.isConnected && el.contains(last) ? last : el).focus()
     }
     if (pane) document.addEventListener('focusin', onFocusIn)

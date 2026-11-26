@@ -103,6 +103,23 @@ async function mount(root = '/repo', opts: { buildIt?: boolean } = {}): Promise<
   return { slot, launch, rerender: async (r) => { utils.rerender(el(r)); await settle() }, unmount: utils.unmount }
 }
 const lastSlot = (m: Mounted) => m.slot.mock.calls[m.slot.mock.calls.length - 1]
+/** Whether an element or one around it is inert (jsdom keeps the property without acting on it: e2e proves the clicks). */
+const inertUp = (el: Element): boolean => {
+  for (let e: HTMLElement | null = el as HTMLElement; e; e = e.parentElement) if (e.inert) return true
+  return false
+}
+/**
+ * A dialog of the pane is up (A11Y fix round 1, I1): the toolbar, the map, the card and the Ask slot behind it are inert
+ * under a scrim, the dialog and the pane itself are not; with no dialog up nothing in the pane is inert or dimmed.
+ */
+function expectModal(dialog: HTMLElement | null): void {
+  const behind = [screen.getByRole('toolbar'), ...['world-canvas-host', 'world-card', 'world-ask-slot'].map((id) => screen.getByTestId(id))]
+  for (const el of behind) expect(inertUp(el), el.dataset.testid ?? 'the toolbar').toBe(dialog !== null)
+  expect(inertUp(screen.getByTestId('world-view'))).toBe(false)
+  if (dialog === null) { expect(screen.queryByTestId('world-pane-scrim')).toBeNull(); return }
+  expect(inertUp(dialog)).toBe(false)
+  expect(screen.getByTestId('world-pane-scrim')).toHaveAttribute('aria-hidden', 'true')
+}
 
 beforeEach(() => {
   h.webgl = true
@@ -375,6 +392,35 @@ describe('WorldView sources', () => {
     expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(buildBtn()).toBeEnabled()
+  })
+
+  it('while Build it, Export, Documentation or the re-layout question is up, the pane behind it is inert under a scrim, and live again once it closes (A11Y fix round 1, I1)', async () => {
+    bridge(exportBits())
+    await mount('/repo')
+    act(() => { viewer().opts.renderCard('<h2>Shop</h2>') })
+    expectModal(null)
+    // The re-layout question is the repository world's.
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expectModal(screen.getByRole('alertdialog', { name: 'Confirm re-layout' }))
+    fireEvent.click(screen.getByTestId('world-relayout-cancel'))
+    expectModal(null)
+    switchTo('design:d1')
+    await settle()
+    act(() => { viewer().opts.renderCard('<h2>Shop</h2>') })
+    fireEvent.click(screen.getByTestId('world-build-it-open'))
+    expectModal(screen.getByRole('dialog', { name: 'Build it' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expectModal(null)
+    for (const kind of ['world', 'document'] as const) {
+      fireEvent.click(screen.getByTestId('world-export'))
+      fireEvent.click(screen.getByTestId(`world-export-${kind}`))
+      await settle()
+      expectModal(screen.getByTestId(`world-${kind === 'world' ? 'export' : 'document'}-dialog`))
+      // Re-layout is greyed too: a second dialog never opens beside this one.
+      expect(screen.getByTestId('world-relayout')).toBeDisabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expectModal(null)
+    }
   })
 
   it('Build it takes over from a documentation dialog still waiting for its picture', async () => {
@@ -722,6 +768,20 @@ describe('WorldView sign in needed', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open rrepo' }))
     await settle()
   }
+
+  it('while the token dialog is up, the pane behind it is inert under a scrim, the notice too, and live again once it closes (A11Y fix round 1, I1)', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    act(() => { viewer().opts.renderCard('<h2>Shop</h2>') })
+    expectModal(null)
+    expect(inertUp(screen.getByTestId('world-sign-in-needed'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    expectModal(screen.getByRole('dialog', { name: 'Use a token' }))
+    expect(inertUp(screen.getByTestId('world-sign-in-needed'))).toBe(true)
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Use a token' })).getByRole('button', { name: 'Cancel' }))
+    expectModal(null)
+    expect(inertUp(screen.getByTestId('world-sign-in-needed'))).toBe(false)
+  })
 
   it('shows the notice with its three actions, and Dismiss hides it', async () => {
     gitBridge(ok(NEEDS))

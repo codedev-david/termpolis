@@ -376,7 +376,7 @@ describe('a dialog inside a pane (Lumopolis, A11Y Y4)', () => {
     const ref = React.useRef<HTMLDivElement>(null)
     useFocusTrap(ref, { within: (el) => el.closest<HTMLElement>('[data-pane]'), ...(restore === undefined ? {} : { restore }) })
     return (
-      <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" data-testid="dialog">
+      <div ref={ref} tabIndex={-1} role="dialog" data-testid="dialog">
         <button type="button" data-testid="one">one</button>
         <button type="button" data-testid="two" onClick={onClose}>close</button>
       </div>
@@ -429,13 +429,13 @@ describe('a dialog inside a pane (Lumopolis, A11Y Y4)', () => {
     function Top({ onClose }: { onClose: () => void }) {
       const inner = React.useRef<HTMLDivElement>(null)
       useFocusTrap(inner, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
-      return <div ref={inner} role="dialog" aria-modal="true" data-testid="top"><button type="button" data-testid="t1">t1</button><button type="button" data-testid="t2">t2</button><button type="button" data-testid="t3" onClick={onClose}>t3</button></div>
+      return <div ref={inner} role="dialog" data-testid="top"><button type="button" data-testid="t1">t1</button><button type="button" data-testid="t2">t2</button><button type="button" data-testid="t3" onClick={onClose}>t3</button></div>
     }
     function Outer() {
       const outer = React.useRef<HTMLDivElement>(null)
       const [top, setTop] = useState(false)
       useFocusTrap(outer, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
-      return <div ref={outer} role="dialog" aria-modal="true" data-testid="outer"><button type="button" data-testid="o1" onClick={() => setTop(true)}>o1</button>{top && <Top onClose={() => setTop(false)} />}</div>
+      return <div ref={outer} role="dialog" data-testid="outer"><button type="button" data-testid="o1" onClick={() => setTop(true)}>o1</button>{top && <Top onClose={() => setTop(false)} />}</div>
     }
     function Stack() {
       return <div data-pane=""><button type="button" data-testid="behind">behind</button><Outer /></div>
@@ -451,15 +451,15 @@ describe('a dialog inside a pane (Lumopolis, A11Y Y4)', () => {
     expect(document.activeElement).toBe(screen.getByTestId('o1'))
   })
 
-  it('lets a dialog opened beside it in the pane (the token dialog beside the clone dialog) take the focus', () => {
-    function Side({ id }: { id: string }) {
+  it('lets a dialog or alert dialog opened beside it in the pane (the token dialog beside the clone dialog) take the focus', () => {
+    function Side({ id, role = 'dialog' }: { id: string; role?: string }) {
       const ref = React.useRef<HTMLDivElement>(null)
       useFocusTrap(ref, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
-      return <div ref={ref} role="dialog" aria-modal="true"><button type="button" data-testid={id}>{id}</button></div>
+      return <div ref={ref} role={role}><button type="button" data-testid={id}>{id}</button></div>
     }
     function Two() {
       const [second, setSecond] = useState(false)
-      return <div data-pane=""><Side id="first" /><button type="button" data-testid="more" onClick={() => setSecond(true)}>more</button>{second && <Side id="second" />}</div>
+      return <div data-pane=""><Side id="first" /><button type="button" data-testid="more" onClick={() => setSecond(true)}>more</button>{second && <Side id="second" role="alertdialog" />}</div>
     }
     render(<Two />)
     expect(document.activeElement).toBe(screen.getByTestId('first'))

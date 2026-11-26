@@ -2142,7 +2142,8 @@ describe('WorldView 2D map switch and bookmarks', () => {
       fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
       // The stop not on the map is skipped, as on the 3D map: two stops.
       expect(body().querySelector('.tour-caption')).toHaveTextContent('Start here.')
-      const nav = within(card() as HTMLElement).getByRole('navigation', { name: 'Tour' })
+      // Named by the tour's title (A11Y fix round 1).
+      const nav = within(card() as HTMLElement).getByRole('navigation', { name: 'Tour: First' })
       expect(nav).toHaveTextContent('Stop 1 of 2')
       expect(said()).toBe('Stop 1 of 2: Start here.')
       // Said once, by the pane: the card's body is no live region meanwhile.
@@ -2154,6 +2155,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
       fireEvent.click(back) // at the first stop: stays
       expect(said()).toBe('Stop 1 of 2: Start here.')
       fireEvent.click(next)
+      expect(within(card() as HTMLElement).getByRole('navigation', { name: 'Tour: First' })).toHaveTextContent('Stop 2 of 2')
       // A district stop lights the district and its buildings; the caption is text, never markup.
       expect(body().querySelector('.tour-caption')?.textContent).toBe('Then <this>.')
       expect(said()).toBe('Stop 2 of 2: Then <this>.')
@@ -2183,7 +2185,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     const ended = (): void => {
       expect(said()).toBe('')
       expect(lit()).toEqual([])
-      expect(screen.queryByRole('navigation', { name: 'Tour' })).toBeNull()
+      expect(screen.queryByRole('navigation', { name: /^Tour/ })).toBeNull()
     }
     start(); esc(); ended(); expect(card()).toBeNull()
     start(); fireEvent.click(screen.getByRole('button', { name: 'Close details' })); ended(); expect(card()).toBeNull()
@@ -2262,6 +2264,17 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(body().getAttribute('aria-live')).toBe('polite')
     act(() => { viewer().opts.onTourStop({ n: 2, of: 3, caption: 'B.' }) })
     fireEvent.click(screen.getByTestId('world-map2d'))
+    expect(said()).toBe('')
+  })
+
+  it('a 3D tour stop is forgotten when the 2D map takes over, so graphics that come back never say a stale stop (A11Y fix round 1)', async () => {
+    bridge()
+    await mount()
+    act(() => { viewer().opts.onTourStop({ n: 2, of: 3, caption: 'B.' }) })
+    expect(said()).toBe('Stop 2 of 3: B.')
+    act(() => { viewer().opts.onGraphics('lost') })
+    expect(said()).toBe('')
+    act(() => { viewer().opts.onGraphics('restored') })
     expect(said()).toBe('')
   })
 
@@ -2903,6 +2916,29 @@ describe('WorldView export', () => {
     expect(screen.queryByTestId('world-export-menu')).toBeNull()
     esc()
     expect(screen.getByTestId('world-export')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('Re-layout is greyed while Export or Documentation is up, so its question never opens beside them (A11Y fix round 1, I1)', async () => {
+    bridge(exportApi())
+    const m = await mountWith()
+    expect(screen.getByTestId('world-relayout')).toBeEnabled()
+    for (const kind of ['world', 'document'] as const) {
+      await m.again({ exportRequest: { kind, seq: kind === 'world' ? 1 : 2 } })
+      expect(screen.getByTestId(`world-${kind === 'world' ? 'export' : 'document'}-dialog`)).toBeInTheDocument()
+      expect(screen.getByTestId('world-relayout')).toBeDisabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(screen.getByTestId('world-relayout')).toBeEnabled()
+    }
+  })
+
+  it('a palette ask while the re-layout question is up is dropped: two dialogs of the pane are never up together (A11Y fix round 1, I1)', async () => {
+    bridge(exportApi())
+    const m = await mountWith()
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(screen.getByRole('alertdialog', { name: 'Confirm re-layout' })).toBeInTheDocument()
+    await m.again({ exportRequest: { kind: 'world', seq: 1 } })
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1)
   })
 
   it('a palette ask is dropped when the world fails to load, so a world that loads later opens nothing', async () => {

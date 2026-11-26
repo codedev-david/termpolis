@@ -33,6 +33,12 @@ describe('WorldCard', () => {
     expect(body).toHaveTextContent('Store')
   })
 
+  it("names a 2D map's tour by its title when it has one (A11Y fix round 1)", () => {
+    const tour = { n: 1, of: 2, title: 'How a request flows', onBack: vi.fn(), onNext: vi.fn(), onEnd: vi.fn() }
+    render(<WorldCard html="<p>Here.</p>" tour={tour} onClose={() => {}} onOpen={() => {}} {...noop} />)
+    expect(screen.getByRole('navigation', { name: 'Tour: How a request flows' })).toHaveTextContent('Stop 1 of 2')
+  })
+
   it('is quiet while a tour stop shows: the pane says the stop in its own status region, once (T5)', () => {
     const { rerender } = render(<WorldCard html="<p>Here.</p>" quiet onClose={() => {}} onOpen={() => {}} {...noop} />)
     expect(screen.getByRole('region', { name: 'Details' })).toHaveAttribute('aria-live', 'off')
@@ -286,6 +292,19 @@ describe('WorldCard', () => {
     close.focus()
     rerender(<WorldCard html="<h3>C</h3>" {...props} />)
     expect(document.activeElement).toBe(close)
+  })
+
+  it('a press that leaves the card as it was is forgotten by the next frame: a later card leaves a focus on the page where it is (A11Y fix round 1)', async () => {
+    const props = { onClose: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn(), onOpen: vi.fn(), onTech: vi.fn() }
+    const { rerender } = render(<WorldCard html={'<h3>B</h3><button type="button" class="chip" data-tech="ipc">ipc</button>'} {...props} />)
+    const chip = screen.getByRole('button', { name: 'ipc' })
+    chip.focus()
+    fireEvent.click(chip)
+    expect(props.onTech).toHaveBeenCalledWith('ipc')
+    await act(() => new Promise<void>((r) => { requestAnimationFrame(() => r()) }))
+    chip.blur()
+    rerender(<WorldCard html="<h3>C</h3>" {...props} />)
+    expect(document.activeElement).toBe(document.body)
   })
 
   it("an evidence button keeps a test's source, and drops anything else it carries", () => {

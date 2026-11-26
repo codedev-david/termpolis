@@ -23,6 +23,7 @@ import { pathToFileURL } from 'url'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
 import { ask, askReady } from './export-page/helpers'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 import { CARD_HEADINGS } from '../src/shared/world/cardFacts'
 import { escapeHtml } from '../src/shared/world/html'
 import type { WorldDoc } from '../src/shared/world/types'
@@ -253,14 +254,17 @@ test.describe.serial('Lumopolis export in the real app', () => {
     async function holds(testid: string): Promise<void> {
       const box = page.locator(`[data-testid="${testid}"]`)
       await expect(box).toBeVisible()
-      await expect(box).toHaveAttribute('aria-modal', 'true')
+      // A dialog, but no aria-modal one: the pane behind it is inert instead, so the terminals stay in reach (fix round 1).
+      expect(['dialog', 'alertdialog']).toContain(await box.getAttribute('role'))
+      await expect(box).not.toHaveAttribute('aria-modal', /.*/)
       await expect.poll(() => inside(testid), `the ${testid} took the focus`).toBe(true)
       for (const key of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
         await page.keyboard.press(key)
         expect(await inside(testid), `${key} kept the focus in the ${testid}`).toBe(true)
       }
-      // A focus moved to the pane behind the dialog (a screen reader's cursor, a click) comes back to it.
-      await page.locator('[data-testid="world-close"]').focus()
+      // A focus moved to the pane behind the dialog (a screen reader's cursor) comes back to it. The pane itself is
+      // the one place behind it a focus can still go: what is on it is inert.
+      await pane.focus()
       await expect.poll(() => inside(testid), `the ${testid} took the focus back`).toBe(true)
       await page.keyboard.press('Escape')
       await expect(box).toHaveCount(0)
@@ -287,6 +291,80 @@ test.describe.serial('Lumopolis export in the real app', () => {
     // Back on Re-layout, or on the More button when Re-layout was in its menu: the menu gave its button the focus as it
     // closed, before the question opened.
     await expect(page.locator(`[data-testid="${inMore ? 'world-more' : 'world-relayout'}"]`)).toBeFocused()
+  })
+
+  test('3c. with Export up, the pane behind it takes no click and no typing, and the terminal is still in reach (A11Y fix round 1, I1)', async () => {
+    const dialog = exportDialog()
+    const card = page.locator('[data-testid="world-card"]')
+    await expect(card).toHaveCount(0)
+    // On the 2D map, whose parts are buttons of the page: a click that reached one would open its card.
+    const fallback = page.locator('[data-testid="world-fallback"]')
+    const to2d = !(await fallback.isVisible())
+    if (to2d) {
+      await (await toolbarControl(page, 'world-map2d')).click()
+      await closeMore(page)
+    }
+    const part = fallback.locator('[data-kind="building"]').first()
+    await expect(part).toBeVisible()
+    const askInput = page.locator('[data-testid="world-ask-row"] input')
+    await expect(askInput).toBeVisible()
+    const terminalInput = '[data-terminal-id] .xterm-helper-textarea'
+    const cdp = await page.context().newCDPSession(page)
+    const axOf = async (selector: string): Promise<{ ignored: boolean; reasons: string[] }> => {
+      const { root } = await cdp.send('DOM.getDocument', { depth: 0 })
+      const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector })
+      expect(nodeId, selector).toBeGreaterThan(0)
+      const { nodes } = await cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false })
+      const node = nodes[0] as { ignored: boolean; ignoredReasons?: { name: string }[] }
+      return { ignored: node.ignored, reasons: (node.ignoredReasons ?? []).map((r) => r.name).sort() }
+    }
+    const terminalBefore = await axOf(terminalInput)
+    expect((await axOf('[data-testid="world-ask-row"] input')).ignored, 'the Ask box is in the tree').toBe(false)
+    await page.locator('[data-testid="world-export"]').click()
+    await page.locator('[data-testid="world-export-world"]').click()
+    await expect(dialog).toBeVisible()
+    await expect(page.locator('[data-testid="world-pane-scrim"]')).toBeVisible()
+    await expect.poll(() => dialog.evaluate((d) => d.contains(document.activeElement)), 'Export took the focus').toBe(true)
+    // Real clicks at the spots (force: no wait for the scrim to go), which land on the scrim, not on what is under it.
+    await part.click({ force: true })
+    await page.waitForTimeout(400)
+    await expect(card, 'a click on a part of the 2D map opened no card').toHaveCount(0)
+    const relayout = page.locator('[data-testid="world-relayout"]')
+    const control = (await relayout.isVisible()) ? relayout : page.locator('[data-testid="world-more"]')
+    await control.click({ force: true })
+    await page.waitForTimeout(400)
+    await expect(page.locator('[data-testid="world-relayout-confirm"]'), 'Re-layout opened no second dialog').toHaveCount(0)
+    await expect(page.locator('[data-testid="world-more-menu"]'), 'nor its menu').toHaveCount(0)
+    // A click on the Ask box puts no caret there: what is typed next goes to the dialog, as it did before the click.
+    await askInput.click({ force: true })
+    expect(await askInput.evaluate((el) => el === document.activeElement), 'the Ask box took no focus').toBe(false)
+    await page.keyboard.type('xyz')
+    await expect(askInput).toHaveValue('')
+    expect(await dialog.evaluate((d) => d.contains(document.activeElement)), 'the focus stayed in Export').toBe(true)
+    await expect(dialog).toBeVisible()
+    // Inert, the pane behind the dialog is out of the accessibility tree; the terminal beside the pane is as it was (an
+    // aria-modal dialog would take it out too on macOS, where Chromium prunes the tree to the dialog).
+    try {
+      expect((await axOf('[data-testid="world-ask-row"] input')).ignored, 'the Ask box is out of the tree').toBe(true)
+      expect(await axOf(terminalInput), 'the terminal is in the tree as before').toEqual(terminalBefore)
+    } finally {
+      await cdp.detach()
+    }
+    // The terminal can still take the focus: the dialog is modal in the pane only.
+    await page.locator(terminalInput).first().focus()
+    expect(await page.evaluate(() => document.activeElement?.classList.contains('xterm-helper-textarea')), 'the terminal took the focus').toBe(true)
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('[data-testid="world-pane-scrim"]')).toHaveCount(0)
+    // Live again: a click on the part opens its card.
+    await part.click()
+    await expect(card).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(card).toHaveCount(0)
+    if (to2d) {
+      await (await toolbarControl(page, 'world-map2d')).click()
+      await closeMore(page)
+    }
   })
 
   test('4. the renderer logged no error and threw nothing', () => {

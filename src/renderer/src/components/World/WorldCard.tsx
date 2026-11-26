@@ -59,7 +59,15 @@ export interface WorldCardProps {
 }
 
 /** The 2D map's tour as the card steps through it (Y2). */
-export interface CardTour { n: number; of: number; onBack: () => void; onNext: () => void; onEnd: () => void }
+export interface CardTour {
+  n: number
+  of: number
+  /** The tour's title, which names its controls ("Tour: How a request flows"); an answer's tour has none. */
+  title?: string
+  onBack: () => void
+  onNext: () => void
+  onEnd: () => void
+}
 
 /**
  * How far up from the bottom of a card that scrolls on its content fades out. A capped card's bottom edge falls
@@ -173,7 +181,16 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   // A chip or link pressed in the body (from the keyboard as well as by a click) opens another card in its place, and
   // the button that had the focus goes with the old card: the body takes the focus, so the next Tab is on the new card,
   // not back at the top of the page (A11Y Y3).
+  // The card a press opens comes in the same event (the viewer renders it as it runs), so a press that changed nothing
+  // is forgotten by the next frame: a later card, from the map or an answer, leaves a focus on the page where it is.
   const pressedRef = useRef(false)
+  const pressFrame = useRef(0)
+  const pressed = (): void => {
+    pressedRef.current = true
+    cancelAnimationFrame(pressFrame.current)
+    pressFrame.current = requestAnimationFrame(() => { pressedRef.current = false })
+  }
+  useEffect(() => () => cancelAnimationFrame(pressFrame.current), [])
   useLayoutEffect(() => {
     if (pressedRef.current && document.activeElement === document.body) bodyRef.current?.focus()
     pressedRef.current = false
@@ -221,7 +238,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const target = e.target as Element
     const chip = target.closest('[data-tech]')
-    if (chip) { e.preventDefault(); pressedRef.current = true; onTech(chip.getAttribute('data-tech') as string); return }
+    if (chip) { e.preventDefault(); pressed(); onTech(chip.getAttribute('data-tech') as string); return }
     const rename = target.closest('[data-runtime-edit]')
     if (rename) {
       e.preventDefault()
@@ -248,7 +265,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     const link = target.closest('[data-node],[data-edge]')
     if (!link) return
     e.preventDefault()
-    pressedRef.current = true
+    pressed()
     onOpen(link.getAttribute('data-node') ?? (link.getAttribute('data-edge') as string))
   }
   return (
@@ -287,8 +304,9 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       />
       {tour && (
         // Back and Next at either end say they can go no further (aria-disabled) but are never disabled: the focus
-        // stays on the button pressed. PENDING SIGN-OFF (A11Y Y2): "Stop {n} of {m}", "Back", "Next", "End tour".
-        <nav className="world-card-tour" aria-label="Tour" data-testid="world-card-tour">
+        // stays on the button pressed. PENDING SIGN-OFF (A11Y Y2): "Stop {n} of {m}", "Back", "Next", "End tour",
+        // "Tour: {title}".
+        <nav className="world-card-tour" aria-label={tour.title !== undefined ? `Tour: ${tour.title}` : 'Tour'} data-testid="world-card-tour">
           <span>Stop {tour.n} of {tour.of}</span>
           <button type="button" aria-disabled={tour.n === 1 ? 'true' : undefined} onClick={() => { if (tour.n > 1) tour.onBack() }}>Back</button>
           <button type="button" aria-disabled={tour.n === tour.of ? 'true' : undefined} onClick={() => { if (tour.n < tour.of) tour.onNext() }}>Next</button>

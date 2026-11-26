@@ -56,7 +56,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
 
   const shown = refused ?? error
   return (
-    <div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Use a token" data-testid="world-repo-access" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={dialog} tabIndex={-1} role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Use a token</h2>
       <p className="text-xs text-[#9ca3af]">
         A token is a key you make on {host === 'github.com' ? 'GitHub' : host} that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.

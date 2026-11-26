@@ -68,7 +68,7 @@ export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStart
   if (escRef) escRef.current = cancel
 
   return (
-    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Design something new" data-testid="world-design-start" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-label="Design something new" data-testid="world-design-start" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Design something new</h2>
       <p className="text-xs text-[#9ca3af]">Lumopolis drafts a planned world from your description. Nothing is written until you choose Build it.</p>
       <div className="relative">

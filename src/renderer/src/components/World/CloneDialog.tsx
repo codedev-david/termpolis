@@ -173,7 +173,7 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initia
 
   return (
     <>
-    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Open a git repository" data-testid="world-clone" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
         Repository URL
