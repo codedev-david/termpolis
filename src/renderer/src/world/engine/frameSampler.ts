@@ -42,7 +42,9 @@ export function frameStats(gaps: readonly number[]): FrameStats {
 export function createFrameSampler(size = 600): FrameSampler {
   const ring: number[] = []
   let at = 0
+  // The window is a ring too (ten rings' worth): a full one overwrites its oldest gap, with no shift per frame.
   let win: number[] = []
+  let winAt = 0
   const winMax = size * 10
   let skipLeft = 0
   return {
@@ -55,8 +57,9 @@ export function createFrameSampler(size = 600): FrameSampler {
       if (ring.length < size) ring.push(gapMs)
       else ring[at] = gapMs
       at = (at + 1) % size
-      win.push(gapMs)
-      if (win.length > winMax) win.shift()
+      if (win.length < winMax) win.push(gapMs)
+      else win[winAt] = gapMs
+      winAt = (winAt + 1) % winMax
       return true
     },
     skip(n) {
@@ -66,12 +69,14 @@ export function createFrameSampler(size = 600): FrameSampler {
     window() {
       const s = frameStats(win)
       win = []
+      winAt = 0
       return s
     },
     reset() {
       ring.length = 0
       at = 0
       win = []
+      winAt = 0
       skipLeft = 0
     },
   }

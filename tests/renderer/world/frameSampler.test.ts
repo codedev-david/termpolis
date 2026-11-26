@@ -1,5 +1,5 @@
 // frameSampler: the frame-time ring the 3D map's loop feeds (look spec §6.1, plan Task 1). Pure: the gaps are given.
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import { createFrameSampler } from '../../../src/renderer/src/world/engine/frameSampler'
 
 const EMPTY = { frames: 0, p50: 0, p95: 0, p99: 0, worst: 0 }
@@ -81,5 +81,21 @@ describe('frameSampler', () => {
     expect(s.window()).toEqual(EMPTY)
     s.add(9, true) // the skip went with the reset
     expect(s.stats().frames).toBe(1)
+  })
+
+  test('a full window overwrites its oldest gap in place: no Array.shift per frame, and the newest kept after a wrap', () => {
+    const s = createFrameSampler(2)
+    const shift = vi.spyOn(Array.prototype, 'shift')
+    try {
+      for (let i = 1; i <= 50; i++) s.add(i, true) // the window (20) wraps twice and a half
+      expect(shift).not.toHaveBeenCalled()
+    } finally {
+      shift.mockRestore()
+    }
+    const w = s.window()
+    expect(w).toEqual({ frames: 20, p50: 40, p95: 49, p99: 50, worst: 50 }) // 31..50
+    // A new window after window() starts empty and fills from its start again.
+    for (const g of [7, 3]) s.add(g, true)
+    expect(s.window()).toEqual({ frames: 2, p50: 3, p95: 7, p99: 7, worst: 7 })
   })
 })
