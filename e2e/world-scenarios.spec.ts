@@ -487,10 +487,19 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
         presses++
       }
       expect(await onPart(), `Tab reaches a part of the 2D map (${presses} presses)`).toBe(true)
+      // The part is a button (a role a screen reader names), and the next Tab leaves it: no part holds another.
+      expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BUTTON')
+      const part = await page.evaluate(() => document.activeElement?.textContent ?? '')
       await expect(page.locator('[data-testid="world-card"]')).toHaveCount(0)
       await page.keyboard.press('Enter')
       await expect(page.locator('[data-testid="world-card"]')).toBeVisible()
       await expect(page.locator('[data-testid="world-card-body"]')).toContainText('index')
+      await page.keyboard.press('Escape')
+      await expect(page.locator('[data-testid="world-card"]')).toHaveCount(0)
+      // Space presses it as well.
+      await fallback.getByRole('button', { name: part, exact: true }).focus()
+      await page.keyboard.press('Space')
+      await expect(page.locator('[data-testid="world-card"]')).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(page.locator('[data-testid="world-card"]')).toHaveCount(0)
       // Esc shut the card and left the pane open on the 2D map.

@@ -25,7 +25,7 @@ describe('renderFallback', () => {
     expect(html).toContain('Desktop app to Memory host: Memory calls')
     expect(html).toContain('to ghost: odd')
     doc.edges[0].label = 'env A, env B, env C'
-    expect(renderFallback(doc, 'termpolis')).toContain('Memory host: reads 3 settings</li>')
+    expect(renderFallback(doc, 'termpolis')).toContain('Memory host: reads 3 settings</button></li>')
     expect(html).not.toContain('<b>Core')
   })
 
@@ -63,7 +63,18 @@ describe('renderFallback', () => {
     expect(html).toContain('<ul class="world-fallback-list">')
     const host = document.createElement('div')
     host.innerHTML = html
-    for (const li of Array.from(host.querySelectorAll('li[data-id]'))) expect(li.getAttribute('tabindex')).toBe('0')
+    // Y1: each list item is a real button in a plain <li> (a role, Enter and Space, one Tab stop each), and no
+    // item holds another one: a district's button is its heading's name, not the whole list of its parts.
+    const items = Array.from(host.querySelectorAll('ul [data-id]'))
+    expect(items.length).toBe(doc.districts.length + doc.buildings.length + doc.externals.length + doc.edges.length)
+    for (const b of items) {
+      expect(b.tagName).toBe('BUTTON')
+      expect(b.getAttribute('type')).toBe('button')
+      expect(b.parentElement?.closest('[data-id]')).toBeNull()
+      expect(b.querySelector('[data-id]')).toBeNull()
+    }
+    expect(host.querySelectorAll('[tabindex]')).toHaveLength(0)
+    expect(host.querySelector('h3 > button[data-kind="district"][data-id="d1"]')?.textContent).toBe(doc.districts[0].name)
     expect(host.querySelector('svg [data-id="b1"]')?.getAttribute('data-kind')).toBe('building')
     expect(host.querySelector('svg')?.getAttribute('viewBox')).toMatch(/^-?[\d.]+( -?[\d.]+){3}$/)
   })
@@ -102,41 +113,41 @@ describe('renderFallback', () => {
     expect(host.querySelector('rect[data-id="b4"]')?.getAttribute('stroke-dasharray')).toBe('0.6 0.4')
     expect(host.querySelector('rect[data-id="b1"]')?.getAttribute('fill')).toBe('#0078d4')
     expect(host.querySelector('[data-id="pb1"]')).toBeNull()
-    expect(host.querySelector('li[data-id="b4"]')?.textContent).toContain('(proposed)')
+    expect(host.querySelector('button[data-id="b4"]')?.textContent).toContain('(proposed)')
     // The planned layer off: b4 and its connection e2 are left out.
     at(renderFallback(doc, 'p', { planned: false, proposal: 'p1' }))
     expect(host.querySelector('[data-id="b4"]')).toBeNull()
     expect(host.querySelector('[data-id="e2"]')).toBeNull()
     expect(host.querySelector('[data-id="pb1"]')).toBeNull() // the design shows only with the planned layer
-    expect(host.querySelector('li[data-id="e1"]')).not.toBeNull()
+    expect(host.querySelector('button[data-id="e1"]')).not.toBeNull()
     // The chosen design with the planned layer: its part not built yet is listed and drawn as proposed, its new
     // connection added; one with the id of a connection already in the world is not listed twice.
     doc.layers.plan[0].edges.push({ ...doc.edges[0] })
     doc.layers.plan[0].removes = ['b2']
     at(renderFallback(doc, 'p', { planned: true, proposal: 'p1' }))
-    expect(host.querySelector('li[data-kind="building"][data-id="pb1"]')?.textContent).toContain('(proposed)')
+    expect(host.querySelector('button[data-kind="building"][data-id="pb1"]')?.textContent).toContain('(proposed)')
     expect(host.querySelector('rect[data-id="pb1"]')?.getAttribute('fill')).toBe('none')
-    expect(host.querySelectorAll('li[data-id="pe1"]')).toHaveLength(1)
-    expect(host.querySelectorAll('li[data-id="e1"]')).toHaveLength(1)
+    expect(host.querySelectorAll('button[data-id="pe1"]')).toHaveLength(1)
+    expect(host.querySelectorAll('button[data-id="e1"]')).toHaveLength(1)
     expect(host.querySelector('rect[data-id="b2"]')?.getAttribute('opacity')).toBe('0.4')
     expect(host.querySelector('rect[data-id="b1"]')?.hasAttribute('opacity')).toBe(false)
     // A drafted proposal shows whatever the layers say; chosen and drafted at once count once. A design part with a
     // world part's id keeps the world's part.
     doc.layers.plan[0].buildings.push(building('b1', { name: 'Imposter' }))
     at(renderFallback(doc, 'p', { planned: false, proposal: null, reveal: 'p1' }))
-    expect(host.querySelector('li[data-id="pb1"]')).not.toBeNull()
+    expect(host.querySelector('button[data-id="pb1"]')).not.toBeNull()
     expect(host.textContent).not.toContain('Imposter')
     at(renderFallback(doc, 'p', { planned: true, proposal: 'p1', reveal: 'p1' }))
-    expect(host.querySelectorAll('li[data-id="pb1"]')).toHaveLength(1)
+    expect(host.querySelectorAll('button[data-id="pb1"]')).toHaveLength(1)
     // A proposal that is not in the world shows nothing more; a design part may stand for a planned part left out.
     at(renderFallback(doc, 'p', { planned: true, proposal: 'nope', reveal: 'gone' }))
     expect(host.querySelector('[data-id="pb1"]')).toBeNull()
     doc.layers.plan[0].buildings.push(building('b4', { name: 'Designed b4' }))
     doc.layers.plan[0].edges.push(edge('pe3', 'pb1', 'b4'))
     at(renderFallback(doc, 'p', { planned: false, proposal: null, reveal: 'p1' }))
-    expect(host.querySelector('li[data-id="b4"]')?.textContent).toContain('Designed b4')
-    expect(host.querySelector('li[data-id="pe3"]')).not.toBeNull()
-    expect(host.querySelector('li[data-id="e2"]')).not.toBeNull() // b4 stands again, so its connection does
+    expect(host.querySelector('button[data-id="b4"]')?.textContent).toContain('Designed b4')
+    expect(host.querySelector('button[data-id="pe3"]')).not.toBeNull()
+    expect(host.querySelector('button[data-id="e2"]')).not.toBeNull() // b4 stands again, so its connection does
   })
 
   it('shows HTML in any name as text: parts, design parts, districts, connections, outside systems and the title (R27)', () => {
@@ -158,7 +169,7 @@ describe('renderFallback', () => {
     expect(host.querySelector('[onerror]')).toBeNull()
     expect(host.querySelector('h2')?.textContent).toBe(evil)
     expect(host.querySelector('svg')?.getAttribute('aria-label')).toBe(`Map of ${evil}`)
-    expect(host.querySelectorAll(`li[data-id="${CSS.escape(evil)}"]`)).toHaveLength(1)
+    expect(host.querySelectorAll(`button[data-id="${CSS.escape(evil)}"]`)).toHaveLength(1)
     expect(host.textContent).toContain(evil)
   })
 

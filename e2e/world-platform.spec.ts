@@ -298,9 +298,9 @@ test.describe.serial('Lumopolis on this platform', () => {
       await shot('00-2d-fallback')
       for (const b of doc.buildings) {
         await expect(fallback().locator(`svg rect[data-kind="building"][data-id="${b.id}"]`), `${b.id} on the flat map`).toHaveCount(1)
-        await expect(fallback().locator(`li[data-kind="building"][data-id="${b.id}"]`), `${b.id} in the list`).toHaveCount(1)
+        await expect(fallback().locator(`button[data-kind="building"][data-id="${b.id}"]`), `${b.id} in the list`).toHaveCount(1)
       }
-      await fallback().locator(`li[data-kind="building"][data-id="${doc.buildings[0].id}"]`).click()
+      await fallback().locator(`button[data-kind="building"][data-id="${doc.buildings[0].id}"]`).click()
       await expect(card()).toBeVisible()
       await expect(card().locator('h3').first()).toHaveText(doc.buildings[0].name)
       await shot('01-opened')

@@ -503,7 +503,7 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-card')).toHaveTextContent('What it does')
     expect(screen.getByTestId('world-card')).toHaveTextContent('Desktop app')
     // A district closes the card; a heading is no item.
-    fireEvent.click(list.querySelector('[data-kind="district"] h3') as Element)
+    fireEvent.click(list.querySelector('h3 > [data-kind="district"]') as Element)
     expect(screen.queryByTestId('world-card')).toBeNull()
     fireEvent.click(list.querySelector('h2') as Element)
     expect(screen.queryByTestId('world-card')).toBeNull()

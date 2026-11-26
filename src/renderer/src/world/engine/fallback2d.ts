@@ -1,7 +1,9 @@
 // The map without WebGL (or with the "2D map" switch on): a flat SVG of the city (hexagon districts,
 // square buildings, lines for the connections) over a semantic list that screen readers walk.
-// Every shape and list item carries data-kind (the viewer's selection kind: district, building or
+// Every shape and list button carries data-kind (the viewer's selection kind: district, building or
 // edge; an external counts as a building) and data-id, both escaped, so clicks are wired from them.
+// A list item's button sits in a plain <li> (a district's in its heading), so each is one Tab stop with a
+// button's role, and Enter and Space press it; none holds another (Y1).
 // The plan shows as on the 3D map (sceneModel's buildSceneModel): planned parts with the planned layer, and the parts
 // of the chosen design (or of a drafted proposal) that are not built yet, dashed; the parts a proposal takes away fade.
 import type { Building, WorldDoc } from '../../../../shared/world/types'
@@ -10,7 +12,7 @@ import { edgeSummary } from '../../../../shared/world/edgeText'
 import { placeOnMap, type MapPoint as Pt } from '../../../../shared/world/mapPlacement'
 
 const tag = (kind: 'district' | 'building' | 'edge', id: string): string => ` data-kind="${kind}" data-id="${esc(id)}"`
-const item = (kind: 'district' | 'building' | 'edge', id: string): string => `${tag(kind, id)} tabindex="0"`
+const item = (kind: 'district' | 'building' | 'edge', id: string, body: string): string => `<button type="button"${tag(kind, id)}>${body}</button>`
 
 const SIDE = 3
 const HEX_R = 6
@@ -106,17 +108,17 @@ export function renderFallback(world: WorldDoc, title: string, plan: FallbackPla
   // quadratic: minutes for 50,000 one-file districts).
   const byDistrict = new Map<string, string[]>()
   for (const b of doc.buildings) {
-    const li = `<li${item('building', b.id)}>${esc(b.name)} <span>${esc(b.techLabel)} (${esc(b.status)})</span></li>`
+    const li = `<li>${item('building', b.id, `${esc(b.name)} <span>${esc(b.techLabel)} (${esc(b.status)})</span>`)}</li>`
     const list = byDistrict.get(b.districtId)
     if (list) list.push(li)
     else byDistrict.set(b.districtId, [li])
   }
   const districts = doc.districts.map((d) => {
     const items = (byDistrict.get(d.id) ?? []).join('')
-    return `<li${item('district', d.id)}><h3>${esc(d.name)}</h3><p>${esc(d.subtitle)}</p><ul>${items}</ul></li>`
+    return `<li><h3>${item('district', d.id, esc(d.name))}</h3><p>${esc(d.subtitle)}</p><ul>${items}</ul></li>`
   }).join('')
-  const externals = doc.externals.map((x) => `<li${item('building', x.id)}>${esc(x.name)} (${esc(x.kind)})</li>`).join('')
-  const edges = doc.edges.map((e) => `<li${item('edge', e.id)}>${esc(label(e.from))} to ${esc(label(e.to))}: ${esc(edgeSummary(e.label))}</li>`).join('')
+  const externals = doc.externals.map((x) => `<li>${item('building', x.id, `${esc(x.name)} (${esc(x.kind)})`)}</li>`).join('')
+  const edges = doc.edges.map((e) => `<li>${item('edge', e.id, `${esc(label(e.from))} to ${esc(label(e.to))}: ${esc(edgeSummary(e.label))}`)}</li>`).join('')
   return `<section class="world-fallback"><h2>${esc(title)}</h2>${renderMap(doc, title, label, removed)}<ul class="world-fallback-list">${districts}</ul>`
     + `<h3>Outside</h3><ul>${externals}</ul><h3>Connections</h3><ul>${edges}</ul></section>`
 }

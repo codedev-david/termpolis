@@ -29,7 +29,7 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc; quality?: 'high'
   viewer.on('select', (s) => { sels.push(s) })
   viewer.load(opts.doc ?? rich())
   const item = (kind: string, id: string): HTMLElement => {
-    const el = host.querySelector<HTMLElement>(`li[data-kind="${kind}"][data-id="${id}"]`)
+    const el = host.querySelector<HTMLElement>(`button[data-kind="${kind}"][data-id="${id}"]`)
     if (!el) throw new Error(`no ${kind} ${id} in the list`)
     return el
   }
@@ -103,8 +103,8 @@ describe('2D fallback: selection from list clicks', () => {
     expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
     expect(cards.pop()).toContain('Memory calls')
 
-    // The district's heading is inside its item (and outside any building item).
-    item('district', 'd1').querySelector('h3')?.click()
+    // The district's button is its heading's name (outside any building's button).
+    item('district', 'd1').click()
     expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
     expect(cards.pop()).toBeNull() // a district has no card
   })
@@ -121,7 +121,7 @@ describe('2D fallback: selection from list clicks', () => {
     doc.districts[0].id = 'b1' // a district sharing a building's id
     for (const b of doc.buildings) b.districtId = 'b1'
     const { sels, item } = setup({ doc })
-    item('district', 'b1').querySelector('h3')?.click()
+    item('district', 'b1').click()
     expect(sels.pop()).toEqual({ kind: 'district', id: 'b1' })
     item('building', 'b1').click()
     expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
@@ -1967,7 +1967,7 @@ describe('read-only viewer', () => {
     doc.buildings[0].how = [{ text: 'x', state: 'inferred', evidence: [] }]
     const viewer = createWorldViewer(host, { reducedMotion: true, readOnly: true, renderCard: (h) => { cards.push(h) } })
     viewer.load(doc)
-    host.querySelector<HTMLElement>(`li[data-kind="building"][data-id="${doc.buildings[0].id}"]`)?.click()
+    host.querySelector<HTMLElement>(`button[data-kind="building"][data-id="${doc.buildings[0].id}"]`)?.click()
     const html = cards[cards.length - 1]
     expect(html).toContain('<h3>')
     expect(html).not.toContain('data-confirm')
@@ -2024,7 +2024,7 @@ describe('WP2: a lost WebGL context (R03, R04)', () => {
     expect(viewer.drawn().frames).toBe(0)
     expect(viewer.cameraState()).toBeNull()
     // The 2D map now answers clicks and keys; a late restore, another loss or a frame asked for do nothing.
-    host.querySelector<HTMLElement>('li[data-kind="building"][data-id="b2"]')?.click()
+    host.querySelector<HTMLElement>('button[data-kind="building"][data-id="b2"]')?.click()
     expect(viewer.getSelection()).toEqual(['b2'])
     expect(cards[cards.length - 1]).toContain('Memory host')
     made.onContextRestored()
@@ -2153,7 +2153,7 @@ describe('WP2: the keyboard on the 2D map (R10)', () => {
     expect(lastCard()).toContain('Desktop app')
     expect(key(item('edge', 'e1'), ' ')).toBe(false)
     expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
-    expect(key(item('district', 'd1').querySelector('h3') as Element, 'Enter')).toBe(false)
+    expect(key(item('district', 'd1'), 'Enter')).toBe(false)
     expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
     expect(key(host.querySelector('section.world-fallback > h2') as Element, 'Enter')).toBe(true)
     expect(key(item('building', 'b1'), 'a')).toBe(true)
@@ -2172,13 +2172,13 @@ describe('WP2: the keyboard on the 2D map (R10)', () => {
 describe('WP2: the 2D map shows the plan layers (R05)', () => {
   it('follows the planned layer and a drafted proposal', async () => {
     const { host, viewer } = setup({ reducedMotion: true })
-    expect(host.querySelector('li[data-id="b4"]')).not.toBeNull()
+    expect(host.querySelector('button[data-id="b4"]')).not.toBeNull()
     viewer.setLayers({ planned: false })
-    expect(host.querySelector('li[data-id="b4"]')).toBeNull()
-    expect(host.querySelector('li[data-id="pb1"]')).toBeNull()
+    expect(host.querySelector('button[data-id="b4"]')).toBeNull()
+    expect(host.querySelector('button[data-id="pb1"]')).toBeNull()
     await viewer.apply({ type: 'draftProposal', proposalId: 'p1' })
-    expect(host.querySelector('li[data-id="pb1"]')?.textContent).toContain('(proposed)')
-    host.querySelector<HTMLElement>('li[data-id="pb1"]')?.click()
+    expect(host.querySelector('button[data-id="pb1"]')?.textContent).toContain('(proposed)')
+    host.querySelector<HTMLElement>('button[data-id="pb1"]')?.click()
     expect(viewer.getSelection()).toEqual(['pb1'])
   })
 })

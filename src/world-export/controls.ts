@@ -60,6 +60,8 @@ html{font-size:${BASE_PX}px}
 .wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#03050a)}
 .wx-map2d{position:absolute;inset:0;box-sizing:border-box;overflow:auto;padding:${r(12)} ${r(16)};border-bottom:var(--wx-low) solid #0b1220;background:#0b1220}
 .wx-map2d [data-kind]{cursor:pointer}
+.wx-map2d button[data-kind]{margin:0;padding:0;border:0;border-radius:${r(2)};background:none;color:inherit;font:inherit;text-align:left}
+.wx-page button:focus-visible{outline:2px solid #7dd3fc;outline-offset:2px}
 .wx-map2d ul{padding-left:${r(18)}}
 .wx-panel{background:rgba(8,12,22,.82);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:${r(12)};color:#e2e8f0}
 .wx-card{position:absolute;top:${r(CARD_INSET)};left:${r(CARD_INSET)};width:${r(CARD_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET)});display:flex;flex-direction:column;box-sizing:border-box;padding:${r(12)} ${r(6)} ${r(12)} ${r(14)};z-index:3}

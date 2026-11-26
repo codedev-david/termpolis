@@ -886,7 +886,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     return true
   }
   const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => { openItem(e.target as Element) }
-  // Enter or Space on an item (each is a Tab stop) opens it as a click does; Space then does not scroll the list.
+  // Enter or Space on an item (each is a button, one Tab stop) opens it as a click does, once: the default is
+  // prevented, so the button's own click does not follow, and Space does not scroll the list.
   const onFallbackKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if ((e.key === 'Enter' || e.key === ' ') && openItem(e.target as Element)) e.preventDefault()
   }
@@ -1146,7 +1147,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             data-testid="world-fallback"
             // Drawn at the pane's scale, wrapping long names, and ending above the ask bar laid over the
             // pane's foot, so no row sits under the suggestions or the box. Dark like the pane, so its scrollbar is too.
-            className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
+            className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_button]:cursor-pointer [&_button]:text-left [&_button]:rounded-sm [&_button:focus-visible]:outline [&_button:focus-visible]:outline-2 [&_button:focus-visible]:outline-offset-2 [&_button:focus-visible]:outline-[#4fc1ff] [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, colorScheme: 'dark', ...zoom }}
             onClick={onFallbackClick}
             onKeyDown={onFallbackKey}
