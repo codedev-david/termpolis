@@ -319,6 +319,24 @@ test.describe.serial('Lumopolis export in the real app', () => {
     }
     const terminalBefore = await axOf(terminalInput)
     expect((await axOf('[data-testid="world-ask-row"] input')).ignored, 'the Ask box is in the tree').toBe(false)
+    // The spots to click are picked while the pane is live: the centre of each part (and of the Ask box) where a hit
+    // test lands on that element itself, not clipped by the map's scroll area nor under another layer of the pane.
+    const liveSpots = (selector: string): Promise<{ x: number; y: number }[]> => page.evaluate((sel) => {
+      const out: { x: number; y: number }[] = []
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+        const r = el.getBoundingClientRect()
+        const x = r.left + r.width / 2
+        const y = r.top + r.height / 2
+        if (r.width === 0 || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
+        const at = document.elementFromPoint(x, y)
+        if (at !== null && el.contains(at)) out.push({ x, y })
+      }
+      return out
+    }, selector)
+    const partSpots = await liveSpots('[data-testid="world-fallback"] [data-kind="building"]')
+    const askSpots = await liveSpots('[data-testid="world-ask-row"] input')
+    expect(partSpots.length, 'a part of the 2D map takes a click').toBeGreaterThan(0)
+    expect(askSpots.length, 'the Ask box takes a click').toBeGreaterThan(0)
     await page.locator('[data-testid="world-export"]').click()
     await page.locator('[data-testid="world-export-world"]').click()
     await expect(dialog).toBeVisible()
@@ -327,20 +345,16 @@ test.describe.serial('Lumopolis export in the real app', () => {
     // Real clicks at spots of the pane the dialog leaves uncovered (a part of the 2D map, the Re-layout control or the
     // More button, the Ask box): each lands on the scrim or on an inert control, never on what is under it. The checks
     // are soft, so a run without the fix names every one that let a click through.
-    const spot = (selector: string): Promise<{ x: number; y: number; hit: string } | null> => page.evaluate((sel) => {
+    const spot = (spots: { x: number; y: number }[]): Promise<{ x: number; y: number; hit: string } | null> => page.evaluate((list) => {
       const box = (document.querySelector('[data-testid="world-export-dialog"]') as HTMLElement).getBoundingClientRect()
-      for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
-        const r = el.getBoundingClientRect()
-        const x = r.left + r.width / 2
-        const y = r.top + r.height / 2
-        if (r.width === 0 || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
+      for (const { x, y } of list) {
         if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) continue
         const at = document.elementFromPoint(x, y) as HTMLElement | null
         return { x, y, hit: at?.dataset.testid ?? at?.tagName.toLowerCase() ?? '' }
       }
       return null
-    }, selector)
-    const partAt = await spot('[data-testid="world-fallback"] [data-kind="building"]')
+    }, spots)
+    const partAt = await spot(partSpots)
     expect(partAt, 'a part of the 2D map lies outside the dialog').not.toBeNull()
     expect.soft(partAt?.hit, 'the scrim lies over the part').toBe('world-pane-scrim')
     await page.mouse.click((partAt as { x: number }).x, (partAt as { y: number }).y)
@@ -354,7 +368,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await expect.soft(page.locator('[data-testid="world-more-menu"]'), 'nor its menu').toHaveCount(0)
     await closeMore(page)
     // A click on the Ask box puts no caret there: what is typed next goes to the dialog, as it did before the click.
-    const askAt = await spot('[data-testid="world-ask-row"] input')
+    const askAt = await spot(askSpots)
     expect(askAt, 'the Ask box lies outside the dialog').not.toBeNull()
     await page.mouse.click((askAt as { x: number }).x, (askAt as { y: number }).y)
     expect.soft(await askInput.evaluate((el) => el === document.activeElement), 'the Ask box took no focus').toBe(false)
