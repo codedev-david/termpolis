@@ -322,7 +322,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await page.locator('[data-testid="world-export"]').click()
     await page.locator('[data-testid="world-export-world"]').click()
     await expect(dialog).toBeVisible()
-    await expect(page.locator('[data-testid="world-pane-scrim"]')).toBeVisible()
+    await expect.soft(page.locator('[data-testid="world-pane-scrim"]'), 'a scrim covers the pane').toBeVisible()
     await expect.poll(() => dialog.evaluate((d) => d.contains(document.activeElement)), 'Export took the focus').toBe(true)
     // Real clicks at spots of the pane the dialog leaves uncovered (a part of the 2D map, the Re-layout control or the
     // More button, the Ask box): each lands on the scrim or on an inert control, never on what is under it. The checks
