@@ -371,19 +371,37 @@ async function aimAtABuilding(ids: string[]): Promise<{ id: string; x: number; y
  * The first building (the busiest first) whose aim point has the bare canvas under it and which the
  * renderer's pick gives the building there and at every CLICK_JITTER point round it.
  */
-async function jitterAim(ids: string[]): Promise<{ id: string; x: number; y: number }> {
-  const pt = await page.evaluate(({ all, jitter }) => {
+async function jitterAim(ids: string[]): Promise<{ hit: { id: string; x: number; y: number } | null; why: string }> {
+  return page.evaluate(({ all, jitter }) => {
     const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
     const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
+    const name = (el: Element | null): string => (el ? `${el.tagName.toLowerCase()}.${el.className}${el.textContent && el.textContent.length < 40 ? ` "${el.textContent}"` : ''}` : 'nothing')
+    let off = 0
+    const tried: Array<{ id: string; bad: number; text: string }> = []
     for (const id of all) {
       const p = probe?.screenPoint(id) ?? null
-      if (!p || document.elementFromPoint(p.x, p.y) !== host) continue
-      if ([[0, 0], ...jitter].every(([dx, dy]) => probe?.pickAt(p.x + dx, p.y + dy)?.id === id && document.elementFromPoint(p.x + dx, p.y + dy) === host)) return { id, ...p }
+      if (!p) {
+        off++
+        continue
+      }
+      // Each point round the aim point that the pick or the page gives to something else, and what.
+      const misses: string[] = []
+      for (const [dx, dy] of [[0, 0], ...jitter]) {
+        const pick = probe?.pickAt(p.x + dx, p.y + dy) ?? null
+        const top = document.elementFromPoint(p.x + dx, p.y + dy)
+        if (pick?.id !== id) misses.push(`${dx},${dy} pick ${pick ? `${pick.kind}:${pick.id}` : 'none'}`)
+        else if (top !== host) misses.push(`${dx},${dy} under ${name(top)}`)
+      }
+      if (misses.length === 0) return { hit: { id, ...p }, why: '' }
+      tried.push({ id, bad: misses.length, text: `${id} aim ${p.x.toFixed(1)},${p.y.toFixed(1)}: ${misses.length}/${jitter.length + 1} off (${misses.join('; ')})` })
     }
-    return null
+    tried.sort((a, b) => a.bad - b.bad)
+    const d = probe?.drawn()
+    const cam = (probe as unknown as { cameraState?: () => { pos: number[]; target: number[] } } | undefined)?.cameraState?.()
+    const dist = cam ? Math.hypot(...cam.pos.map((v, k) => v - cam.target[k])).toFixed(1) : '?'
+    const c = host?.getBoundingClientRect()
+    return { hit: null, why: `${all.length} candidates, ${off} with no aim point in view, tier ${d?.tier ?? '?'}, camera ${dist} from its target, canvas ${c ? `${Math.round(c.width)}x${Math.round(c.height)}` : '?'} at dpr ${window.devicePixelRatio}; best:${tried.slice(0, 5).map((t) => t.text).join(' | ') || 'none'}` }
   }, { all: ids, jitter: CLICK_JITTER })
-  if (!pt) throw new Error(`no building of ${ids.length} has every point round its aim point to itself`)
-  return pt
 }
 
 /** Connection labels on show (the hovered or selected part's lines). */
@@ -668,13 +686,17 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
       // jitter round its aim point, so the camera goes a few notches nearer until one does.
       let further = 0
       let steady: { id: string; x: number; y: number } | null = null
+      const whys: string[] = []
       for (; further <= 12; further += 4) {
         await toOverview()
         await toBuildingsTier(further)
-        steady = await jitterAim(connected).catch(() => null)
+        const aim = await jitterAim(connected)
+        steady = aim.hit
         if (steady) break
+        whys.push(`${further} further: ${aim.why}`)
       }
-      if (!steady) throw new Error(`no steady aim on ${connected} at any zoom tried (up to ${further - 4} further)`)
+      if (!steady) throw new Error(`${tag}: no steady aim at any zoom tried (up to ${further - 4} further):\n${whys.join('\n')}`)
+      console.log(`[world-visual] ${tag} steady aim on ${steady.id} at ${steady.x.toFixed(1)},${steady.y.toFixed(1)}, ${further} further${whys.length ? `, after:\n${whys.join('\n')}` : ''}`)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
         await toBuildingsTier(further)
@@ -887,7 +909,9 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     await page.evaluate(() => getSelection()?.removeAllRanges())
     // Film bugs 5 and 6: nothing selected or open yet, the first double-click explodes the building
     // (its first click no longer opens a card over it), and selects none of the page's text.
-    const at = await jitterAim(motionDoc.buildings.map((b) => b.id))
+    const aim = await jitterAim(motionDoc.buildings.map((b) => b.id))
+    if (!aim.hit) throw new Error(`no building has every point round its aim point to itself: ${aim.why}`)
+    const at = aim.hit
     await page.mouse.dblclick(at.x, at.y)
     await expect.poll(async () => (await visual()).exploded, { timeout: 5000 }).toBe(at.id)
     await expect.poll(async () => (await visual()).explodeGap, { timeout: 5000 }).toBeGreaterThan(0)
