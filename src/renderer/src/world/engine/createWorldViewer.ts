@@ -325,8 +325,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   const pos = getComputedStyle(container).position
   if (pos === '' || pos === 'static') container.style.position = 'relative' // '' = not laid out yet
+  // No outline override: the host's own focus ring shows when the keyboard reaches the map (A11Y Y6).
   if (!container.hasAttribute('tabindex')) container.tabIndex = 0
-  container.style.outline = 'none'
 
   let r3: ThreeRenderer | null = null
   /** WebGL contexts lost so far: the first is waited out, the second drops to the 2D map. */

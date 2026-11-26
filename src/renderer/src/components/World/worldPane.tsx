@@ -53,6 +53,9 @@ export function saveWorldPaneWidth(px: number): void {
 export const ASK_BOTTOM_PX = 16
 /** The ask bar's width: 34rem, or the pane less 12 px each side when that is narrower. */
 export const ASK_SLOT_WIDTH = 'min(34rem, calc(100% - 24px))'
+/** The ask bar never runs past the top of the map: in a short pane its answer, notices and field scroll inside it
+ *  (A11Y Y8). */
+export const ASK_SLOT_MAX_HEIGHT = 'calc(100% - 24px)'
 /** Room kept between the city and the top of the ask bar. */
 const ASK_CLEARANCE_PX = 8
 
@@ -281,16 +284,21 @@ export function useUiZoom(): CSSProperties {
   return s === 1 ? {} : { zoom: s }
 }
 
-export function WorldPaneOpening({ width, overlay, onClose }: {
+/** One function for every render, so React focuses the control once, as it mounts. */
+const focusOnMount = (el: HTMLElement | null): void => el?.focus()
+
+export function WorldPaneOpening({ width, overlay, onClose, takeFocus = false }: {
   width: number
   overlay: WorldPaneOverlay | null
   onClose: () => void
+  /** Close takes the focus: the control that had it went as the pane started over (Try again, A11Y M2). */
+  takeFocus?: boolean
 }): JSX.Element {
   return (
     <div data-testid="world-view-opening" style={worldPaneStyle(WORLD_OPENING_BACKGROUND, width, overlay)}>
       <div className="m-auto flex flex-col items-center gap-3 p-4 text-center">
         <div role="status" className="text-sm text-[#9ca3af]">Opening Lumopolis…</div>
-        <button type="button" className="rounded bg-[#3c3c3c] px-3 py-1.5 text-xs hover:bg-[#4c4c4c]" onClick={onClose}>Close</button>
+        <button type="button" ref={takeFocus ? focusOnMount : undefined} className="rounded bg-[#3c3c3c] px-3 py-1.5 text-xs hover:bg-[#4c4c4c]" onClick={onClose}>Close</button>
       </div>
     </div>
   )

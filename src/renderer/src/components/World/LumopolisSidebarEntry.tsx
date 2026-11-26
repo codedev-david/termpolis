@@ -42,7 +42,7 @@ export function LumopolisSidebarEntry(): JSX.Element {
         data-testid="sidebar-lumopolis-entry"
         className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-[#d4d4d4] hover:text-white hover:bg-[#37373d]"
       >
-        <i className="fa-solid fa-earth-americas text-[#4fc1ff] w-4 text-center"></i>
+        <i aria-hidden="true" className="fa-solid fa-earth-americas text-[#4fc1ff] w-4 text-center"></i>
         <span>Lumopolis</span>
         {isNew && (
           <span data-testid="sidebar-lumopolis-new" className="ml-auto rounded-full bg-[#0078d4] px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-white">New</span>
@@ -60,7 +60,7 @@ export function LumopolisSidebarEntry(): JSX.Element {
             title="Dismiss"
             data-testid="sidebar-lumopolis-hint-dismiss"
             className="absolute right-1 top-1 rounded px-1 text-[#9ca3af] hover:text-white hover:bg-[#37373d]"
-          ><i className="fa-solid fa-xmark text-[11px]"></i></button>
+          ><i aria-hidden="true" className="fa-solid fa-xmark text-[11px]"></i></button>
         </div>
       )}
     </div>

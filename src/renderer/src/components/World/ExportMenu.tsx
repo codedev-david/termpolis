@@ -27,7 +27,8 @@ export interface ExportMenuProps {
 /** The menu's width in its own px (w-56), to tell whether it fits to the left of the button: times the pane's scale on screen. */
 const MENU_W = 224
 
-const itemCls = 'text-left px-2 py-1.5 rounded text-[#d4d4d4] hover:bg-[#37373d] focus:bg-[#37373d] outline-none'
+// The keyboard's item has a ring as well as the lighter ground, which alone is too faint to see (A11Y Y6).
+const itemCls = 'text-left px-2 py-1.5 rounded text-[#d4d4d4] hover:bg-[#37373d] focus:bg-[#37373d] outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#4fc1ff]'
 
 export function ExportMenu({ btnClass, onExport, disabled = false, open, onToggle, onDone, menuId }: ExportMenuProps): JSX.Element {
   const scale = useContext(UiScaleContext)

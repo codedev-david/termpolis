@@ -54,7 +54,7 @@ import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
 import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveFrom, legendReserveScaled, WorldLegend } from './WorldLegend'
-import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, noticeBox, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
+import { ASK_BOTTOM_PX, ASK_SLOT_MAX_HEIGHT, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, noticeBox, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import { tourCard } from '../../world/engine/cards'
@@ -90,6 +90,8 @@ export interface WorldViewProps {
 
 /** The width a pane gets from no one (a test, a stand-alone mount). */
 const DEFAULT_WIDTH = 480
+/** Room kept below a toolbar menu capped to the map (A11Y Y8): its 4 px drop from the toolbar and a little air. */
+const MENU_GAP_PX = 12
 
 /** How the ask box and the pane share Esc and world swaps. */
 export interface WorldAskLink {
@@ -1105,6 +1107,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onExport={doc && doc.provisional !== true && worldKey !== null ? openExport : undefined}
         onBuildIt={designKey !== null && buildIt && doc ? openBuildIt : undefined}
         dialogOpen={dialogOpen}
+        menuMaxHeight={stageSize[1] > 0 ? Math.floor(stageSize[1] / scale) - MENU_GAP_PX : undefined}
         inert={home && homeDialog}
         bookmarks={bookmarks}
         onSaveBookmark={onSaveBookmark}
@@ -1124,6 +1127,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           <div
             ref={hostRef}
             data-testid="world-canvas-host"
+            // A ring inside its edge when the keyboard reaches the map (the stage clips anything outside) (A11Y Y6).
+            className="focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#4fc1ff]"
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
             // The theme's background (the renderer sets --world-bg) shows before the first frame paints (look spec §5.3).
@@ -1231,7 +1236,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           </div>
         )}
         {askSlot && !home && (
-          <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3, ...zoom }} data-testid="world-ask-slot">
+          <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, maxHeight: ASK_SLOT_MAX_HEIGHT, overflowY: 'auto', zIndex: 3, ...zoom }} data-testid="world-ask-slot">
             {askSlot(shows2d ? null : viewer, doc, worldKey, askLink, proposal)}
           </div>
         )}

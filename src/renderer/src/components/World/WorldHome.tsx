@@ -204,7 +204,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
             </button>
           ))}
         </div>
-        {error !== null && <p role="alert" className="text-xs text-[#f14c4c] text-center">{error}</p>}
+        {error !== null && <p role="alert" className="text-xs text-[#f48771] text-center">{error}</p>}
         <section className="flex flex-col gap-2">
           <h2 className="text-xs uppercase tracking-wide text-[#9ca3af]">Recent worlds</h2>
           {listError && (
@@ -214,7 +214,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
             </div>
           )}
           {entries.length === 0 ? (
-            !listError && <p className="text-xs text-[#6b7280]">No worlds yet. Pick one of the choices above to make your first.</p>
+            !listError && <p className="text-xs text-[#9ca3af]">No worlds yet. Pick one of the choices above to make your first.</p>
           ) : (
             <ul aria-label="Recent worlds" className="flex flex-col gap-1">
               {entries.map((e) => {
@@ -227,9 +227,9 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
                     {/* The name, and where it is under it: two worlds can share a name (F-R12). */}
                     <span className="flex-1 min-w-0 flex flex-col">
                       <span className="truncate text-sm text-[#d4d4d4]">{e.title}</span>
-                      {where !== '' && <span data-testid="world-where" title={where} className="truncate text-xs text-[#6b7280]">{where}</span>}
+                      {where !== '' && <span data-testid="world-where" title={where} className="truncate text-xs text-[#9ca3af]">{where}</span>}
                     </span>
-                    <span className="text-xs text-[#6b7280]">{agoText(e.lastOpened, at)}</span>
+                    <span className="text-xs text-[#9ca3af]">{agoText(e.lastOpened, at)}</span>
                   </>
                 )
                 return (

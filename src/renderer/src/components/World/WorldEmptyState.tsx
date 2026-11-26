@@ -46,15 +46,16 @@ export function WorldEmptyState({ mode, progress, error, onRetry, onCancel, onCh
             className={quietBtn}
           >Stop mapping</button>
         )}
-        {mode === 'error' && noFiles === null && (
-          <>
-            <p className="text-sm">Lumopolis could not map this project.</p>
+        {/* A failure is read out as it shows, the way an error in a dialog is (A11Y Y5). */}
+        {mode === 'error' && (
+          <div role="alert" className="flex flex-col items-center gap-3" data-testid="world-failure">
+            {noFiles === null && <p className="text-sm">Lumopolis could not map this project.</p>}
             {/* M3: the fixed words for a call that threw would only say "couldn't" twice. */}
-            {error !== UI_FAILED && <p className="text-xs text-[#f48771] break-words" data-testid="world-error">{error}</p>}
-          </>
+            {noFiles === null && error !== UI_FAILED && <p className="text-xs text-[#f48771] break-words" data-testid="world-error">{error}</p>}
+            {/* The folder's own words say it all; "could not map" over them would only say it twice. */}
+            {noFiles !== null && <p className="text-sm break-words" data-testid="world-error">{error}</p>}
+          </div>
         )}
-        {/* The folder's own words say it all; "could not map" over them would only say it twice. */}
-        {noFiles !== null && <p className="text-sm break-words" data-testid="world-error">{error}</p>}
         {(retry || noFiles !== null) && (
           <div className="flex flex-wrap justify-center gap-2">
             {retry && <button type="button" onClick={retry} data-testid="world-retry" className={mainBtn}>Try again</button>}
@@ -89,6 +90,9 @@ function MappingProgress({ progress }: { progress: { stage: string; pct: number 
       <p className="text-xs text-[#9ca3af]" data-testid="world-progress-text">
         {progress ? `${pct}% · ${progress.stage}` : 'Starting…'}
       </p>
+      {/* A screen reader hears each stage once as it starts, not every percent (the bar has the number) (A11Y Y5).
+          PENDING SIGN-OFF: the wording. */}
+      <p role="status" className="sr-only" data-testid="world-progress-stage">{progress ? `Mapping: ${progress.stage}` : 'Mapping started'}</p>
     </div>
   )
 }

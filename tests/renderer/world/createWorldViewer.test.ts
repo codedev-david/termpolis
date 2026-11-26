@@ -85,6 +85,8 @@ describe('2D fallback: selection from list clicks', () => {
     expect(createThreeRenderer).not.toHaveBeenCalled()
     expect(host.querySelector('section.world-fallback')).not.toBeNull()
     expect(host.tabIndex).toBe(0)
+    // Its focus ring is left alone, so the keyboard can see where it is (A11Y Y6).
+    expect(host.style.outline).toBe('')
     expect(host.style.position).toBe('relative')
   })
 

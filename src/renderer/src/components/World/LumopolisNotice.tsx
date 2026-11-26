@@ -54,7 +54,7 @@ export function LumopolisNotice(): JSX.Element | null {
         title="Dismiss"
         onClick={() => setNotice(null)}
         className="shrink-0 rounded px-1 text-[#9ca3af] hover:bg-[#37373d] hover:text-white"
-      ><i className="fa-solid fa-xmark text-[11px]"></i></button>
+      ><i aria-hidden="true" className="fa-solid fa-xmark text-[11px]"></i></button>
     </div>
   )
 }

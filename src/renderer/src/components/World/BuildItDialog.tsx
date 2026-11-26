@@ -92,7 +92,7 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
         Build it starts Claude Code: it is the one agent that takes the design as its first prompt when it opens.
       </p>
       {agents.length === 0 && <p className="text-xs text-[#f0b429]">Build it needs Claude Code: add a Claude Code profile in the sidebar first.</p>}
-      {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={onClose}>Cancel</button>
         <button type="button" className={primaryCls} disabled={!ready} onClick={build}>{building ? 'Building…' : 'Build it'}</button>

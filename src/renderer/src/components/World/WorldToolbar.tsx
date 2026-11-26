@@ -73,6 +73,9 @@ export interface WorldToolbarProps {
   onBuildIt?: () => void
   /** An Export or Build it dialog is open: both buttons are off until it closes. */
   dialogOpen?: boolean
+  /** The tallest a toolbar menu may be, in the toolbar's own px: the map's height under it. A taller one (many saved
+   *  views, a short pane) scrolls inside, every control in reach (A11Y Y8). Unmeasured: no cap. */
+  menuMaxHeight?: number
   /** A dialog on the home is up: the whole toolbar is inert, so Tab and clicks stay in that dialog (F-R13). */
   inert?: boolean
   /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
@@ -331,7 +334,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
             aria-label="Bookmarks"
             data-testid="world-bookmarks-menu" data-map-panel
             className="absolute left-0 top-full mt-1 p-2 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-1 text-xs w-64"
-            style={{ zIndex: 7, background: '#252526' }}
+            style={{ zIndex: 7, background: '#252526', maxHeight: props.menuMaxHeight, overflowY: 'auto' }}
           >
             <div className="flex gap-1">
               <input
@@ -400,7 +403,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
               aria-label="More"
               data-testid="world-more-menu" data-map-panel
               className={`absolute ${moreSide === 'left' ? 'left-0' : 'right-0'} top-full mt-1 p-2 rounded border border-[#3c3c3c] shadow-xl flex flex-wrap items-center gap-2 w-60`}
-              style={{ zIndex: 7, background: '#252526' }}
+              style={{ zIndex: 7, background: '#252526', maxHeight: props.menuMaxHeight, overflowY: 'auto' }}
             >
               {secondary}
               {actions}

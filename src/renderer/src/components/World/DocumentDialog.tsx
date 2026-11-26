@@ -97,7 +97,7 @@ export function DocumentDialog({ root, designKey, projectName, picture, onSaved,
           <p data-testid="world-document-no-picture" className="text-xs text-[#9ca3af] pl-5">The city picture needs the 3D map on screen.</p>
         )}
       </div>
-      {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={saving || title.trim() === ''} onClick={save}>{saving ? 'Saving…' : 'Save…'}</button>

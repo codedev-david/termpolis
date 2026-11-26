@@ -95,10 +95,10 @@ export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStart
           </button>
         )}
       </div>
-      {mic.errorMsg && <p role="alert" className="text-xs text-[#f14c4c]">{mic.errorMsg}</p>}
+      {mic.errorMsg && <p role="alert" className="text-xs text-[#f48771]">{mic.errorMsg}</p>}
       {mic.notice && <p role="status" className="text-xs text-[#9ca3af]">{mic.notice}</p>}
       {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] motion-safe:animate-pulse">Drafting your design…</p>}
-      {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={description === '' || drafting !== null} onClick={submit}>Design it</button>

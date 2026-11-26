@@ -95,7 +95,7 @@ export function SignInNeededNotice({ host, helper, message, notFound, busy, tryi
     >
       <span id={wordsId}>{said}</span>
       {doing !== null && <span data-testid="world-sign-in-progress" className="text-[#9da5b4]">{doing}</span>}
-      {error !== null && <span role="alert" className="text-[#f14c4c]">{reason === 'failed' ? lessTryAgain(error) : error}</span>}
+      {error !== null && <span role="alert" className="text-[#f48771]">{reason === 'failed' ? lessTryAgain(error) : error}</span>}
       <div className="flex flex-wrap justify-end gap-2">
         {reason === 'failed' ? (
           <button type="button" className={btnCls} disabled={busy} onClick={onTryAgain}>Try again</button>

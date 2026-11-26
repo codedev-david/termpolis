@@ -732,7 +732,7 @@ async function answerProblems(): Promise<string[]> {
       if (lines.length === 0 || !lines.every(inside)) out.push('the heading is not wholly on show')
     }
     for (const label of ['E1', 'E2']) {
-      const chip = scroller.querySelector(`button[aria-label="Evidence ${label}"]`)
+      const chip = scroller.querySelector(`button[data-evidence="${label}"]`)
       if (!chip) out.push(`no ${label} chip`)
       else if (!inside(chip.getBoundingClientRect())) out.push(`the ${label} chip is not wholly on show`)
     }

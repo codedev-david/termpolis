@@ -147,6 +147,7 @@ describe('WorldView', () => {
     await mount()
     await settle()
     expect(screen.getByTestId('world-error')).toHaveTextContent(FOLDER_EMPTY_MESSAGE)
+    expect(screen.getByRole('alert').textContent).toBe(FOLDER_EMPTY_MESSAGE)
     expect(screen.queryByTestId('world-retry')).toBeNull()
     const lists = b.api.worldSourcesList.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Choose another folder' }))
@@ -190,11 +191,16 @@ describe('WorldView', () => {
     expect(dialog()).toBeInTheDocument()
     expect(screen.getByText('Mapping your project…')).toBeInTheDocument()
     expect(screen.getByTestId('world-progress-text')).toHaveTextContent('Starting…')
+    // A screen reader hears the stage as it starts, never each percent (A11Y Y5).
+    const stage = (): HTMLElement => screen.getByTestId('world-progress-stage')
+    expect(stage()).toHaveAttribute('role', 'status')
+    expect(stage()).toHaveTextContent(/^Mapping started$/)
     expect(b.api.worldCompile).toHaveBeenCalledWith('/repo')
 
     b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 40 })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
     expect(screen.getByTestId('world-progress-text')).toHaveTextContent('40% · layout')
+    expect(stage()).toHaveTextContent(/^Mapping: layout$/)
     // A read's twentieth of a point moves the bar itself; the text and the reader keep the whole percent (fix round 3).
     b.progress({ root: '/repo', projectKey: 'k', stage: 'boundaries', pct: 12.35 })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '12')
@@ -643,6 +649,37 @@ describe('WorldView', () => {
     bridge({ worldGet: vi.fn(() => get.promise) })
     render(<WorldView root="/repo" width={512} onClose={vi.fn()} />)
     expect(dialog()).toHaveStyle({ width: '512px' })
+  })
+
+  it('caps a toolbar menu to the map under it, so a long one scrolls with every control in reach (A11Y Y8)', async () => {
+    const stage = { h: 0 }
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-stage' ? stage.h : 0
+    })
+    try {
+      bridge()
+      const { unmount } = render(<WorldView root="/repo" width={400} onClose={vi.fn()} />)
+      await screen.findByTestId('world-legend')
+      fireEvent.click(screen.getByTestId('world-more'))
+      // Unmeasured (no layout yet): no cap.
+      expect(screen.getByTestId('world-more-menu').style.maxHeight).toBe('')
+      expect(screen.getByTestId('world-more-menu').style.overflowY).toBe('auto')
+      unmount()
+      stage.h = 300
+      bridge()
+      render(<WorldView root="/repo" width={400} onClose={vi.fn()} askSlot={() => <input aria-label="ask" />} />)
+      await screen.findByTestId('world-legend')
+      fireEvent.click(screen.getByTestId('world-bookmarks'))
+      expect(screen.getByTestId('world-bookmarks-menu').style.maxHeight).toBe('288px')
+      expect(screen.getByTestId('world-bookmarks-menu').style.overflowY).toBe('auto')
+      fireEvent.click(screen.getByTestId('world-more'))
+      expect(screen.getByTestId('world-more-menu').style.maxHeight).toBe('288px')
+      // The ask bar is capped to the map as well.
+      expect(screen.getByTestId('world-ask-slot').style.maxHeight).toBe('calc(100% - 24px)')
+      expect(screen.getByTestId('world-ask-slot').style.overflowY).toBe('auto')
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
   it("folds its toolbar's secondary controls into More in a pane under the fold, judged in its own pixels", async () => {
@@ -1626,6 +1663,8 @@ describe('WorldView', () => {
     const b = bridge({ worldGet: vi.fn().mockResolvedValueOnce(fail('host down')).mockResolvedValue(ok(minimal())) })
     await mount()
     expect(screen.getByTestId('world-error')).toHaveTextContent('host down')
+    // Read out as it shows (A11Y Y5): the failure and its reason, not the Try again under them.
+    expect(screen.getByRole('alert')).toHaveTextContent(/^Lumopolis could not map this project\.host down$/)
     fireEvent.click(screen.getByTestId('world-retry'))
     await settle()
     expect(b.api.worldGet).toHaveBeenCalledTimes(2)

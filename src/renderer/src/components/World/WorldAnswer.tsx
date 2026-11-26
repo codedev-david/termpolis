@@ -138,7 +138,8 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
         <button
           key={i}
           type="button"
-          aria-label={`Evidence ${n.v}`}
+          // The name holds the chip's whole visible text, as speech input expects (A11Y Y10, WCAG 2.5.3).
+          aria-label={`Evidence ${chipText(n.v)}`}
           data-evidence={n.v}
           onClick={() => click(n.v)}
           className="mx-0.5 px-1.5 rounded bg-[#0078d4]/30 text-[#4fc1ff] text-xs hover:bg-[#0078d4]/50"

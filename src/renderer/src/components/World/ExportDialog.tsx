@@ -267,7 +267,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
           </div>
         </div>
       )}
-      {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={info === null || running} onClick={start}>{running ? 'Exporting…' : 'Export…'}</button>
@@ -298,7 +298,7 @@ export function ExportToast({ file, onDismiss }: ExportToastProps): JSX.Element 
       <button type="button" className={link} onClick={() => call(window.termpolis.worldShowFile)}>Show in folder</button>
       <button type="button" className={link} onClick={() => call(window.termpolis.worldOpenFile)}>Open</button>
       <button type="button" aria-label="Dismiss" className="text-[#999] hover:text-white" onClick={onDismiss}><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
-      {error !== null && <span role="alert" className="basis-full text-[#f14c4c]">{error}</span>}
+      {error !== null && <span role="alert" className="basis-full text-[#f48771]">{error}</span>}
     </span>
   )
 }

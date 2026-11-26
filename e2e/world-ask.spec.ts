@@ -210,7 +210,7 @@ const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 const askBox = () => page.getByPlaceholder('Ask about this project…')
 const answer = () => page.locator('[data-testid="world-answer"]')
-const chip = () => answer().getByRole('button', { name: 'Evidence E1' })
+const chip = () => answer().getByRole('button', { name: /^Evidence E1(?: ·|$)/ })
 
 /** Claims with evidence in the worlds saved under `userDataDir` (0 while only code labels exist). */
 function storedClaims(): number {

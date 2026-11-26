@@ -350,7 +350,8 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
           ))}
         </div>
       )}
-      <div className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1.5 w-full" data-testid="world-ask-row">
+      {/* The field draws no ring of its own: the row's border lights up while the field has the focus (A11Y Y6). */}
+      <div className="flex items-center gap-1.5 rounded border border-[#3c3c3c] focus-within:border-[#4fc1ff] bg-[#252526] px-2 py-1.5 w-full" data-testid="world-ask-row">
         <input
           ref={inputRef}
           value={text}
@@ -398,7 +399,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
         </div>
       )}
       {mic.errorMsg && (
-        <div role="alert" className="max-w-full text-xs text-[#f14c4c]">{mic.errorMsg}</div>
+        <div role="alert" className="max-w-full text-xs text-[#f48771]">{mic.errorMsg}</div>
       )}
       {micNotice && <div role="status" className="max-w-full text-xs text-[#9ca3af]">{micNotice}</div>}
     </div>

@@ -209,7 +209,7 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initia
       {signingIn && <p className="text-xs text-[#9ca3af]">{SIGNING_IN_MESSAGE}</p>}
       {stopping !== null && <p role="status" className="text-xs text-[#9ca3af]">{STOPPING_MESSAGE}</p>}
       {kept && <p role="status" className="text-xs text-[#9ca3af]">{CLONE_KEPT_MESSAGE}</p>}
-      {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       {login !== null && (
         // When the host only said it could not find the repository, the address is the likelier fault: the
         // sign-in choices are offered as links, beneath the hint to check it (F-R8).
