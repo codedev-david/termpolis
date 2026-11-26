@@ -72,7 +72,7 @@ describe('lumopolisOscHandler', () => {
 
   it('a repeat main names a folder for: the notice offers that folder with its Open button, and nothing opens by itself', async () => {
     const { handler, open } = make()
-    const message = 'lumopolis: /repo/app was asked for a moment ago. Open shows it again.'
+    const message = 'lumopolis: /repo/app was asked for a moment ago. Open brings it to the front.'
     ask.mockResolvedValueOnce({ success: false, error: message, show: true, folder: '/repo/app' })
     handler('lumopolis;abc;app')
     await flush()
