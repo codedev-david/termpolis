@@ -17,7 +17,7 @@ import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
 import { CODEX_STARTING } from '../shared/accountSwitch'
-import { HINT_HEAD, echoedAtFirstPrompt, hintAtFoot, indexOf, look, plain } from './accountSwitch'
+import { HINT_HEAD, hintAtFoot, indexOf, look, plain, ranAtFirstPrompt } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { PROMPT_REPORT, sinceStarted } from './mcpServer'
 
@@ -77,7 +77,7 @@ export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: numbe
   // The replay is read only once a shell reported a prompt since the start: David's Git Bash, zsh
   // and fish report none.
   const since = l.raw.slice(from)
-  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell && !echoedAtFirstPrompt(since, start.commands)) return true
+  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell && !ranAtFirstPrompt(since, start.commands, io.size(id))) return true
   return !fresh && io.atShell?.(id) === true
 }
 
