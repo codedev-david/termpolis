@@ -20,8 +20,6 @@ export function fogDensity(themeDensity: number, overviewDist: number, open: boo
   return Math.min(themeDensity, FOG_REACH / overviewDist) * (open ? OPEN_FOG : 1)
 }
 
-const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 const norm = (a: V3): V3 => {
   const l = Math.hypot(a[0], a[1], a[2])
@@ -52,10 +50,14 @@ export function fitDistance(points: V3[], target: V3, dir: V3, fovDeg: number, a
   const { r, u, d } = basis(dir)
   const { tanH, tanV } = halfTangents(fovDeg, aspect, margin)
   let dist = minDist
+  // The arithmetic of sub and dot written out: nothing is made per point, as the overview of a city of thousands of
+  // parts is fitted on every resize of a pane drag, and its garbage was collected inside the resize.
   for (const p of points) {
-    const rel = sub(p, target)
-    const toward = dot(rel, d) // how far the point stands out toward the camera
-    dist = Math.max(dist, Math.abs(dot(rel, r)) / tanH + toward, Math.abs(dot(rel, u)) / tanV + toward)
+    const x = p[0] - target[0]
+    const y = p[1] - target[1]
+    const z = p[2] - target[2]
+    const toward = x * d[0] + y * d[1] + z * d[2] // how far the point stands out toward the camera
+    dist = Math.max(dist, Math.abs(x * r[0] + y * r[1] + z * r[2]) / tanH + toward, Math.abs(x * u[0] + y * u[1] + z * u[2]) / tanV + toward)
   }
   return dist
 }
@@ -80,10 +82,12 @@ export function fitView(points: V3[], dir: V3, fovDeg: number, aspect: number, m
     let y0 = Infinity
     let y1 = -Infinity
     for (const p of points) {
-      const rel = sub(p, target)
-      const depth = Math.max(1e-6, dist - dot(rel, d))
-      const x = dot(rel, r) / (depth * tanH)
-      const y = dot(rel, u) / (depth * tanV)
+      const px = p[0] - target[0] // sub and dot written out, as in fitDistance
+      const py = p[1] - target[1]
+      const pz = p[2] - target[2]
+      const depth = Math.max(1e-6, dist - (px * d[0] + py * d[1] + pz * d[2]))
+      const x = (px * r[0] + py * r[1] + pz * r[2]) / (depth * tanH)
+      const y = (px * u[0] + py * u[1] + pz * u[2]) / (depth * tanV)
       x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y)
     }
     const sx = ((x0 + x1) / 2) * dist * tanH

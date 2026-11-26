@@ -190,6 +190,42 @@ describe('threeRenderer wheel and orbit limits', () => {
     r.dispose()
   })
 
+  it('a resize fits the overview from the points made when the world was drawn; a world drawn again has its points made again', async () => {
+    let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })
+    readyCanvas(r)
+    const parts = [bldg('w1', [-400, 0, 0]), bldg('e1', [400, 0, 0])]
+    let walked = 0 // the times the city's parts are gone through
+    const buildings = new Proxy(parts, {
+      get: (t, k, rec) => {
+        if (k === Symbol.iterator) walked++
+        return Reflect.get(t, k, rec) as unknown
+      },
+    })
+    const city: SceneModel = { districts: [district('w', [-400, 0, 0], 60), district('e', [400, 0, 0], 60)], buildings, conduits: [], orbs: [] }
+    r.draw(city, emptyText(), false)
+    await r.overview(true)
+    const before = distOf(r)
+    walked = 0
+    for (const [w, hgt] of [[640, 480], [700, 480], [760, 480]]) {
+      resizeHost(h.host, w, hgt)
+      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
+    }
+    expect(walked).toBe(0)
+    // The same world changed in place and drawn again: the overview takes in its new part.
+    parts.push(bldg('far', [1600, 0, 0]))
+    r.draw(city, emptyText(), false)
+    await r.overview(true)
+    expect(distOf(r)).toBeGreaterThan(before * 1.5)
+    r.dispose()
+  })
+
   it('a big city lets the camera back off to 1.6 times its overview distance; it never goes under the ground', async () => {
     vi.stubGlobal('devicePixelRatio', 0.75)
     const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })

@@ -1375,8 +1375,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * more steeply down, the city turned so its long side runs up the picture (overviewDir). Done again
    * when the view is resized.
    */
-  function fitOverview(model: SceneModel): void {
-    if (model.buildings.length === 0 && model.orbs.length === 0) return
+  /**
+   * The city's own points for the overview (its parts, its externals and its platforms' rims) and their ground (x, z),
+   * made once per draw: the overview is fitted again on every resize, and a city of thousands of parts made some
+   * 50,000 of them each time, whose collection fell inside a pane drag's resizes (96 ms on a Windows runner).
+   */
+  let overviewBase: { model: SceneModel; pts: readonly V3[]; ground: ReadonlyArray<readonly [number, number]> } | null = null
+  function overviewPoints(model: SceneModel): { pts: readonly V3[]; ground: ReadonlyArray<readonly [number, number]> } {
+    if (overviewBase?.model === model) return overviewBase
     const pts: V3[] = []
     const h = FLOOR_W / 2
     for (const b of model.buildings) {
@@ -1390,7 +1396,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         pts.push([d.pos[0] + Math.cos(a) * d.radius, d.pos[1], d.pos[2] + Math.sin(a) * d.radius])
       }
     }
-    const view = overviewDir(fitAspect(false), pts.map((p) => [p[0], p[2]] as const), portrait)
+    overviewBase = { model, pts, ground: pts.map((p) => [p[0], p[2]] as const) }
+    return overviewBase
+  }
+  function fitOverview(model: SceneModel): void {
+    if (model.buildings.length === 0 && model.orbs.length === 0) return
+    const base = overviewPoints(model)
+    const pts: V3[] = base.pts.slice()
+    const view = overviewDir(fitAspect(false), base.ground, portrait)
     portrait = view.portrait
     if (view.turned !== turned) {
       turned = view.turned
@@ -1417,7 +1430,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const side = new THREE.Vector3(dir[2], 0, -dir[0]).normalize()
     for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
       const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(BASE_FOV / 2))) / height
-      const named = [...pts]
+      const named = pts.slice()
       for (const d of model.districts) {
         const half = districtHalfPx(d.id) * perPx
         const drop = districtDropPx(d.id) * perPx
@@ -1459,6 +1472,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (drawAskedAt === null) drawAskedAt = performance.now()
     newLayout() // a line close-up is searched again in the new city
     lastModel = model
+    overviewBase = null // a world drawn again may be the same one changed: its points are made again
     lastText = text
     allLabels = allEdgeLabels
     changes.settle() // the objects rising or pulsing are about to be freed
