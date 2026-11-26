@@ -166,7 +166,21 @@ export async function launchWorldApp(opts: WorldAppOptions = {}): Promise<WorldA
     }
     return { app, page, userDataDir }
   } catch (error) {
-    await app.close().catch(() => {})
+    // A launch that failed may also fail to close (a recording window that never loaded hangs app.close()): the
+    // close gets 10 s, then the process is killed, so a failed launch never holds the run until its timeout and
+    // the error thrown is still the launch's own (HOLD-B #107).
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      const closed = await Promise.race([
+        app.close().then(() => true, () => false),
+        new Promise<boolean>((done) => { deadline = setTimeout(() => done(false), 10_000) }),
+      ])
+      if (!closed) {
+        try { app.process().kill() } catch { /* already gone */ }
+      }
+    } finally {
+      clearTimeout(deadline)
+    }
     throw error
   }
 }

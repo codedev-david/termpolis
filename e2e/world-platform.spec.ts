@@ -1,6 +1,6 @@
 /**
  * Lumopolis on each platform (caveat 5): the same walk through the pane on Windows, macOS and Linux, with a
- * screenshot at each key moment and a video of the whole run, in test-results/lumopolis-shots/ (CI uploads it
+ * screenshot at each key moment and an optional video of the whole run, in test-results/lumopolis-shots/ (CI uploads it
  * per OS), plus the checks that differ by platform:
  *
  *   1. The project sits under a path with spaces ("termpolis platform …/My Project"). The pane opens on it
@@ -40,9 +40,11 @@ const PLATFORM = process.platform === 'win32' ? 'windows' : process.platform ===
 const FORCED_2D = process.env.TERMPOLIS_E2E_WORLD_2D === '1'
 const SHOTS = path.resolve(FORCED_2D ? 'test-results/lumopolis-shots-2d' : 'test-results/lumopolis-shots')
 const VIDEO_DIR = path.join(SHOTS, 'video')
-/** The video needs Playwright's ffmpeg. The e2e-windows job installs none (it runs no \`playwright install\`),
- *  and there a recording launch never loaded its window (30 s, twice); the macOS and Linux jobs install it. */
-const RECORD = !(process.platform === 'win32' && process.env.CI)
+/** Record on macOS and Linux CI, where Playwright's ffmpeg is installed. Set TERMPOLIS_E2E_RECORD_VIDEO=1 to opt in
+ *  anywhere Playwright's ffmpeg is available. The e2e-windows job installs none (it runs no \`playwright install\`),
+ *  and there a recording launch never loaded its window (30 s, twice); a local run without ffmpeg would hang the same
+ *  way, so outside CI the video is opt-in (HOLD-B #107). */
+const RECORD = process.env.TERMPOLIS_E2E_RECORD_VIDEO === '1' || (Boolean(process.env.CI) && process.platform !== 'win32')
 const DESCRIPTION = 'A small pet shop'
 const PROJECT_NAME = 'My Project'
 /** A second project beside the first, also under the path with spaces, which only the quoted folder in test 8 opens. */
