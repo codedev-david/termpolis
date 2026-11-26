@@ -304,8 +304,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
       await (await toolbarControl(page, 'world-map2d')).click()
       await closeMore(page)
     }
-    const part = fallback.locator('[data-kind="building"]').first()
-    await expect(part).toBeVisible()
+    await expect(fallback.locator('[data-kind="building"]').first()).toBeVisible()
     const askInput = page.locator('[data-testid="world-ask-row"] input')
     await expect(askInput).toBeVisible()
     const terminalInput = '[data-terminal-id] .xterm-helper-textarea'
@@ -325,22 +324,43 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await expect(dialog).toBeVisible()
     await expect(page.locator('[data-testid="world-pane-scrim"]')).toBeVisible()
     await expect.poll(() => dialog.evaluate((d) => d.contains(document.activeElement)), 'Export took the focus').toBe(true)
-    // Real clicks at the spots (force: no wait for the scrim to go), which land on the scrim, not on what is under it.
-    await part.click({ force: true })
+    // Real clicks at spots of the pane the dialog leaves uncovered (a part of the 2D map, the Re-layout control or the
+    // More button, the Ask box): each lands on the scrim or on an inert control, never on what is under it. The checks
+    // are soft, so a run without the fix names every one that let a click through.
+    const spot = (selector: string): Promise<{ x: number; y: number; hit: string } | null> => page.evaluate((sel) => {
+      const box = (document.querySelector('[data-testid="world-export-dialog"]') as HTMLElement).getBoundingClientRect()
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+        const r = el.getBoundingClientRect()
+        const x = r.left + r.width / 2
+        const y = r.top + r.height / 2
+        if (r.width === 0 || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
+        if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) continue
+        const at = document.elementFromPoint(x, y) as HTMLElement | null
+        return { x, y, hit: at?.dataset.testid ?? at?.tagName.toLowerCase() ?? '' }
+      }
+      return null
+    }, selector)
+    const partAt = await spot('[data-testid="world-fallback"] [data-kind="building"]')
+    expect(partAt, 'a part of the 2D map lies outside the dialog').not.toBeNull()
+    expect.soft(partAt?.hit, 'the scrim lies over the part').toBe('world-pane-scrim')
+    await page.mouse.click((partAt as { x: number }).x, (partAt as { y: number }).y)
     await page.waitForTimeout(400)
-    await expect(card, 'a click on a part of the 2D map opened no card').toHaveCount(0)
+    await expect.soft(card, 'a click on a part of the 2D map opened no card').toHaveCount(0)
     const relayout = page.locator('[data-testid="world-relayout"]')
     const control = (await relayout.isVisible()) ? relayout : page.locator('[data-testid="world-more"]')
     await control.click({ force: true })
     await page.waitForTimeout(400)
-    await expect(page.locator('[data-testid="world-relayout-confirm"]'), 'Re-layout opened no second dialog').toHaveCount(0)
-    await expect(page.locator('[data-testid="world-more-menu"]'), 'nor its menu').toHaveCount(0)
+    await expect.soft(page.locator('[data-testid="world-relayout-confirm"]'), 'Re-layout opened no second dialog').toHaveCount(0)
+    await expect.soft(page.locator('[data-testid="world-more-menu"]'), 'nor its menu').toHaveCount(0)
+    await closeMore(page)
     // A click on the Ask box puts no caret there: what is typed next goes to the dialog, as it did before the click.
-    await askInput.click({ force: true })
-    expect(await askInput.evaluate((el) => el === document.activeElement), 'the Ask box took no focus').toBe(false)
+    const askAt = await spot('[data-testid="world-ask-row"] input')
+    expect(askAt, 'the Ask box lies outside the dialog').not.toBeNull()
+    await page.mouse.click((askAt as { x: number }).x, (askAt as { y: number }).y)
+    expect.soft(await askInput.evaluate((el) => el === document.activeElement), 'the Ask box took no focus').toBe(false)
     await page.keyboard.type('xyz')
-    await expect(askInput).toHaveValue('')
-    expect(await dialog.evaluate((d) => d.contains(document.activeElement)), 'the focus stayed in Export').toBe(true)
+    await expect.soft(askInput, 'nothing typed reached the Ask box').toHaveValue('')
+    expect.soft(await dialog.evaluate((d) => d.contains(document.activeElement)), 'the focus stayed in Export').toBe(true)
     await expect(dialog).toBeVisible()
     // Inert, the pane behind the dialog is out of the accessibility tree; the terminal beside the pane is as it was (an
     // aria-modal dialog would take it out too on macOS, where Chromium prunes the tree to the dialog).
@@ -356,8 +376,8 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await dialog.getByRole('button', { name: 'Cancel' }).click()
     await expect(dialog).toHaveCount(0)
     await expect(page.locator('[data-testid="world-pane-scrim"]')).toHaveCount(0)
-    // Live again: a click on the part opens its card.
-    await part.click()
+    // Live again: a click at the same spot opens the part's card.
+    await page.mouse.click((partAt as { x: number }).x, (partAt as { y: number }).y)
     await expect(card).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(card).toHaveCount(0)
