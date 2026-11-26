@@ -21,7 +21,7 @@ import { globalHotkeys } from '../../src/main/appMenu'
 // Platform-specific accelerators (Super+Shift+* on Windows/Linux, Control+Alt+* on macOS). Derived
 // from the same source index.ts registers with, so these pass on every CI runner.
 const HK = globalHotkeys(process.platform)
-import { join } from 'path'
+import { isAbsolute, join, resolve } from 'path'
 
 // ---------------------------------------------------------------------------
 // Hoisted spies — referenced from inside vi.mock factories
@@ -875,10 +875,16 @@ describe('Commit Shield registry — path folding is Windows-only', () => {
     const fs = (await import('fs')) as any
     fs.readFileSync.mockReturnValue(JSON.stringify(['C:\\Repo']))
     // A plain repository at the folder asked about: git rev-parse --git-path hooks says `hooks`, the working tree is
-    // that folder and its git folder is in it (M2), and there is no core.hooksPath.
+    // that folder and its git folder is in it (M2), and there is no core.hooksPath. git prints the working tree as a
+    // full path, the way this OS's path rules read the folder: `C:/repo` is already one on Windows, but a folder
+    // named `C:` in the current one on Linux and macOS, so echoing it back as given named a working tree the repo
+    // is not in, and the install was refused there (main b5a483cf, unit on ubuntu and macos).
     M.execFileSync.mockImplementation((_bin: string, args: string[], opts?: { cwd?: string }) => {
       const k = args.slice(Math.max(args.lastIndexOf('rev-parse'), args.lastIndexOf('config'))).join(' ')
-      if (k === 'rev-parse --show-toplevel') return Buffer.from(`${opts?.cwd ?? ''}\n`)
+      if (k === 'rev-parse --show-toplevel') {
+        const cwd = opts?.cwd ?? ''
+        return Buffer.from(`${isAbsolute(cwd) ? cwd : resolve(cwd)}\n`)
+      }
       if (k === 'rev-parse --git-common-dir') return Buffer.from('.git\n')
       if (k === 'config --show-scope -z --get-all core.hooksPath') return Buffer.from('')
       return Buffer.from('hooks\n')
@@ -898,7 +904,9 @@ describe('Commit Shield registry — path folding is Windows-only', () => {
   it('folds two spellings of the same repo into one entry on win32', async () => {
     M.writeFileSync.mockClear()
     await withPlatform('win32', async () => {
-      expect((await invoke('gitHooks:install', { cwd: 'C:/repo' })).success).toBe(true)
+      const r = await invoke('gitHooks:install', { cwd: 'C:/repo' })
+      // The refusal's words, when there is one, are what a red run needs to show.
+      expect({ success: r.success, error: r.error }).toEqual({ success: true, error: undefined })
     })
     // NTFS is case-insensitive and treats the separators as interchangeable, so these ARE one
     // repository -- storing both is what let uninstall-by-cwd leave a stale "PROTECTED" entry.
@@ -908,7 +916,9 @@ describe('Commit Shield registry — path folding is Windows-only', () => {
   it('keeps them apart on POSIX, where they are genuinely different paths', async () => {
     M.writeFileSync.mockClear()
     await withPlatform('linux', async () => {
-      expect((await invoke('gitHooks:install', { cwd: 'C:/repo' })).success).toBe(true)
+      const r = await invoke('gitHooks:install', { cwd: 'C:/repo' })
+      // The refusal's words, when there is one, are what a red run needs to show.
+      expect({ success: r.success, error: r.error }).toEqual({ success: true, error: undefined })
     })
     // A backslash is a legal filename character on POSIX and the filesystem is case-sensitive.
     // Folding here would silently drop a real, separately protected repo from the list.
