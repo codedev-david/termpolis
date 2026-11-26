@@ -135,6 +135,12 @@ test('load A, then B with 2 added: after 1 s both are visible and the toast read
   }
 })
 
+/** The four motions as the last frame drew them. Only those: the rest of `visual` (which line labels show, say) is layout, not motion. */
+const readMotion = (): Promise<Visual> => page.evaluate(() => {
+  const { ringAngle, fogDrift, wirePulse, selectionRingAngle } = (window as unknown as HarnessWindow).__worldTest.drawn().visual
+  return { ringAngle, fogDrift, wirePulse, selectionRingAngle }
+})
+
 /** Loads A with its first building guessed (so it is fog), selects the verified one, and reads the four motions 800 ms apart. */
 async function motionTwice(): Promise<[Visual, Visual]> {
   await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
@@ -147,14 +153,9 @@ async function motionTwice(): Promise<[Visual, Visual]> {
   }, WORLD_A)
   await page.mouse.click(point.x, point.y)
   await expect(page.locator('#card')).toBeVisible()
-  // Only the four motions: the rest of `visual` (which line labels show, say) is layout, not motion.
-  const read = (): Promise<Visual> => page.evaluate(() => {
-    const { ringAngle, fogDrift, wirePulse, selectionRingAngle } = (window as unknown as HarnessWindow).__worldTest.drawn().visual
-    return { ringAngle, fogDrift, wirePulse, selectionRingAngle }
-  })
-  const first = await read()
+  const first = await readMotion()
   await page.waitForTimeout(800)
-  return [first, await read()]
+  return [first, await readMotion()]
 }
 
 test('reduced motion freezes the ring, fog drift, wireframe pulse and selection ring', async () => {
@@ -163,9 +164,14 @@ test('reduced motion freezes the ring, fog drift, wireframe pulse and selection 
   const [a, b] = await motionTwice()
   expect(b).toEqual(a)
   await page.goto(base + '?motion=1')
-  const [c, d] = await motionTwice()
-  expect(d.ringAngle).not.toBe(c.ringAngle)
-  expect(d.fogDrift).not.toBe(c.fogDrift)
+  const [c] = await motionTwice()
+  // Moving, the ring and the fog drift change from frame to frame. Drawn in software on a busy runner, no frame may be
+  // drawn in the 800 ms above (the macOS soak 45830192658 read the same ring angle 800 ms apart), so the next drawn
+  // frame is waited for: a frozen ring never changes, however long the wait.
+  await expect.poll(async () => {
+    const d = await readMotion()
+    return { ring: d.ringAngle !== c.ringAngle, fog: d.fogDrift !== c.fogDrift }
+  }, { message: 'with motion on, the ring turns and the fog drifts', timeout: 10_000 }).toEqual({ ring: true, fog: true })
 })
 
 test('a building with live latency is drawn hot, and one without is not', async () => {
