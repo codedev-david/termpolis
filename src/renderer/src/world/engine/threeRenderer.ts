@@ -19,6 +19,7 @@ import { focusOpacity } from './interaction'
 import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { shrunk, tierPixelRatio, type TierName } from './tierBudget'
 import { timedUpdate } from './timedDamping'
+import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
@@ -893,8 +894,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** When the first draw() asked for a city, and the time from then to the first frame after it. */
   let drawAskedAt: number | null = null
   let firstFrameMs: number | null = null
-  /** When the view was last resized (0 once a frame has drawn it), and the longest a resize waited for its frame. */
-  let resizedAt = 0
+  /** The longest a resize took, its own work (resize), since the view was built or the last perfBegin. */
   let resizeWorstMs = 0
   /** The first frame's time, stretched to opts.firstFrameSlowdown times itself by waiting (test only). */
   const slowFirstFrame = (ms: number, askedAt: number): number => {
@@ -1388,6 +1388,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   function draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void {
     if (drawAskedAt === null) drawAskedAt = performance.now()
+    newLayout() // a line close-up is searched again in the new city
     lastModel = model
     lastText = text
     allLabels = allEdgeLabels
@@ -1685,6 +1686,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
     const from = camera.position.clone().sub(controls.target)
+    lineShots.clear() // a new framing looks from the camera's side as it is now: a line is searched again
     endTurn() // a flight ends the idle turn
     const flight = rig.frame({ ids: [...ids], around, from }, instant)
     wake()
@@ -1968,11 +1970,37 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * that shows the most of them. When nothing shows an end, the camera looks down from high above,
    * backing off until it is clear of the roofs around it.
    */
+  /**
+   * A line's close-up (WP2 M-a). The search (searchLineShot) runs once per line, framing and layout: a resize or a
+   * panel change, which the rig answers by asking for the framing's shot again (resized, refit), only fits the kept
+   * shot's distance to the new free area (reaim), with no search. A new framing, a new layout and an explode search again.
+   */
+  const lineShots = createLineShotCache()
+  let layoutVersion = 0
+  function newLayout(): void {
+    layoutVersion++
+    lineShots.clear()
+  }
   function lineShot(e: EdgeRec, from: THREE.Vector3): Shot {
-    scene.updateMatrixWorld()
-    takePickBalls()
-    const balls = new Map<EdgeRec, THREE.Sphere>()
-    for (const o of edges.values()) balls.set(o, new THREE.Sphere().setFromPoints(o.path))
+    const key = lineShotKey(e.id, layoutVersion)
+    const kept = lineShots.get(key)
+    const fit = { margin: CLOSE_UP_MARGIN, minDist: CLOSE_UP_MIN, maxDist: controls.maxDistance }
+    if (kept) {
+      const { pos, target } = reaim(kept, fitAspect(), fitFov(), fit)
+      return { pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target) }
+    }
+    const { points } = lineFrame(e)
+    const shot = searchLineShot(e, from)
+    const off = shot.pos.clone().sub(shot.target)
+    const dist = Math.max(1e-6, off.length())
+    const dir: V3 = [off.x / dist, off.y / dist, off.z / dist]
+    const target: V3 = [shot.target.x, shot.target.y, shot.target.z]
+    const fitted = fitDistance(points, target, dir, fitFov(), fitAspect(), fit.margin, fit.minDist)
+    lineShots.put(key, { dir, target, points, stretch: dist / fitted })
+    return shot
+  }
+  /** What a line's close-up frames: the arch and each end building's upper part (`points`), and the ends' name points. */
+  function lineFrame(e: EdgeRec): { pts: V3[]; names: V3[]; points: V3[] } {
     // The arch, and each end building's upper part up to its name: in a tall, busy district the
     // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
     const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
@@ -1984,6 +2012,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([m.anchor.x, m.anchor.y - m.height * 0.4, m.anchor.z])
       names.push([m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
+    return { pts, names, points: pts.concat(names) }
+  }
+  function searchLineShot(e: EdgeRec, from: THREE.Vector3): Shot {
+    scene.updateMatrixWorld()
+    takePickBalls()
+    const balls = new Map<EdgeRec, THREE.Sphere>()
+    for (const o of edges.values()) balls.set(o, new THREE.Sphere().setFromPoints(o.path))
+    const { pts, names } = lineFrame(e)
     const lineFit = (dir: THREE.Vector3): ReturnType<typeof fitView> => withNameRoom(pts.concat(names), names, dir, (all) => fitView(all, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN))
     const h = sideOf(from)
     const along = e.curve.v2.clone().sub(e.curve.v0).setY(0)
@@ -2368,9 +2404,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (shrunk(gl, renderer.domElement)) opts.onBufferShrunk?.()
   }
   fitShrunk() // the buffer made at build
+  /**
+   * A resize's own cost, the longest kept (resizeWorstMs): the work the observer's call does before the next frame can
+   * be drawn (the buffer, the labels, the city's fit and the camera's framing). Only once the view has drawn: the
+   * observer's first call, on open, is the first frame's to time.
+   */
   const resize = (): void => {
-    // A resize once the view has drawn (the observer's first call, on open, is the first frame's to time).
-    if (presented > 0) resizedAt = Math.max(1, performance.now())
+    const timed = presented > 0
+    const t0 = performance.now()
+    resizeNow()
+    if (timed) resizeWorstMs = Math.max(resizeWorstMs, performance.now() - t0)
+  }
+  const resizeNow = (): void => {
     solids = null
     ;[width, height] = size()
     applyView()
@@ -3112,10 +3157,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     presented++
     const done = performance.now()
     if (firstFrameMs === null && drawAskedAt !== null) firstFrameMs = slowFirstFrame(done - drawAskedAt, drawAskedAt)
-    if (resizedAt > 0) {
-      resizeWorstMs = Math.max(resizeWorstMs, done - resizedAt)
-      resizedAt = 0
-    }
     drawCalls = renderer.info.render.calls
     triangles = renderer.info.render.triangles
     labelRenderer.render(scene, camera)
@@ -3208,6 +3249,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const n = id === null ? undefined : nodes.get(id)
       explodedId = n && !n.orb ? n.id : null
       for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
+      newLayout() // an open building's floors stand in other places: a line close-up is searched again
       fogTarget = fogFor()
       regroup = true
       wake()
@@ -3328,7 +3370,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     },
     requestFrame: () => { wake() },
     perf: () => perfNow(),
-    perfBegin: () => { bench = [] },
+    perfBegin: () => {
+      bench = []
+      resizeWorstMs = 0 // a window's resizes are its own: the longest since it began
+    },
     perfEnd: () => {
       const st = frameStats(bench ?? [])
       bench = null

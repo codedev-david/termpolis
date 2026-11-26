@@ -178,6 +178,9 @@ export function createCameraRig<F>(deps: CameraRigDeps<F>): CameraRig<F> {
       setMode('free', null, mode === 'framing' || (mode === 'free' && handCard))
       return fly({ pos: [...pose.pos], target: [...pose.target] }, instant, FRAME_FLIGHT_S)
     },
+    // refit and resized ask for the framing's shot again on every panel change and every ResizeObserver call (a pane
+    // divider dragged calls it each frame). A line's close-up is searched once per line, framing and layout and only
+    // re-aimed here (threeRenderer lineShot, lineShotCache): no search runs in these.
     refit() {
       const to = goal()
       if (to) glide(to)

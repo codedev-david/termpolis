@@ -1201,29 +1201,40 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     r.dispose()
   })
 
-  it('a resize breaks the chain, and its time to the next frame is kept, the longest', () => {
+  it("a resize breaks the chain, and its own cost is kept, the longest (not the wait for the next frame)", () => {
     gpu.gpuName = GEFORCE
     const resized = observeResizes()
+    // Each read of the host's width during a resize takes `cost` ms of the clock: the resize's own work.
+    let cost = 0
+    Object.defineProperty(h.host, 'clientWidth', { configurable: true, get: () => { h.frames.advance(cost); return (h.host as unknown as { _w: number })._w } })
+    const timedResize = (ms: number): number => { cost = ms; const t0 = h.frames.now; resized(); cost = 0; return h.frames.now - t0 }
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     boxCanvas(r.canvas, 800, 600)
-    resized() // the observer's first call, as the view opens: not a resize to time
+    expect(timedResize(50)).toBeGreaterThan(0) // the observer's first call, as the view opens: not a resize to time
     r.draw(smallCity(), smallText(), false)
     h.frames.run(20)
     expect(perf(r).resizeWorstMs).toBe(0)
     const n = perf(r).frames
     resizeHost(h.host, 640, 480)
-    resized()
-    h.frames.step(90) // the frame at the new size: a slow one, but not counted
+    const took = timedResize(7)
+    expect(took).toBeGreaterThan(0)
+    expect(perf(r).resizeWorstMs).toBe(took)
+    h.frames.step(90) // the frame at the new size: a slow one, but not counted, and not the resize's cost
     h.frames.run(4) // and the four after it: five not counted
-    expect(perf(r).resizeWorstMs).toBe(90)
+    expect(perf(r).resizeWorstMs).toBe(took)
     expect(perf(r).frames).toBe(n)
     expect(perf(r).worst).toBe(16)
     h.frames.step()
     expect(perf(r).frames).toBe(n + 1)
     resizeHost(h.host, 700, 500)
-    resized()
+    expect(timedResize(1)).toBeLessThan(took)
     h.frames.step(30)
-    expect(perf(r).resizeWorstMs).toBe(90)
+    expect(perf(r).resizeWorstMs).toBe(took)
+    r.perfBegin() // a frame-time window keeps its own resizes: the longest since it began
+    expect(perf(r).resizeWorstMs).toBe(0)
+    resizeHost(h.host, 720, 500)
+    const inWindow = timedResize(2)
+    expect(perf(r).resizeWorstMs).toBe(inWindow)
     r.dispose()
   })
 

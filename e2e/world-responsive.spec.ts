@@ -1302,6 +1302,85 @@ test.describe.serial('Lumopolis at every screen size', () => {
     }
   })
 
+  test('dragging the pane divider with a line card open stays smooth', async () => {
+    // Look plan Task 5 (WP2 M-a): a line's close-up is searched once and only re-aimed on each resize, so the drag never
+    // waits on a search. Each resize's own work is timed in the app (perf.resizeWorstMs, from the window's start), and no
+    // task of the page runs over 200 ms while the divider moves: 300 px in 40 steps over 2 s, as a hand drags it.
+    test.setTimeout(600_000)
+    const v = VIEWPORTS.find((x) => x.name === '1920x1080') as Viewport
+    await setViewport(v)
+    slowness = 1
+    if (!(await page.locator(PANE).isVisible())) {
+      await createTerminal('Repo', path.resolve('.'))
+      await openPane()
+    }
+    await settled(180_000)
+    const width = await split(null)
+    expect(width, 'the pane sits beside the terminals at 1920x1080').not.toBeNull()
+    expect((await paneState()).overlays, 'the pane has a divider at 1920x1080').toBe(false)
+    // A line between two buildings, both on the map: its card opened as the agent opens one.
+    const line = await page.evaluate(async (r) => {
+      type Doc = { buildings: { id: string }[]; edges: { id: string; from: string; to: string }[] }
+      const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
+      const probe = (window as unknown as { __termpolis_world?: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
+      const top = await api.gitFindRoot(r)
+      const res = await api.worldGet(top.success && top.data ? top.data : r)
+      if (!res.success || !res.data || !probe) return null
+      const ids = new Set(res.data.buildings.map((b) => b.id))
+      const e = res.data.edges.find((x) => x.from !== x.to && ids.has(x.from) && ids.has(x.to))
+      return e ? { id: e.id, from: e.from, to: e.to } : null
+    }, path.resolve('.'))
+    expect(line, 'the world has a line between two buildings').not.toBeNull()
+    const { id, from, to } = line as { id: string; from: string; to: string }
+    await page.evaluate((id) => (window as unknown as { __termpolis_world: { apply(a: { type: 'openCard'; id: string }): Promise<void> } }).__termpolis_world.apply({ type: 'openCard', id }), id)
+    await expect(page.locator('[data-testid="world-card"]'), 'the line card is open').toBeVisible({ timeout: 30_000 })
+    await glideDone('the line card opened')
+    // Both ends of the line on the canvas: in its box, as the probe projects them.
+    const endsInView = (): Promise<string[]> => page.evaluate(([a, b]) => {
+      const probe = (window as unknown as { __termpolis_world: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
+      const r = (document.querySelector('[data-testid="world-canvas-host"] canvas') as HTMLCanvasElement).getBoundingClientRect()
+      return [a, b].filter((x) => {
+        const p = probe.screenPoint(x)
+        return !p || p.x < r.left || p.x > r.right || p.y < r.top || p.y > r.bottom
+      })
+    }, [from, to])
+    expect(await endsInView(), 'both ends of the line are in view before the drag').toEqual([])
+    await page.evaluate(() => {
+      const w = window as unknown as { __longTasks: number[]; __longObs?: PerformanceObserver; __worldPerf: { begin(): void } }
+      w.__longTasks = []
+      w.__longObs = new PerformanceObserver((list) => { for (const t of list.getEntries()) w.__longTasks.push(t.duration) })
+      w.__longObs.observe({ type: 'longtask', buffered: false })
+      w.__worldPerf.begin()
+    })
+    const box = await page.locator('[data-testid="world-pane-divider"]').boundingBox()
+    if (!box) throw new Error('the divider has no box')
+    const x = box.x + box.width / 2
+    const y = box.y + box.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    // To the right narrows the pane: 300 px in 40 steps, one every 50 ms.
+    for (let k = 1; k <= 40; k++) {
+      await page.mouse.move(x + (300 * k) / 40, y)
+      await page.waitForTimeout(50)
+    }
+    await page.mouse.up()
+    const after = await page.evaluate(() => {
+      const w = window as unknown as { __longTasks: number[]; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
+      w.__longObs?.disconnect()
+      const perf = w.__termpolis_world.drawn().perf
+      return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, longTasks: w.__longTasks, frames: w.__worldPerf.end().frames }
+    })
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, long tasks ${after.longTasks.map((d) => d.toFixed(0)).join(', ') || 'none'}`)
+    expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
+    softly(after.resizeWorstMs, 'the drag resized the view, timed').toBeGreaterThan(0)
+    softly(after.resizeWorstMs, 'each resize during the drag takes under 16 ms of its own').toBeLessThan(16)
+    softly(after.longTasks.filter((d) => d > 200), 'no task of the page runs over 200 ms during the drag').toEqual([])
+    await glideDone('the divider dragged')
+    expect(await endsInView(), 'both ends of the line are in view after the drag').toEqual([])
+    await expect(page.locator('[data-testid="world-card"]'), 'the line card is still open').toBeVisible()
+    await closeCard()
+  })
+
   test("a design's Build it dialog fits at every size and width", async () => {
     test.setTimeout(900_000)
     await setViewport(RUN[RUN.length - 1])

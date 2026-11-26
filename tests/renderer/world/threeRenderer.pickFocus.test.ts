@@ -10,7 +10,7 @@ import { focusOpacity } from '../../../src/renderer/src/world/engine/interaction
 import { LABEL_MIN_OPACITY } from '../../../src/renderer/src/world/engine/viewMath'
 import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import {
-  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, makeHost, orb, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, makeHost, orb, resizeHost, sceneOf, smallCity, smallText,
   withHarness, withData, worldOf,
 } from './threeHarness'
 
@@ -633,3 +633,120 @@ describe('threeRenderer line framing', () => {
   })
 })
 
+
+/**
+ * A line card's close-up across resizes (look plan Task 5, WP2 M-a). Each search of a line's close-up bounds every
+ * line of the city once (a Sphere fitted to each line's points, then one to each end's probes); the spy counts those, so
+ * a resize that searched again would show at once.
+ */
+describe('threeRenderer line close-up, kept across resizes', () => {
+  /** The host's ResizeObserver, called by hand: `resized(w, h)` gives the host that size and tells the renderer. */
+  const observe = (): ((w: number, hgt: number) => void) => {
+    let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    return (w, hgt) => {
+      resizeHost(h.host, w, hgt)
+      boxCanvas(cameraCanvas(), w, hgt)
+      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
+    }
+  }
+  let canvasOf: HTMLCanvasElement | null = null
+  const cameraCanvas = (): HTMLCanvasElement => canvasOf as HTMLCanvasElement
+  const searches = (): { count: () => number } => {
+    const spy = vi.spyOn(THREE.Sphere.prototype, 'setFromPoints')
+    let from = 0
+    return { count: () => { const n = spy.mock.calls.length - from; from = spy.mock.calls.length; return n } }
+  }
+  const open = async (): Promise<{ r: ThreeRenderer; resized: (w: number, hgt: number) => void }> => {
+    const resized = observe()
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    canvasOf = r.canvas
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.step()
+    await r.frame(['e1'], true)
+    h.frames.step()
+    return { r, resized }
+  }
+  const settle = (): void => { for (let i = 0; i < 400 && h.frames.pending() > 0; i++) h.frames.step() }
+  const pose = (r: ThreeRenderer): { dist: number; dir: V } => {
+    const c = r.getCamera()
+    const off: V = [c.pos[0] - c.target[0], c.pos[1] - c.target[1], c.pos[2] - c.target[2]]
+    const dist = Math.hypot(...off)
+    return { dist, dir: [off[0] / dist, off[1] / dist, off[2] / dist] }
+  }
+  const angle = (a: V, b: V): number => (Math.acos(Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])) * 180) / Math.PI
+
+  it('thirty resizes with a line card open search the line once', async () => {
+    const n = searches()
+    const { r, resized } = await open()
+    const once = n.count()
+    expect(once).toBeGreaterThan(0) // the framing's search
+    for (let k = 0; k < 30; k++) {
+      resized(800 - k * 10, 600)
+      h.frames.step()
+    }
+    expect(n.count()).toBe(0)
+    settle()
+    for (const id of ['a', 'b']) expect(r.screenPoint(id), id).not.toBeNull()
+    r.dispose()
+  })
+
+  it('reaim keeps both ends of the line in view at any aspect from 0.5 to 3', async () => {
+    const { r, resized } = await open()
+    for (const [w, hgt] of [[300, 600], [450, 600], [600, 600], [900, 600], [1200, 600], [1800, 600]]) {
+      resized(w, hgt)
+      settle()
+      for (const id of ['a', 'b']) expect(r.screenPoint(id), `${w}x${hgt}: ${id}`).not.toBeNull()
+    }
+    r.dispose()
+  })
+
+  it('a new layout, an explode or a new framing searches again', async () => {
+    const n = searches()
+    const { r, resized } = await open()
+    n.count()
+    r.draw(smallCity(), smallText(), false) // the city laid out again
+    resized(700, 600)
+    expect(n.count()).toBeGreaterThan(0)
+    resized(720, 600)
+    expect(n.count()).toBe(0)
+    r.setExploded('a')
+    resized(740, 600)
+    expect(n.count()).toBeGreaterThan(0)
+    r.setExploded(null)
+    resized(760, 600)
+    expect(n.count()).toBeGreaterThan(0)
+    await r.frame(['e1'], true)
+    expect(n.count()).toBeGreaterThan(0)
+    resized(780, 600)
+    expect(n.count()).toBe(0)
+    r.dispose()
+  })
+
+  it('the reaimed shot matches a fresh search within 2% distance and 3 degrees direction at the original aspect', async () => {
+    const { r, resized } = await open()
+    settle()
+    const first = pose(r)
+    resized(400, 600)
+    settle()
+    resized(800, 600)
+    settle()
+    const back = pose(r)
+    expect(Math.abs(back.dist - first.dist) / first.dist).toBeLessThan(0.02)
+    expect(angle(back.dir, first.dir)).toBeLessThan(3)
+    // and as a fresh search at this size puts it
+    r.draw(smallCity(), smallText(), false)
+    await r.frame(['e1'], true)
+    settle()
+    const fresh = pose(r)
+    expect(Math.abs(back.dist - fresh.dist) / fresh.dist).toBeLessThan(0.02)
+    expect(angle(back.dir, fresh.dir)).toBeLessThan(3)
+    r.dispose()
+  })
+})
