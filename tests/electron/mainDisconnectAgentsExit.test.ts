@@ -8,8 +8,8 @@
 // file pins what that harness cannot show:
 //
 //   1. The block works wherever index.ts is loaded, including jsdom, which is ON PURPOSE the
-//      environment above (and, since Vitest 4 ignores `environmentMatchGlobs`, the one every file
-//      in tests/electron without a pragma gets anyway). Under jsdom `os` is Vite's
+//      environment above: the pragma overrides the node environment vitest.config.ts gives the
+//      rest of tests/electron (its `main` project). Under jsdom `os` is Vite's
 //      browser-external shim, and a builtin's names are bound WHERE ITS IMPORT IS WRITTEN. While
 //      index.ts imported `os` below the block, `homedir()` hit the temporal dead zone ("Cannot
 //      access 'homedir' before initialization"), the block's catch logged it, and the "uninstall"
@@ -132,9 +132,20 @@ vi.mock('../../src/main/agentIntegrationManager', async (importOriginal) => {
 let logSpy: MockInstance<typeof console.log>
 let errorSpy: MockInstance<typeof console.error>
 
+/** The launch before this one, settled. A test that runs out of time leaves its import running, still
+ *  holding the flag on argv and still calling the mocks; beforeEach waits for it, so the next test
+ *  starts on a clean argv and clean mocks (HOLD-B #106). */
+let previous: Promise<unknown> = Promise.resolve()
+
 /** A FRESH index.ts, launched the way the uninstaller launches it. Returns what stopped it. The
  *  flag comes off argv again whatever happens, so nothing imported later can see it. */
-async function launch(withFlag: boolean): Promise<unknown> {
+function launch(withFlag: boolean): Promise<unknown> {
+  const run = launchOnce(withFlag)
+  previous = run
+  return run
+}
+
+async function launchOnce(withFlag: boolean): Promise<unknown> {
   if (withFlag) process.argv.push('--disconnect-agents')
   try {
     vi.resetModules()
@@ -178,15 +189,28 @@ const SCRATCH_PATHS = {
   geminiDir: '/scratch/home/.gemini',
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   H.userData = mkdtempSync(join(tmpdir(), 'tp-disconnect-exit-'))
-})
+  // HOLD-B #106: the first import of index.ts transforms its whole graph (about 400 modules, 15 s
+  // alone and several times that on a loaded machine), and that cost landed in the first test's
+  // budget. One control launch here pays it once, under the hook's own budget; every test after it
+  // only evaluates the cached modules again.
+  H.gpuPolicy.mockImplementationOnce(() => { throw new H.StopHere() })
+  vi.spyOn(console, 'log').mockImplementation(() => {})
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    expect(await launch(false)).toBeInstanceOf(H.StopHere)
+  } finally {
+    vi.restoreAllMocks()
+  }
+}, 180_000)
 
 afterAll(() => {
   rmSync(H.userData, { recursive: true, force: true })
 })
 
-beforeEach(() => {
+beforeEach(async () => {
+  await previous
   vi.clearAllMocks()
   // mockReset also drops a once-queue a failed test left behind, so it cannot answer the next test.
   H.resolvePaths.mockReset().mockImplementation((...a: any[]) => H.real.resolve!(...a))
