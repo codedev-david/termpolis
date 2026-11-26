@@ -1076,47 +1076,69 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
   test('camera flights ease', async () => {
     // One flight's frames, as drawn. In software one frame can take longer than the whole flight: the macOS soak
     // (45728064997) drew t=0.002 and t=0.012, then t=1. The ease is a function of t alone, so points from more than one
-    // flight to the same building lie on the same curve: the test flies again, at most FLIGHTS times, until it has
-    // seen at least 4 distinct points, and checks them all together.
-    const FLIGHTS = 4
-    const fly = async (): Promise<Array<{ t: number; eased: number }>> => page.evaluate(async (id) => {
-      const probe = (window as unknown as { __termpolis_world: { drawn(): { visual: Visual }; apply(a: { type: 'focus'; ids: string[] }): Promise<void> } }).__termpolis_world
-      void probe.apply({ type: 'focus', ids: [id] })
-      const out: Array<{ t: number; eased: number }> = []
+    // flight to the same building lie on the same curve: the test flies again, at most FLIGHTS times, until it has seen
+    // at least 4 distinct points with one in the ease-in window and one in the ease-out window, and checks them together.
+    // Each flight is also checked on its own, against the camera as drawn: mid-flight the camera is short of where the
+    // flight ends, so a flight that snapped to its end goes red even when its points alone would pass.
+    const FLIGHTS = 10
+    const EASE_IN: [number, number] = [0.05, 0.45]
+    const EASE_OUT: [number, number] = [0.55, 0.95]
+    type Sample = { t: number; eased: number; pos: number[] }
+    type Flight = { from: number[]; to: number[]; samples: Sample[] }
+    const fly = async (): Promise<Flight> => page.evaluate(async (id) => {
+      const probe = (window as unknown as { __termpolis_world: { drawn(): { visual: Visual }; cameraState(): { pos: number[] } | null; apply(a: { type: 'focus'; ids: string[] }): Promise<void> } }).__termpolis_world
+      const from = probe.cameraState()?.pos ?? []
+      const landed = probe.apply({ type: 'focus', ids: [id] })
+      const samples: Sample[] = []
       const t0 = performance.now()
       await new Promise<void>((done) => {
         const tick = (): void => {
           const f = probe.drawn().visual.flight
-          if (f.active) out.push({ t: f.t, eased: f.eased })
-          if ((out.length > 0 && !f.active) || performance.now() - t0 > 8000) done()
+          if (f.active) samples.push({ t: f.t, eased: f.eased, pos: probe.cameraState()?.pos ?? [] })
+          if ((samples.length > 0 && !f.active) || performance.now() - t0 > 8000) done()
           else requestAnimationFrame(tick)
         }
         requestAnimationFrame(tick)
       })
-      return out
+      await landed
+      return { from, to: probe.cameraState()?.pos ?? [], samples }
     }, motionDoc.buildings[0].id)
-    const flights: Array<Array<{ t: number; eased: number }>> = []
-    let pts: Array<{ t: number; eased: number }> = []
-    for (let n = 0; n < FLIGHTS && pts.length < 4; n++) {
+    const dist = (a: number[], b: number[]): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+    const inside = (t: number, [lo, hi]: [number, number]): boolean => t > lo && t < hi
+    const flights: Flight[] = []
+    let pts: Sample[] = []
+    const seen = (w: [number, number]): number => pts.filter((p) => inside(p.t, w)).length
+    for (let n = 0; n < FLIGHTS && (pts.length < 4 || seen(EASE_IN) === 0 || seen(EASE_OUT) === 0); n++) {
       await toOverview()
-      const samples = await fly()
+      const f = await fly()
+      const at = JSON.stringify(f)
       // Each flight's own points must rise with time: a sample never goes back along the flight.
-      for (let i = 1; i < samples.length; i++) expect(samples[i].t, `flight ${n} went back at sample ${i}: ${JSON.stringify(samples)}`).toBeGreaterThanOrEqual(samples[i - 1].t)
-      flights.push(samples)
-      // Distinct points of every flight so far, in order of t.
-      pts = flights.flat().sort((a, b) => a.t - b.t).filter((p, i, all) => i === 0 || p.t > all[i - 1].t)
+      for (let i = 1; i < f.samples.length; i++) expect(f.samples[i].t, `flight ${n} went back at sample ${i}: ${at}`).toBeGreaterThanOrEqual(f.samples[i - 1].t)
+      const span = dist(f.from, f.to)
+      expect(span, `flight ${n} moved the camera: ${at}`).toBeGreaterThan(1)
+      // Before its last stretch a flight is under way: its ease is short of the end, and so is the camera.
+      const mid = f.samples.filter((p) => p.t > 0 && p.t < EASE_OUT[1])
+      for (const p of mid) {
+        expect(p.eased, `flight ${n} snapped to its end at t=${p.t}: ${at}`).toBeLessThan(1)
+        expect(dist(p.pos, f.to), `flight ${n}'s camera was already at the end at t=${p.t}: ${at}`).toBeGreaterThan(span * 1e-4)
+        if (inside(p.t, EASE_IN)) expect(p.eased, `flight ${n} not eased in at t=${p.t}: ${at}`).toBeLessThan(p.t)
+        if (inside(p.t, EASE_OUT)) expect(p.eased, `flight ${n} not eased out at t=${p.t}: ${at}`).toBeGreaterThan(p.t)
+      }
+      // A flight with no frame drawn before its last stretch says nothing about its ease, so it is not pooled.
+      if (mid.length > 0) flights.push(f)
+      // Distinct points of every pooled flight so far, in order of t.
+      pts = flights.flatMap((x) => x.samples).sort((a, b) => a.t - b.t).filter((p, i, all) => i === 0 || p.t > all[i - 1].t)
     }
-    expect(pts.length, `flight samples ${JSON.stringify(flights)}`).toBeGreaterThanOrEqual(4)
+    const all = JSON.stringify(flights.map((f) => f.samples.map((p) => [p.t, p.eased])))
+    expect(pts.length, `flight samples ${all}`).toBeGreaterThanOrEqual(4)
+    // The ease-in and ease-out checks each saw a point: neither passes on no points.
+    expect(seen(EASE_IN), `no point in the ease-in window ${JSON.stringify(EASE_IN)}: ${all}`).toBeGreaterThan(0)
+    expect(seen(EASE_OUT), `no point in the ease-out window ${JSON.stringify(EASE_OUT)}: ${all}`).toBeGreaterThan(0)
     for (let i = 1; i < pts.length; i++) expect(pts[i].eased, `eased falls at sample ${i}`).toBeGreaterThanOrEqual(pts[i - 1].eased)
     // Eased: slow off the mark, fastest mid-flight (the rise per unit of time, so uneven frames do not count).
     const rate = (i: number): number => (pts[i + 1].eased - pts[i].eased) / (pts[i + 1].t - pts[i].t)
-    const mid = pts.findIndex((p) => p.t >= 0.5)
-    const m = Math.max(1, Math.min(pts.length - 2, mid > 0 ? mid - 1 : Math.floor(pts.length / 2)))
-    // An ease in and out runs behind a straight line before the middle and ahead of it after.
-    for (const p of pts) {
-      if (p.t > 0.05 && p.t < 0.45) expect(p.eased, `not eased in at t=${p.t}: ${JSON.stringify(pts)}`).toBeLessThan(p.t)
-      if (p.t > 0.55 && p.t < 0.95) expect(p.eased, `not eased out at t=${p.t}: ${JSON.stringify(pts)}`).toBeGreaterThan(p.t)
-    }
+    const middle = pts.findIndex((p) => p.t >= 0.5)
+    const m = Math.max(1, Math.min(pts.length - 2, middle > 0 ? middle - 1 : Math.floor(pts.length / 2)))
     // The first step is slow off the mark only when it was seen: a slow runner's first frame of the
     // flight can come well into it (macOS CI's first sample was at t=0.56, already slowing down).
     // And only when that step ends before the middle. In software only one frame is in flight, and the
@@ -1124,7 +1146,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     // averages eased(t)/t, which for an ease in and out is above 1 once t is past the middle (the check
     // above holds eased(t) > t there). The step after it, near the end, is slowing down, so that
     // comparison fails for a correct ease. The ease itself is still checked at every point by the loop above.
-    if (pts[0].t < 0.25 && pts[1].t <= 0.5) expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
+    if (pts[0].t < 0.25 && pts[1].t <= 0.5) expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${all}`).toBeLessThan(rate(m))
     await toOverview()
   })
 
