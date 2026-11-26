@@ -1380,8 +1380,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * made once per draw: the overview is fitted again on every resize, and a city of thousands of parts made some
    * 50,000 of them each time, whose collection fell inside a pane drag's resizes (96 ms on a Windows runner).
    */
-  let overviewBase: { model: SceneModel; pts: readonly V3[]; ground: ReadonlyArray<readonly [number, number]> } | null = null
-  function overviewPoints(model: SceneModel): { pts: readonly V3[]; ground: ReadonlyArray<readonly [number, number]> } {
+  let overviewBase: { model: SceneModel; pts: V3[]; ground: ReadonlyArray<readonly [number, number]> } | null = null
+  function overviewPoints(model: SceneModel): { pts: V3[]; ground: ReadonlyArray<readonly [number, number]> } {
     if (overviewBase?.model === model) return overviewBase
     const pts: V3[] = []
     const h = FLOOR_W / 2
@@ -1402,8 +1402,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   function fitOverview(model: SceneModel): void {
     if (model.buildings.length === 0 && model.orbs.length === 0) return
     const base = overviewPoints(model)
-    const pts: V3[] = base.pts.slice()
-    const view = overviewDir(fitAspect(false), base.ground, portrait)
+    // The names' points go on the end of the city's own and come off again: the city's are not copied.
+    const pts = base.pts
+    const own = pts.length
+    try {
+      fitOverviewFrom(model, pts, base.ground)
+    } finally {
+      pts.length = own
+    }
+  }
+  function fitOverviewFrom(model: SceneModel, pts: V3[], ground: ReadonlyArray<readonly [number, number]>): void {
+    const view = overviewDir(fitAspect(false), ground, portrait)
     portrait = view.portrait
     if (view.turned !== turned) {
       turned = view.turned
@@ -1422,6 +1431,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const [x, z] = nameAt(d)
       pts.push([x, d.pos[1] - 2, z]) // the district's name below its rim
     }
+    const placed = pts.length
     let fit = fitView(pts, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
     // A district's name is its measured half width (DISTRICT_NAME_HALF_PX before it is measured) on
     // each side of its point, whatever the distance: at the fitted distance that is so many world
@@ -1430,14 +1440,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const side = new THREE.Vector3(dir[2], 0, -dir[0]).normalize()
     for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
       const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(BASE_FOV / 2))) / height
-      const named = pts.slice()
+      pts.length = placed // the last pass's name ends come off
       for (const d of model.districts) {
         const half = districtHalfPx(d.id) * perPx
         const drop = districtDropPx(d.id) * perPx
         const [x, z] = nameAt(d)
-        for (const k of [-1, 1]) named.push([x + side.x * half * k, d.pos[1] - 2 - drop, z + side.z * half * k])
+        for (const k of [-1, 1]) pts.push([x + side.x * half * k, d.pos[1] - 2 - drop, z + side.z * half * k])
       }
-      fit = fitView(named, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
+      fit = fitView(pts, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
     }
     overviewDist = fit.dist
     overviewTarget.set(fit.target[0], fit.target[1], fit.target[2])

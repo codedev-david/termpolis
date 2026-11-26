@@ -209,15 +209,21 @@ describe('threeRenderer wheel and orbit limits', () => {
       },
     })
     const city: SceneModel = { districts: [district('w', [-400, 0, 0], 60), district('e', [400, 0, 0], 60)], buildings, conduits: [], orbs: [] }
+    const resized = (w: number, hgt: number): void => {
+      resizeHost(h.host, w, hgt)
+      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
+    }
+    resized(800, 600)
     r.draw(city, emptyText(), false)
     await r.overview(true)
     const before = distOf(r)
     walked = 0
-    for (const [w, hgt] of [[640, 480], [700, 480], [760, 480]]) {
-      resizeHost(h.host, w, hgt)
-      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
-    }
+    // A short view makes the names' ends wide in the world: they come off again with the fit, so back at the first
+    // size the overview stands where it stood.
+    for (const [w, hgt] of [[640, 480], [800, 60], [800, 600]]) resized(w, hgt)
     expect(walked).toBe(0)
+    await r.overview(true)
+    expect(distOf(r)).toBeCloseTo(before, 6)
     // The same world changed in place and drawn again: the overview takes in its new part.
     parts.push(bldg('far', [1600, 0, 0]))
     r.draw(city, emptyText(), false)
