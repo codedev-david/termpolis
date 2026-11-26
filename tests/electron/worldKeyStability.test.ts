@@ -62,6 +62,7 @@ import {
   adoptAnnotationAliases, createAnnotationStore, withAnnotationFileLock, ANNOTATION_LOCK_DEADLINE_MS, ANNOTATION_LOCK_RETRY_MS,
   ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
   ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX, ADOPT_RETRY_BACKOFF_MS, ADOPT_RETRY_OPENS, ADOPT_GIVEN_UP, type PendingKey,
+  pendingAdoptionKeys,
 } from '../../src/main/world/annotations'
 import { CLAIM_TRIES, LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
 import { writeFileSync } from 'node:fs'
@@ -435,6 +436,34 @@ describe('adoptAnnotationAliases', () => {
     faults.rename = true
     expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
     expect((await readdir(folder())).sort()).toEqual([`${sha256('old-key')}.json`])
+  })
+
+  // HOLD-B #17 (WP5 N1): the record of what is still to adopt is also what shows a later open that a key was this folder's
+  // (adoptWorldAliases reads it once the recent-list line has moved), so a merged file that cannot be written goes in it.
+  it('a merged file that cannot be written puts every key it read in the record, tried again after the back-off (HOLD-B #17)', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('old-key', 'b1', claim('kept'))
+    faults.refuseTo = `${sha256('new-key')}.json`
+    let now = 1_000
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { now: () => now })).toEqual([])
+    await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    const recorded = JSON.parse(await readFile(`${fileFor('new-key')}${ADOPT_PENDING_SUFFIX}`, 'utf8')) as PendingKey[]
+    expect(recorded).toEqual([{ key: 'old-key', tries: 1, next: 1_000 + ADOPT_RETRY_BACKOFF_MS }])
+    expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual(['old-key'])
+    faults.refuseTo = ''
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { now: () => now })).toEqual([]) // not due yet
+    now += ADOPT_RETRY_BACKOFF_MS
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { now: () => now })).toEqual(['old-key'])
+    expect((await store.list('new-key')).b1[0].text).toBe('kept')
+    expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual([])
+  })
+
+  it('pendingAdoptionKeys lists the keys in the record, given up on or not, and nothing without one (HOLD-B #17)', async () => {
+    expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual([])
+    await mkdir(folder(), { recursive: true })
+    const given: PendingKey[] = [{ key: 'a', tries: 2, next: 5 }, { key: 'b', tries: ADOPT_RETRY_OPENS, next: ADOPT_GIVEN_UP }]
+    await writeFile(`${fileFor('new-key')}${ADOPT_PENDING_SUFFIX}`, JSON.stringify(given))
+    expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual(['a', 'b'])
   })
 
   describe('a save the OS refuses for a moment (Defender or the indexer holding the file)', () => {

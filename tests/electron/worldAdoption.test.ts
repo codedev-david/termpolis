@@ -6,6 +6,8 @@ import type { WorldDoc } from '../../src/shared/world/types'
 import { adoptWorldAliases, type WorldAdoptionDeps } from '../../src/main/world/worldAdoption'
 import { createSourceRegistry, keyForSource, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
 import { createWorldStore, worldFileName } from '../../src/main/world/worldStore'
+import { ADOPT_PENDING_SUFFIX } from '../../src/main/world/annotations'
+import { createHash } from 'node:crypto'
 
 // WP5 (X02): on Linux a world's key now keeps its folder's case; the world saved under the old, lowercased key and its
 // recent-list line follow it the first time it opens, copied and never moved.
@@ -135,6 +137,31 @@ describe('adoptWorldAliases', () => {
     expect(await adoptWorldAliases(NEW, [OLD], { ...ours.deps, lowered })).toEqual({ world: OLD, entries: [OLD], aliases: [OLD] })
     expect(ours.docs[NEW].projectKey).toBe(NEW)
     expect(ours.deps.registry.list).toHaveBeenCalledTimes(1)
+  })
+
+  // HOLD-B #17 (WP5 N1): the first open moves the line, so a later open finds the lowered key's proof in the record the
+  // annotation adoption keeps of what it still has to try (adoptAnnotationAliases), beside the new key's annotations.
+  it("keeps a lowered key whose line has moved while the new key's annotation record still holds it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'world-adopt-pending-'))
+    try {
+      const lowered = new Set([OLD])
+      const recordOf = join(dir, 'world', 'annotations', `${createHash('sha256').update(NEW).digest('hex')}.json${ADOPT_PENDING_SUFFIX}`)
+      const moved = fakes({ entries: [entry(NEW, folder, 'Mine')] })
+      expect(await adoptWorldAliases(NEW, [OLD], { ...moved.deps, lowered, annotationsDir: dir })).toEqual({ entries: [], aliases: [] })
+      await mkdir(join(dir, 'world', 'annotations'), { recursive: true })
+      await writeFile(recordOf, JSON.stringify([{ key: OLD, tries: 1, next: 0 }]))
+      expect(await adoptWorldAliases(NEW, [OLD, 'k-dup'], { ...moved.deps, lowered, annotationsDir: dir })).toEqual({ entries: [], aliases: [OLD, 'k-dup'] })
+      expect(moved.entries().map((e) => e.key)).toEqual([NEW])
+      // Without the dir, or for a lowered key the record does not hold, it stays out as before.
+      expect((await adoptWorldAliases(NEW, [OLD], { ...moved.deps, lowered })).aliases).toEqual([])
+      expect((await adoptWorldAliases(NEW, ['k-other'], { ...moved.deps, lowered: new Set(['k-other']), annotationsDir: dir })).aliases).toEqual([])
+      // A lowered key the recent list still shows for this folder is ours with no record at all.
+      const listed = fakes({ entries: [entry(OLD, folder, 'Mine')] })
+      await rm(recordOf)
+      expect((await adoptWorldAliases(NEW, [OLD], { ...listed.deps, lowered, annotationsDir: dir })).aliases).toEqual([OLD])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('works on the real world store and source registry', async () => {
