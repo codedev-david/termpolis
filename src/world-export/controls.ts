@@ -79,10 +79,11 @@ html{font-size:${BASE_PX}px}
 .wx-card-body .status-built,.wx-card-body .claim[data-state=observed] .state{background:#1e3a5f;color:#7dd3fc}
 .wx-card-body .status-gap,.wx-card-body .claim[data-state=inferred] .state{background:#451a03;color:#fbbf24}
 .wx-card-body .status-proposed{background:#1e293b;color:#93c5fd}
-.wx-card-body .chip{display:inline-block;margin:${r(2)} ${r(3)} ${r(2)} 0;padding:${r(2)} ${r(8)};border-radius:99px;font-size:${r(12)};background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
+.wx-card-body .chip{display:inline-block;margin:${r(2)} ${r(3)} ${r(2)} 0;padding:${r(2)} ${r(8)};border-radius:99px;font:inherit;font-size:${r(12)};text-align:left;background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
 .wx-card-body .chip[data-tech]{cursor:pointer}
 .wx-card-body .cargo{display:inline-block;width:${r(10)};height:${r(10)};border-radius:${r(2)};margin-right:${r(6)}}
-.wx-card-body a{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
+.wx-card-body a,.wx-card-body .lnk{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
+.wx-card-body .lnk{display:inline;margin:0;padding:0;border:0;background:none;font:inherit;text-align:inherit}
 .wx-card-body .ev-ref{font-family:ui-monospace,monospace;font-size:${r(12)};color:#94a3b8}
 .wx-ask-host{position:absolute;top:${r(CARD_INSET)};right:${r(CARD_INSET)};width:${r(ASK_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET + LEGEND_CHIP_ROOM)});display:flex;flex-direction:column;box-sizing:border-box;z-index:4}
 .wx-ask{display:flex;flex-direction:column;min-height:0;padding:${r(10)} ${r(12)}}

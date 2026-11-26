@@ -212,7 +212,7 @@ describe('WorldCard', () => {
     const onConfirm = vi.fn()
     const onEvidence = vi.fn()
     const html =
-      '<h3>T</h3><span class="chip" data-tech="electron">electron</span>' +
+      '<h3>T</h3><button type="button" class="chip" data-tech="electron">electron</button>' +
       '<ul><li class="claim"><span class="ctext">Keeps data safe</span> <button data-confirm="b1|0">Confirm</button>' +
       '<button data-evidence="{&quot;kind&quot;:&quot;file&quot;,&quot;ref&quot;:&quot;a.ts:3&quot;}">evidence</button></li></ul>' +
       '<button data-confirm="b2|1">Loose</button>'
@@ -225,6 +225,30 @@ describe('WorldCard', () => {
     expect(onConfirm).toHaveBeenLastCalledWith('b2', '')
     fireEvent.click(screen.getByText('evidence'))
     expect(onEvidence).toHaveBeenCalledWith({ kind: 'file', ref: 'a.ts:3' })
+  })
+
+  it('a chip or a link pressed from the keyboard leaves the focus on the card that replaces it, not on the page (A11Y Y3)', () => {
+    let html = '<h3>A</h3><button type="button" class="lnk link-node" data-node="b2">B</button>'
+    const onOpen = vi.fn(() => { html = '<h3>B</h3><button type="button" class="chip" data-tech="ipc">ipc</button>' })
+    const onTech = vi.fn(() => { html = '<h3>ipc</h3>' })
+    const props = { onClose: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn(), onOpen, onTech }
+    const { rerender } = render(<WorldCard html={html} {...props} />)
+    const link = screen.getByRole('button', { name: 'B' })
+    link.focus()
+    fireEvent.click(link)
+    rerender(<WorldCard html={html} {...props} />)
+    expect(document.activeElement).toBe(screen.getByTestId('world-card-body'))
+    // The new card's chip takes the next Tab, and pressing it keeps the focus on the card again.
+    const chip = screen.getByRole('button', { name: 'ipc' })
+    chip.focus()
+    fireEvent.click(chip)
+    rerender(<WorldCard html={html} {...props} />)
+    expect(document.activeElement).toBe(screen.getByTestId('world-card-body'))
+    // A press that leaves the card as it was moves nothing; nor does a new card with the focus elsewhere.
+    const close = screen.getByTestId('world-card-close')
+    close.focus()
+    rerender(<WorldCard html="<h3>C</h3>" {...props} />)
+    expect(document.activeElement).toBe(close)
   })
 
   it("an evidence button keeps a test's source, and drops anything else it carries", () => {

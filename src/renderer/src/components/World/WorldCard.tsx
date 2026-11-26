@@ -124,10 +124,12 @@ const CARD_CSS = `
 .world-card-body .claim button:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
 .world-card-body .chip[data-tech]{cursor:pointer}
 .world-card-body .chip[data-tech]:hover{background:rgba(167,139,250,.3)}
-.world-card-body .chip{display:inline-block;max-width:100%;box-sizing:border-box;margin:2px 3px 2px 0;padding:2px 8px;border-radius:99px;font-size:12px;background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
+.world-card-body .chip{display:inline-block;max-width:100%;box-sizing:border-box;margin:2px 3px 2px 0;padding:2px 8px;border-radius:99px;font:inherit;font-size:12px;line-height:1.45;text-align:left;background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
 .world-card-body .cargo{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-.world-card-body a{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
-.world-card-body a:hover{color:#e0f2fe}
+.world-card-body a,.world-card-body .lnk{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
+.world-card-body a:hover,.world-card-body .lnk:hover{color:#e0f2fe}
+.world-card-body .lnk{display:inline;margin:0;padding:0;border:0;background:none;font:inherit;text-align:inherit}
+.world-card button:focus-visible{outline:2px solid #7dd3fc;outline-offset:1px}
 .world-card-names{margin-top:8px;padding:8px 8px 0 0;border-top:1px solid rgba(148,163,184,.18)}
 .world-card-names label{display:block;font-size:12px;color:#7dd3fc;margin-bottom:4px}
 .world-card-names input{width:100%;box-sizing:border-box;padding:4px 6px;border-radius:6px;font-size:12px;color:#e2e8f0;background:rgba(15,23,42,.8);border:1px solid rgba(148,163,184,.35)}
@@ -157,6 +159,14 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
   const [edit, setEdit] = useState<{ id: string; text: string; was: string; error: boolean } | null>(null)
   useEffect(() => setEdit(null), [html])
+  // A chip or link pressed in the body (from the keyboard as well as by a click) opens another card in its place, and
+  // the button that had the focus goes with the old card: the body takes the focus, so the next Tab is on the new card,
+  // not back at the top of the page (A11Y Y3).
+  const pressedRef = useRef(false)
+  useLayoutEffect(() => {
+    if (pressedRef.current && document.activeElement === document.body) bodyRef.current?.focus()
+    pressedRef.current = false
+  }, [html])
   // A capped card's scrollbar takes the body's right edge, where the close button sits: the button moves left by the
   // scrollbar's measured width (0 with an overlay scrollbar or none), so it is never drawn over the scrollbar.
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -200,7 +210,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const target = e.target as Element
     const chip = target.closest('[data-tech]')
-    if (chip) { e.preventDefault(); onTech(chip.getAttribute('data-tech') as string); return }
+    if (chip) { e.preventDefault(); pressedRef.current = true; onTech(chip.getAttribute('data-tech') as string); return }
     const rename = target.closest('[data-runtime-edit]')
     if (rename) {
       e.preventDefault()
@@ -227,6 +237,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     const link = target.closest('[data-node],[data-edge]')
     if (!link) return
     e.preventDefault()
+    pressedRef.current = true
     onOpen(link.getAttribute('data-node') ?? (link.getAttribute('data-edge') as string))
   }
   return (

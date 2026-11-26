@@ -665,7 +665,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     // a connection to a spawned agent or a service does (Spawn, HTTP client). Follow the card's own
     // links until a card carries a chip.
     for (let hop = 0; hop < 12 && (await card().locator('[data-tech]').count()) === 0; hop++) {
-      const links = card().locator('a.lnk')
+      const links = card().locator('.lnk')
       const n = await links.count()
       if (n === 0) break
       await links.nth(hop % n).click()
@@ -674,7 +674,12 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect(card()).toBeVisible()
     const chip = card().locator('[data-tech]').first()
     const term = (await chip.getAttribute('data-tech'))!
-    await chip.click()
+    // The chip is a button the keyboard reaches and Enter presses (A11Y Y3); so is every link in the card.
+    await expect(card().getByRole('button', { name: term, exact: true }).first()).toBeVisible()
+    expect(await card().locator('a:not([href]), span[data-tech]').count()).toBe(0)
+    await chip.focus()
+    await expect(chip).toBeFocused()
+    await page.keyboard.press('Enter')
     await expect.poll(async () => ((await card().locator('h3').first().textContent()) ?? '').toLowerCase()).toContain(term.toLowerCase())
     await expect.poll(async () => (await drawn())?.highlighted.length ?? 0).toBeGreaterThanOrEqual(2)
   })

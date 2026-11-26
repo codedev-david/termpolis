@@ -49,6 +49,19 @@ describe('cards', () => {
     expect(buildingCard(doc, 'p1')).not.toContain('data-runtime-edit')
   })
 
+  it('makes every technology chip and every link to a part or line a button, so the keyboard reaches them (A11Y Y3)', () => {
+    const doc = rich()
+    const host = document.createElement('div')
+    host.innerHTML = buildingCard(doc, 'b1') + edgeCard(doc, 'e1') + techCard(doc, doc.buildings[0].stack[0] ?? 'electron')
+    const reach = Array.from(host.querySelectorAll('[data-tech], [data-node], [data-edge]'))
+    expect(reach.length).toBeGreaterThan(2)
+    for (const el of reach) {
+      expect(el.tagName, el.outerHTML).toBe('BUTTON')
+      expect(el.getAttribute('type')).toBe('button')
+    }
+    expect(host.querySelectorAll('a:not([href]), span[data-tech]')).toHaveLength(0)
+  })
+
   it('does not tag observed claims', () => {
     expect(buildingCard(minimal(), 'b2')).toContain('<li class="claim" data-state="verified"><span class="ctext">Memories are stored')
   })
@@ -110,10 +123,10 @@ describe('cards', () => {
     doc.edges[0].twoWay = false
     doc.edges.push(edge('e<2>', 'b2', 'b1', { label: 'Replies' }))
     const html = edgeCard(doc, 'e1')
-    expect(html).toContain('</p><h4>Direction</h4><p>Both ways: Desktop app reaches Memory host, and <a class="lnk link-edge" data-edge="e&lt;2&gt;">Memory host reaches Desktop app</a>.</p>')
+    expect(html).toContain('</p><h4>Direction</h4><p>Both ways: Desktop app reaches Memory host, and <button type="button" class="lnk link-edge" data-edge="e&lt;2&gt;">Memory host reaches Desktop app</button>.</p>')
     expect(html.indexOf('Direction')).toBeLessThan(html.indexOf('What travels'))
     doc.buildings[1].name = 'A <b>'
-    expect(edgeCard(doc, 'e<2>')).toContain('<p>Both ways: A &lt;b&gt; reaches Desktop app, and <a class="lnk link-edge" data-edge="e1">Desktop app reaches A &lt;b&gt;</a>.</p>')
+    expect(edgeCard(doc, 'e<2>')).toContain('<p>Both ways: A &lt;b&gt; reaches Desktop app, and <button type="button" class="lnk link-edge" data-edge="e1">Desktop app reaches A &lt;b&gt;</button>.</p>')
     doc.edges.push(edge('e5', 'b1', 'x1', { label: 'http-out api.example.com' }))
     expect(edgeCard(doc, 'e5')).toContain('<p>One way, with replies: Desktop app asks and Claude Code answers.</p>')
     expect(edgeCard(rich(), 'pe1')).toContain('<p>One way (planned): Desktop app reaches pb1.</p>')
@@ -138,7 +151,7 @@ describe('cards', () => {
     expect(edgeCard(doc, 'e1').match(/Memory calls/g)).toHaveLength(1)
     // A link to the line shows its summary too.
     doc.edges[0].label = 'env A, env B'
-    expect(techCard(doc, 'ipc')).toContain('>reads 2 settings</a>')
+    expect(techCard(doc, 'ipc')).toContain('>reads 2 settings</button>')
   })
 
   it('usesTech and techCard list buildings and edges', () => {
@@ -183,7 +196,7 @@ describe('cards', () => {
     const doc = minimal()
     expect(buildingCard(doc, 'b2')).toContain('<span class="tag status-verified">Built · tests pass</span>')
     const color = doc.cargo[doc.edges[0].cargo].color
-    expect(buildingCard(doc, 'b1')).toContain(`<span class="cargo" style="background:${color}"></span><a class="lnk link-edge"`)
+    expect(buildingCard(doc, 'b1')).toContain(`<span class="cargo" style="background:${color}"></span><button type="button" class="lnk link-edge"`)
     expect(edgeCard(doc, 'e1')).toContain(`<p><span class="cargo" style="background:${color}"></span>`)
     doc.edges[0].cargo = 'nothing-known'
     expect(edgeCard(doc, 'e1')).toContain('<p>nothing-known</p>')

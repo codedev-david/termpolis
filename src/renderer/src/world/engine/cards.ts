@@ -55,11 +55,13 @@ function serviceNames(doc: WorldDoc, id: string, readOnly: boolean): string {
 }
 
 function chips(doc: WorldDoc, techs: string[]): string {
-  return techs.map((t) => `<span class="chip" data-tech="${esc(t)}" title="${esc(doc.glossary[t] ?? '')}">${esc(t)}</span>`).join('')
+  return techs.map((t) => `<button type="button" class="chip" data-tech="${esc(t)}" title="${esc(doc.glossary[t] ?? '')}">${esc(t)}</button>`).join('')
 }
 
-const nodeLink = (doc: WorldDoc, id: string): string => `<a class="lnk link-node" data-node="${esc(id)}">${esc(nodeName(doc, id))}</a>`
-const edgeLink = (e: WorldEdge): string => `<a class="lnk link-edge" data-edge="${esc(e.id)}">${esc(edgeSummary(e.label))}</a>`
+// A chip and a link are buttons (they open a card in place, they go to no address), so Tab reaches each and Enter
+// and Space press it (A11Y Y3); the card's CSS draws them as a pill and as dotted link text.
+const nodeLink = (doc: WorldDoc, id: string): string => `<button type="button" class="lnk link-node" data-node="${esc(id)}">${esc(nodeName(doc, id))}</button>`
+const edgeLink = (e: WorldEdge): string => `<button type="button" class="lnk link-edge" data-edge="${esc(e.id)}">${esc(edgeSummary(e.label))}</button>`
 /** The small colour square of a line's cargo, as in the legend. Only a hex colour reaches the style attribute. */
 const swatch = (doc: WorldDoc, e: WorldEdge): string => {
   const c = doc.cargo[e.cargo]
@@ -118,7 +120,7 @@ export function edgeCard(doc: WorldDoc, id: string, opts: CardOptions = {}): str
     : title !== e.label.trim() ? `<p>${esc(e.label)}</p>` : ''
   // Which way it runs, right under its ends; the half of the sentence about the line back opens that line.
   const d = direction(doc, e)
-  const back = d.reverseId !== undefined ? `<a class="lnk link-edge" data-edge="${esc(d.reverseId)}">${esc(d.link)}</a>` : esc(d.link)
+  const back = d.reverseId !== undefined ? `<button type="button" class="lnk link-edge" data-edge="${esc(d.reverseId)}">${esc(d.link)}</button>` : esc(d.link)
   return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}</p>`
     + section(CARD_HEADINGS.direction, `<p>${esc(d.before)}${back}${esc(d.after)}</p>`)
     + carries
