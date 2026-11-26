@@ -2619,6 +2619,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // boxes measured again; the host's own changes resize the view.
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((changed?: ResizeObserverEntry[]) => {
     panelBoxes = null
+    namesStale = true
     wake() // the labels keep off the panels' new boxes; a pane shown again (size 0 before) draws again
     if (!changed || changed.some((e) => e.target === host)) resize()
   })
@@ -2681,6 +2682,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** The panels over the view (setPanels), and their boxes from the view's top left corner (null: to measure again). */
   let panels: readonly HTMLElement[] = []
   let panelBoxes: Rect[] | null = []
+  /** A panel's box changed since the names were last laid out: they keep off it at once, a frame held back or not (animate). */
+  let namesStale = false
   /** The panels' boxes, measured once after each change: a hidden panel has none. */
   function blocked(): Rect[] {
     if (panelBoxes) return panelBoxes
@@ -3166,6 +3169,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (busy || (loopOnly && !changed && now - drawnAt < loopGap)) {
         // A wait for the GPU is part of the next frame's time; a frame held back to loopGap's pace is not a slow one.
         if (!busy) chained = false
+        // A panel opened, moved or shut over the map meanwhile: the names keep off it now, as the page lays them out
+        // (the GPU draws none of them), rather than showing through it until the wait is over, which drawn in software
+        // takes seconds (an answer's card at 5120x2880 on the Linux runners, world-responsive's locked-note test).
+        if (namesStale) {
+          showNames()
+          labelRenderer.render(scene, camera)
+        }
         raf = requestAnimationFrame(animate)
         return
       }
@@ -3192,6 +3202,33 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       idleLeft = motion !== 'still' ? SETTLE_FRAMES : idleLeft - 1
       if (raf === 0 && !disposed && !paused && !lost && idleLeft > 0) raf = requestAnimationFrame(animate)
     }
+  }
+  /**
+   * Lays the names out (layLabels) and shows each where it goes, as strongly as it reads: in every frame drawn, and at
+   * once when a panel changes while a frame is held back (animate). True when a name moved, showed or went.
+   */
+  function showNames(): boolean {
+    namesStale = false
+    const shown = layLabels()
+    const moved = !sameLayout(lastShown, shown)
+    lastShown = shown
+    for (const l of labels) {
+      l.o.visible = shown.has(l.key)
+      if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
+      const sub = l.kind === 'district' ? subtitleOf(l.o.element) : null
+      const subShown = compactShown.has(l.key) ? 'none' : ''
+      if (sub && sub.style.display !== subShown) sub.style.display = subShown
+      // A district name left on a building or slab reads over a dark halo, not its glow alone.
+      if (l.kind === 'district' && l.o.element.classList.contains('lw-on-solid') !== onSolid.has(l.key)) l.o.element.classList.toggle('lw-on-solid')
+      if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
+      l.o.element.style.opacity = String(opacities.get(l) as number) // every name shown was found legible (layLabels)
+    }
+    for (const e of edges.values()) {
+      e.label.visible = shown.has('e:' + e.id)
+      if (e.label.visible) nudgeLabel(e.label.element, shown.get('e:' + e.id) as Nudge)
+      if (e.label.visible) e.label.element.style.opacity = String(Math.max(LABEL_MIN_OPACITY, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
+    }
+    return moved
   }
   /**
    * Draws one frame; returns whether anything is still moving (another frame will differ from this one): 'looping'
@@ -3324,25 +3361,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // names read from the overview of any size of world (their fade starts past it); building names
     // read at the overview and fade a little with distance; the hovered or selected part's and its
     // neighbours' names read in full.
-    const shown = layLabels()
-    if (!sameLayout(lastShown, shown)) moving = true // the labels find their places over a frame or two (placeLabels keeps the shown ones)
-    lastShown = shown
-    for (const l of labels) {
-      l.o.visible = shown.has(l.key)
-      if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
-      const sub = l.kind === 'district' ? subtitleOf(l.o.element) : null
-      const subShown = compactShown.has(l.key) ? 'none' : ''
-      if (sub && sub.style.display !== subShown) sub.style.display = subShown
-      // A district name left on a building or slab reads over a dark halo, not its glow alone.
-      if (l.kind === 'district' && l.o.element.classList.contains('lw-on-solid') !== onSolid.has(l.key)) l.o.element.classList.toggle('lw-on-solid')
-      if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
-      l.o.element.style.opacity = String(opacities.get(l) as number) // every name shown was found legible (layLabels)
-    }
-    for (const e of edges.values()) {
-      e.label.visible = shown.has('e:' + e.id)
-      if (e.label.visible) nudgeLabel(e.label.element, shown.get('e:' + e.id) as Nudge)
-      if (e.label.visible) e.label.element.style.opacity = String(Math.max(LABEL_MIN_OPACITY, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
-    }
+    if (showNames()) moving = true // the labels find their places over a frame or two (placeLabels keeps the shown ones)
     batchFrame()
     renderer.info.reset()
     if (composer) composer.render()
@@ -3401,10 +3420,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (els.length === panels.length && els.every((el, i) => el === panels[i])) {
         const was = panelBoxes
         panelBoxes = null
-        if (was === null || !sameRects(was, blocked())) wake()
+        if (was === null || !sameRects(was, blocked())) {
+          namesStale = true
+          wake()
+        }
         return
       }
       panelBoxes = null
+      namesStale = true
       wake()
       for (const el of panels) ro?.unobserve(el)
       panels = [...els]

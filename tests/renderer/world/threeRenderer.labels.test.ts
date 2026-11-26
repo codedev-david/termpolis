@@ -8,7 +8,7 @@ import { BUFFER_SETTLE_MS, createThreeRenderer, type ThreeRenderer } from '../..
 import type { SceneModel, SceneText } from '../../../src/renderer/src/world/engine/sceneModel'
 import { turnGround } from '../../../src/renderer/src/world/engine/viewMath'
 import {
-  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, emptyText, labelsOf, makeHost, rendererOf, resizeHost, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, emptyText, gpu, labelsOf, makeHost, rendererOf, resizeHost, sceneOf, smallCity, smallText,
   withHarness, worldOf,
 } from './threeHarness'
 
@@ -622,6 +622,50 @@ describe('threeRenderer labels', () => {
     expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
     expect(watched).toHaveLength(seen)
     expect(unwatched).toEqual([])
+    r.dispose()
+  })
+
+  // world-responsive's locked-note test on the Linux runners: drawn in software at 5120x2880, an answer's card opened
+  // over the district names while the GPU was still drawing the last frame, and every frame was held back for seconds
+  // (lastDrawn), so the names, laid out only in a drawn frame, showed through the card. A panel's change lays them out
+  // at once, held frame or not; it draws nothing, and the next frame drawn is the GPU's as before.
+  it('drawn in software, a panel opened while a frame is held back for the GPU hides the names under it at once', () => {
+    gpu.gpuName = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+    gpu.fences.on = true
+    gpu.fences.signalAfter = 0
+    sized(300)
+    /** Which district names the page shows (the label renderer hides the rest). */
+    const onPage = (): boolean[] => labelsOf(world(), 'district').map((l) => l.element.style.display !== 'none')
+    const r = drawn(twoDistricts(), withSubtitles)
+    h.frames.run(4) // the page's frame, then the first drawn one
+    expect(r.drawnCounts().frames).toBeGreaterThan(0)
+    expect(onPage()).toEqual([true, true])
+    gpu.fences.signalAfter = null // the GPU is still drawing the last frame: every frame is held back
+    const card = panelAt([0, 0, 0, 0])
+    r.setPanels([card])
+    h.frames.run(2)
+    const frames = r.drawnCounts().frames
+    const renders = rendererOf().renders.length
+    // The card opens over the whole view and the stage hands it over again (the same panel, a new box).
+    card.getBoundingClientRect = panelAt([0, 0, 800, 600]).getBoundingClientRect
+    r.setPanels([card])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
+    expect(onPage()).toEqual([false, false])
+    expect(r.drawnCounts().frames).toBe(frames) // no frame drawn: the GPU is still busy
+    expect(rendererOf().renders.length).toBe(renders)
+    // Laid out once for the change, not again on every held frame (a name set shown by hand stays so).
+    labelsOf(world(), 'district')[0].visible = true
+    h.frames.run(3)
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, false])
+    labelsOf(world(), 'district')[0].visible = false
+    // It shuts (seen by its ResizeObserver, or handed over again): the names come back, still with no frame drawn.
+    card.getBoundingClientRect = panelAt([0, 0, 0, 0]).getBoundingClientRect
+    r.setPanels([card])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    expect(onPage()).toEqual([true, true])
+    expect(r.drawnCounts().frames).toBe(frames)
     r.dispose()
   })
 
