@@ -150,7 +150,7 @@ describe('the open limiter (a program in the terminal knows the nonce, so it cou
     // Not silent: someone who closed the pane and typed it again at once gets a line with an Open button for the
     // folder, which opens only when they click it, so a program asking in a loop cannot keep reopening the pane.
     expect(await ask('/home/me/repo')).toEqual({ success: false, error: askedAgain('/home/me/repo'), show: true, folder: '/home/me/repo' })
-    expect(askedAgain('/x')).toBe('lumopolis: /x was asked for a moment ago. Open shows it again.')
+    expect(askedAgain('/x')).toBe('lumopolis: /x was asked for a moment ago. Open brings it to the front.')
     expect(await ask('/home/me/gone')).toMatchObject({ error: noSuchFolder('/home/me/gone') }) // refused: not counted
     for (let i = 1; i < OPEN_LIMIT; i++) { t += REPEAT_MS; expect(await ask(i % 2 ? '/home/me/repo/sub' : '/home/me/repo')).toMatchObject({ success: true }) }
     t += REPEAT_MS
