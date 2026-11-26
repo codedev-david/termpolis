@@ -185,6 +185,59 @@ describe('WorldCard', () => {
     }
   })
 
+  it('measures again when fonts finish loading, so bare text that a late font makes taller fades too, and stops listening when it closes (HOLD-B #106, landing m2)', () => {
+    // Bare text at the top of the body is no element, so no ResizeObserver can watch it.
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void {}
+      disconnect(): void {}
+    })
+    const fonts = new EventTarget()
+    Object.defineProperty(document, 'fonts', { configurable: true, value: fonts })
+    const off = vi.spyOn(fonts, 'removeEventListener')
+    const box = { scroll: 200, client: 200 }
+    const spyS = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => box.scroll)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => box.client)
+    try {
+      const { unmount } = render(<WorldCard html="Holds the data" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      const body = screen.getByTestId('world-card-body')
+      expect(body).not.toHaveAttribute('data-more')
+      box.scroll = 260
+      act(() => { fonts.dispatchEvent(new Event('loadingdone')) })
+      expect(body).toHaveAttribute('data-more')
+      unmount()
+      expect(off).toHaveBeenCalledWith('loadingdone', expect.any(Function))
+    } finally {
+      spyS.mockRestore()
+      spyC.mockRestore()
+      delete (document as { fonts?: unknown }).fonts
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('measures again when fonts finish loading where there is no ResizeObserver, and stops listening when it closes', () => {
+    vi.stubGlobal('ResizeObserver', undefined)
+    const fonts = new EventTarget()
+    Object.defineProperty(document, 'fonts', { configurable: true, value: fonts })
+    const off = vi.spyOn(fonts, 'removeEventListener')
+    const box = { scroll: 200, client: 200 }
+    const spyS = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => box.scroll)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => box.client)
+    try {
+      const { unmount } = render(<WorldCard html="<h3>Store</h3>Holds the data" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      const body = screen.getByTestId('world-card-body')
+      box.scroll = 260
+      act(() => { fonts.dispatchEvent(new Event('loadingdone')) })
+      expect(body).toHaveAttribute('data-more')
+      unmount()
+      expect(off).toHaveBeenCalledWith('loadingdone', expect.any(Function))
+    } finally {
+      spyS.mockRestore()
+      spyC.mockRestore()
+      delete (document as { fonts?: unknown }).fonts
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('measures the scrollbar once where there is no ResizeObserver', () => {
     vi.stubGlobal('ResizeObserver', undefined)
     const spyO = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => 320)
