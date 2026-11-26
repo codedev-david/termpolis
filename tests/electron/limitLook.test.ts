@@ -475,6 +475,24 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(liveness(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN + repaint), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
     expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
     // The agent's name alone is no echo of a line: a prompt can show it, a folder's (a start Termpolis was not sure of).
-    expect(liveness(io(BEFORE + FIRST + 'claude\r\n' + BOX), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
+    expect(liveness(io(BEFORE + FIRST + 'claude\r\n'), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
+  })
+
+  // agy is started by its name alone, and no echo of a name can be told from a prompt that shows it: the box agy draws after that
+  // first prompt is what tells it runs. Read as the shell back, the switch's exit step typed no /exit, read agy as gone already and
+  // named no conversation to resume (accountsChooserE2eMock loaded at 6 copies, 2026-11-26).
+  it('is an agent started by its name alone live once it draws its box after that first prompt, to the switch and the limit look', () => {
+    const AGY = `${E}[?25l${E}[H${E}[?25h${E}[2J      ▄▀▀▄        Antigravity CLI 1.4.3${E}[K\r\n     a@example.com (Google AI Pro)${E}[K\r\n\r\n${RULE}\r\n> ${E}[K\r\n${RULE}\r\n? for shortcuts${E}[K\r\n`
+    const rec = { at: BEFORE.length, commands: ['agy'] }
+    const agy: LiveStart = { ...rec, agent: 'agy', time: 0 }
+    expect(liveness(io(BEFORE + FIRST + 'agy\r\n' + AGY), 't', 'agy', rec)).toEqual({ state: 'live' })
+    for (const now of [FOREGROUND_GRACE_MS, FOREGROUND_GRACE_MS * 10]) {
+      expect(agentGone(io(BEFORE + FIRST + 'agy\r\n' + AGY), 't', agy, now)).toBe(false)
+    }
+    // Gone once the shell reports a prompt after it, and gone where nothing agy drew follows that first prompt.
+    expect(liveness(io(BEFORE + FIRST + 'agy\r\n' + AGY + '\r\n' + AGAIN), 't', 'agy', rec)).toEqual({ state: 'gone', hint: null })
+    expect(agentGone(io(BEFORE + FIRST + 'agy\r\n' + AGY + '\r\n' + AGAIN), 't', agy, FOREGROUND_GRACE_MS)).toBe(true)
+    expect(liveness(io(BEFORE + FIRST + 'agy\r\n'), 't', 'agy', rec)).toEqual({ state: 'gone', hint: null })
+    expect(agentGone(io(BEFORE + FIRST + 'agy\r\n'), 't', agy, FOREGROUND_GRACE_MS)).toBe(true)
   })
 })
