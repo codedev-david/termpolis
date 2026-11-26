@@ -252,8 +252,13 @@ test.describe.serial('Lumopolis in the real app', () => {
     // recompiles of about 350 ms fit well inside it), then the tail.
     test.setTimeout(90_000)
     // Stop the tour (it may still be running) by closing its card, then close the pane. The tour may end between
-    // the look and the click, taking its card with it.
-    if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click({ timeout: 5_000 }).catch(() => undefined)
+    // the look and the click, taking its card with it; any other failure (two cards, a close that is not there) is
+    // thrown with its own message (HOLD-B #106, landing m1).
+    if ((await card().count()) > 0) {
+      await page.locator('[data-testid="world-card-close"]').click({ timeout: 5_000 }).catch(async (e: unknown) => {
+        if ((await card().count()) > 0) throw e
+      })
+    }
     await page.locator('[data-testid="world-close"]').click()
     await expect(pane()).toHaveCount(0)
     await createTerminal('Typing', project)
@@ -682,6 +687,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     await page.keyboard.press('Enter')
     await expect.poll(async () => ((await card().locator('h3').first().textContent()) ?? '').toLowerCase()).toContain(term.toLowerCase())
     await expect.poll(async () => (await drawn())?.highlighted.length ?? 0).toBeGreaterThanOrEqual(2)
+    // The glossary card is closed here, so a card a later test finds open is a card something else left (HOLD-B #106, landing m1).
+    await page.locator('[data-testid="world-card-close"]').click()
+    await expect(card()).toHaveCount(0)
   })
 
   test('8. a saved view comes back after moving away, and the 2D map switch draws an svg map that a tour steps through', async () => {
@@ -703,10 +711,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     })
     expect(saved).not.toBeNull()
     await page.getByTestId('world-bookmarks').click() // close the menu
-    // Test 7 leaves its glossary card open; in a narrow pane a card takes most of the height, so it is closed first
-    // and the click lands on a building rather than under the card.
-    if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
-    await expect(card()).toHaveCount(0)
+    // In a narrow pane a card takes most of the height, so none may be open here: the click must land on a building
+    // rather than under a card. Test 7 closes its own (HOLD-B #106, landing m1).
+    await expect(card(), 'no card is left open by an earlier test').toHaveCount(0)
     await clickABuilding() // the camera moves to frame it
     await expect.poll(async () => {
       const c = await cam()
