@@ -33,6 +33,43 @@ describe('WorldCard', () => {
     expect(body).toHaveTextContent('Store')
   })
 
+  it('is quiet while a tour stop shows: the pane says the stop in its own status region, once (T5)', () => {
+    const { rerender } = render(<WorldCard html="<p>Here.</p>" quiet onClose={() => {}} onOpen={() => {}} {...noop} />)
+    expect(screen.getByRole('region', { name: 'Details' })).toHaveAttribute('aria-live', 'off')
+    rerender(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+    expect(screen.getByRole('region', { name: 'Details' })).toHaveAttribute('aria-live', 'polite')
+  })
+
+  it("steps a 2D map's tour: Back, Next and End tour, each one Tab stop that stays put at either end (Y2)", () => {
+    const tour = { n: 1, of: 3, onBack: vi.fn(), onNext: vi.fn(), onEnd: vi.fn() }
+    const { rerender } = render(<WorldCard html="<p>Here.</p>" tour={tour} onClose={() => {}} onOpen={() => {}} {...noop} />)
+    const nav = screen.getByRole('navigation', { name: 'Tour' })
+    expect(nav).toHaveTextContent('Stop 1 of 3')
+    const back = screen.getByRole('button', { name: 'Back' })
+    const next = screen.getByRole('button', { name: 'Next' })
+    // At the first stop Back says it can go no further, but keeps its place and the focus: it is never disabled.
+    expect(back).toHaveAttribute('aria-disabled', 'true')
+    expect(back).not.toBeDisabled()
+    expect(next).not.toHaveAttribute('aria-disabled')
+    fireEvent.click(back)
+    expect(tour.onBack).not.toHaveBeenCalled()
+    fireEvent.click(next)
+    expect(tour.onNext).toHaveBeenCalledTimes(1)
+    rerender(<WorldCard html="<p>There.</p>" tour={{ ...tour, n: 3 }} onClose={() => {}} onOpen={() => {}} {...noop} />)
+    expect(next).toHaveAttribute('aria-disabled', 'true')
+    expect(back).not.toHaveAttribute('aria-disabled')
+    fireEvent.click(next)
+    expect(tour.onNext).toHaveBeenCalledTimes(1)
+    fireEvent.click(back)
+    expect(tour.onBack).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'End tour' }))
+    expect(tour.onEnd).toHaveBeenCalledTimes(1)
+    const css = (screen.getByTestId('world-card').querySelector('style') as HTMLStyleElement).textContent as string
+    expect(css).toContain('.world-card-tour button[aria-disabled=true]{')
+    rerender(<WorldCard html="<p>There.</p>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+    expect(screen.queryByRole('navigation', { name: 'Tour' })).toBeNull()
+  })
+
   it('moves the close button left by the scrollbar a capped body shows, and watches the body for it', () => {
     const observed: Element[] = []
     let fire = (): void => undefined

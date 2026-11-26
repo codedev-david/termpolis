@@ -7,6 +7,7 @@ import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/
 import type { WorldDoc } from '../../../src/shared/world/types'
 import { CANVAS_DESCRIPTION, createWorldViewer, FIRST_FRAME_MS_HW, FIRST_FRAME_MS_SW, forgetWebGL, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
+import type { TourStop } from '../../../src/renderer/src/world/engine/cards'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { building, minimal, rich } from './helpers'
 
@@ -21,10 +22,12 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc; quality?: 'high'
   const cards: Card[] = []
   const fromClicks: boolean[] = []
   const sels: (WorldSelection | null)[] = []
+  const stops: (TourStop | null)[] = []
   const viewer = createWorldViewer(host, {
     ...(opts.reducedMotion === undefined ? {} : { reducedMotion: opts.reducedMotion }),
     ...(opts.quality === undefined ? {} : { quality: opts.quality }),
     renderCard: (html, fromClick) => { cards.push(html); fromClicks.push(fromClick === true) },
+    onTourStop: (s) => { stops.push(s) },
   })
   viewer.on('select', (s) => { sels.push(s) })
   viewer.load(opts.doc ?? rich())
@@ -34,7 +37,7 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc; quality?: 'high'
     return el
   }
   const esc = (): void => { host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) }
-  return { host, viewer, cards, fromClicks, sels, item, esc, lastCard: (): Card | undefined => cards[cards.length - 1] }
+  return { host, viewer, cards, fromClicks, sels, stops, item, esc, lastCard: (): Card | undefined => cards[cards.length - 1] }
 }
 
 let getContext: ReturnType<typeof vi.spyOn>
@@ -221,6 +224,32 @@ describe('2D fallback: apply()', () => {
     expect(cards.slice(before)).toEqual([null]) // the finished tour takes its caption down
     expect(viewer.getSelection()).toEqual([])
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('tour names each stop it shows as n of the stops on the map, and says it ended (T5)', async () => {
+    vi.useFakeTimers()
+    const { viewer, stops } = setup({ reducedMotion: true })
+    const done = viewer.apply({ type: 'tour', steps: [{ ids: ['gone'], caption: 'lost' }, { ids: ['b1'], caption: 'one' }, { ids: ['d1'], caption: 'the app' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stops).toEqual([{ n: 1, of: 2, caption: 'one' }])
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    expect(stops).toEqual([{ n: 1, of: 2, caption: 'one' }, { n: 2, of: 2, caption: 'the app' }])
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await done
+    expect(stops[stops.length - 1]).toBeNull()
+    expect(stops).toHaveLength(3)
+    // Stopped part way, it says so too; a tour with no stop on the map says nothing at all.
+    stops.length = 0
+    const cut = viewer.apply({ type: 'tour', steps: [{ ids: ['b1'], caption: 'one' }, { ids: ['b2'], caption: 'two' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    viewer.cancelActions()
+    await vi.advanceTimersByTimeAsync(ACTION_GAP_MS * 2)
+    await cut
+    expect(stops).toEqual([{ n: 1, of: 2, caption: 'one' }, null])
+    stops.length = 0
+    await viewer.apply({ type: 'tour', steps: [{ ids: ['gone'], caption: 'lost' }] })
+    viewer.cancelActions()
+    expect(stops).toEqual([])
   })
 
   it('tour passes over a stop whose parts are all gone, silently, and shows a district stop', async () => {

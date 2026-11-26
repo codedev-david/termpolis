@@ -45,7 +45,7 @@ function mountViewer(page: Page, doc: WorldDoc, meta: PageMeta): WorldViewer | n
   let viewer: WorldViewer | null = null
   if (hasWebGL()) {
     try {
-      viewer = createWorldViewer(page.viewHost, { title: meta.project, readOnly: true, renderCard: (html) => page.showCard(html) })
+      viewer = createWorldViewer(page.viewHost, { title: meta.project, readOnly: true, renderCard: (html) => page.showCard(html), onTourStop: (stop) => page.sayTourStop(stop) })
       viewer.load(doc)
       page.attach(viewer)
       return viewer

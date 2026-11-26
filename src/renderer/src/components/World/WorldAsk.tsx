@@ -11,19 +11,18 @@
 // in a narrow pane the suggestion chips wrap and the input shrinks instead of running past the edge.
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
-import type { WorldViewer } from '../../world/engine'
 import type { WorldAskLink } from './WorldView'
 import { WorldAnswerPanel } from './WorldAnswer'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { spokenText } from '../../../../shared/world/answerMarkdown'
 import { MAX_QUESTION_CHARS } from '../../../../shared/world/askLimits'
-import { isDesignKey, useWorldAsk } from './useWorldAsk'
+import { isDesignKey, useWorldAsk, type AskPlayer } from './useWorldAsk'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { useTerminalStore } from '../../store/terminalStore'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction } from '../../lib/voice/voicePipeline'
 
 export interface WorldAskProps {
-  viewer: WorldViewer | null
+  viewer: AskPlayer | null
   /** The loaded world: chips open cards only for building and edge ids found in it. */
   doc?: WorldDoc | null
   /** The world's key: the project root it was drawn for (WorldView's resolved git root), or design:<id>. Empty: asking is off. */

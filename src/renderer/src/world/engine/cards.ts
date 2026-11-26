@@ -157,3 +157,8 @@ export function techCard(doc: WorldDoc, techId: string): string {
 /** A tour as a card, for the 2D map (the 3D city plays it instead): its title over its captions in order. */
 export const tourCard = (t: Tour): string =>
   `<h3>${esc(t.title)}</h3><ol>${t.steps.map((s) => `<li>${esc(s.caption)}</li>`).join('')}</ol>`
+
+/** A tour's stop as a screen reader hears it: its place among the stops on the map, and its caption (T5). */
+export interface TourStop { n: number; of: number; caption: string }
+// PENDING SIGN-OFF (A11Y #55): the words a screen reader says at each tour stop.
+export const tourStopText = (s: TourStop): string => `Stop ${s.n} of ${s.of}: ${s.caption}`

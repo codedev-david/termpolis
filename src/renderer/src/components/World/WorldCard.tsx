@@ -52,7 +52,14 @@ export interface WorldCardProps {
    * the city keeps its least room.
    */
   onNeed?: (px: number) => void
+  /** A tour stop shows: the body is no live region then, as the pane says the stop in its own status region, once (T5). */
+  quiet?: boolean
+  /** A tour on the 2D map: the stop shown of how many, and Back, Next and End tour to step through it (Y2). */
+  tour?: CardTour
 }
+
+/** The 2D map's tour as the card steps through it (Y2). */
+export interface CardTour { n: number; of: number; onBack: () => void; onNext: () => void; onEnd: () => void }
 
 /**
  * How far up from the bottom of a card that scrolls on its content fades out. A capped card's bottom edge falls
@@ -137,6 +144,10 @@ const CARD_CSS = `
 .world-card-names [role=alert]{margin:4px 0 0;font-size:12px;color:#fbbf24}
 .world-card-body .edit-names{padding:0 6px;border-radius:6px;font-size:12px;color:#7dd3fc;background:transparent;border:1px solid rgba(125,211,252,.4);cursor:pointer}
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
+.world-card-tour{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.18);font-size:12px;color:#cbd5e1}
+.world-card-tour span{margin-right:auto}
+.world-card-tour button{padding:1px 8px;border-radius:6px;font-size:12px;color:#7dd3fc;background:transparent;border:1px solid rgba(125,211,252,.4);cursor:pointer}
+.world-card-tour button[aria-disabled=true]{color:#94a3b8;border-color:rgba(148,163,184,.3);cursor:default}
 `
 
 /**
@@ -147,7 +158,7 @@ const CARD_CSS = `
  */
 export const CARD_CLICK_GRACE_MS = 500
 
-export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, onNeed, boxRef, maxHeight = null, clickThrough = false, solid = false }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, onNeed, boxRef, maxHeight = null, clickThrough = false, solid = false, quiet = false, tour }: WorldCardProps): JSX.Element {
   const zoom = useUiZoom()
   // Only how the card opened counts: a later card shown in it takes clicks at once.
   const [opening, setOpening] = useState(clickThrough)
@@ -266,14 +277,24 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
         role="region"
         aria-label="Details"
         // A screen reader reads a card when it opens or another part's replaces it, wherever the focus is (the 2D map's
-        // list, the Ask box): polite, so it waits for what is being read to finish.
-        aria-live="polite"
+        // list, the Ask box): polite, so it waits for what is being read to finish. A tour stop is said by the pane (T5).
+        aria-live={quiet ? 'off' : 'polite'}
         tabIndex={0}
         onClick={onClick}
         onScroll={readMore}
         {...(more ? { 'data-more': '' } : {})}
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {tour && (
+        // Back and Next at either end say they can go no further (aria-disabled) but are never disabled: the focus
+        // stays on the button pressed. PENDING SIGN-OFF (A11Y Y2): "Stop {n} of {m}", "Back", "Next", "End tour".
+        <nav className="world-card-tour" aria-label="Tour" data-testid="world-card-tour">
+          <span>Stop {tour.n} of {tour.of}</span>
+          <button type="button" aria-disabled={tour.n === 1 ? 'true' : undefined} onClick={() => { if (tour.n > 1) tour.onBack() }}>Back</button>
+          <button type="button" aria-disabled={tour.n === tour.of ? 'true' : undefined} onClick={() => { if (tour.n < tour.of) tour.onNext() }}>Next</button>
+          <button type="button" onClick={tour.onEnd}>End tour</button>
+        </nav>
+      )}
       {edit && (
         <form className="world-card-names" data-testid="world-card-names" onSubmit={save}>
           <label htmlFor="world-card-names-input">Service names (up to {MAX_RUNTIME_NAMES}, separated by commas)</label>

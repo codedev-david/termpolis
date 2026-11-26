@@ -115,6 +115,9 @@ describe('boot', () => {
     expect(viewer.load).toHaveBeenCalledWith(doc)
     opts.renderCard('<h3>From the viewer</h3>')
     expect(document.querySelector('.wx-card-body')!.innerHTML).toBe('<h3>From the viewer</h3>')
+    // A tour's stops reach the page's status region (T5).
+    opts.onTourStop({ n: 2, of: 2, caption: 'Last.' })
+    expect(document.querySelector('.wx-sr')!.textContent).toBe('Stop 2 of 2: Last.')
     expect(document.querySelector('.wx-title')!.textContent).toBe('Termpolis, exported from Termpolis on 2026-11-21 · commit abc1234')
   })
 

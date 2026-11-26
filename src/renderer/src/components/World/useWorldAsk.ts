@@ -19,6 +19,13 @@ import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProto
 import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
 import type { AskNoMemory, CitedEvidence, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
+
+/**
+ * What a question is asked from and its answer plays on: the 3D viewer, or the pane's 2D map, which gives the part
+ * whose card is open and every part on the map, and opens the cards, lights the parts and steps the tour an answer
+ * names (A11Y Y2).
+ */
+export type AskPlayer = Pick<WorldViewer, 'apply' | 'play' | 'cancelActions' | 'getSelection' | 'cameraRegion'>
 import { lumopolisModel } from './worldAgentModel'
 
 export type AskState = 'idle' | 'thinking' | 'answered' | 'error'
@@ -68,7 +75,7 @@ function reducedMotion(): boolean {
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>): UseWorldAsk {
+export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
@@ -129,7 +136,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   }, [])
 
   /** Shows the answer sentence by sentence, playing each one's steps as it appears. */
-  const reveal = useCallback((v: WorldViewer, a: WorldAnswer): void => {
+  const reveal = useCallback((v: AskPlayer, a: WorldAnswer): void => {
     clearTimers()
     const gen = ++playGen.current
     const reduced = reducedMotion()
@@ -198,7 +205,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
       )
       return true
     }
-    const v = viewer as WorldViewer
+    const v = viewer as AskPlayer
     void (async () => {
       try {
         const model = await lumopolisModel()
@@ -255,7 +262,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
 
   /** Stops the answer's tour in the viewer, if one is flying, and its reveal (U5, T4). */
   const stopTour = useCallback((): void => {
-    if (playingRef.current) (viewerRef.current as WorldViewer).cancelActions()
+    if (playingRef.current) (viewerRef.current as AskPlayer).cancelActions()
     clearTimers()
   }, [clearTimers])
 
@@ -283,7 +290,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     const prev = lastViewer.current
     lastViewer.current = viewer
     if (prev === viewer || !playingRef.current) return
-    ;(prev as WorldViewer).cancelActions()
+    ;(prev as AskPlayer).cancelActions()
     clearTimers()
     setRevealed((answerRef.current as WorldAnswer).sentences.length)
   }, [viewer, clearTimers])

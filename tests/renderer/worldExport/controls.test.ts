@@ -469,6 +469,20 @@ describe('buildPage: cards and clicks in 3D', () => {
     expect(viewer.resetView).toHaveBeenCalled()
   })
 
+  it('says each tour stop to a screen reader in its one status region, and clears it when the tour ends (T5)', () => {
+    const { page, q } = setup()
+    const said = q('.wx-stage > [role="status"]')
+    expect(said.className).toBe('wx-sr')
+    expect(said.textContent).toBe('')
+    page.sayTourStop({ n: 1, of: 3, caption: 'Start <here>.' })
+    expect(said.textContent).toBe('Stop 1 of 3: Start <here>.')
+    expect(said.innerHTML).toBe('Stop 1 of 3: Start &lt;here&gt;.')
+    page.sayTourStop(null)
+    expect(said.textContent).toBe('')
+    // Read by a screen reader, hidden from the eye.
+    expect(PAGE_CSS).toContain('.wx-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}')
+  })
+
   it('opens what an Ask result names: a part, a term or a tour', () => {
     const { page, viewer, doc } = setup()
     page.pick('b1', 'building')

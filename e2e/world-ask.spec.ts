@@ -29,6 +29,7 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { expectPaneOpens } from './helpers/world'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import path from 'path'
@@ -355,6 +356,24 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     // Ended by the cancel (its tree killed), not by its own reply two minutes from now.
     await expect.poll(() => alive(pid), { timeout: 15_000 }).toBe(false)
     await expect(answer()).toHaveCount(0)
+  })
+
+  test('6c. on the 2D map a question is asked and its answer opens the card there (A11Y Y2)', async () => {
+    await (await toolbarControl(page, 'world-map2d')).click()
+    await closeMore(page)
+    await expect(page.locator('[data-testid="world-fallback"]')).toBeVisible()
+    if (await card().count() > 0) await card().getByRole('button', { name: 'Close details' }).click()
+    await expect(card()).toHaveCount(0)
+    await expect(askBox()).toBeEnabled()
+    await ask('How does it fit together?')
+    await expect(answer()).toContainText('Answer to: How does it fit together?', { timeout: 30_000 })
+    // The world-actions block opened the card of the building the agent named, on the 2D map.
+    await expect(card()).toBeVisible({ timeout: 15_000 })
+    await expect(card().locator('h3').first()).not.toHaveText('')
+    await expect(page.locator('[data-testid="world-fallback"]')).toBeVisible()
+    await (await toolbarControl(page, 'world-map2d')).click() // back to the 3D map
+    await closeMore(page)
+    await expect(canvas()).toBeVisible()
   })
 })
 

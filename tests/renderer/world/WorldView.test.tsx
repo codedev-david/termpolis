@@ -90,6 +90,13 @@ const settle = async (): Promise<void> => {
 const viewer = () => h.viewers[h.viewers.length - 1]
 const dialog = () => screen.getByRole('region', { name: 'Lumopolis' })
 const esc = (target: Element = dialog()) => fireEvent.keyDown(target, { key: 'Escape' })
+/** What the 2D map hands the ask box (A11Y Y2): a player of its own, never the viewer. */
+const player2d = {
+  asymmetricMatch: (p: unknown) => p !== null && typeof p === 'object' && typeof (p as { cameraRegion?: unknown }).cameraRegion === 'function' && !('resetView' in p),
+  toString: () => 'the 2D map player',
+  toAsymmetricMatcher: () => 'the 2D map player',
+}
+type Player = { apply: (a: unknown) => Promise<void>; play: (s: unknown[]) => Promise<void>; cancelActions: () => void; getSelection: () => string[]; cameraRegion: () => string[] }
 
 async function mount(props: Partial<{ root: string; onClose: () => void; askSlot: (v: unknown) => React.ReactNode }> = {}) {
   const onClose = props.onClose ?? vi.fn()
@@ -495,7 +502,7 @@ describe('WorldView', () => {
     // The list is dark, so its scrollbar is drawn dark too, not as a light bar in a dark pane (F7).
     expect((list.style as CSSStyleDeclaration & { colorScheme?: string }).colorScheme).toBe('dark')
     expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }), null)
+    expect(askSlot).toHaveBeenLastCalledWith(player2d, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }), null)
     const doc = minimal()
 
     // Clicking a building or a connection opens its card from the doc.
@@ -522,9 +529,9 @@ describe('WorldView', () => {
 
     // Toolbar actions have no viewer to drive, and do not throw.
     fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
-    // A tour shows as its captions instead (T3).
+    // A tour steps through the 2D map instead (Y2).
     fireEvent.change(screen.getByRole('combobox', { name: 'Tours' }), { target: { value: 't1' } })
-    expect(screen.getByTestId('world-card')).toHaveTextContent('First lookThe app talks to its memory.')
+    expect(screen.getByTestId('world-card')).toHaveTextContent('The app talks to its memory.Stop 1 of 1')
     fireEvent.click(screen.getByTestId('world-layer-processes'))
     fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'glass' } })
     fireEvent.click(screen.getByTestId('world-reset'))
@@ -1867,11 +1874,11 @@ describe('WorldView card actions', () => {
       .mockResolvedValueOnce(fail(savedByNewerNotice()))
     // Main refuses an annotate only over a world a newer Termpolis saved, which the pane already says in its files note.
     await open({ ...infer(), savedByNewer: true }, { worldAnnotate })
-    expect(screen.getByRole('status').textContent).toBe(savedByNewerNotice())
+    expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
     for (const want of [CONFIRM_FAILED, CONFIRM_FAILED, savedByNewerNotice()]) {
       fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
       await settle()
-      expect(screen.getByRole('status').textContent).toBe(want)
+      expect(screen.getByTestId('world-notice').textContent).toBe(want)
     }
     expect(CONFIRM_FAILED).toBe("Lumopolis couldn't save your confirmation. Try again.")
   })
@@ -1904,10 +1911,10 @@ describe('WorldView card actions', () => {
     expect(viewer().load).toHaveBeenLastCalledWith(returned, expect.anything())
     save('x')
     await settle()
-    expect(screen.getByRole('status').textContent).toBe(NAMES_FAILED)
+    expect(screen.getByTestId('world-notice').textContent).toBe(NAMES_FAILED)
     save('y')
     await settle()
-    expect(screen.getByRole('status').textContent).toBe(NAMES_FAILED)
+    expect(screen.getByTestId('world-notice').textContent).toBe(NAMES_FAILED)
     expect(NAMES_FAILED).toBe("Lumopolis couldn't save the service names. Try again.")
   })
 
@@ -1962,7 +1969,7 @@ describe('WorldView card actions', () => {
     fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
     await settle()
     expect(worldAnnotate).not.toHaveBeenCalled()
-    expect(screen.getByRole('status')).toHaveTextContent('Use Edit on the Service names line')
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Use Edit on the Service names line')
   })
 
   it('service names saved after the pane closed change nothing and do not throw', async () => {
@@ -2051,7 +2058,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('hidden')
     expect(viewer().setPaused).toHaveBeenLastCalledWith(true)
     expect(screen.queryByTestId('world-legend')).toBeNull()
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
+    expect(askSlot).toHaveBeenLastCalledWith(player2d, expect.anything(), '/repo', expect.anything(), null)
     expect(localStorage.getItem('termpolis.world.map2d')).toBe('1')
     // A click on the map opens the card from the doc, not through the viewer.
     fireEvent.click(list.querySelector('svg rect[data-id="b1"]') as Element)
@@ -2111,21 +2118,219 @@ describe('WorldView 2D map switch and bookmarks', () => {
     }
   })
 
-  it('a tour picked on the 2D map shows its captions in order as a card, with or without a viewer (T3)', async () => {
+  const textOf = (html: string) => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent as string }
+  /** The card's body, the tour's nav, what the pane says, and which items of the 2D map are lit. */
+  const body = () => within(card() as HTMLElement).getByRole('region', { name: 'Details' })
+  const said = () => screen.getByTestId('world-tour-said').textContent
+  const lit = () => [...screen.getByTestId('world-fallback').querySelectorAll('[data-lit]')].map((e) => `${e.tagName.toLowerCase()}:${e.getAttribute('data-id')}`).sort()
+  const tourDoc = (): WorldDoc => {
     const doc = minimal()
-    doc.tours = [{ id: 't1', title: 'First <look>', steps: [{ ids: ['b1'], caption: 'Start here.' }, { ids: ['b2'], caption: 'Then <this>.' }] }]
+    doc.tours = [{ id: 't1', title: 'First', steps: [{ ids: ['b1'], caption: 'Start here.' }, { ids: ['gone'], caption: 'Not on the map.' }, { ids: ['d1'], caption: 'Then <this>.' }] }]
+    // Another district, whose building a stop on d1 leaves unlit.
+    doc.districts.push({ ...doc.districts[0], id: 'd2', name: 'Elsewhere' })
+    doc.buildings.push({ ...doc.buildings[1], id: 'b9', districtId: 'd2', name: 'Far part' })
+    return doc
+  }
+
+  it('a tour picked on the 2D map shows one stop at a time, its parts lit and the stop said, with or without a viewer (Y2, T5)', async () => {
     for (const gl of [true, false]) {
       cleanup()
       h.webgl = gl
-      bridge({ worldGet: vi.fn(async () => ok(doc)) })
+      bridge({ worldGet: vi.fn(async () => ok(tourDoc())) })
       await mount()
       if (gl) fireEvent.click(screen.getByTestId('world-map2d'))
       fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
-      const c = card() as HTMLElement
-      expect(c.querySelector('h3')).toHaveTextContent('First <look>')
-      expect([...c.querySelectorAll('ol > li')].map((li) => li.textContent)).toEqual(['Start here.', 'Then <this>.'])
+      // The stop not on the map is skipped, as on the 3D map: two stops.
+      expect(body().querySelector('.tour-caption')).toHaveTextContent('Start here.')
+      const nav = within(card() as HTMLElement).getByRole('navigation', { name: 'Tour' })
+      expect(nav).toHaveTextContent('Stop 1 of 2')
+      expect(said()).toBe('Stop 1 of 2: Start here.')
+      // Said once, by the pane: the card's body is no live region meanwhile.
+      expect(body().getAttribute('aria-live')).toBe('off')
+      expect(lit()).toEqual(['button:b1', 'rect:b1'])
+      const back = within(nav).getByRole('button', { name: 'Back' })
+      const next = within(nav).getByRole('button', { name: 'Next' })
+      expect(back.getAttribute('aria-disabled')).toBe('true')
+      fireEvent.click(back) // at the first stop: stays
+      expect(said()).toBe('Stop 1 of 2: Start here.')
+      fireEvent.click(next)
+      // A district stop lights the district and its buildings; the caption is text, never markup.
+      expect(body().querySelector('.tour-caption')?.textContent).toBe('Then <this>.')
+      expect(said()).toBe('Stop 2 of 2: Then <this>.')
+      expect(lit()).toEqual(['button:b1', 'button:b2', 'button:d1', 'polygon:d1', 'rect:b1', 'rect:b2'])
+      expect(within(card() as HTMLElement).getByRole('button', { name: 'Next' }).getAttribute('aria-disabled')).toBe('true')
+      fireEvent.click(within(card() as HTMLElement).getByRole('button', { name: 'Next' })) // at the last stop: stays
+      expect(said()).toBe('Stop 2 of 2: Then <this>.')
+      fireEvent.click(within(card() as HTMLElement).getByRole('button', { name: 'Back' }))
+      expect(said()).toBe('Stop 1 of 2: Start here.')
+      fireEvent.click(within(card() as HTMLElement).getByRole('button', { name: 'End tour' }))
+      expect(card()).toBeNull()
+      expect(said()).toBe('')
+      expect(lit()).toEqual([])
       if (gl) expect(viewer().play).not.toHaveBeenCalled()
     }
+  })
+
+  it('a 2D tour ends on Esc, the card close, a part, a district, leaving the 2D map and a world with other parts; one with no stop on the map shows nothing (Y2)', async () => {
+    h.webgl = false
+    let doc = tourDoc()
+    const b = bridge({ worldGet: vi.fn(async () => ok(doc)) })
+    await mount()
+    const start = (): void => {
+      fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+      expect(said()).toBe('Stop 1 of 2: Start here.')
+    }
+    const ended = (): void => {
+      expect(said()).toBe('')
+      expect(lit()).toEqual([])
+      expect(screen.queryByRole('navigation', { name: 'Tour' })).toBeNull()
+    }
+    start(); esc(); ended(); expect(card()).toBeNull()
+    start(); fireEvent.click(screen.getByRole('button', { name: 'Close details' })); ended(); expect(card()).toBeNull()
+    start()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('button[data-id="b2"]') as Element)
+    ended()
+    expect(body().textContent).toBe(textOf(buildingCard(doc, 'b2')))
+    expect(body().getAttribute('aria-live')).toBe('polite')
+    start()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('button[data-kind="district"]') as Element)
+    ended(); expect(card()).toBeNull()
+    // A world with the same parts (a status change) keeps the tour; one with other parts ends it.
+    start()
+    doc = tourDoc()
+    await b.updated({ root: '/repo', projectKey: doc.projectKey })
+    await settle()
+    expect(said()).toBe('Stop 1 of 2: Start here.')
+    doc = tourDoc()
+    doc.buildings.push({ ...doc.buildings[1], id: 'b3', name: 'New part' })
+    await b.updated({ root: '/repo', projectKey: doc.projectKey })
+    await settle()
+    expect(screen.getByTestId('world-fallback').querySelector('button[data-id="b3"]')).not.toBeNull()
+    ended(); expect(card()).toBeNull()
+    // A tour whose stops are all off the map shows nothing.
+    doc = tourDoc()
+    doc.tours = [{ id: 't1', title: 'Gone', steps: [{ ids: ['gone'], caption: 'Nowhere.' }] }]
+    await b.updated({ root: '/repo', projectKey: doc.projectKey })
+    await settle()
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(card()).toBeNull()
+    expect(said()).toBe('')
+  })
+
+  it('a 2D tour ends when the 3D map comes back: switched to, the graphics restored, or WebGL found later (Y2)', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(tourDoc())) })
+    await mount()
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(said()).toBe('Stop 1 of 2: Start here.')
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    expect(card()).toBeNull()
+    expect(said()).toBe('')
+    act(() => { viewer().opts.onGraphics('lost') })
+    expect(screen.getByTestId('world-fallback')).toBeTruthy()
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(said()).toBe('Stop 1 of 2: Start here.')
+    act(() => { viewer().opts.onGraphics('restored') })
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    expect(card()).toBeNull()
+    expect(said()).toBe('')
+    // WebGL found after the pane opened without it.
+    cleanup()
+    h.webgl = false
+    bridge({ worldGet: vi.fn(async () => ok(tourDoc())) })
+    await mount()
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(said()).toBe('Stop 1 of 2: Start here.')
+    h.webgl = true
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    await settle()
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    expect(card()).toBeNull()
+    expect(said()).toBe('')
+  })
+
+  it('the 3D map tour stop is said once by the pane, the card body quiet meanwhile; the 2D map does not say it (T5)', async () => {
+    bridge()
+    await mount()
+    expect(said()).toBe('')
+    act(() => { viewer().opts.renderCard('<p class="tour-caption">A.</p>') })
+    act(() => { viewer().opts.onTourStop({ n: 1, of: 3, caption: 'A.' }) })
+    expect(said()).toBe('Stop 1 of 3: A.')
+    expect(body().getAttribute('aria-live')).toBe('off')
+    act(() => { viewer().opts.onTourStop(null) })
+    expect(said()).toBe('')
+    expect(body().getAttribute('aria-live')).toBe('polite')
+    act(() => { viewer().opts.onTourStop({ n: 2, of: 3, caption: 'B.' }) })
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    expect(said()).toBe('')
+  })
+
+  it('the ask box plays an answer on the 2D map: cards, lit parts, a tour, a reset; a question carries the open part and the whole map (Y2)', async () => {
+    h.webgl = false
+    // The next project is still being mapped: no world yet.
+    bridge({ worldGet: vi.fn(async (root: string) => ok(root === '/repo' ? minimal() : null)), worldCompile: vi.fn(() => new Promise(() => undefined)) })
+    const askSlot = vi.fn((_v: unknown) => <span>ask</span>)
+    const { rerender, onClose } = await mount({ askSlot })
+    // Before the world comes there is nothing to play on.
+    expect(askSlot.mock.calls[0]).toEqual([null, null, null, expect.anything(), null])
+    const p = askSlot.mock.lastCall?.[0] as Player
+    expect(p).toEqual(player2d)
+    expect(p.cameraRegion()).toEqual(['b1', 'b2', 'x1', 'e1'])
+    expect(p.getSelection()).toEqual([])
+    await act(async () => { await p.apply({ type: 'openCard', id: 'b1' }) })
+    expect(body().textContent).toBe(textOf(buildingCard(minimal(), 'b1')))
+    expect(p.getSelection()).toEqual(['b1'])
+    p.cancelActions() // no tour under way: the card stays
+    expect(card()).not.toBeNull()
+    esc()
+    expect(p.getSelection()).toEqual([]) // the card closed: nothing is selected
+    await act(async () => { await p.apply({ type: 'highlight', ids: ['b2', 'nope'] }) })
+    expect(lit()).toEqual(['button:b2', 'rect:b2'])
+    await act(async () => { await p.apply({ type: 'focus', ids: ['b1'] }) })
+    expect(lit()).toEqual(['button:b1', 'rect:b1'])
+    await act(async () => { await p.apply({ type: 'flow', edgeIds: ['e1'] }) })
+    expect(lit()).toEqual(['button:e1', 'line:e1'])
+    await act(async () => { await p.apply({ type: 'openCard', id: 'tech:ipc' }) })
+    expect(body()).toHaveTextContent('Inter-process communication')
+    expect(lit()).toEqual(['button:e1', 'line:e1'])
+    expect(p.getSelection()).toEqual([])
+    await act(async () => { await p.apply({ type: 'reset' }) })
+    expect(card()).toBeNull()
+    expect(lit()).toEqual([])
+    // A tour plays as the 2D map's own, and the first lit item of the list is scrolled into view.
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    try {
+      await act(async () => { await p.play([{ type: 'tour', steps: [{ ids: ['b2'], caption: 'Asked.' }] }]) })
+      expect(said()).toBe('Stop 1 of 1: Asked.')
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' })
+      expect(scroll.mock.contexts.at(-1)).toBe(screen.getByTestId('world-fallback').querySelector('button[data-id="b2"]'))
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
+    expect(p.getSelection()).toEqual([])
+    // A highlight ends the tour, and what it lights stays lit.
+    await act(async () => { await p.apply({ type: 'highlight', ids: ['b1'] }) })
+    expect(card()).toBeNull()
+    expect(said()).toBe('')
+    expect(lit()).toEqual(['button:b1', 'rect:b1'])
+    // A new question stops a tour under way.
+    await act(async () => { await p.play([{ type: 'tour', steps: [{ ids: ['b2'], caption: 'Asked.' }] }]) })
+    act(() => { p.cancelActions() })
+    expect(card()).toBeNull()
+    expect(lit()).toEqual([])
+    // Fog and a drafted proposal have nothing to show on the 2D map.
+    await act(async () => { await p.apply({ type: 'openCard', id: 'b1' }) })
+    await act(async () => { await p.play([{ type: 'fog', ids: ['b1'] }, { type: 'draftProposal', proposal: {} }]) })
+    expect(body().textContent).toBe(textOf(buildingCard(minimal(), 'b1')))
+    // One player for the pane's life.
+    expect(askSlot.mock.lastCall?.[0]).toBe(p)
+    // A project with no world yet: a late answer to the last one does nothing.
+    rerender(<WorldView root="/next" onClose={onClose} askSlot={askSlot as never} />)
+    await settle()
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    await act(async () => { await p.apply({ type: 'openCard', id: 'b1' }) })
+    expect(card()).toBeNull()
   })
 
   it('switching to the 2D map stops what the viewer is playing, so a tour cannot caption over the map (T3)', async () => {
@@ -3094,7 +3299,7 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     expect(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]')).not.toBeNull()
     expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('hidden')
     expect(v.setPaused).toHaveBeenLastCalledWith(true)
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
+    expect(askSlot).toHaveBeenLastCalledWith(player2d, expect.anything(), '/repo', expect.anything(), null)
     act(() => { v.opts.onGraphics('restored') })
     expect(notice()).toBeNull()
     // Back: the 3D map shows and draws again, without the 2D switch ever being touched.
@@ -3109,7 +3314,7 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     expect(v.dispose).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('world-canvas-host')).toBeNull()
     expect(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]')).not.toBeNull()
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
+    expect(askSlot).toHaveBeenLastCalledWith(player2d, expect.anything(), '/repo', expect.anything(), null)
     // WebGL is not looked for again: these graphics are not trusted to stay.
     act(() => { window.dispatchEvent(new Event('focus')) })
     expect(h.viewers).toHaveLength(1)

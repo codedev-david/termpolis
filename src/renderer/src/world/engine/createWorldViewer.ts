@@ -9,7 +9,7 @@ import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
 import { focusHolds } from './batching'
 import { createChangeToast } from './changeToast'
-import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from './cards'
+import { buildingCard, edgeCard, escapeHtml, techCard, usesTech, type TourStop } from './cards'
 import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
@@ -227,6 +227,8 @@ export interface WorldViewerOptions {
   readOnly?: boolean
   /** What became of the 3D map's graphics (a lost WebGL context): the host shows a notice. */
   onGraphics?: (state: WorldGraphics) => void
+  /** Each stop a tour shows, then null once a tour that showed one ends: the host says it to a screen reader (T5). */
+  onTourStop?: (stop: TourStop | null) => void
   /** Test only: passed to the renderer (RendererOptions.firstFrameSlowdown). */
   firstFrameSlowdown?: () => number
 }
@@ -314,6 +316,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // Whether the card and the highlight showing are the tour's own: its end clears those and nothing else.
   let tourCard = false
   let tourLit = false
+  /** The tour under way named a stop to the host (onTourStop), so its end is named too. */
+  let tourSaid = false
   let disposed = false
   const toast = createChangeToast(container)
   /** The ask bar's and the legend's strips: the toast keeps out of both (the fit gets them too, in 3D). */
@@ -834,6 +838,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     wakeDwells()
     if (!tourActive) return
     tourActive = false
+    if (tourSaid) { tourSaid = false; opts.onTourStop?.(null) }
     r3?.stopFlight()
     if (disposed) return // the host is taking the view down: nothing is drawn again
     if (tourCard) renderCard(null)
@@ -872,11 +877,17 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         endTour()
         const mine = tourToken
         tourActive = true
+        // Stops are counted among those on the map as the tour starts: a load that changes the parts ends the tour.
+        const of = a.steps.filter((s) => shownIds(s.ids).length > 0).length
+        let n = 0
         for (const step of a.steps) {
           if (mine !== tourToken || disposed) return
           // A stop whose parts are all gone from the world is passed over.
           const ids = shownIds(step.ids)
           if (ids.length === 0) continue
+          n++
+          tourSaid = true
+          opts.onTourStop?.({ n, of, caption: step.caption })
           if (selection) { selection = null; emitSelect() }
           renderCard(`<p class="tour-caption">${escapeHtml(step.caption)}</p>`)
           tourCard = true

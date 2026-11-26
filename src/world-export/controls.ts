@@ -5,7 +5,7 @@
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
-import { tourCard } from '../renderer/src/world/engine/cards'
+import { tourCard, tourStopText, type TourStop } from '../renderer/src/world/engine/cards'
 import { freeArea } from '../renderer/src/world/engine/viewMath'
 import type { AskKind } from '../shared/world/askIndex'
 import { REMOVALS_ID } from '../shared/world/designPatch'
@@ -66,6 +66,7 @@ html{font-size:${BASE_PX}px}
 .wx-panel{background:rgba(8,12,22,.82);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:${r(12)};color:#e2e8f0}
 .wx-card{position:absolute;top:${r(CARD_INSET)};left:${r(CARD_INSET)};width:${r(CARD_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET)});display:flex;flex-direction:column;box-sizing:border-box;padding:${r(12)} ${r(6)} ${r(12)} ${r(14)};z-index:3}
 .wx-card-close{position:absolute;top:${r(8)};right:calc(${r(10)} + var(--wx-card-gutter, 0px));padding:${r(2)} ${r(7)};border:0;border-radius:${r(6)};background:transparent;color:#94a3b8;font:inherit;font-size:${r(16)};line-height:1.2;cursor:pointer}
+.wx-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .wx-card-body{overflow-y:auto;min-height:0;padding-right:${r(8)};overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
 .wx-card-body h3{margin:0 0 ${r(4)};padding-right:${r(26)};font-size:${r(16)};font-weight:600;color:#f1f5f9}
 .wx-card-body h4{margin:${r(12)} 0 ${r(4)};font-size:${r(12)};font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#7dd3fc}
@@ -166,6 +167,8 @@ export interface Page {
   viewHost: HTMLElement
   /** The card panel: shows the engine's card HTML, or closes on null. It is the viewer's renderCard. */
   showCard(html: string | null): void
+  /** Says a tour's stop to a screen reader, or nothing once the tour ends: the viewer's onTourStop (T5). */
+  sayTourStop(stop: TourStop | null): void
   /** Wires the controls to the viewer; null without WebGL (the page then shows the 2D map only). */
   attach(viewer: WorldViewer | null): void
   /** Opens what an Ask result names: a part's card, a term's card, or a tour. */
@@ -265,7 +268,10 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   toolbar.setAttribute('aria-label', 'Lumopolis controls')
   const legend = make('section', 'wx-legend wx-panel')
   legend.setAttribute('aria-label', 'Lumopolis legend')
-  stage.append(viewHost, map2d, card, askHost, legend, toolbar)
+  // The page's tour stops, said to a screen reader as each shows ("Stop 1 of 3: ..."), hidden from the eye (T5).
+  const said = make('p', 'wx-sr')
+  said.setAttribute('role', 'status')
+  stage.append(viewHost, map2d, card, askHost, legend, toolbar, said)
   page.append(header, stage)
   parent.appendChild(page)
 
@@ -560,5 +566,7 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     watch?.disconnect()
   }
 
-  return { askHost, viewHost, showCard, attach, pick, setAsk: (a) => { ask = a; layout() }, dispose }
+  const sayTourStop = (stop: TourStop | null): void => { said.textContent = stop === null ? '' : tourStopText(stop) }
+
+  return { askHost, viewHost, showCard, sayTourStop, attach, pick, setAsk: (a) => { ask = a; layout() }, dispose }
 }

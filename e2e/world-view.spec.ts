@@ -684,7 +684,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect.poll(async () => (await drawn())?.highlighted.length ?? 0).toBeGreaterThanOrEqual(2)
   })
 
-  test('8. a saved view comes back after moving away, and the 2D map switch draws an svg map', async () => {
+  test('8. a saved view comes back after moving away, and the 2D map switch draws an svg map that a tour steps through', async () => {
     const cam = (): Promise<Cam | null> =>
       page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.cameraState() ?? null)
     await page.getByTestId('world-bookmarks').click()
@@ -728,6 +728,30 @@ test.describe.serial('Lumopolis in the real app', () => {
     expect(await rects.count()).toBeGreaterThan(0)
     await rects.first().click()
     await expect(card()).toBeVisible()
+    // A tour steps through the 2D map (A11Y Y2): one stop at a time with Back and Next, its parts lit on the map, and
+    // each stop said once by the pane's status region (T5).
+    const tours = await toolbarControl(page, 'world-tours')
+    const tourIds = await tours.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean))
+    await tours.selectOption(tourIds[0])
+    await closeMore(page)
+    const nav = card().getByRole('navigation', { name: 'Tour' })
+    await expect(nav).toBeVisible()
+    const said = page.getByTestId('world-tour-said')
+    await expect(said).toHaveText(/^Stop 1 of \d+: \S/)
+    await expect(nav).toContainText(/^Stop 1 of \d+/)
+    await expect(card().getByRole('region', { name: 'Details' })).toHaveAttribute('aria-live', 'off')
+    await expect(page.locator('[data-testid="world-fallback"] [data-lit]').first()).toBeAttached()
+    const stops = Number((/of (\d+)/.exec((await said.textContent()) as string) as RegExpExecArray)[1])
+    await expect(nav.getByRole('button', { name: 'Back' })).toHaveAttribute('aria-disabled', 'true')
+    if (stops > 1) {
+      await nav.getByRole('button', { name: 'Next' }).click()
+      await expect(said).toHaveText(new RegExp(`^Stop 2 of ${stops}: \\S`))
+      await expect(nav.getByRole('button', { name: 'Next' })).toBeFocused() // the focus stays on the button pressed
+    }
+    await nav.getByRole('button', { name: 'End tour' }).click()
+    await expect(card()).toHaveCount(0)
+    await expect(said).toHaveText('')
+    await expect(page.locator('[data-testid="world-fallback"] [data-lit]')).toHaveCount(0)
     await (await toolbarControl(page, 'world-map2d')).click() // off again
     await closeMore(page)
     await expect(map).toHaveCount(0)

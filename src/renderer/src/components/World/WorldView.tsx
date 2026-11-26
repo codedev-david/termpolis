@@ -34,7 +34,7 @@ import { formatTokens } from '../../../../shared/world/tokens'
 import { sameParts } from '../../../../shared/world/diff'
 import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
-import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
+import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, escapeHtml, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { TOOLBAR_FOLD_PX, WorldToolbar } from './WorldToolbar'
@@ -57,7 +57,9 @@ import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveFr
 import { ASK_BOTTOM_PX, ASK_SLOT_MAX_HEIGHT, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, noticeBox, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
-import { tourCard } from '../../world/engine/cards'
+import { tourStopText, type TourStop } from '../../world/engine/cards'
+import type { AskPlayer } from './useWorldAsk'
+import type { CardTour } from './WorldCard'
 import type { BuildAgent } from './BuildItDialog'
 import { CONFIRM_FAILED, NAMES_FAILED, RELAYOUT_FAILED, UI_FAILED, type OpenTarget } from './worldTargets'
 import { FRAME_RATE_EVENT, WORLD_OPENED_EVENT } from './worldOpen'
@@ -68,13 +70,14 @@ export interface WorldViewProps {
   root: string
   onClose: () => void
   /**
-   * Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL), the world,
+   * Plan 2's ask box: rendered at the bottom centre with what plays an answer (the viewer, or the 2D map while it
+   * shows, with WebGL or without: it opens the cards and lights the parts an answer names, A11Y Y2), the world,
    * the world's key (the project root it was drawn for, or design:<id> for a design; null until it
    * is known) and the link through which the box takes Esc first, holds newer worlds while it
    * answers and hands back a changed design, and the proposal selected in the toolbar (null: none), which
    * a question carries to the agent. Not shown on the home.
    */
-  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink, proposal: string | null) => ReactNode
+  askSlot?: (viewer: AskPlayer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink, proposal: string | null) => ReactNode
   /** Build it on design worlds: the agents it can start, and how App opens the agent terminal. */
   buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
   /** The pane's width in px (App owns it: the divider and the window size change it). */
@@ -157,6 +160,18 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
   d.buildings.some((b) => b.id === id) || d.externals.some((x) => x.id === id) || d.edges.some((e) => e.id === id) || d.districts.some((x) => x.id === id)
 
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
+/**
+ * The ids a tour stop or an answer names that the 2D map shows: a part the world has, and a district with its
+ * buildings (as the 3D map lights them); an id the world no longer has is dropped (A11Y Y2).
+ */
+function shownOn2d(d: WorldDoc, ids: string[]): string[] {
+  const out = new Set<string>()
+  for (const id of ids) {
+    if (d.buildings.some((b) => b.id === id) || d.externals.some((x) => x.id === id) || d.edges.some((e) => e.id === id)) out.add(id)
+    else if (d.districts.some((x) => x.id === id)) { out.add(id); for (const b of d.buildings) if (b.districtId === id) out.add(b.id) }
+  }
+  return [...out]
+}
 
 /** The notice while the 3D map waits for its lost graphics to come back (the first loss). */
 export const GRAPHICS_LOST = 'The 3D map paused: the graphics stopped. It comes back when they do.'
@@ -224,6 +239,20 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // Whether a click on the map opened the card; a closed card forgets it, so a tree or legend open never inherits it.
   const [clickThrough, setClickThrough] = useState(false)
   useEffect(() => { if (card === null) setClickThrough(false) }, [card])
+  /** The stop the 3D map's tour shows (the viewer's onTourStop): the pane says it to a screen reader (T5). */
+  const [tourStop3d, setTourStop3d] = useState<TourStop | null>(null)
+  /** A tour on the 2D map, which the person steps through: its stops on the map, and the one shown (A11Y Y2). */
+  const [tour2d, setTour2d] = useState<{ stops: Tour['steps']; i: number } | null>(null)
+  const tour2dRef = useRef(tour2d)
+  tour2dRef.current = tour2d
+  /** The parts lit on the 2D map: a tour stop's, a technology's uses, or what an answer highlights (A11Y Y2). */
+  const [lit2d, setLit2d] = useState<string[]>([])
+  const unlight = (): void => setLit2d((l) => (l.length === 0 ? l : []))
+  const cardNowRef = useRef(card)
+  cardNowRef.current = card
+  // A closed card ends the 2D map's tour, whatever closed it (Esc, its close button, End tour, a district, another
+  // world). Each of those puts out what it lit; an answer that lights other parts as the tour ends keeps them.
+  useEffect(() => { if (card === null) setTour2d(null) }, [card])
   /** The evidence a card's button opened, shown under the card until closed or the card changes. */
   const [evidence, setEvidence] = useState<Evidence | null>(null)
   const [layers, setLayersState] = useState<LayerState>(DEFAULT_LAYERS)
@@ -655,6 +684,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         setCard(html)
         setClickThrough(fromClick === true)
       },
+      onTourStop: setTourStop3d,
       // A lost WebGL context: the first is waited out on the 2D map, the second leaves the 2D map for good, as a map that never drew a frame does (watchdog).
       onGraphics: (g) => {
         if (g === 'lost') {
@@ -757,6 +787,61 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setCard((c) => (c === null ? null : partCard(doc, id)))
   }, [viewer, shows2d, doc])
 
+  // The 2D map's tour ends when its parts change (a newer world with other parts, or none), as the 3D map's does on a
+  // load; a world with the same parts (a status change) keeps it. Lit parts go with it.
+  const tourDocRef = useRef<WorldDoc | null>(null)
+  useEffect(() => {
+    const prev = tourDocRef.current
+    tourDocRef.current = doc
+    if (prev === null || (doc !== null && sameParts(prev, doc))) return
+    if (tour2dRef.current) setCard(null)
+    unlight()
+  }, [doc])
+  // Leaving the 2D map (WebGL found or back, or the 3D map chosen) ends its tour too, its card with it.
+  useEffect(() => {
+    if (flat) return
+    if (tour2dRef.current) setCard(null)
+    unlight()
+  }, [flat])
+  /**
+   * What an answer plays on the 2D map (A11Y Y2): it opens the cards and lights the parts it names and steps through
+   * its tour there. The same object for the pane's life, so the ask box sees one player; it acts through the latest
+   * render's handlers. Fog and a drafted proposal have nothing to show on the 2D map.
+   */
+  const act2d = (a: WorldAction): void => {
+    if (!docRef.current) return
+    if (a.type === 'openCard') { if (a.id.startsWith('tech:')) openTech(a.id.slice('tech:'.length)); else openPart(a.id) }
+    else if (a.type === 'highlight' || a.type === 'focus') light2d(a.ids)
+    else if (a.type === 'flow') light2d(a.edgeIds)
+    else if (a.type === 'tour') startTour2d(a.steps)
+    else if (a.type === 'reset') { fallbackIdRef.current = null; setCard(null); unlight() }
+  }
+  const act2dRef = useRef(act2d)
+  act2dRef.current = act2d
+  const [map2dPlayer] = useState<AskPlayer>(() => ({
+    apply: async (a) => { act2dRef.current(a) },
+    play: async (steps) => { for (const a of steps) act2dRef.current(a) },
+    // A new question or a closed answer stops a tour under way, as it stops the 3D map's.
+    cancelActions: () => { if (tour2dRef.current) { setCard(null); unlight() } },
+    // The question's context: the part whose card is open, and the whole map, which the 2D view shows at once.
+    getSelection: () => (cardNowRef.current === null || fallbackIdRef.current === null ? [] : [fallbackIdRef.current]),
+    cameraRegion: () => {
+      const d = docRef.current as WorldDoc
+      return [...d.buildings.map((b) => b.id), ...d.externals.map((x) => x.id), ...d.edges.map((e) => e.id)]
+    },
+  }))
+  /** The tour stop shown, the 2D map's or the 3D map's, as a screen reader hears it and the card steps it. */
+  const shownStop: TourStop | null = flat
+    ? (tour2d && { n: tour2d.i + 1, of: tour2d.stops.length, caption: tour2d.stops[tour2d.i].caption })
+    : tourStop3d
+  const cardTour: CardTour | undefined = flat && tour2d ? {
+    n: tour2d.i + 1,
+    of: tour2d.stops.length,
+    onBack: () => showStop2d(tour2d.stops, tour2d.i - 1),
+    onNext: () => showStop2d(tour2d.stops, tour2d.i + 1),
+    onEnd: () => { setCard(null); unlight() },
+  } : undefined
+
   // Saved views of this world.
   const projectKey = doc ? doc.projectKey : null
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
@@ -805,6 +890,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     cancelBookmark()
     // A tour or a flight under way stops here: paused, it would otherwise caption over the 2D map (T3).
     viewer?.cancelActions()
+    unlight()
     setMap2d(on)
   }
 
@@ -819,13 +905,34 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const onTour = (tour: Tour): void => {
     armedRef.current = false
     if (viewer && !shows2d) { void viewer.play([{ type: 'tour', steps: tour.steps }]); return }
-    // The 2D map has no camera to fly: the tour shows as its captions in order (T3).
+    startTour2d(tour.steps)
+  }
+  /**
+   * A tour on the 2D map (A11Y Y2): there is no camera to fly, so the card shows one stop at a time with Back and Next,
+   * its parts lit on the map, and the stop said to a screen reader. Its stops are those with a part on the map, as on
+   * the 3D map; a tour with none shows nothing.
+   */
+  const startTour2d = (steps: Tour['steps']): void => {
+    const stops = steps.filter((st) => shownOn2d(docRef.current as WorldDoc, st.ids).length > 0)
+    if (stops.length > 0) showStop2d(stops, 0)
+  }
+  const showStop2d = (stops: Tour['steps'], i: number): void => {
+    armedRef.current = false
     fallbackIdRef.current = null
-    setCard(tourCard(tour))
+    setTour2d({ stops, i })
+    setCard(`<p class="tour-caption">${escapeHtml(stops[i].caption)}</p>`)
+    setLit2d(shownOn2d(docRef.current as WorldDoc, stops[i].ids))
+  }
+  /** Lights parts on the 2D map, for an answer: a tour under way ends first, its card with it, as on the 3D map. */
+  const light2d = (ids: string[]): void => {
+    if (tour2dRef.current) setCard(null)
+    setTour2d(null)
+    setLit2d(shownOn2d(docRef.current as WorldDoc, ids))
   }
   const resetView = (): void => {
     armedRef.current = true
     setCard(null)
+    unlight()
     viewer?.resetView()
   }
   /** Open a part's card: through the viewer (it flies there), or straight from the doc in 2D. */
@@ -834,6 +941,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (viewer && !shows2d) { void viewer.apply({ type: 'openCard', id }); return }
     const d = docRef.current as WorldDoc
     fallbackIdRef.current = id
+    setTour2d(null)
+    unlight()
     setCard(partCard(d, id))
   }
   /** A technology chip: the glossary card, and every building and line that uses it lit up. */
@@ -846,6 +955,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       return
     }
     fallbackIdRef.current = null
+    setTour2d(null)
+    setLit2d(usesTech(d, techId))
     setCard(techCard(d, techId))
   }
   /** True while the world an annotation write started in is still the one open: its answer belongs to that world only. */
@@ -884,7 +995,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     const item = target.closest('[data-kind][data-id]')
     if (!item) return false
     const kind = item.getAttribute('data-kind')
-    if (kind === 'district') { armedRef.current = false; setCard(null); return true }
+    if (kind === 'district') { armedRef.current = false; setCard(null); unlight(); return true }
     openPart(item.getAttribute('data-id') as string)
     return true
   }
@@ -979,6 +1090,16 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     ? { top: 12, left: '50%', maxWidth: 'calc(100% - 24px)' }
     : { left: noticeSpot.center, width: 'max-content', maxWidth: noticeSpot.width, ...(noticeSpot.top !== undefined ? { top: noticeSpot.top } : { bottom: noticeSpot.bottom }) }
   const projectName = worldTitle(entries, { root: worldRoot, designKey })
+  // The lit parts drawn on the 2D map (its list and its picture), and the first lit item of the list scrolled into view.
+  const fallbackRef = useRef<HTMLDivElement>(null)
+  const fallbackHtml = flat && doc ? renderFallback(doc, projectName, { planned: layers.planned, proposal }) : null
+  useEffect(() => {
+    const on = new Set(lit2d)
+    for (const el of Array.from(fallbackRef.current?.querySelectorAll('[data-id]') ?? [])) el.toggleAttribute('data-lit', on.has(el.getAttribute('data-id') as string))
+  }, [lit2d, fallbackHtml])
+  useEffect(() => {
+    fallbackRef.current?.querySelector('button[data-lit]')?.scrollIntoView?.({ block: 'nearest' })
+  }, [lit2d])
   const worldKey = worldRoot ?? designKey
   // The canvas's text alternative names the project shown.
   useEffect(() => { viewer?.setTitle(projectName) }, [viewer, projectName])
@@ -1153,12 +1274,15 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             data-testid="world-fallback"
             // Drawn at the pane's scale, wrapping long names, and ending above the ask bar laid over the
             // pane's foot, so no row sits under the suggestions or the box. Dark like the pane, so its scrollbar is too.
-            className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_button]:cursor-pointer [&_button]:text-left [&_button]:rounded-sm [&_button:focus-visible]:outline [&_button:focus-visible]:outline-2 [&_button:focus-visible]:outline-offset-2 [&_button:focus-visible]:outline-[#4fc1ff] [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
+            ref={fallbackRef}
+            // A lit part (a tour stop's, an answer's, a technology's uses) is drawn amber: a bar beside its list item
+            // and an outline on the map's picture, in its own units (a building is 3 across) (A11Y Y2).
+            className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_button[data-lit]]:shadow-[inset_3px_0_0_#fbbf24] [&_[data-lit]]:stroke-[#fbbf24] [&_rect[data-lit]]:[stroke-width:0.6] [&_polygon[data-lit]]:[stroke-width:0.6] [&_line[data-lit]]:[stroke-width:1.2] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_button]:cursor-pointer [&_button]:text-left [&_button]:rounded-sm [&_button:focus-visible]:outline [&_button:focus-visible]:outline-2 [&_button:focus-visible]:outline-offset-2 [&_button:focus-visible]:outline-[#4fc1ff] [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, colorScheme: 'dark', ...zoom }}
             onClick={onFallbackClick}
             onKeyDown={onFallbackKey}
             // renderFallback escapes every string from the doc. The plan shows as on the 3D map.
-            dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName, { planned: layers.planned, proposal }) }}
+            dangerouslySetInnerHTML={{ __html: fallbackHtml as string }}
           />
         )}
         {home && <WorldHome entries={entries} listError={listError} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} ticket={ticket} onDialog={setHomeDialog} escRef={homeEscRef} pickFolder={pickOnHome} />}
@@ -1229,7 +1353,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         {repoUpdate && tokenOpen && (
           <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={closeToken} />
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onNeed={setCardNeed} solid={solid} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
+        {/* The tour stop shown, said once as it shows ("Stop 1 of 3: ..."); the card's body is quiet meanwhile (T5). */}
+        <p role="status" className="sr-only" data-testid="world-tour-said">{shownStop ? tourStopText(shownStop) : ''}</p>
+        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onNeed={setCardNeed} solid={solid} quiet={shownStop !== null} {...(cardTour ? { tour: cardTour } : {})} onClose={() => { setCard(null); unlight(); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 'min(360px, calc(100% - 24px))', ...zoom }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />
@@ -1237,7 +1363,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, maxHeight: ASK_SLOT_MAX_HEIGHT, overflowY: 'auto', zIndex: 3, ...zoom }} data-testid="world-ask-slot">
-            {askSlot(shows2d ? null : viewer, doc, worldKey, askLink, proposal)}
+            {askSlot(flat ? (doc ? map2dPlayer : null) : viewer, doc, worldKey, askLink, proposal)}
           </div>
         )}
       </div>
