@@ -163,7 +163,14 @@ describe('App Lumopolis wiring', () => {
     await settle()
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
     await screen.findByTestId('world-view')
+    // Not even for one render: every node put in the page while the banner is set is looked at.
+    const drawn: string[] = []
+    const watch = new MutationObserver((records) => { for (const r of records) r.addedNodes.forEach((n) => drawn.push(n.textContent ?? '')) })
+    watch.observe(document.body, { childList: true, subtree: true })
     act(() => { useTerminalStore.getState().setMemoryNotice(CODE_GRAPH) })
+    await settle()
+    watch.disconnect()
+    expect(drawn.some((t) => t.includes('Code graph'))).toBe(false)
     expect(screen.queryByText(CODE_GRAPH)).toBeNull()
     expect(notice()).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))

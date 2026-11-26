@@ -87,6 +87,7 @@ import { LimitBanners } from './components/Accounts/LimitBanners'
 import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 import { splitActivePane, exportActivePane, toggleRecordingActivePane } from './lib/paneCommands'
 import { useSwarmCompleteDialog } from './lib/swarmCompleteDialog'
+import { isCodeGraphNotice } from './lib/codeGraphNotice'
 import { WorldAsk } from './components/World/WorldAsk'
 import { defaultBuildAgent } from './components/World/buildAgent'
 import type { BuildItResult } from '../../shared/world/types'
@@ -161,6 +162,9 @@ export default function App() {
   const setSwarmNotification = useTerminalStore(s => s.setSwarmNotification)
   const memoryNotice = useTerminalStore(s => s.memoryNotice)
   const setMemoryNotice = useTerminalStore(s => s.setMemoryNotice)
+  // HOLD-B #27 (F9): the code graph banner is put away while the Lumopolis pane is open (the pane shows that world
+  // itself): not drawn for the render that brings it, and dropped (below) so it does not come back when the pane closes.
+  const codeGraphHidden = showWorld && isCodeGraphNotice(memoryNotice)
   const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
   // Closing the swarm-complete dialog keeps the summary, so the dashboard's Review tab stays.
   const swarmCompleteDialog = useSwarmCompleteDialog(swarmCompletionSummary)
@@ -955,6 +959,7 @@ export default function App() {
     const timer = setTimeout(() => setMemoryNotice(null), 6000)
     return () => clearTimeout(timer)
   }, [memoryNotice, setMemoryNotice])
+  useEffect(() => { if (codeGraphHidden) setMemoryNotice(null) }, [codeGraphHidden, setMemoryNotice])
 
   const handleCreateTerminal = async (opts: { name: string; shellType: any; color: string; fontSize?: number; theme?: string; fontFamily?: string; cwd?: string }) => {
     const id = uuid()
@@ -1173,7 +1178,7 @@ export default function App() {
             </div>
           )}
           <LimitBanners />
-          {memoryNotice && (
+          {memoryNotice && !codeGraphHidden && (
             <div className="px-4 py-2 flex items-center justify-between text-sm bg-[#D97706]/15 border-b border-[#D97706]/40 text-[#F0B86E]">
               <div className="flex items-center gap-2">
                 <i className="fa-solid fa-brain"></i>

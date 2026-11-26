@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useTerminalStore } from '../store/terminalStore'
+import { codeGraphNotice } from '../lib/codeGraphNotice'
 
 // Auto-index everything: keep the shared memory brain current with no clicks.
 // Past AI conversations are already ingested by the main-process background
@@ -61,7 +62,7 @@ export async function autoIndexRepo(cwd: string): Promise<boolean> {
     const cg = ingest?.success ? (ingest.data as { codeGraph?: { symbols?: number } } | undefined)?.codeGraph : null
     try {
       if (cg && typeof cg.symbols === 'number' && cg.symbols > 0) {
-        useTerminalStore.getState().setMemoryNotice(`🧭 Code graph: ${cg.symbols} symbols indexed in "${name}"`)
+        useTerminalStore.getState().setMemoryNotice(codeGraphNotice(cg.symbols, name))
       }
     } catch {
       /* store may be unavailable in some test contexts */
