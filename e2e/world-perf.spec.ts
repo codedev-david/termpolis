@@ -12,8 +12,8 @@
  *   - in software on Linux and Windows, once both worlds are drawn: each world's first frame stays under this system's
  *     time (FIRST_FRAME_SW_MS), and the first frames against the runner's own speed under FIRST_FRAME_PER_GL;
  *   - the quality governor (look spec §5.1, plan Task 3): in software an Auto map starts at Flat, and one forced to
- *     start at High steps down through Low to Flat within GOVERNOR_FLAT_MS of its first frame and never rises; its
- *     orbit at Flat is written to <os>-big-flat.json and, on Linux and Windows, held to the big world's floor.
+ *     start at High steps down through Low to Flat within its system's GOVERNOR_FLAT_MS of its first frame and never
+ *     rises; its orbit at Flat is written to <os>-big-flat.json and, on Linux and Windows, held to the big world's floor.
  *
  * Every measure above but the governor's is taken with the Quality held at High (the profile's world settings), the
  * tier its bounds were set at: Auto would draw them at Flat in software, where they would no longer catch what they
@@ -110,10 +110,17 @@ const FIRST_FRAME_PER_GL: Record<string, { warm: number; median: number }> = {
 const FIRST_FRAME_WATCHDOG_MS = 15_000
 /**
  * The governor (look spec §5.1, plan Task 3's acceptance): an Auto map forced to start at High, drawn in software at
- * 1080p and kept drawing by an orbit, reaches Flat through Low within this long of its first frame. Each step takes two
- * windows over the budget (DROP_WINDOWS) of WINDOW_MS (2 s) of frames each, so about 8 s.
+ * 1080p and kept drawing by an orbit, reaches Flat through Low within this long of its first frame, per system.
+ *
+ * Each step takes two windows over the budget (DROP_WINDOWS) of WINDOW_MS (2 s) of counted time each, so the rules' own
+ * least is 8 s, the plan's target: no run can meet it, since the wall clock runs past the counted time (software paces
+ * its frames, and a gap a frame is held back for is not counted), and the poll sees a change up to 100 ms late. Each bound
+ * is the worst seen on that system's runner x 1.3, rounded up to 100 ms, as the other bounds here: Linux 11177 ms and
+ * Windows 10067 ms, in 3 and 4 runs (soaks 45763264132, 45763270474: Low at 4.8-5.3 s, Flat at 9.5-11.2 s). A deviation,
+ * recorded in the look spec §6.2. macOS is logged, not asserted, as its other bounds are (Flat at 10.6-12.0 s, soak
+ * 45763276618).
  */
-const GOVERNOR_FLAT_MS = 8000
+const GOVERNOR_FLAT_MS: Record<string, number> = { linux: 14_600, windows: 13_100 }
 const FIRST_FRAME_HARDWARE_MS = 1000
 /**
  * How many counted orbits each world's gate takes the median of (after one warm-up orbit): one slow orbit on a shared
@@ -451,7 +458,7 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
   })
 
   // The governor in software (look spec §5.1): Auto starts at Flat; forced to start at High it steps down by itself.
-  test(`forced High in software drops through Low to Flat within ${GOVERNOR_FLAT_MS / 1000} s and never rises`, async () => {
+  test('forced High in software drops through Low to Flat in time and never rises', async () => {
     test.setTimeout(420_000)
     test.skip(![...firstFrames.values()].every((f) => f.software), 'drawn on a GPU: a fast machine keeps High, so nothing drops')
     // Auto from here on, as the Quality menu saves it.
@@ -509,7 +516,8 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
     expect(log.first, 'no frame was ever drawn at High').not.toBeNull()
     expect(log.seen.map((s) => s.tier), `the tiers seen: ${steps.join(', ')}`).toEqual(['high', 'low', 'flat'])
     const flatAt = log.seen[2].at - first
-    expect(flatAt, `Flat came ${Math.round(flatAt)} ms after the first frame`).toBeLessThanOrEqual(GOVERNOR_FLAT_MS)
+    const bound = GOVERNOR_FLAT_MS[OS_NAME]
+    if (bound !== undefined) expect(flatAt, `Flat came ${Math.round(flatAt)} ms after the first frame (${OS_NAME} bound ${bound} ms)`).toBeLessThanOrEqual(bound)
     const end = (await drawn()).perf
     expect(end.tier, 'the map rose from Flat').toBe('flat')
     expect(end.auto).toBe(true)

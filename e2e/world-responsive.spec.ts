@@ -91,7 +91,10 @@ test.beforeAll(async () => {
     path.join(userDataDir, 'session.json'),
     JSON.stringify({ terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs' }),
   )
-  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false }))
+  // Held at High (look spec §5.1), the tier these checks were set at: the painted check's corners are the background as
+  // the composer tone maps it, and its lit share counts the bloom. Auto, drawn in software as here, starts at Flat, which
+  // draws the background as it is and lights less of the canvas.
+  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false, quality: 'high' }))
   memoryLockFile = path.join(userDataDir, 'test-memory-lock')
   // The Ask's agent is mock-claude (see world-ask.spec.ts for why Windows needs the .ps1).
   shims = e2eShimEnv('world-responsive')
