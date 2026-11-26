@@ -26,6 +26,8 @@ import {
   type ExecResult,
 } from '../../src/main/headlessExec'
 import type { DeliverOpts } from '../../src/main/secondOpinion'
+import { createLinkedJobMcp } from '../../src/main/linkedJobMcp'
+import { RESTRICTED_RUN_TOOLS, CODEX_AUTO_APPROVED_TOOLS } from '../../src/shared/agentIntegration'
 import { isDelegatedSession } from '../../src/shared/headlessPrompt'
 import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import type { RemoteEvent, RemoteHost } from '../../src/main/remoteBridgeHost'
@@ -608,9 +610,10 @@ describe('delegating a job', () => {
       b.work,
       PROMPT_TOKEN,
     ])
-    // Only the job that may not write is isolated, keeping Termpolis's server for its marker.
+    // Only the job that may not write is isolated. This build box's codex config has no Termpolis server
+    // (no linkedJobMcp), so nothing is kept and the server stays off (HOLD-A N1).
     expect(isolation).toHaveBeenCalledTimes(1)
-    expect(isolation).toHaveBeenCalledWith('codex', b.work, { TERMPOLIS_LINKED_JOB: b.execs[0].env?.TERMPOLIS_LINKED_JOB }, expect.any(Function), { keepTermpolis: true })
+    expect(isolation).toHaveBeenCalledWith('codex', b.work, { TERMPOLIS_LINKED_JOB: b.execs[0].env?.TERMPOLIS_LINKED_JOB }, expect.any(Function), {})
     expect(codex.opts.env).toEqual({ TERMPOLIS_LINKED_JOB: b.execs[0].env?.TERMPOLIS_LINKED_JOB, TERMPOLIS_READ_ONLY_RUN: '1' })
     expect(claude.bin).toBe('claude')
     expect(claude.args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--strict-mcp-config'])
@@ -653,6 +656,49 @@ describe('delegating a job', () => {
       PROMPT_TOKEN,
     ])
     expect(write).toMatchObject({ note: `Ran with edit permission on "${BUILDBOX_ON_LAPTOP}": that agent had full access there.` })
+  })
+
+  // HOLD-A N1: with Termpolis's server in the build box's codex config, a read-only job keeps it, pinned to the
+  // registration the box's own linkedJobMcp hands over, and carries the job's marker on it.
+  it("keeps Termpolis's server for a read-only Codex job, pinned to the build box's own registration", async () => {
+    const { a, b } = await linkedPair({ onB: EDIT })
+    const ENTRY = { command: '/opt/termpolis/node', args: ['/opt/termpolis/resources/mcp-adapter/stdio-adapter.cjs'], env: { ELECTRON_RUN_AS_NODE: '1' } }
+    const spawned: Array<{ bin: string; args: string[] }> = []
+    const isolation = vi.fn(async () => ({ args: [...DOCS_OFF], env: { TERMPOLIS_READ_ONLY_RUN: '1' }, dispose: async () => undefined }))
+    const linkedJobMcp = createLinkedJobMcp({ serverEntry: () => ENTRY, codexHasTermpolis: () => true, tempDir: () => os.tmpdir() })
+    b.agent = (req) =>
+      runHeadless(req, {
+        deliver: async (bin, args) => {
+          spawned.push({ bin, args })
+          return { stdout: `${bin} finished\n`, code: 0 }
+        },
+        primer: async () => '',
+        isolation,
+        linkedJobMcp,
+      })
+
+    const read = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Find the flaky test.', cwd: b.work })
+    expect(read).toMatchObject({ status: 'done', output: answered(BUILDBOX_ON_LAPTOP, 'codex', 'codex finished') })
+
+    const marker = b.execs[0].env?.TERMPOLIS_LINKED_JOB
+    expect(isolation).toHaveBeenCalledTimes(1)
+    expect(isolation).toHaveBeenCalledWith('codex', b.work, { TERMPOLIS_LINKED_JOB: marker }, expect.any(Function), { keepTermpolis: ENTRY })
+    const approvals = RESTRICTED_RUN_TOOLS.filter((t) => !CODEX_AUTO_APPROVED_TOOLS.includes(t))
+      .flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`])
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].args).toEqual([
+      'exec',
+      '--sandbox',
+      'read-only',
+      '--skip-git-repo-check',
+      '-c',
+      `mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-${marker}`,
+      ...approvals,
+      ...DOCS_OFF,
+      '-C',
+      b.work,
+      PROMPT_TOKEN,
+    ])
   })
 
   it('takes a credential out of the prompt before it leaves, and out of the answer before it comes back', async () => {

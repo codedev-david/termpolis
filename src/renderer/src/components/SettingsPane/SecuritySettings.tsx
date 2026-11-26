@@ -32,7 +32,7 @@ interface GeminiAccountStatus {
  *  there that isn't ours (someone's husky/lint-staged) — we chain to it rather than clobber it. */
 interface ShieldRepo {
   repo: string
-  status: Record<string, 'installed' | 'absent' | 'foreign'> | null
+  status: Record<string, 'installed' | 'absent' | 'foreign' | 'link' | 'other'> | null
 }
 
 // NOTE: there is no `setRedaction` here any more, and no `redactionEnabled` in the settings.

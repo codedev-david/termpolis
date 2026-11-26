@@ -2153,13 +2153,18 @@ const SHIELD_NOT_INSTALLED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, strin
   hooksPath: "This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.",
   gitDirOutside: 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.',
 }
-/** What Remove protection says when it removed nothing: a shield it was refused to touch, or none there. PENDING
+/** What Remove protection says when a shield may still be there: one it was refused to touch, or none there. PENDING
  *  SIGN-OFF (new wording, HOLD-A N2). */
 const SHIELD_NOT_REMOVED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
   hooksPath: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath).",
   gitDirOutside: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.',
 }
 const SHIELD_NONE_TO_REMOVE = 'There was no Commit Shield to remove in this repository.'
+/** What Remove protection says of a hook file it never reads or writes, which may still carry a shield. PENDING SIGN-OFF
+ *  (new wording, HOLD-A R2-3; the install refusal's form). */
+const shieldHookNotRemoved = (u: { name: string; kind: 'link' | 'other' }): string => u.kind === 'link'
+  ? `The Commit Shield was not removed: this repository's ${u.name} hook is a link to another file.`
+  : `The Commit Shield was not removed: this repository's ${u.name} hook is not an ordinary file.`
 
 ipcMain.handle('gitHooks:status', async (_, { cwd }: { cwd: string }) => {
   try {
@@ -2210,16 +2215,20 @@ ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
   try {
     const paths = await hookPathsFor(cwd)
     if (!paths) return err('Not a git repository')
-    // A hooks folder outside the repository that its own config names is not touched; the repository still leaves the list.
+    // A hooks folder outside the repository that its own config names is not touched (HOLD-A N2).
     const verdict = await shieldMayWrite(cwd, paths.hooksDir)
     const removed = verdict === 'allowed' ? uninstallHooks(paths, realHookDeps) : []
-    writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
-    if (removed.length > 0) return ok({ removed })
-    // Nothing removed: say so, or why a shield is still there (HOLD-A N2). A block left in a linked hook file of a
-    // repository it may write keeps the old answer.
-    const left = Object.values(hookStatus(paths, realHookDeps)).includes('installed')
-    if (!left) return ok({ removed, notice: SHIELD_NONE_TO_REMOVE })
-    return verdict === 'allowed' ? ok({ removed }) : ok({ removed, notice: SHIELD_NOT_REMOVED[verdict] })
+    // A shield may still be there: a block it left, or a hook file it never reads (a link, or not a regular file). The
+    // repository then stays listed as protected and the person hears why; otherwise it leaves the list (HOLD-A R2-3).
+    const unsafe = unsafeHook(paths, realHookDeps)
+    const stays = unsafe !== null || Object.values(hookStatus(paths, realHookDeps)).includes('installed')
+    if (!stays) {
+      writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
+      return removed.length > 0 ? ok({ removed }) : ok({ removed, notice: SHIELD_NONE_TO_REMOVE })
+    }
+    if (verdict !== 'allowed') return ok({ removed, notice: SHIELD_NOT_REMOVED[verdict] })
+    if (unsafe) return ok({ removed, notice: shieldHookNotRemoved(unsafe) })
+    return ok({ removed }) // a block still there after its remove (a race): listed still, with nothing more to say
   } catch (e: any) { return err(e.message) }
 })
 

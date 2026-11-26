@@ -131,8 +131,8 @@ export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number): s
 }
 
 /** The whole lines agy prints when it runs a `--mode plan` turn in its default mode instead, as agy.exe 1.5.15 holds
- *  them (its `--mode %s` filled in): four "Print mode:" lines, three "warning:" lines, and the one for slash
- *  commands off. Nothing before or after on the line but trailing spaces and a carriage return. */
+ *  them (its `--mode %s` filled in): three "Print mode:" lines, three "warning:" lines, and the one for slash
+ *  commands off, seven in all. Nothing before or after on the line but trailing spaces and a carriage return. */
 const AGY_PLAN_DROPPED_LINE = new RegExp([
   '^(?:',
   'warning: --mode plan (?:is not supported in print mode|is not available for this account|is not available because ',

@@ -933,14 +933,16 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(H.fs.writeFileSync).not.toHaveBeenCalled()
   })
 
-  it('uninstall leaves a linked hook that carries the shield untouched, and removes the plain one', async () => {
+  // HOLD-A R2-3: and says why one was left, keeping the repository listed.
+  it('uninstall leaves a linked hook that carries the shield untouched, removes the plain one, and says why one is left', async () => {
     git(inRepo)
     await invoke('gitHooks:install', { cwd: REPO })
     H.kinds.set(H.norm(PRE_COMMIT), 'link')
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
-    expect(r).toEqual({ success: true, data: { removed: ['pre-push'] } })
+    expect(r).toEqual({ success: true, data: { removed: ['pre-push'], notice: "The Commit Shield was not removed: this repository's pre-commit hook is a link to another file." } })
     expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(PRE_COMMIT)
     expect(wrote(PRE_COMMIT)).toContain(SENTINEL)
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([REPO])
   })
 
   // The hooks folder is checked again once it exists: a link in its path that led nowhere before is followed now.
@@ -1055,7 +1057,7 @@ describe('Commit Shield hooks — repo resolution', () => {
     }
   })
 
-  it("uninstall leaves a hooks folder outside the repository alone, and still drops the repository from the list", async () => {
+  it("uninstall leaves a hooks folder outside the repository alone, and keeps the repository in the list", async () => {
     git(hooksPathIn('local\0../elsewhere/hooks\0'))
     seed(SHIELD_REPOS, JSON.stringify([REPO]))
     seed(pJoin(OUTSIDE, 'pre-commit'), `#!/bin/sh\n${SENTINEL}\n`)
@@ -1066,7 +1068,8 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath)." } })
     expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
     expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(pJoin(OUTSIDE, 'pre-commit'))
-    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([])
+    // HOLD-A R2-3: its shield is still there, so it stays listed as protected.
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([REPO])
   })
 
   // HOLD-A N2. `git init --separate-git-dir`: the working tree's .git is a file naming a git folder elsewhere, with no
@@ -1121,6 +1124,7 @@ describe('Commit Shield hooks — repo resolution', () => {
 
   it('Remove protection on such a repository that still has a shield from before says it was not removed, and leaves it', async () => {
     git(separate())
+    seed(SHIELD_REPOS, JSON.stringify([REPO]))
     seed(pJoin(SEP_HOOKS, 'pre-push'), `#!/bin/sh\n${SENTINEL}\n`)
 
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
@@ -1128,6 +1132,7 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(r).toEqual({ success: true, data: { removed: [], notice: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.' } })
     expect(wrote(pJoin(SEP_HOOKS, 'pre-push'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
     expect(H.fs.unlinkSync).not.toHaveBeenCalled()
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([REPO]) // HOLD-A R2-3: still listed
   })
 })
 
@@ -1289,15 +1294,45 @@ describe('Commit Shield hooks — protected-repo list', () => {
     expect(r.data).toEqual({ removed: [], notice: 'There was no Commit Shield to remove in this repository.' })
   })
 
-  it('says nothing more when the only shield left is in a linked hook file it may not change', async () => {
+  // HOLD-A R2-3: the only shield left is in a hook file it never reads or writes. It says so, and the repository stays
+  // listed, since its block is still there.
+  it('says the shield was not removed when the only one left is in a linked hook file, and keeps the repository listed', async () => {
     git(inRepo)
+    seed(SHIELD_REPOS, JSON.stringify(['/other-repo', REPO]))
     seed(PRE_COMMIT, `#!/bin/sh\n${SENTINEL}\n`)
     H.kinds.set(H.norm(PRE_COMMIT), 'link')
 
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
 
-    expect(r).toEqual({ success: true, data: { removed: [] } })
+    expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's pre-commit hook is a link to another file." } })
     expect(wrote(PRE_COMMIT)).toContain(SENTINEL)
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual(['/other-repo', REPO])
+  })
+
+  it('says a hook that is not an ordinary file was not removed, and keeps the repository listed', async () => {
+    git(inRepo)
+    seed(SHIELD_REPOS, JSON.stringify([REPO]))
+    H.kinds.set(H.norm(PRE_PUSH), 'fifo')
+
+    const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+    expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's pre-push hook is not an ordinary file." } })
+    expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([REPO])
+  })
+
+  it('keeps the repository listed when a shield it removed is still there afterwards', async () => {
+    git(inRepo)
+    await invoke('gitHooks:install', { cwd: REPO })
+    const unlink = H.fs.unlinkSync.getMockImplementation()!
+    H.fs.unlinkSync.mockImplementation(() => undefined) // a remove that leaves the file, as a race can
+    try {
+      const r = await invoke('gitHooks:uninstall', { cwd: REPO })
+
+      expect(r).toEqual({ success: true, data: { removed: ['pre-commit', 'pre-push'] } })
+      expect(JSON.parse(wrote(SHIELD_REPOS)!)).toEqual([REPO])
+    } finally {
+      H.fs.unlinkSync.mockImplementation(unlink)
+    }
   })
 })
 

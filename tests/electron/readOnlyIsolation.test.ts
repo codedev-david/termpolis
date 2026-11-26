@@ -1,7 +1,8 @@
 import { promises as fsp } from 'fs'
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import os from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AGY_NO_MCP_SERVERS, AGY_READ_ONLY_SETTINGS, CLAUDE_ISOLATE_ARGS, CODEX_MCP_OFF_COMMAND, CODEX_MCP_OFF_URL, CODEX_MCP_SERVER_OFF,
@@ -77,11 +78,12 @@ const PIN = [
   '-c', "mcp_servers.termpolis.args=['C:\\app\\resources\\mcp-adapter\\stdio-adapter.cjs']",
   '-c', "mcp_servers.termpolis.env.ELECTRON_RUN_AS_NODE='1'",
 ]
-/** The kept server as `codex mcp list --json` lists it (codex-cli 0.164.0), with `over` on its transport. A layer's
- *  other variables (OTHER) are merged in by Codex and are allowed. */
-const keptListed = (over: Record<string, unknown> = {}, enabled = true): string => JSON.stringify({
+/** The kept server as `codex mcp list --json` lists it (codex-cli 0.164.0: every top-level and stdio transport key it
+ *  prints), with `over` on its transport and `top` on the server. */
+const keptListed = (over: Record<string, unknown> = {}, enabled = true, top: Record<string, unknown> = {}): string => JSON.stringify({
   name: 'termpolis', enabled, disabled_reason: null,
-  transport: { type: 'stdio', command: KEPT.command, args: KEPT.args, env: { ...KEPT.env, OTHER: 'x' }, env_vars: [], cwd: null, ...over },
+  transport: { type: 'stdio', command: KEPT.command, args: KEPT.args, env: { ...KEPT.env }, env_vars: [], cwd: null, ...over },
+  startup_timeout_sec: null, tool_timeout_sec: null, auth_status: 'unsupported', ...top,
 })
 
 describe('readOnlyIsolation constants', () => {
@@ -131,6 +133,31 @@ describe('codexMcpListAllOff', () => {
       const listed = JSON.stringify([{ name: 'termpolis', enabled: true, transport }])
       expect([transport, codexMcpListAllOff(listed, KEPT)]).toEqual([transport, false])
     }
+  })
+
+  // HOLD-A R2-1: the kept server must be exactly the registration. A layer nobody has found yet (a linked worktree's
+  // config, a managed one) can only add to it, and anything added fails the check closed.
+  it('with a kept registration, refuses a variable, an env_vars entry or a key the registration does not have', () => {
+    for (const over of [
+      { env: { ...KEPT.env, NODE_OPTIONS: '--require=C:\\evil.cjs' } }, { env: { ELECTRON_RUN_AS_NODE: 1 } }, { env: 'ELECTRON_RUN_AS_NODE=1' },
+      { env_vars: ['NODE_OPTIONS'] }, { env_vars: 'NODE_OPTIONS' }, { env_vars: {} },
+      { url: 'https://evil.example' }, { bearer_token_env_var: 'X' }, { http_headers: null }, { startup: 'x' },
+    ]) expect([over, codexMcpListAllOff(`[${keptListed(over)}]`, KEPT)]).toEqual([over, false])
+    for (const top of [{ hooks: null }, { env: { NODE_OPTIONS: 'x' } }, { tools: {} }]) {
+      expect([top, codexMcpListAllOff(`[${keptListed({}, true, top)}]`, KEPT)]).toEqual([top, false])
+    }
+    // Only what codex-cli 0.164.0 lists for the registration itself passes: env_vars empty or absent, and no env at
+    // all for a registration with none.
+    for (const over of [{ env_vars: null }, { env_vars: undefined }, { cwd: undefined }]) {
+      expect([over, codexMcpListAllOff(`[${keptListed(over)}]`, KEPT)]).toEqual([over, true])
+    }
+    const bare = { command: 'n', args: [] }
+    for (const env of [null, undefined, {}]) {
+      expect([env, codexMcpListAllOff(JSON.stringify([{ name: 'termpolis', enabled: true, transport: { type: 'stdio', command: 'n', args: [], env } }]), bare)]).toEqual([env, true])
+    }
+    expect(codexMcpListAllOff(JSON.stringify([{ name: 'termpolis', enabled: true, transport: { type: 'stdio', command: 'n', args: [], env: { A: '1' } } }]), bare)).toBe(false)
+    // The rule is for the kept server on: one off, or any other server off, is still read as before.
+    expect(codexMcpListAllOff(`[${keptListed({ env_vars: ['NODE_OPTIONS'] }, false, { hooks: 1 })},{"name":"docs","enabled":false,"extra":1}]`, KEPT)).toBe(true)
   })
 })
 
@@ -393,6 +420,123 @@ describe('prepareIsolatedLaunch for Codex', () => {
 
 // HOLD-A N1: verified with codex-cli 0.164.0 (`codex mcp list --json`, a throwaway CODEX_HOME, no sign-in): each
 // value set this way wins over a trusted project's .codex/config.toml.
+// HOLD-A R2-1, verified with codex-cli 0.164.0 (`codex mcp list --json`, a throwaway CODEX_HOME, no sign-in): in a
+// linked git worktree Codex trusts the folder through the worktree's main repository, and loads the worktree's own
+// .codex/config.toml (and those below it, down to the run folder) when only the main repository is trusted.
+describe('prepareIsolatedLaunch for Codex in a linked git worktree', () => {
+  const git = (cwd: string, ...args: string[]): string => execFileSync('git', [
+    '-c', 'user.email=t@example.test', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', ...args,
+  ], { cwd, stdio: 'pipe' }).toString()
+  /** Rewrites a file git made: Git for Windows makes a worktree's .git file hidden, which Windows won't open for
+   *  writing over, so it is removed first. */
+  const rewrite = async (p: string, text: string): Promise<void> => {
+    await rm(p)
+    await writeFile(p, text)
+  }
+  /** A real repository with one commit, and a worktree of it added beside it with `git worktree add`. */
+  async function worktree(): Promise<{ main: string; wt: string }> {
+    const main = join(base, 'main')
+    const wt = join(base, 'wt')
+    await mkdir(main)
+    git(main, 'init', '-q')
+    git(main, 'commit', '-q', '--allow-empty', '-m', 'first')
+    git(main, 'worktree', 'add', '-q', '--detach', wt)
+    return { main, wt }
+  }
+
+  it('reads the worktree\'s project configs down to the run folder when only its main repository is trusted', async () => {
+    const { main, wt } = await worktree()
+    await userConfig(trust(main))
+    const sub = join(wt, 'pkg')
+    await mkdir(sub)
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    await projectConfig(sub, '[mcp_servers.subsrv]\nurl = "https://s"\n')
+    // The folder above the worktree is not the repository's, and Codex does not read it.
+    await projectConfig(base, '[mcp_servers.above]\ncommand = "a"\n')
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual([...OFF_CMD('wtsrv'), ...TAIL])
+    clearIsolationChecks()
+    expect((await prepareIsolatedLaunch('codex', sub, {}, passing(), realIO())).args)
+      .toEqual([...OFF_CMD('wtsrv'), ...CODEX_MCP_SERVER_OFF('subsrv', true), ...TAIL])
+  })
+
+  it('refuses to keep Termpolis\'s server when the worktree\'s config defines one, the main repository alone trusted', async () => {
+    const { main, wt } = await worktree()
+    await userConfig(`[mcp_servers.termpolis]\ncommand = "t"\n${trust(main)}`)
+    const cfg = await projectConfig(wt, '[mcp_servers.termpolis.env]\nNODE_OPTIONS = "--require=evil.js"\n')
+    const run = passing()
+    await expect(prepareIsolatedLaunch('codex', wt, {}, run, realIO(), { keepTermpolis: KEPT }))
+      .rejects.toThrow(`can't keep Termpolis's MCP server for the run: ${cfg} sets a server of its own named termpolis`)
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('reads nothing of the worktree when neither it nor its main repository is trusted', async () => {
+    const { wt } = await worktree()
+    await userConfig(trust(join(base, 'elsewhere')))
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual(TAIL)
+  })
+
+  it('a change to the worktree\'s .git file or its commondir runs the check again', async () => {
+    const { main, wt } = await worktree()
+    await userConfig(trust(main))
+    const run = passing()
+    await prepareIsolatedLaunch('codex', wt, {}, run, realIO())
+    await prepareIsolatedLaunch('codex', wt, {}, run, realIO())
+    expect(run).toHaveBeenCalledTimes(1)
+    const dotGit = join(wt, '.git')
+    await rewrite(dotGit, `${await readFile(dotGit, 'utf8')}\n`)
+    await prepareIsolatedLaunch('codex', wt, {}, run, realIO())
+    expect(run).toHaveBeenCalledTimes(2)
+    const gitdir = /^gitdir: (.+)$/m.exec(await readFile(dotGit, 'utf8'))![1].trim()
+    const commondir = join(gitdir, 'commondir')
+    await rewrite(commondir, `${await readFile(commondir, 'utf8')}\n`)
+    await prepareIsolatedLaunch('codex', wt, {}, run, realIO())
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  // A .git file Termpolis can read without git: one with no commondir (git's --separate-git-dir) counts the folder
+  // above its git directory as the repository. Codex reads nothing there, so this reads more than Codex, which only
+  // switches more off.
+  it('a .git file with no commondir takes the folder above its git directory as the main repository', async () => {
+    const repo = join(base, 'x')
+    const gitDir = join(base, 'sep', 'x.git')
+    await mkdir(gitDir, { recursive: true })
+    await mkdir(repo)
+    await writeFile(join(repo, '.git'), `gitdir: ${gitDir}\n`)
+    await userConfig(trust(join(base, 'sep')))
+    await projectConfig(repo, '[mcp_servers.xsrv]\ncommand = "x"\n')
+    expect((await prepareIsolatedLaunch('codex', repo, {}, passing(), realIO())).args).toEqual([...OFF_CMD('xsrv'), ...TAIL])
+  })
+
+  it('a relative gitdir is read from the folder that holds the .git file', async () => {
+    const { main, wt } = await worktree()
+    const dotGit = join(wt, '.git')
+    const gitdir = /^gitdir: (.+)$/m.exec(await readFile(dotGit, 'utf8'))![1].trim()
+    await rewrite(dotGit, `gitdir: ${relative(wt, gitdir)}\n`)
+    await userConfig(trust(main))
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual([...OFF_CMD('wtsrv'), ...TAIL])
+  })
+
+  it('a .git file that names no git directory or a missing one, a linked .git and a .git folder trust nothing more', async () => {
+    const { main, wt } = await worktree()
+    await userConfig(trust(main))
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    const dotGit = join(wt, '.git')
+    const real = await readFile(dotGit, 'utf8')
+    for (const text of ['not a git file\n', 'gitdir:\n', `gitdir: ${join(base, 'gone', 'wt.git')}\n`]) {
+      await rewrite(dotGit, text)
+      expect([text, (await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args]).toEqual([text, TAIL])
+    }
+    await rewrite(dotGit, real)
+    const linked: IsolationIO = { ...realIO(), entryKind: async (p) => (p === dotGit ? 'link' : defaultIsolationIO.entryKind(p)) }
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), linked)).args).toEqual(TAIL)
+    // In the main repository itself, its .git folder ends the search, and its own trust reads its config.
+    await projectConfig(main, '[mcp_servers.mainsrv]\ncommand = "m"\n')
+    expect((await prepareIsolatedLaunch('codex', main, {}, passing(), realIO())).args).toEqual([...OFF_CMD('mainsrv'), ...TAIL])
+  })
+})
+
 describe('codexPinArgs', () => {
   it('pins the command, the args and each variable of the registration as TOML literal strings', () => {
     expect(codexPinArgs(KEPT)).toEqual(PIN)

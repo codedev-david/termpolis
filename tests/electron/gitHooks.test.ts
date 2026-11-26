@@ -463,6 +463,29 @@ describe('hookStatus', () => {
     expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
   })
 
+  // HOLD-A R2-3: status reads a hook file the way uninstallHooks does (readHook): never through a link and never one
+  // that is not a regular file. So 'installed' is always a shield Remove protection can take out.
+  it('reports a linked hook and one that is not a regular file by their kind, without reading them, as uninstall leaves them', () => {
+    const mine = fakeFs()
+    installHooks(PATHS, mine.deps)
+    const fs = fakeFs(
+      { [PRE_COMMIT]: mine.files.get(PRE_COMMIT)!, [PRE_PUSH]: mine.files.get(PRE_PUSH)! },
+      { [PRE_COMMIT]: 'link', [PRE_PUSH]: 'other' },
+    )
+    const readFile = vi.spyOn(fs.deps, 'readFile')
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'link', 'pre-push': 'other' })
+    expect(readFile).not.toHaveBeenCalled()
+    expect(uninstallHooks(PATHS, fs.deps)).toEqual([])
+    expect(fs.removed).toEqual([])
+    expect(fs.wrote).toEqual([])
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'link', 'pre-push': 'other' })
+  })
+
+  it('reports a link that leads nowhere as a link, not as absent', () => {
+    const fs = fakeFs({}, { [PRE_COMMIT]: 'link' })
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'link', 'pre-push': 'absent' })
+  })
+
   it('reports foreign for a hook that is not ours, per hook', () => {
     const fs = fakeFs({ [PRE_COMMIT]: HUSKY })
     expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'foreign', 'pre-push': 'absent' })

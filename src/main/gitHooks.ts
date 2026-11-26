@@ -78,8 +78,9 @@ export interface HookPaths {
   scriptPath: string
 }
 
-/** 'foreign' = a hook file is there that carries no block of ours. */
-export type HookState = 'installed' | 'absent' | 'foreign'
+/** 'foreign' = a hook file is there that carries no block of ours. 'link' and 'other' = a hook file that is a link,
+ *  or not a regular file: never read (readHook), so whether it carries a block is not known. */
+export type HookState = 'installed' | 'absent' | 'foreign' | 'link' | 'other'
 
 const HOOK_NAMES: readonly HookName[] = ['pre-commit', 'pre-push']
 const BEGIN = '# >>> termpolis commit shield >>>'
@@ -425,15 +426,15 @@ export function shieldNodePath(
   return path.isAbsolute(found) ? found : null
 }
 
+/** Each hook's state, read the way install and uninstall read it (readHook): a link or a file that is not a regular
+ *  one is reported by its kind and never read through, so 'installed' is always a block uninstallHooks can take out
+ *  (HOLD-A R2-3). A regular file it cannot read counts as foreign. */
 export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, HookState> {
   const out = {} as Record<HookName, HookState>
   for (const name of HOOK_NAMES) {
     const file = hookPath(paths, name)
-    if (!deps.exists(file)) {
-      out[name] = 'absent'
-      continue
-    }
-    out[name] = hasBlock(deps.readFile(file) ?? '') ? 'installed' : 'foreign'
+    const kind = deps.fileKind(file)
+    out[name] = kind === 'file' ? (hasBlock(deps.readFile(file) ?? '') ? 'installed' : 'foreign') : kind
   }
   return out
 }

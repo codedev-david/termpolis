@@ -1901,7 +1901,12 @@ describe('linked machines wiring', () => {
     claude.dispose()
     expect(M.unlinkSync).toHaveBeenCalledWith(file)
 
-    expect(deps.linkedJobMcp('0123456789ab', 'codex')).toEqual({ codexHasTermpolis: true })
+    // HOLD-A N1: with the registration an isolated run pins the kept server to, the same entry claude's file holds.
+    const entryEnv = Object.fromEntries(Object.entries(server.env as Record<string, string>).filter(([k]) => k !== 'TERMPOLIS_LINKED_JOB'))
+    expect(deps.linkedJobMcp('0123456789ab', 'codex')).toEqual({
+      codexHasTermpolis: true,
+      codexServer: { command: server.command, args: server.args, ...(Object.keys(entryEnv).length > 0 ? { env: entryEnv } : {}) },
+    })
     expect(M.codexHasTermpolisServer).toHaveBeenCalledWith(M.agentPaths)
     M.codexHasTermpolisServer.mockReturnValueOnce(false)
     expect(deps.linkedJobMcp('0123456789ab', 'codex')).toBeNull()

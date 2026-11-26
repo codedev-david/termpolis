@@ -313,7 +313,8 @@ function orFail<T>(file: string, r: T | { error: string }): T {
 }
 
 /** The project configs Codex loads for a run in `cwd`: `<dir>/.codex/config.toml` for each folder from
- *  the topmost trusted folder at or above `cwd` down to `cwd`, none when no such folder is trusted. Each
+ *  the topmost trusted folder at or above `cwd` down to `cwd`, none when no such folder is trusted (a
+ *  linked worktree's folder counts as trusted through its main repository, worktreeFolder). Each
  *  must be a regular file (never a symlink) that resolves inside that trusted folder, or the run fails:
  *  Codex would follow a link this can't vouch for. */
 async function projectConfigs(cwd: string, trusted: string[], io: IsolationIO): Promise<string[]> {
@@ -335,6 +336,51 @@ async function projectConfigs(cwd: string, trusted: string[], io: IsolationIO): 
     files.push(file)
   }
   return files
+}
+
+/** The folder a `.git` file's `gitdir:` line names, resolved against the folder that holds the file;
+ *  undefined when it names none. */
+function gitFileDir(text: string, dir: string): string | undefined {
+  const m = /^gitdir:[ \t]*(.*?)[ \t]*\r?$/m.exec(text)
+  return m && m[1] !== '' ? path.resolve(dir, m[1]) : undefined
+}
+
+/** Whether `dir` is one of the trusted folders, as written or as each resolves on disk. */
+async function isTrusted(dir: string, trusted: string[], io: IsolationIO): Promise<boolean> {
+  const mine = [dir, await io.realpath(dir).catch(() => dir)]
+  for (const t of trusted) {
+    const theirs = [t, await io.realpath(t).catch(() => t)]
+    if (theirs.some((a) => mine.some((b) => samePath(a, b, io.platform)))) return true
+  }
+  return false
+}
+
+/** For a run inside a linked git worktree, the worktree's folder when its main repository is trusted:
+ *  codex-cli 0.164.0 trusts a worktree through its main repository and loads the worktree's own
+ *  .codex/config.toml with only the main repository trusted. The nearest `.git` at or above `cwd`
+ *  decides: a folder or a link is no linked worktree; a file's `gitdir:` names the git directory, whose
+ *  `commondir` names the main repository's (the folder above it is the main repository), or which is
+ *  the main repository's itself when it has none. That last case is also a repository whose git
+ *  directory was moved with --separate-git-dir, which Codex does not trust through the folder above it:
+ *  this then reads more than Codex does, which only switches more off. Each file read goes in
+ *  `found.read`, so a change to one runs the check again. */
+async function worktreeFolder(cwd: string, trusted: string[], io: IsolationIO, found: CodexServers): Promise<string | undefined> {
+  for (const dir of folderChain(cwd)) {
+    const dotGit = path.join(dir, '.git')
+    const kind = await io.entryKind(dotGit)
+    if (kind === null) continue
+    const text = kind === 'file' ? await io.readText(dotGit, { noFollow: true }) : null
+    if (text === null) return undefined
+    found.read.push([dotGit, text])
+    const gitdir = gitFileDir(text, dir)
+    if (gitdir === undefined) return undefined
+    const commonFile = path.join(gitdir, 'commondir')
+    const common = await io.readText(commonFile)
+    if (common !== null) found.read.push([commonFile, common])
+    const main = path.dirname(common === null ? gitdir : path.resolve(gitdir, common.trim()))
+    return (await isTrusted(main, trusted, io)) ? dir : undefined
+  }
+  return undefined
 }
 
 /** The config layers Codex can load that the parser doesn't read: the machine-wide config, enforced
@@ -379,6 +425,8 @@ async function codexServers(cwd: string, runEnv: Readonly<Record<string, string>
       trusted.push(...orFail(profileFile, codexTrustedProjects(text)))
     }
   }
+  const worktree = await worktreeFolder(cwd, trusted, io, found)
+  if (worktree !== undefined) trusted.push(worktree)
   for (const file of await projectConfigs(cwd, trusted, io)) {
     const text = await io.readText(file, { noFollow: true })
     if (text === null) continue
@@ -401,19 +449,39 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-/** A listed server's transport is the kept registration: stdio, its command, exactly its args, no folder
- *  of its own, and each of its variables. Variables another layer adds are the person's own and pass. */
-function isKeptTransport(t: unknown, kept: ServerEntry): boolean {
-  if (!isRecord(t) || t.type !== 'stdio' || t.command !== kept.command || (t.cwd !== null && t.cwd !== undefined)) return false
-  const args = t.args
-  if (!Array.isArray(args) || args.length !== kept.args.length || args.some((a, i) => a !== kept.args[i])) return false
-  const env = t.env
-  return Object.entries(kept.env ?? {}).every(([k, v]) => isRecord(env) && env[k] === v)
+/** The keys `codex mcp list --json` prints for a server and for a stdio transport (codex-cli 0.164.0). */
+const LISTED_SERVER_KEYS: readonly string[] = ['name', 'enabled', 'disabled_reason', 'transport', 'startup_timeout_sec', 'tool_timeout_sec', 'auth_status']
+const LISTED_STDIO_KEYS: readonly string[] = ['type', 'command', 'args', 'env', 'env_vars', 'cwd']
+
+/** Null or not there. */
+const absent = (v: unknown): boolean => v === null || v === undefined
+
+/** A listed env that is exactly `kept`'s: the same variables with the same values, or none for none. */
+function sameEnv(env: unknown, kept: Readonly<Record<string, string>> = {}): boolean {
+  if (absent(env)) return Object.keys(kept).length === 0
+  if (!isRecord(env)) return false
+  const keys = Object.keys(env)
+  return keys.length === Object.keys(kept).length && keys.every((k) => typeof env[k] === 'string' && env[k] === kept[k])
+}
+
+/** A listed server is exactly the kept registration: no key `codex mcp list` doesn't print for one, a stdio
+ *  transport with only its own keys, its command, exactly its args, no folder of its own, exactly its
+ *  variables and no variable passed through by name (env_vars). The pin sets each of these, and a config
+ *  layer can only add to them (Codex merges a server's tables), so anything else means a layer this
+ *  doesn't know about reached the server: the run must not start. */
+function isKeptServer(s: Record<string, unknown>, kept: ServerEntry): boolean {
+  const t = s.transport
+  return Object.keys(s).every((k) => LISTED_SERVER_KEYS.includes(k)) &&
+    isRecord(t) && Object.keys(t).every((k) => LISTED_STDIO_KEYS.includes(k)) &&
+    t.type === 'stdio' && t.command === kept.command && absent(t.cwd) &&
+    Array.isArray(t.args) && t.args.length === kept.args.length && t.args.every((a, i) => a === kept.args[i]) &&
+    (absent(t.env_vars) || (Array.isArray(t.env_vars) && t.env_vars.length === 0)) &&
+    sameEnv(t.env, kept.env)
 }
 
 /** `codex mcp list --json` output that lists every server off: a JSON array of objects, each with a
  *  string `name` and `enabled: false`, but for Termpolis's own when it is `kept`, which may be on as
- *  that registration (isKeptTransport). Any other shape fails. Pure. */
+ *  exactly that registration (isKeptServer). Any other shape fails. Pure. */
 export function codexMcpListAllOff(stdout: string, kept?: ServerEntry): boolean {
   let listed: unknown
   try {
@@ -423,7 +491,7 @@ export function codexMcpListAllOff(stdout: string, kept?: ServerEntry): boolean 
   }
   return Array.isArray(listed) && listed.every((s: unknown) =>
     isRecord(s) && typeof s.name === 'string' &&
-    (s.enabled === false || (kept !== undefined && s.name === 'termpolis' && isKeptTransport(s.transport, kept))))
+    (s.enabled === false || (kept !== undefined && s.name === 'termpolis' && isKeptServer(s, kept))))
 }
 
 /** `agy mcp list` output that reports no server. Pure. */
@@ -478,6 +546,8 @@ export async function prepareIsolatedLaunch(
       ...CODEX_NO_CONNECTORS_ARGS,
     ]
     const env = { ...runEnv, ...READ_ONLY_RUN_ENV }
+    // `kept` adds nothing to the key that `args` doesn't (its pin args carry the whole registration); it
+    // is there so the key says what was checked.
     await checkMcpList([agent, cwd, args, env, found.read, found.layers, kept ?? null], 'codex', ['mcp', 'list', '--json', ...args], { cwd, env },
       (stdout) => codexMcpListAllOff(stdout, kept), run, io)
     return { args, env: { ...READ_ONLY_RUN_ENV }, dispose: noop }
