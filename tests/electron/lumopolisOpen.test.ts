@@ -220,7 +220,6 @@ describe('lumopolisTypable (#29)', () => {
   })
 
   it('a zsh terminal is yes as soon as its ready mark is seen, before the wait is up', async () => {
-    // eslint-disable-next-line prefer-const
     let c: ReturnType<typeof clocked>
     c = clocked({ ready: () => c.now() >= 750 })
     expect(await lumopolisTypable({ terminalId: 'z' }, c.d)).toEqual({ success: true, data: true })
@@ -243,7 +242,6 @@ describe('lumopolisTypable (#29)', () => {
   })
 
   it('stops waiting when the terminal closes, and refuses what names no terminal', async () => {
-    // eslint-disable-next-line prefer-const
     let c: ReturnType<typeof clocked>
     c = clocked({ way: (id) => (id === 'z' && c.now() < 500 ? { way: 'reports', startedAt: 0 } : null) })
     expect(await lumopolisTypable({ terminalId: 'z' }, c.d)).toEqual({ success: false, error: NOT_A_TERMINAL })
