@@ -1333,34 +1333,43 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const width = await split(null)
     expect(width, 'the pane sits beside the terminals at 1920x1080').not.toBeNull()
     expect((await paneState()).overlays, 'the pane has a divider at 1920x1080').toBe(false)
-    // A line between two buildings, both drawn on the map (a district shown folded into parts draws no building of its
-    // own, so a line of the doc may have no end on the map): its card opened as the agent opens one.
-    const findLine = (): Promise<{ id: string; from: string; to: string } | null> => page.evaluate(async (r) => {
+    // A line between two buildings, its card opened as the agent opens one, with both ends in view in its close-up. The
+    // world opens from far away, where its buildings stand under their districts' slabs and none can be pointed at, and a
+    // district shown folded into parts draws no building of its own, so a line of the doc may have an end that is never
+    // on the map: each line is tried in its own close-up until one shows both ends.
+    const lines = await page.evaluate(async (r) => {
       type Doc = { buildings: { id: string }[]; edges: { id: string; from: string; to: string }[] }
       const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
-      const probe = (window as unknown as { __termpolis_world?: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
       const top = await api.gitFindRoot(r)
       const res = await api.worldGet(top.success && top.data ? top.data : r)
-      if (!res.success || !res.data || !probe) return null
-      const ids = new Set(res.data.buildings.map((b) => b.id))
-      const e = res.data.edges.find((x) => x.from !== x.to && ids.has(x.from) && ids.has(x.to) && probe.screenPoint(x.from) !== null && probe.screenPoint(x.to) !== null)
-      return e ? { id: e.id, from: e.from, to: e.to } : null
+      if (!res.success || !res.data) return []
+      const ids = new Set(res.data.buildings.map((x) => x.id))
+      return res.data.edges.filter((x) => x.from !== x.to && ids.has(x.from) && ids.has(x.to)).map((x) => ({ id: x.id, from: x.from, to: x.to }))
     }, path.resolve('.'))
-    await expect.poll(findLine, { message: 'the world has a line between two buildings drawn on the map', timeout: 60_000 }).not.toBeNull()
-    const { id, from, to } = (await findLine()) as { id: string; from: string; to: string }
-    await page.evaluate((id) => (window as unknown as { __termpolis_world: { apply(a: { type: 'openCard'; id: string }): Promise<void> } }).__termpolis_world.apply({ type: 'openCard', id }), id)
-    await expect(page.locator('[data-testid="world-card"]'), 'the line card is open').toBeVisible({ timeout: 30_000 })
-    await glideDone('the line card opened')
-    // Both ends of the line on the canvas: in its box, as the probe projects them.
-    const endsInView = (): Promise<string[]> => page.evaluate(([a, b]) => {
+    expect(lines.length, 'the world has a line between two buildings').toBeGreaterThan(0)
+    // Both ends of the line on the canvas: in its box, as the probe projects them (null: not drawn, or not to be pointed at).
+    const endsInView = (ends: string[]): Promise<string[]> => page.evaluate((ends) => {
       const probe = (window as unknown as { __termpolis_world: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
       const r = (document.querySelector('[data-testid="world-canvas-host"] canvas') as HTMLCanvasElement).getBoundingClientRect()
-      return [a, b].filter((x) => {
+      return ends.filter((x) => {
         const p = probe.screenPoint(x)
         return !p || p.x < r.left || p.x > r.right || p.y < r.top || p.y > r.bottom
       })
-    }, [from, to])
-    expect(await endsInView(), 'both ends of the line are in view before the drag').toEqual([])
+    }, ends)
+    const tried: string[] = []
+    let line: { id: string; from: string; to: string } | null = null
+    for (const l of lines.slice(0, 12)) {
+      await page.evaluate((id) => (window as unknown as { __termpolis_world: { apply(a: { type: 'openCard'; id: string }): Promise<void> } }).__termpolis_world.apply({ type: 'openCard', id }), l.id)
+      await expect(page.locator('[data-testid="world-card"]'), `the card of line ${l.id} is open`).toBeVisible({ timeout: 30_000 })
+      await glideDone(`the card of line ${l.id} opened`)
+      const out = await endsInView([l.from, l.to])
+      if (out.length === 0) { line = l; break }
+      tried.push(`${l.id} (not in view: ${out.join(', ')})`)
+      await closeCard()
+    }
+    if (!line) throw new Error(`no line of the world showed both ends in its close-up; tried ${lines.length} of ${lines.length > 12 ? '12 first' : 'them'}: ${tried.join('; ')}`)
+    const { from, to } = line
+    console.log(`[world-responsive] divider drag: line ${line.id}, both ends in view in its close-up, after ${tried.length} other line(s)${tried.length ? `: ${tried.join('; ')}` : ''}`)
     await page.evaluate(() => {
       const w = window as unknown as { __longTasks: number[]; __longObs?: PerformanceObserver; __worldPerf: { begin(): void } }
       w.__longTasks = []
@@ -1392,7 +1401,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     softly(after.resizeWorstMs, 'each resize during the drag takes under 16 ms of its own').toBeLessThan(16)
     softly(after.longTasks.filter((d) => d > 200), 'no task of the page runs over 200 ms during the drag').toEqual([])
     await glideDone('the divider dragged')
-    expect(await endsInView(), 'both ends of the line are in view after the drag').toEqual([])
+    expect(await endsInView([from, to]), 'both ends of the line are in view after the drag').toEqual([])
     await expect(page.locator('[data-testid="world-card"]'), 'the line card is still open').toBeVisible()
     await closeCard()
   })
