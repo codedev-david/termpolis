@@ -746,6 +746,9 @@ async function answerProblems(): Promise<string[]> {
 /** WorldLegend's LEGEND_ASIDE_PX: from this canvas width (in the legend's own pixels) the opened legend's strip is kept clear. */
 const LEGEND_ASIDE_PX = 600
 
+/** threeRenderer's BUFFER_SETTLE_MS: how long the view's size holds before its drawing buffer is fitted to it (the e2e run does not load three). */
+const BUFFER_SETTLE_MS = 150
+
 /**
  * What of the city lies under the opened legend's panel: the building names on show whose boxes meet it, and the
  * buildings a click would pick at a grid of points over it (every 8 px), whatever is drawn over them. Round 3 saw the
@@ -1308,7 +1311,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
   test('dragging the pane divider with a line card open stays smooth', async () => {
     // Look plan Task 5 (WP2 M-a): a line's close-up is searched once and only re-aimed on each resize, so the drag never
     // waits on a search. Each resize's own work is timed in the app (perf.resizeWorstMs, from the window's start), and no
-    // task of the page runs over 200 ms while the divider moves: 300 px in 40 steps over 2 s, as a hand drags it.
+    // task of the page runs over 200 ms while the divider moves: 300 px in 40 steps over 2 s, as a hand drags it. The
+    // drawing buffer is fitted only once the size holds (threeRenderer's BUFFER_SETTLE_MS): in software rendering a fit
+    // waits on the GPU's frames for 250 ms and more, so a task that starts that long after the last move is the drag
+    // held still, not the drag; the buffer is checked fitted to the narrowed view after it.
     test.setTimeout(600_000)
     const v = VIEWPORTS.find((x) => x.name === '1920x1080') as Viewport
     await setViewport(v)
@@ -1371,9 +1377,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const { from, to } = line
     console.log(`[world-responsive] divider drag: line ${line.id}, both ends in view in its close-up, after ${tried.length} other line(s)${tried.length ? `: ${tried.join('; ')}` : ''}`)
     await page.evaluate(() => {
-      const w = window as unknown as { __longTasks: number[]; __longObs?: PerformanceObserver; __worldPerf: { begin(): void } }
+      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __longObs?: PerformanceObserver; __worldPerf: { begin(): void } }
       w.__longTasks = []
-      w.__longObs = new PerformanceObserver((list) => { for (const t of list.getEntries()) w.__longTasks.push(t.duration) })
+      w.__moves = []
+      window.addEventListener('pointermove', () => { w.__moves.push(performance.now()) }, { capture: true })
+      w.__longObs = new PerformanceObserver((list) => { for (const t of list.getEntries()) w.__longTasks.push({ start: t.startTime, ms: t.duration }) })
       w.__longObs.observe({ type: 'longtask', buffered: false })
       w.__worldPerf.begin()
     })
@@ -1389,18 +1397,29 @@ test.describe.serial('Lumopolis at every screen size', () => {
       await page.waitForTimeout(50)
     }
     await page.mouse.up()
-    const after = await page.evaluate(() => {
-      const w = window as unknown as { __longTasks: number[]; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
+    const after = await page.evaluate((settleMs) => {
+      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
       w.__longObs?.disconnect()
       const perf = w.__termpolis_world.drawn().perf
-      return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, longTasks: w.__longTasks, frames: w.__worldPerf.end().frames }
-    })
-    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, long tasks ${after.longTasks.map((d) => d.toFixed(0)).join(', ') || 'none'}`)
+      // A task is the drag's when it starts within the settle time of a move (the move's resize and the frames after it);
+      // later, the hand held still and the buffer was fitted.
+      const sinceMove = (t: number): number => t - Math.max(-Infinity, ...w.__moves.filter((m) => m <= t))
+      const tasks = w.__longTasks.map((t) => ({ ms: t.ms, still: sinceMove(t.start) >= settleMs }))
+      const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
+      return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, tasks, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
+    }, BUFFER_SETTLE_MS)
+    const show = (xs: Array<{ ms: number }>): string => xs.map((t) => t.ms.toFixed(0)).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), long tasks of the drag ${show(after.tasks.filter((t) => !t.still))}, once it held still ${show(after.tasks.filter((t) => t.still))}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     softly(after.resizeWorstMs, 'the drag resized the view, timed').toBeGreaterThan(0)
     softly(after.resizeWorstMs, 'each resize during the drag takes under 16 ms of its own').toBeLessThan(16)
-    softly(after.longTasks.filter((d) => d > 200), 'no task of the page runs over 200 ms during the drag').toEqual([])
+    softly(after.tasks.filter((t) => !t.still && t.ms > 200).map((t) => Math.round(t.ms)), 'no task of the page runs over 200 ms during the drag').toEqual([])
     await glideDone('the divider dragged')
+    // The size held: the buffer is fitted to the narrowed view (its shape, at whatever pixel ratio the tier draws at).
+    await expect.poll(() => page.evaluate(() => {
+      const c = document.querySelector<HTMLCanvasElement>('[data-testid="world-canvas-host"] canvas')
+      return c ? Math.abs(c.width / c.height - c.clientWidth / c.clientHeight) : Infinity
+    }), { message: "the drawing buffer is fitted to the view's new shape once the drag holds still", timeout: 10_000 }).toBeLessThan(0.02)
     expect(await endsInView([from, to]), 'both ends of the line are in view after the drag').toEqual([])
     await expect(page.locator('[data-testid="world-card"]'), 'the line card is still open').toBeVisible()
     await closeCard()

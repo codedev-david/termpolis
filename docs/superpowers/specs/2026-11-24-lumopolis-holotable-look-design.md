@@ -231,7 +231,7 @@ WP2's rereview (M4) said the cap is not the white-map fix. WP-LOOK closes the re
 - p50, p95, p99 and worst, by nearest rank (as `e2e/world-view.spec.ts` does);
 - per-tier counts of frames and drops.
 
-The renderer feeds it each drawn frame's rAF gap. `drawnCounts().perf` exposes `{ tier, auto, p50, p95, p99, worst, frames, drops, firstFrameMs, resizeWorstMs }`. With the probe flag on, a test hook `__worldPerf.begin()/end()` gives the e2e harness a window, the same API as the spike's `__lt.perfBegin/perfEnd`. Settings ▸ Lumopolis ▸ "Show frame rate" puts a small readout in the pane corner (`88 fps · 11.4 ms · high`). It is off by default.
+The renderer feeds it each drawn frame's rAF gap. `drawnCounts().perf` exposes `{ tier, auto, p50, p95, p99, worst, frames, drops, firstFrameMs, resizeWorstMs }`. With the probe flag on, a test hook `__worldPerf.begin()/end()` gives the e2e harness a window, the same API as the spike's `__lt.perfBegin/perfEnd`. Settings ▸ Lumopolis ▸ "Show frame rate" puts a small readout in the pane corner (`88 fps · 11.4 ms · high`). It is off by default. `resizeWorstMs` is a resize's own work before the next frame. Once the view has drawn, the drawing buffer is not refitted on every resize: the canvas stretches the buffer it has and the buffer is fitted when the size has held for 150 ms (`BUFFER_SETTLE_MS`), because a fit waits on the GPU's pending frames, 250 ms and more in software (PENDING SIGN-OFF, plan Task 5 deviation).
 
 ### 6.2 CI perf soak
 

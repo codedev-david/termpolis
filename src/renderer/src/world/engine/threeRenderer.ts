@@ -228,6 +228,13 @@ const CSS = `
 `
 
 const FLOOR_W = 5
+/**
+ * How long the view's size must hold before the drawing buffer is fitted to it, once the view has drawn (resize).
+ * Fitting the buffer gives the canvas a new size, which waits for the frames the GPU still has to draw (in software
+ * rendering, a frame of a big world: 250 ms and more), so a pane divider dragged, which resizes the view every frame,
+ * stretches the buffer it has over the new size and has it fitted once, when the drag holds still.
+ */
+export const BUFFER_SETTLE_MS = 150
 /** A changed part's outline shell is this much larger than the building. */
 const OUTLINE_SCALE = 1.08
 /** A removed part's opacity pulse: between 0.15 and 0.45. */
@@ -2474,20 +2481,48 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   fitShrunk() // the buffer made at build
   /**
    * A resize's own cost, the longest kept (resizeWorstMs): the work the observer's call does before the next frame can
-   * be drawn (the buffer, the labels, the city's fit and the camera's framing). Only once the view has drawn: the
+   * be drawn (the canvas stretched, the labels, the city's fit and the camera's framing; the buffer is fitted later, by
+   * fitBufferFor's timer, and is not counted). Only once the view has drawn: the
    * observer's first call, on open, is the first frame's to time.
    */
   const resize = (): void => {
     const timed = presented > 0
     const t0 = performance.now()
-    resizeNow()
+    resizeNow(timed)
     if (timed) resizeWorstMs = Math.max(resizeWorstMs, performance.now() - t0)
   }
-  const resizeNow = (): void => {
+  /**
+   * The drawing buffer for a new size: at once before the view has drawn, or from or to an empty view (a pane hidden or
+   * shown again: there is no picture to stretch); otherwise the canvas shows the buffer it has stretched over the new
+   * size (the camera already frames the new shape, so nothing is drawn out of proportion, only a little soft) and the
+   * buffer is fitted when the size has held for BUFFER_SETTLE_MS.
+   */
+  let settleTimer: ReturnType<typeof setTimeout> | null = null
+  const settleBuffer = (): void => {
+    if (settleTimer !== null) clearTimeout(settleTimer)
+    settleTimer = null
+  }
+  const fitBufferFor = (drawn: boolean): void => {
+    settleBuffer()
+    // A hidden pane's view is 1 by 1 (size): from it or to it there is no picture to stretch.
+    if (!drawn || Math.min(width, height, shown.width, shown.height) <= 1) {
+      fitBuffer()
+      return
+    }
+    breakChain() // the next frames draw the new shape: not a frame of the old one
+    renderer.domElement.style.width = `${width}px`
+    renderer.domElement.style.height = `${height}px`
+    settleTimer = setTimeout(() => {
+      settleTimer = null
+      fitBuffer()
+      wake()
+    }, BUFFER_SETTLE_MS)
+  }
+  const resizeNow = (drawn: boolean): void => {
     solids = null
     ;[width, height] = size()
     applyView()
-    fitBuffer()
+    fitBufferFor(drawn)
     labelRenderer.setSize(width, height)
     panelBoxes = null
     // The city is fitted again to the new shape; a camera at the overview moves to the new one, a
@@ -2525,6 +2560,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   const onRatio = (): void => {
     watchRatio()
+    settleBuffer()
     fitBuffer()
     wake()
   }
@@ -3484,6 +3520,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       cancelAnimationFrame(startRaf) // not started yet: it never will be
       dropFence(true)
       ro?.disconnect()
+      settleBuffer() // a buffer waiting to be fitted never is
       dropRatioQuery()
       dropContextListeners()
       host.removeEventListener('keydown', onKeyDown)

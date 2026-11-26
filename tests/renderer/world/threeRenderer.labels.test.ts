@@ -4,7 +4,7 @@
 // labels" on (always shown, even overlapping); sizes measured from the page; a line label's click.
 import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
-import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { BUFFER_SETTLE_MS, createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel, SceneText } from '../../../src/renderer/src/world/engine/sceneModel'
 import { turnGround } from '../../../src/renderer/src/world/engine/viewMath'
 import {
@@ -544,7 +544,13 @@ describe('threeRenderer labels', () => {
     // It closes, and the view changes size: measured again with the view.
     legend.getBoundingClientRect = panelAt([0, 0, 0, 0]).getBoundingClientRect
     boxCanvas(r.canvas, 820, 600)
-    fire([{ target: h.host }])
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fire([{ target: h.host }])
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS) // the view has drawn: its buffer is fitted once the size holds
+    } finally {
+      vi.useRealTimers()
+    }
     expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([820, 600])
     h.frames.run(3)
     expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])

@@ -353,6 +353,8 @@ Add the e2e drag-jank test `dragging the pane divider with a line card open stay
 - [ ] **Step 4: Run the tests and see them pass.** Run `COV`, `TSC`, `E2E e2e/world-responsive.spec.ts e2e/world-visual.spec.ts`, then `SOAK` on three OSes.
 - [ ] **Step 5: Commit** with the message `lumopolis: a line close-up is searched once and re-aimed on resize, so dragging the pane stays smooth (WP2 M-a)`
 
+**Deviation (Task 5, 2026-11-26), PENDING SIGN-OFF.** The search was not the drag's only cost. With the cache in place the drag still failed on all three CI systems (worst resize 250-700 ms, long tasks over 200 ms): a timed run put the cost in `renderer.setSize`, because giving the canvas a new buffer waits on the frames the GPU process still has to draw, and in software a frame of the repository's world takes that long. So a resize once the view has drawn no longer fits the buffer at once: the canvas stretches the buffer it has over the new size (the camera already uses the new shape, so nothing is out of proportion, only a little soft), and the buffer is fitted, with a frame drawn, once the size has held for `BUFFER_SETTLE_MS` (150 ms). The fit stays immediate before the first frame, from or to a hidden pane's 1 × 1 view, and on a pixel-ratio change; dispose drops a pending fit. `resizeWorstMs` therefore counts the stretch, not the fit. The e2e test counts a long task as the drag's only when it starts within 150 ms of a pointer move (later, the hand held still and the fit ran), and checks the buffer is fitted to the narrowed view's shape afterwards.
+
 ---
 
 ### Task 6: Tooling dot-folders are not districts [S]

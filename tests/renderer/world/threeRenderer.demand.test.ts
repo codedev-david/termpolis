@@ -3,7 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
-import { createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { BUFFER_SETTLE_MS, createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
@@ -925,7 +925,15 @@ describe('threeRenderer: a 4K canvas is never blank (look spec 5.3)', () => {
     // A lost context is never tested: a lost one answers no buffer worth reading.
     gpu.allocMax = 1000
     gpu.contextLost = true
-    ro.fire()
+    const fits = rendererOf().sizes.length
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      ro.fire()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS) // the view has drawn: its buffer is fitted once the size holds
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(rendererOf().sizes.length).toBe(fits + 1) // the fit was made, and not tested
     expect(rendererOf().getPixelRatio()).toBe(1)
     expect(onBufferShrunk).toHaveBeenCalledTimes(1)
     gpu.contextLost = false
@@ -1241,6 +1249,99 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     const inWindow = timedResize(2)
     expect(perf(r).resizeWorstMs).toBe(inWindow)
     r.dispose()
+  })
+
+  /** A renderer that has drawn a still city in an 800 x 600 view (its loop sleeps), under fake timeouts (undone by `done`). */
+  const drawnView = (): { r: ThreeRenderer; resized: () => void; fits: () => number; done: () => void } => {
+    gpu.gpuName = GEFORCE
+    const resized = observeResizes()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const r = createThreeRenderer(h.host, REDUCED)
+    boxCanvas(r.canvas, 800, 600)
+    resized() // the observer's first call, as the view opens
+    r.draw(still(), smallText(), false)
+    settle(h.frames)
+    expect(r.drawnCounts().presented).toBeGreaterThan(0)
+    return { r, resized, fits: () => rendererOf().sizes.length, done: () => { r.dispose(); vi.useRealTimers() } }
+  }
+  const lastSize = (xs: Array<[number, number]>): [number, number] => xs[xs.length - 1]
+
+  it('a resize once the view has drawn stretches the buffer it has, and fits it once the size holds (a divider dragged resizes every frame)', () => {
+    const v = drawnView()
+    try {
+      const before = v.fits()
+      const composed = gpu.composers[0].sizes.length
+      // Thirty resizes 10 ms apart, as a dragged divider gives: the canvas is stretched to each, no buffer is fitted.
+      for (let k = 1; k <= 30; k++) {
+        resizeHost(h.host, 800 - k * 10, 600)
+        v.resized()
+        expect([v.r.canvas.style.width, v.r.canvas.style.height]).toEqual([`${800 - k * 10}px`, '600px'])
+        vi.advanceTimersByTime(10)
+      }
+      expect(v.fits()).toBe(before)
+      expect(gpu.composers[0].sizes).toHaveLength(composed)
+      // The size holds: the buffer is fitted to it once, the composer's with it, and a frame is drawn at it.
+      settle(h.frames)
+      expect(h.frames.pending()).toBe(0) // the loop sleeps: only the fit wakes it
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS - 11)
+      expect(v.fits()).toBe(before)
+      vi.advanceTimersByTime(1)
+      expect(v.fits()).toBe(before + 1)
+      expect(lastSize(rendererOf().sizes)).toEqual([500, 600])
+      expect(lastSize(gpu.composers[0].sizes)).toEqual([500, 600])
+      expect(h.frames.pending()).toBe(1)
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS * 4)
+      expect(v.fits()).toBe(before + 1)
+    } finally {
+      v.done()
+    }
+  })
+
+  it('a pane hidden (a 1 by 1 view) or shown again has its buffer fitted at once: there is no picture to stretch', () => {
+    const v = drawnView()
+    try {
+      const before = v.fits()
+      resizeHost(h.host, 0, 0) // hidden: the view is 1 by 1
+      v.resized()
+      expect(v.fits()).toBe(before + 1)
+      expect(lastSize(rendererOf().sizes)).toEqual([1, 1])
+      resizeHost(h.host, 640, 480) // shown again: from 1 by 1
+      v.resized()
+      expect(v.fits()).toBe(before + 2)
+      expect(lastSize(rendererOf().sizes)).toEqual([640, 480])
+      resizeHost(h.host, 640, 0) // a view 1 high
+      v.resized()
+      expect(lastSize(rendererOf().sizes)).toEqual([640, 1])
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 3)
+    } finally {
+      v.done()
+    }
+  })
+
+  it('a buffer waiting to be fitted is let go by a new pixel ratio, which fits it at once, and by dispose', () => {
+    const queries: Array<() => void> = []
+    vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: (_: string, f: () => void) => { queries.push(f) }, removeEventListener: () => {} }))
+    const v = drawnView()
+    try {
+      const before = v.fits()
+      resizeHost(h.host, 700, 600)
+      v.resized()
+      expect(v.fits()).toBe(before)
+      queries[queries.length - 1]() // the window moved to another display
+      expect(v.fits()).toBe(before + 1)
+      expect(lastSize(rendererOf().sizes)).toEqual([700, 600])
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 1)
+      resizeHost(h.host, 650, 600)
+      v.resized()
+      v.r.dispose()
+      const gone = v.fits()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS * 2)
+      expect(v.fits()).toBe(gone) // no fit comes after dispose
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drawnCounts gives the last frame triangles with its draw calls (the perf soak records both)', () => {
