@@ -37,7 +37,7 @@ import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
-import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS } from '../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE } from '../src/renderer/src/world/engine/bufferFit'
 import { CORNER_MAX_LEVELS, cornerPatches, drawnBackground, levelsApart, MAX_WHITE_FRACTION, MIN_LIT_FRACTION, pngMetrics } from './worldPixels'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -1333,16 +1333,15 @@ test.describe.serial('Lumopolis at every screen size', () => {
   test('dragging the pane divider with a line card open stays smooth', async () => {
     // Look plan Task 5 (WP2 M-a): a line's close-up is searched once and only re-aimed on each resize, so the drag never
     // waits on a search. Each resize's own work is timed in the app (perf.resizeWorstMs, from the window's start), and no
-    // frame of the page spends over 200 ms on its own work while the divider moves: 300 px in 40 steps over 2 s, as a
-    // hand drags it. The drawing buffer is fitted only once the size holds (threeRenderer's BUFFER_SETTLE_MS): in
-    // software rendering a fit waits on the GPU's frames for 250 ms and more, so work that starts that long after the
-    // last move is the drag held still, not the drag; the buffer is checked fitted to the narrowed view after it.
-    // The page's own work is what a long animation frame names (look plan Task 5 deviation, PENDING SIGN-OFF): its
-    // scripts (the pointer's events, the resize observer, the frame's drawing, each with the layout it forced) and its
-    // rendering (style, layout and paint). A frame drawn in software also holds the page while the GPU process draws the
-    // frame before it, 100 to 330 ms on every CI system, with no script in it: the soaks 45862505941 and 45862510698 timed
-    // those tasks as long with the hand held still as during the drag (323 ms still on Windows, 204 ms on Linux), so a
-    // long task alone is not the drag's and is only logged.
+    // task of the page runs over 200 ms from the first move to DRAG_AFTER_MS after the mouse-up (a debounce, a timer, an
+    // idle callback the drag left is the drag's too), while the divider moves 300 px in 40 steps over 2 s, as a hand drags
+    // it. Only the drawing buffer's fit is left out: it runs once the size holds (BUFFER_SETTLE_MS), and in software it
+    // waits on the GPU's frames (its GL calls wait for the GPU process: 50 to 600 ms in the traces of 45888315285,
+    // 45888319728 and 45888323274), so the renderer names it (BUFFER_FIT_MEASURE) and the task that holds that measure is
+    // the one left out. Long animation frames cannot time this (look plan Task 5 deviation, PENDING SIGN-OFF): the app's
+    // pages are file:// pages, whose long animation frames name no scripts, so a timer's work showed in none of them (a
+    // 250 ms busy timer 400 ms after the last resize passed that check). Every other long task counts: a frame's drawing
+    // (BeginMainFrame) ran at most 151 ms in those traces.
     test.setTimeout(600_000)
     const v = VIEWPORTS.find((x) => x.name === '1920x1080') as Viewport
     await setViewport(v)
@@ -1412,26 +1411,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
       window.addEventListener('pointerup', () => { (window as unknown as { __upAt: number }).__upAt = performance.now() }, { capture: true, once: true })
       w.__longObs = new PerformanceObserver((list) => { for (const t of list.getEntries()) w.__longTasks.push({ start: t.startTime, ms: t.duration }) })
       w.__longObs.observe({ type: 'longtask', buffered: false })
-      // A long animation frame's own work, each piece where it began: the scripts that ran before it rendered (each named
-      // by what called it), then its rendering (requestAnimationFrame callbacks with the frame's drawing, the resize
-      // observer, style, layout and paint), up to its end.
-      type Loaf = PerformanceEntry & { renderStart: number; scripts: Array<{ startTime: number; duration: number; invokerType: string; invoker: string }> }
-      const lw = window as unknown as { __frames: Array<{ ms: number; work: Array<{ start: number; ms: number; what: string }> }>; __loafObs?: PerformanceObserver }
-      lw.__frames = []
-      lw.__loafObs = new PerformanceObserver((list) => {
-        for (const e of list.getEntries() as Loaf[]) {
-          const end = e.startTime + e.duration
-          const work = e.scripts.filter((x) => e.renderStart <= 0 || x.startTime < e.renderStart)
-            .map((x) => ({ start: x.startTime, ms: x.duration, what: `${x.invokerType} ${x.invoker}`.slice(0, 60) }))
-          if (e.renderStart > 0) work.push({ start: e.renderStart, ms: end - e.renderStart, what: 'rendering' })
-          lw.__frames.push({ ms: e.duration, work })
-        }
-      })
-      lw.__loafObs.observe({ type: 'long-animation-frame', buffered: false })
       w.__worldPerf.begin()
     })
-    // The frames are timed only where the page can time them: a page without long animation frames would see none.
-    expect(await page.evaluate(() => PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')), 'the page times its long animation frames').toBe(true)
+    // The tasks are timed only where the page can time them: a page without long tasks would see none.
+    expect(await page.evaluate(() => PerformanceObserver.supportedEntryTypes.includes('longtask')), 'the page times its long tasks').toBe(true)
     const box = await page.locator('[data-testid="world-pane-divider"]').boundingBox()
     if (!box) throw new Error('the divider has no box')
     const x = box.x + box.width / 2
@@ -1444,49 +1427,30 @@ test.describe.serial('Lumopolis at every screen size', () => {
       await page.waitForTimeout(50)
     }
     await page.mouse.up()
-    // The page's work after the drag is the drag's too (a debounce, a timer, an idle callback it left), up to
-    // DRAG_AFTER_MS after the mouse-up: only the buffer's fit, named by the renderer (BUFFER_FIT_MEASURE), is left out.
+    // The page's work after the drag is the drag's too, up to DRAG_AFTER_MS after the mouse-up.
     await page.waitForTimeout(DRAG_AFTER_MS)
-    const after = await page.evaluate(([settleMs, fitName, afterMs]) => {
-      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __frames: Array<{ ms: number; work: Array<{ start: number; ms: number; what: string }> }>; __moves: number[]; __longObs?: PerformanceObserver; __loafObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
+    const after = await page.evaluate(([fitName, afterMs]) => {
+      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
+      // The tasks the observer has not handed over yet are taken too: one that ended just now is still the drag's.
+      for (const t of w.__longObs?.takeRecords() ?? []) w.__longTasks.push({ start: t.startTime, ms: t.duration })
       w.__longObs?.disconnect()
-      w.__loafObs?.disconnect()
       const perf = w.__termpolis_world.drawn().perf
       const upAt = (window as unknown as { __upAt: number }).__upAt
       const fits = performance.getEntriesByName(fitName, 'measure').map((m) => ({ start: m.startTime, end: m.startTime + m.duration }))
-      // A task is the drag's when it starts within the settle time of a move (the move's resize and the frames after it);
-      // later, the hand held still and the buffer was fitted.
-      const sinceMove = (t: number): number => t - Math.max(-Infinity, ...w.__moves.filter((m) => m <= t))
-      const tasks = w.__longTasks.map((t) => ({ ms: t.ms, still: sinceMove(t.start) >= settleMs }))
-      // A piece of a frame's work is the drag's when a move came while it ran (the pointer's events are handled in the
-      // frame's rendering, the resize observer after them) or within the settle time before it began. The buffer's fit
-      // runs from a timer once the size has held, with no move in it, and is the hand held still: in software a move can
-      // come 500 to 900 ms after the last, the page being slow to take it, so the fit can run between two moves.
-      const during = (x: { start: number; ms: number }): boolean => w.__moves.some((m) => m > x.start - settleMs && m <= x.start + x.ms)
-      const longFrames = w.__frames.map((f) => {
-        const drag = f.work.filter(during)
-        return { ms: drag.reduce((n, x) => n + x.ms, 0), all: f.ms, still: drag.length === 0, what: drag.filter((x) => x.ms >= 50).map((x) => `${x.what} ${x.ms.toFixed(0)}`).join('; ') }
-      })
-      const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
-      // From the first move to DRAG_AFTER_MS after the mouse-up, every piece of a frame's work is the drag's but the
-      // buffer's fit: a script piece that holds a fit's measure.
       const first = w.__moves[0]
-      const isFit = (x: { start: number; ms: number }): boolean => fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1)
-      const inDrag = (x: { start: number; ms: number }): boolean => x.start + x.ms > first && x.start < upAt + afterMs
-      const dragFrames = w.__frames.map((f) => {
-        const own = f.work.filter((x) => inDrag(x) && !isFit(x))
-        return { ms: own.reduce((n, x) => n + x.ms, 0), all: f.ms, what: own.filter((x) => x.ms >= 50).map((x) => `${x.what} ${x.ms.toFixed(0)}`).join('; ') }
-      })
-      return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, tasks, longFrames, dragFrames, fitCount: fits.filter((f) => f.end > first).length, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
-    }, [BUFFER_SETTLE_MS, BUFFER_FIT_MEASURE, DRAG_AFTER_MS] as const)
-    const show = (xs: Array<{ ms: number }>): string => xs.map((t) => t.ms.toFixed(0)).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), long tasks of the drag ${show(after.tasks.filter((t) => !t.still))}, once it held still ${show(after.tasks.filter((t) => t.still))}; long frames of the drag, own work of all ${after.longFrames.filter((f) => !f.still).map((f) => `${f.ms.toFixed(0)}/${f.all.toFixed(0)}${f.what ? ` (${f.what})` : ''}`).join(', ') || 'none'}; ${after.fitCount} fits named; frames over 100 ms of own work to ${DRAG_AFTER_MS} ms after the mouse-up, the fit left out, ${after.dragFrames.filter((f) => f.ms > 100).map((f) => `${f.ms.toFixed(0)}/${f.all.toFixed(0)}${f.what ? ` (${f.what})` : ''}`).join(', ') || 'none'}`)
+      // A task from the first move to DRAG_AFTER_MS after the mouse-up is the drag's; one that holds a fit's measure is the fit.
+      const tasks = w.__longTasks.filter((x) => x.start + x.ms > first && x.start < upAt + afterMs)
+        .map((x) => ({ ms: x.ms, fit: fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1) }))
+      const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
+      return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, tasks, fitCount: fits.filter((f) => f.end > first).length, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
+    }, [BUFFER_FIT_MEASURE, DRAG_AFTER_MS] as const)
+    const show = (xs: Array<{ ms: number }>): string => xs.map((x) => x.ms.toFixed(0)).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), ${after.fitCount} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(after.tasks.filter((x) => !x.fit))}, the fits ${show(after.tasks.filter((x) => x.fit))}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     softly(after.resizeWorstMs, 'the drag resized the view, timed').toBeGreaterThan(0)
     softly(after.resizeWorstMs, 'each resize during the drag takes under 16 ms of its own').toBeLessThan(16)
-    softly(after.longFrames.filter((f) => !f.still && f.ms > 200).map((f) => Math.round(f.ms)), 'no frame of the page spends over 200 ms on its own work during the drag').toEqual([])
     softly(after.fitCount, 'the buffer was fitted during or after the drag, its fit named').toBeGreaterThan(0)
-    softly(after.dragFrames.filter((f) => f.ms > 200).map((f) => Math.round(f.ms)), 'no frame of the page spends over 200 ms on its own work from the first move to the drag well over, the fit left out').toEqual([])
+    softly(after.tasks.filter((x) => !x.fit && x.ms > 200).map((x) => Math.round(x.ms)), `no task of the page runs over 200 ms from the first move to ${DRAG_AFTER_MS} ms after the mouse-up, the fit left out`).toEqual([])
     await glideDone('the divider dragged')
     // The size held: the buffer is fitted to the narrowed view (its shape, at whatever pixel ratio the tier draws at).
     await expect.poll(() => page.evaluate(() => {
