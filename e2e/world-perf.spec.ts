@@ -60,14 +60,15 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
  * before the warm-up in the same launch (FIRST_FRAME_PER_GL's unit). A floor in ms has to sit over the slowest runner
  * seen, so it cannot see an app that got 2x slower on a fast one (Linux's Termpolis orbit: 394 ms on one runner, 846
  * on another, in one soak); a slower runner moves glMs as well. Per system and per world, the worst seen x 1.3,
- * rounded up to 0.1, from the soaks 45740645423, 45747049554, 45763264132 and 45765629026 (Linux, 15 Termpolis and 13
- * big launches) and 45747055496, 45763270474 and 45765632881 (Windows, 8 each):
- *   - Linux: Termpolis 5.15-8.01 (worst 845.5 / 105.6, 45765629026), so 10.5; big 3.48-4.48 (462.2 / 103.2,
+ * rounded up to 0.1, from the soaks 45740645423, 45747049554, 45763264132, 45765629026 and 45770181769 (Linux, 17
+ * Termpolis and 15 big launches) and 45747055496, 45763270474, 45765632881 and 45770194385 (Windows, 10 each):
+ *   - Linux: Termpolis 4.63-8.01 (worst 845.5 / 105.6, 45765629026), so 10.5; big 2.69-4.48 (462.2 / 103.2,
  *     45763264132), so 5.9;
- *   - Windows: Termpolis 2.86-3.31 (344.4 / 104.1, 45763270474), so 4.4; big 1.66-1.94 (204.9 / 105.4, 45747055496),
+ *   - Windows: Termpolis 2.63-3.31 (344.4 / 104.1, 45763270474), so 4.4; big 1.47-1.94 (204.9 / 105.4, 45747055496),
  *     so 2.6.
- * Twice the work on every frame doubles the measure: over the bound on every launch seen but two Linux Termpolis
- * ones (5.15 and 5.19, x 2 = 10.3 and 10.4).
+ * Twice the work on every frame doubles the measure: over the bound on every Windows launch seen, and on Linux, where
+ * the orbit swings 1.7x against glMs from one runner to the next, on 14 of 17 Termpolis and 14 of 15 big launches.
+ * A staged 2x (every frame drawn twice) failed it on every copy of each system, in both worlds (look-a2 report).
  * macOS is reported only, as SOFTWARE_FLOOR_P95_MS says (0.54-2.23 in soaks 45763276618 and 45765636039).
  */
 const ORBIT_PER_GL: Record<string, Record<string, number>> = {
