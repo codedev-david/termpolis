@@ -485,6 +485,20 @@ describe('prepareIsolatedLaunch for Codex in a linked git worktree', () => {
     expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual(TAIL)
   })
 
+  // HOLD-A R4-2. The other side: the worktree's .git file names the main repository through a link (a junction on
+  // Windows, a folder symlink elsewhere) while the trust is written as its real path. Codex compares real paths.
+  it('a .git file that names the main repository through a link is its main repository, the trust written as the real path', async () => {
+    const { main, wt } = await worktree()
+    const real = await fsp.realpath(main)
+    await userConfig(trust(real))
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    const alias = join(base, 'main-alias')
+    await symlink(main, alias, 'junction')
+    const dotGit = join(wt, '.git')
+    await rewrite(dotGit, `gitdir: ${join(alias, '.git', 'worktrees', 'wt')}\n`)
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual([...OFF_CMD('wtsrv'), ...TAIL])
+  })
+
   it('reads nothing of the worktree when neither it nor its main repository is trusted', async () => {
     const { wt } = await worktree()
     await userConfig(trust(join(base, 'elsewhere')))

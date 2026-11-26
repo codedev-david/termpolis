@@ -7,6 +7,12 @@
 //
 // -NoProfile: the person's $PROFILE is not what is under test, and a developer's profile can be slow or print anything.
 // Each shell is asked to exit, so no console process list is ever taken to kill it (kill is only the fallback).
+//
+// HOLD-A R4-1. node-pty 1.1.0 drains ConPTY's output on a worker thread that listens on a pipe, and ends that thread only
+// in kill(): a shell that exits by itself leaves it running, and the test worker's process can then never exit by
+// itself (measured: a plain node process stays up for good). kill() on a shell that is gone forks the console-list agent,
+// which fails (AttachConsole failed) and holds the kill for 5 s. So each test, once its shell has exited, disposes the
+// thread the way kill() does and waits until it has ended.
 import { afterAll, describe, expect, it } from 'vitest'
 import { createRequire } from 'module'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
@@ -17,6 +23,10 @@ import { LUMOPOLIS_NONCE_ENV } from '../../src/shared/world/lumopolisCommand'
 import { powershellPath } from '../../src/main/secondOpinion'
 
 interface Pty { onData(cb: (d: string) => void): void; onExit(cb: () => void): void; write(s: string): void; kill(): void }
+/** node-pty's own thread that drains ConPTY's output (windowsPtyAgent.ts, windowsConoutConnection.ts in node-pty 1.1.0). */
+interface ConoutThread { dispose(): void; _worker: { once(event: 'exit', cb: () => void): void } }
+const conoutThread = (p: Pty): ConoutThread | undefined =>
+  (p as unknown as { _agent?: { _conoutSocketWorker?: ConoutThread } })._agent?._conoutSocketWorker
 const require = createRequire(import.meta.url)
 const pty = require('node-pty') as { spawn: (file: string, args: string[], opts: Record<string, unknown>) => Pty }
 
@@ -44,11 +54,17 @@ function start(file: string, args: string[], env: Record<string, string>, cwd: s
   return {
     out: () => out,
     write: (s: string) => p.write(s),
-    /** Asks the shell to exit and waits for it; kills it only if it will not go. */
+    /** Asks the shell to exit and waits for it; kills it only if it will not go. Then ends node-pty's output thread
+     *  and waits until it has ended, so nothing of the pty outlives the test. */
     async end(): Promise<void> {
+      const thread = conoutThread(p)
+      // The shape this relies on: a node-pty that moved it fails here, not by leaving the thread behind.
+      expect(typeof thread?.dispose, "node-pty's ConPTY output thread").toBe('function')
+      const ended = new Promise<void>((r) => thread!._worker.once('exit', r))
       if (!exited) p.write('exit\r')
       for (const t0 = Date.now(); !exited && Date.now() - t0 < 10_000;) await new Promise((r) => setTimeout(r, 50))
-      if (!exited) { try { p.kill() } catch { /* already gone */ } }
+      if (!exited) { try { p.kill() } catch { /* already gone */ } } else thread!.dispose()
+      await ended
     },
   }
 }

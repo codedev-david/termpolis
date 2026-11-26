@@ -11,6 +11,13 @@
 //
 // Secret samples use repeated characters: they satisfy the rule regexes while failing entropy
 // heuristics, so GitHub push protection will not block this file.
+//
+// HOLD-A R4-1. A test here costs what its programs cost to start: every git call is a new git (on Windows a launcher
+// and git, each scanned on start), and a commit adds sh, node and git again. That cost rises with the load on the
+// machine (measured on a Windows laptop: about 0.3 s a git alone, 0.6-1.3 s while the whole unit suite
+// runs), so a test that starts too many fails its budget on a busy machine while its code is right.
+// The fixtures write a repository's config as a file instead of starting git for each key, a fixture several tests
+// read is built once, and no test asks real git the same question twice.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
 import * as fs from 'fs'
@@ -47,14 +54,16 @@ afterEach(() => {
   }
 })
 
+/** The repository config a test commit needs: who commits, and no signing. */
+const REPO_IDENTITY = '[user]\n\temail = t@example.test\n\tname = Test\n[commit]\n\tgpgsign = false\n'
+
 /** A real, throwaway git repo with the Commit Shield hooks installed. */
 function makeRepo(scriptPath = SCANNER): { dir: string; paths: HookPaths } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shield-e2e-'))
   repos.push(dir)
   execFileSync('git', ['init', '-q'], { cwd: dir })
-  execFileSync('git', ['config', 'user.email', 't@example.test'], { cwd: dir })
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir })
+  // What `git config user.email`, `user.name` and `commit.gpgsign` write, without starting git three times.
+  fs.appendFileSync(path.join(dir, '.git', 'config'), REPO_IDENTITY)
 
   const hooksDir = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd: dir }).toString().trim()
   const abs = path.resolve(dir, hooksDir)
@@ -190,28 +199,17 @@ describe.skipIf(!gitAvailable)('Commit Shield — REAL git end to end', () => {
 
   // #36 (WPS M7). With real git: the repository's own core.hooksPath pointing outside it is refused, and the places a
   // shield belongs (the git folder, husky's .husky, a linked worktree's common hooks) are allowed.
+  // A linked worktree's common hooks: M2's 'allows a plain repository, a linked worktree and a submodule' below.
   it("refuses a hooks folder the repository's own config puts outside it, with real git's answers", async () => {
-    const { dir } = makeRepo()
-    const run = (cwd: string) => async (args: string[]): Promise<string> =>
-      execFileSync('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], { cwd, stdio: 'pipe' }).toString()
-    const where = (cwd: string): string => path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd }).toString().trim())
-    const allowed = (cwd: string): Promise<boolean> =>
-      shieldHooksAllowed({ repo: cwd, hooksDir: where(cwd), git: run(cwd), readFile: readText, path, platform: process.platform, realpath: (p) => fs.promises.realpath(p) })
-
-    expect(await allowed(dir)).toBe(true) // .git/hooks
-    execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: dir })
-    expect(await allowed(dir)).toBe(true)
-    execFileSync('git', ['config', 'core.hooksPath', '../elsewhere'], { cwd: dir })
-    expect(where(dir)).toBe(path.resolve(dir, '../elsewhere'))
-    expect(await allowed(dir)).toBe(false)
-    execFileSync('git', ['config', '--unset', 'core.hooksPath'], { cwd: dir })
-
-    stage(dir, 'app.ts', 'export const x = 1\n')
-    expect(commit(dir).ok).toBe(true)
-    const wt = path.join(dir, '..', path.basename(dir) + '-wt')
-    repos.push(wt)
-    execFileSync('git', ['worktree', 'add', '-q', wt], { cwd: dir })
-    expect(await allowed(wt)).toBe(true) // the main repository's .git/hooks, through the common dir
+    const dir = scratch('shield-e2e-')
+    git(dir, ['init', '-q'])
+    expect(await allowedIn(dir)).toBe(true) // .git/hooks
+    git(dir, ['config', 'core.hooksPath', '.husky'])
+    expect(await allowedIn(dir)).toBe(true)
+    git(dir, ['config', 'core.hooksPath', '../elsewhere'])
+    const elsewhere = hooksOf(dir)
+    expect(elsewhere).toBe(path.resolve(dir, '../elsewhere'))
+    expect(await allowedIn(dir, elsewhere)).toBe(false)
   }, 30_000)
 
   it('does not destroy a pre-existing foreign hook — it still runs, and still gates the commit', () => {
@@ -240,7 +238,8 @@ const readText = (p: string): Promise<string | null> => fs.promises.readFile(p, 
  *  what these tests assert. */
 const ISOLATED_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'shield-e2e-config-'))
 const ISOLATED_CONFIG = path.join(ISOLATED_DIR, 'gitconfig')
-fs.writeFileSync(ISOLATED_CONFIG, '')
+// Who commits, and (for the submodule fixture) file:// clones, so no fixture starts git to set them per repository.
+fs.writeFileSync(ISOLATED_CONFIG, REPO_IDENTITY + '[protocol "file"]\n\tallow = always\n')
 afterAll(() => fs.rmSync(ISOLATED_DIR, { recursive: true, force: true }))
 const isolatedEnv: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: ISOLATED_CONFIG, GIT_CONFIG_NOSYSTEM: '1' }
 const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, env: isolatedEnv, stdio: 'pipe' }).toString()
@@ -263,16 +262,12 @@ function scratch(prefix: string): string {
   return dir
 }
 
-/** A repository with one commit. */
-function committedRepo(prefix = 'shield-e2e-repo-'): string {
-  const dir = scratch(prefix)
+/** A repository with one commit, cleaned after the test (or by `into`'s owner). */
+function committedRepo(prefix = 'shield-e2e-repo-', into: string[] = repos): string {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
+  into.push(dir)
   git(dir, ['init', '-q'])
-  git(dir, ['config', 'user.email', 't@example.test'])
-  git(dir, ['config', 'user.name', 'Test'])
-  git(dir, ['config', 'commit.gpgsign', 'false'])
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n')
-  git(dir, ['add', 'a.txt'])
-  git(dir, ['commit', '-q', '-m', 'one'])
+  git(dir, ['commit', '-q', '--allow-empty', '-m', 'one'])
   return dir
 }
 
@@ -354,53 +349,67 @@ describe.skipIf(!gitAvailable)('Commit Shield — a hook file that is a link, on
 describe.skipIf(!gitAvailable)("Commit Shield — a `.git` file that points at another repository's git folder (M2)", () => {
   const dotGitFile = (dir: string, gitdir: string): void => fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${gitdir}\n`)
 
-  it('allows a plain repository, a linked worktree and a submodule', async () => {
-    const repo = committedRepo()
-    expect(await allowedIn(repo)).toBe(true)
-    const wt = path.join(path.dirname(repo), path.basename(repo) + '-wt')
-    repos.push(wt)
+  // git's own layouts, built once: a repository with a linked worktree and a submodule. The tests only read it: each
+  // attack is a `.git` file in a folder of its own that names a git folder in here.
+  const built: string[] = []
+  let repo = ''
+  let wt = ''
+  beforeAll(() => {
+    repo = committedRepo('shield-e2e-repo-', built)
+    wt = repo + '-wt'
+    built.push(wt)
     git(repo, ['worktree', 'add', '-q', wt])
-    expect(hooksOf(wt)).toBe(path.join(repo, '.git', 'hooks'))
-    expect(await allowedIn(wt)).toBe(true)
-    const lib = committedRepo('shield-e2e-lib-')
-    git(repo, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub'])
-    const sub = path.join(repo, 'sub')
-    expect(hooksOf(sub)).toBe(path.join(repo, '.git', 'modules', 'sub', 'hooks'))
-    expect(await allowedIn(sub)).toBe(true)
+    const lib = committedRepo('shield-e2e-lib-', built)
+    git(repo, ['submodule', 'add', '-q', lib, 'sub'])
   }, 60_000)
-
-  it("refuses a `.git` file naming another repository's git folder, its worktree's or its submodule's", async () => {
-    const victim = committedRepo('shield-e2e-victim-')
-    const wt = path.join(path.dirname(victim), path.basename(victim) + '-wt')
-    repos.push(wt)
-    git(victim, ['worktree', 'add', '-q', wt])
-    const lib = committedRepo('shield-e2e-lib-')
-    git(victim, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub'])
-    const victimHooks = path.join(victim, '.git', 'hooks')
-
-    for (const gitdir of [path.join(victim, '.git'), path.join(victim, '.git', 'worktrees', path.basename(wt)), path.join(victim, '.git', 'modules', 'sub')]) {
-      const attacker = scratch('shield-e2e-attacker-')
-      dotGitFile(attacker, gitdir)
-      expect(hooksOf(attacker).startsWith(victim)).toBe(true) // git really does send the hooks there
-      expect(await allowedIn(attacker), gitdir).toBe(false)
+  afterAll(() => {
+    for (const d of built.splice(0)) {
+      try { fs.rmSync(d, { recursive: true, force: true }) } catch { /* ignore */ }
     }
+  })
+
+  it('allows a plain repository, a linked worktree and a submodule', async () => {
+    expect(await allowedIn(repo)).toBe(true)
+    const wtHooks = hooksOf(wt)
+    expect(wtHooks).toBe(path.join(repo, '.git', 'hooks'))
+    expect(await allowedIn(wt, wtHooks)).toBe(true)
+    const sub = path.join(repo, 'sub')
+    const subHooks = hooksOf(sub)
+    expect(subHooks).toBe(path.join(repo, '.git', 'modules', 'sub', 'hooks'))
+    expect(await allowedIn(sub, subHooks)).toBe(true)
+  }, 30_000)
+
+  it.each([
+    ["another repository's git folder", (): string => path.join(repo, '.git')],
+    ["another repository's worktree's git folder", (): string => path.join(repo, '.git', 'worktrees', path.basename(wt))],
+    ["another repository's submodule's git folder", (): string => path.join(repo, '.git', 'modules', 'sub')],
+  ])('refuses a `.git` file naming %s', async (_what, gitdirOf) => {
+    const attacker = scratch('shield-e2e-attacker-')
+    dotGitFile(attacker, gitdirOf())
+    const hooks = hooksOf(attacker)
+    expect(hooks.startsWith(repo)).toBe(true) // git really does send the hooks there
+    expect(await allowedIn(attacker, hooks)).toBe(false)
+  }, 30_000)
+
+  it("refuses a git folder of the attacker's own whose commondir names another repository's", async () => {
     // A git folder inside the attacker's own tree whose commondir names the victim's: git takes the victim's hooks.
     const attacker = scratch('shield-e2e-attacker-')
     const inner = path.join(attacker, '.gitinner')
     fs.mkdirSync(inner)
     fs.writeFileSync(path.join(inner, 'HEAD'), 'ref: refs/heads/main\n')
-    fs.writeFileSync(path.join(inner, 'commondir'), path.join(victim, '.git') + '\n')
+    fs.writeFileSync(path.join(inner, 'commondir'), path.join(repo, '.git') + '\n')
     dotGitFile(attacker, inner)
-    expect(hooksOf(attacker)).toBe(victimHooks)
-    expect(await allowedIn(attacker)).toBe(false)
-  }, 60_000)
+    const hooks = hooksOf(attacker)
+    expect(hooks).toBe(path.join(repo, '.git', 'hooks'))
+    expect(await allowedIn(attacker, hooks)).toBe(false)
+  }, 30_000)
 
   it('refuses a `git init --separate-git-dir` repository (it has no core.worktree to tell it from the attack)', async () => {
     const tree = scratch('shield-e2e-sep-')
     const gitDir = path.join(scratch('shield-e2e-sepdir-'), 'repo.git')
     git(tree, ['init', '-q', '--separate-git-dir', gitDir])
-    expect(await allowedIn(tree)).toBe(false)
-    // HOLD-A N2: and it is the git-folder refusal, not the core.hooksPath one.
+    // Refused (shieldHooksAllowed is this verdict === 'allowed'), and HOLD-A N2: by the git-folder refusal, not the
+    // core.hooksPath one.
     expect(await shieldHooksVerdict(factsIn(tree))).toBe('gitDirOutside')
     git(tree, ['config', 'core.hooksPath', '../elsewhere'])
     expect(await shieldHooksVerdict(factsIn(tree))).toBe('hooksPath')
