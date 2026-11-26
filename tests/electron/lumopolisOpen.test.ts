@@ -10,6 +10,10 @@ import {
   TOO_MANY,
   NOT_A_TERMINAL,
   TERMINAL_OPEN_CHANNEL,
+  TERMINAL_TYPABLE_CHANNEL,
+  READY_WAIT_MS,
+  lumopolisTypable,
+  type LumopolisTypingDeps,
   createLumopolisNonce,
   createOpenLimiter,
   askedAgain,
@@ -187,5 +191,82 @@ describe('registerLumopolisIpc on a real file system', () => {
     expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ error: askedAgain('/home/me/repo'), folder: '/home/me/repo' })
     t += REPEAT_MS
     expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ success: true })
+  })
+})
+
+// #29. Whether typing lumopolis works in a terminal, for the sidebar hint's "or type lumopolis". bash, PowerShell, cmd and fish
+// have it from what Termpolis started them with; zsh only once its ready mark came (a system zshenv that sets ZDOTDIR keeps
+// Termpolis's .zshrc from running at all), so a zsh terminal is waited on until the mark or READY_WAIT_MS after it started.
+describe('lumopolisTypable (#29)', () => {
+  const ways: Record<string, 'defined' | 'reports' | 'none'> = { b: 'defined', z: 'reports', n: 'none' }
+  const clocked = (over: Partial<LumopolisTypingDeps> = {}, startedAt = 0) => {
+    let t = startedAt
+    const slept: number[] = []
+    const d: LumopolisTypingDeps = {
+      way: (id) => (id in ways ? { way: ways[id], startedAt } : null),
+      ready: () => false,
+      now: () => t,
+      sleep: async (ms) => { slept.push(ms); t += ms },
+      ...over,
+    }
+    return { d, slept, now: () => t }
+  }
+
+  it('answers at once for a shell given it on start, and for one given none', async () => {
+    const { d, slept } = clocked()
+    expect(await lumopolisTypable({ terminalId: 'b' }, d)).toEqual({ success: true, data: true })
+    expect(await lumopolisTypable({ terminalId: 'n' }, d)).toEqual({ success: true, data: false })
+    expect(slept).toEqual([])
+  })
+
+  it('a zsh terminal is yes as soon as its ready mark is seen, before the wait is up', async () => {
+    // eslint-disable-next-line prefer-const
+    let c: ReturnType<typeof clocked>
+    c = clocked({ ready: () => c.now() >= 750 })
+    expect(await lumopolisTypable({ terminalId: 'z' }, c.d)).toEqual({ success: true, data: true })
+    expect(c.now()).toBe(750)
+    expect(c.slept.every((ms) => ms > 0 && ms <= 250)).toBe(true)
+  })
+
+  it('a zsh terminal with no mark is no once READY_WAIT_MS have passed since it started, and at once when they already have', async () => {
+    const c = clocked()
+    expect(await lumopolisTypable({ terminalId: 'z' }, c.d)).toEqual({ success: true, data: false })
+    expect(c.now()).toBe(READY_WAIT_MS)
+    const old = clocked()
+    old.d.now = () => READY_WAIT_MS + 5
+    expect(await lumopolisTypable({ terminalId: 'z' }, old.d)).toEqual({ success: true, data: false })
+    expect(old.slept).toEqual([])
+    // Asked long after a mark came: yes, with no wait.
+    const marked = clocked({ ready: () => true })
+    expect(await lumopolisTypable({ terminalId: 'z' }, marked.d)).toEqual({ success: true, data: true })
+    expect(marked.slept).toEqual([])
+  })
+
+  it('stops waiting when the terminal closes, and refuses what names no terminal', async () => {
+    // eslint-disable-next-line prefer-const
+    let c: ReturnType<typeof clocked>
+    c = clocked({ way: (id) => (id === 'z' && c.now() < 500 ? { way: 'reports', startedAt: 0 } : null) })
+    expect(await lumopolisTypable({ terminalId: 'z' }, c.d)).toEqual({ success: false, error: NOT_A_TERMINAL })
+    expect(c.now()).toBeLessThan(READY_WAIT_MS)
+    for (const a of [undefined, null, 'z', {}, { terminalId: '' }, { terminalId: 7 }, { terminalId: 'gone' }]) {
+      expect(await lumopolisTypable(a, c.d)).toEqual({ success: false, error: NOT_A_TERMINAL })
+    }
+  })
+
+  it('is answered on world:terminal-typable, by the real clock when none is given', async () => {
+    const handlers = new Map<string, (e: unknown, a?: unknown) => unknown>()
+    // Started all but 120 ms of the wait ago, and no mark: no, after a real wait of about that long.
+    const startedAt = Date.now() - READY_WAIT_MS + 120
+    registerLumopolisIpc({ handle: (c, l) => handlers.set(c, l) }, {
+      ...deps(),
+      typing: { way: (id) => (id === 'z' ? { way: 'reports', startedAt } : null), ready: () => false },
+    })
+    const t0 = Date.now()
+    expect(await handlers.get(TERMINAL_TYPABLE_CHANNEL)!(null, { terminalId: 'z' })).toEqual({ success: true, data: false })
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(100)
+    // Without typing deps (a build or test that gives none) the channel is not registered.
+    const bare = new Map<string, unknown>()
+    registerLumopolisIpc({ handle: (c, l) => bare.set(c, l) }, deps())
+    expect([...bare.keys()]).toEqual([TERMINAL_OPEN_CHANNEL])
   })
 })

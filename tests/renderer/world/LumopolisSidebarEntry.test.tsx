@@ -2,7 +2,8 @@
 // shows the one-time hint until it is dismissed or Lumopolis is opened. Both flags live in worldSettings.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { LUMOPOLIS_HINT, LumopolisSidebarEntry } from '../../../src/renderer/src/components/World/LumopolisSidebarEntry'
+import { LUMOPOLIS_HINT, LUMOPOLIS_HINT_UNTYPED, LumopolisSidebarEntry } from '../../../src/renderer/src/components/World/LumopolisSidebarEntry'
+import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { OPEN_WORLD_EVENT, WORLD_OPENED_EVENT } from '../../../src/renderer/src/components/World/worldOpen'
 
 const settings = (over: Partial<{ worldOpened: boolean; worldHintDismissed: boolean }> = {}) => ({
@@ -105,6 +106,69 @@ describe('LumopolisSidebarEntry', () => {
     await mount()
     fireEvent.click(screen.getByTestId('sidebar-lumopolis-hint-dismiss'))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.queryByTestId('sidebar-lumopolis-hint')).toBeNull()
+  })
+})
+
+// #29. "or type lumopolis" is said only where typing it works: main answers for the active terminal (a zsh whose Termpolis
+// .zshrc never ran, because a system zshenv set ZDOTDIR, has no lumopolis). With no terminal yet, or while main has not
+// answered, or when it cannot say, the whole hint shows: every shell Termpolis integrates has the command.
+describe('LumopolisSidebarEntry and the active terminal (#29)', () => {
+  let typable: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    typable = vi.fn(async (id: string) => ({ success: true, data: id !== 'zsh-bare' }))
+    ;(window as unknown as { termpolis: Record<string, unknown> }).termpolis.worldTerminalTypable = typable
+    useTerminalStore.setState({ activeTerminalId: null })
+  })
+
+  it('drops "or type lumopolis" for an active terminal that cannot take it, keeps it for one that can, and asks once each', async () => {
+    expect(LUMOPOLIS_HINT_UNTYPED).toBe('Lumopolis: see any project as a 3D city. Open it here, or click the globe on a terminal.')
+    useTerminalStore.setState({ activeTerminalId: 'zsh-bare' })
+    await mount()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT_UNTYPED)
+    expect(screen.getByTestId('sidebar-lumopolis-hint').textContent).not.toContain('type lumopolis')
+    await act(async () => { useTerminalStore.setState({ activeTerminalId: 'bash-1' }); await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    await act(async () => { useTerminalStore.setState({ activeTerminalId: 'zsh-bare' }); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT_UNTYPED)
+    expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-bare', 'bash-1'])
+  })
+
+  it('keeps the whole hint while main is still answering and when it cannot say, and asks nothing with no terminal or no hint', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    typable.mockReturnValueOnce(new Promise((r) => { answer = r }))
+    useTerminalStore.setState({ activeTerminalId: 'slow' })
+    const a = await mount()
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    await act(async () => { answer({ success: false, error: 'That is not a Termpolis terminal.' }) })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    a.unmount()
+    typable.mockRejectedValueOnce(new Error('gone'))
+    useTerminalStore.setState({ activeTerminalId: 'broken' })
+    const b = await mount()
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    b.unmount()
+    typable.mockClear()
+    useTerminalStore.setState({ activeTerminalId: null })
+    const c = await mount()
+    expect(typable).not.toHaveBeenCalled()
+    c.unmount()
+    get.mockResolvedValueOnce({ success: true, data: settings({ worldOpened: true }) })
+    useTerminalStore.setState({ activeTerminalId: 'zsh-bare' })
+    await mount()
+    await act(async () => { await Promise.resolve() })
+    expect(typable).not.toHaveBeenCalled()
+  })
+
+  it('an answer that lands after the sidebar is gone is dropped', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    typable.mockReturnValueOnce(new Promise((r) => { answer = r }))
+    useTerminalStore.setState({ activeTerminalId: 'late' })
+    const a = await mount()
+    a.unmount()
+    await act(async () => { answer({ success: true, data: false }) })
     expect(screen.queryByTestId('sidebar-lumopolis-hint')).toBeNull()
   })
 })

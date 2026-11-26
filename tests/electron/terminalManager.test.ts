@@ -57,6 +57,7 @@ const {
   terminalShellAlone,
   computeWindowsPty,
   isShellInForeground,
+  terminalLumopolis,
 } = await import('../../src/main/terminalManager')
 const { shellAlone } = await import('../../src/main/shellAlone')
 
@@ -882,3 +883,43 @@ describe('terminalManager', () => {
   })
 })
 
+
+// #29. How each terminal's shell was given lumopolis, and when it started: the sidebar hint asks before it says "or type lumopolis".
+describe('terminalLumopolis (#29)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''))
+    vi.mocked(existsSync).mockReturnValue(true)
+    mockPty.onExit.mockReset()
+  })
+
+  it('bash has it defined, zsh reports it, and a program that is no shell has none; each with when it started', () => {
+    const before = Date.now()
+    spawnTerminal('tl-bash', '/bin/bash', '/tmp', vi.fn())
+    spawnTerminal('tl-zsh', '/usr/bin/zsh', '/tmp', vi.fn())
+    spawnTerminal('tl-nu', '/usr/bin/nu', '/tmp', vi.fn())
+    expect(terminalLumopolis('tl-bash')?.way).toBe('defined')
+    expect(terminalLumopolis('tl-zsh')?.way).toBe('reports')
+    expect(terminalLumopolis('tl-nu')?.way).toBe('none')
+    const at = terminalLumopolis('tl-zsh')!.startedAt
+    expect(at).toBeGreaterThanOrEqual(before)
+    expect(at).toBeLessThanOrEqual(Date.now())
+    for (const id of ['tl-bash', 'tl-zsh', 'tl-nu']) killTerminal(id)
+  })
+
+  it('every shell has none with integration switched off', () => {
+    process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION = '1'
+    try {
+      spawnTerminal('tl-off', '/bin/bash', '/tmp', vi.fn())
+      expect(terminalLumopolis('tl-off')?.way).toBe('none')
+      killTerminal('tl-off')
+    } finally { delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION }
+  })
+
+  it('is null for a terminal that is not open, or that has exited', () => {
+    expect(terminalLumopolis('never')).toBeNull()
+    spawnTerminal('tl-exit', '/bin/bash', '/tmp', vi.fn())
+    ;(mockPty.onExit.mock.calls[0][0] as (e: { exitCode: number }) => void)({ exitCode: 0 })
+    expect(terminalLumopolis('tl-exit')).toBeNull()
+  })
+})

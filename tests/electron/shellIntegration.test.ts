@@ -23,7 +23,9 @@ import {
   ZSH_ZLOGIN,
   ZSH_LUMOPOLIS_FUNCTION,
   FISH_INTEGRATION_SCRIPT,
+  lumopolisWay,
 } from '../../src/main/shellIntegration'
+import { LUMOPOLIS_READY_SEQUENCE } from '../../src/shared/world/lumopolisCommand'
 
 describe('detectShellKind', () => {
   it('identifies each shell from a full path', () => {
@@ -392,7 +394,8 @@ describe('zsh start-up files', () => {
       'if [[ "${HISTFILE-}" == "$__termpolis_zdotdir/.zsh_history" ]]; then HISTFILE="${ZDOTDIR:-$HOME}/.zsh_history"; fi',
       source('.zshrc'),
       `if [[ -o login ]]; then ${HANDBACK}; else ${DONE}; fi`,
-      String.raw`function __termpolis_report_cwd { builtin printf '\033]7;file://%s%s\007' "${'$'}{HOST-}" "$PWD"; }`,
+      // The report, then Termpolis's ready mark (#29): this file ran to its end, so lumopolis is defined here.
+      String.raw`function __termpolis_report_cwd { builtin printf '\033]7;file://%s%s\007\033]7377;ready\007' "${'$'}{HOST-}" "$PWD"; }`,
       'builtin autoload -Uz add-zsh-hook',
       'if ! add-zsh-hook precmd __termpolis_report_cwd 2>/dev/null; then precmd_functions+=(__termpolis_report_cwd); fi',
       `if ! builtin typeset -f lumopolis >/dev/null 2>&1; then ${ZSH_LUMOPOLIS_FUNCTION}; fi`,
@@ -460,5 +463,35 @@ describe('the fish integration file', () => {
     }
     expect(bare).toEqual([])
     expect(f.match(/\bbuiltin (?:set|functions|test|contains|string|return|printf)\b/g)!.length).toBeGreaterThanOrEqual(15)
+  })
+})
+
+// #29. Whether typing lumopolis works in a shell Termpolis started: bash takes it from the environment and the PowerShell
+// family, cmd and fish from the file they are started with, so each has it whenever its file was written. zsh's comes from
+// the .zshrc in Termpolis's ZDOTDIR, which a system zshenv that sets ZDOTDIR keeps from running: only the ready mark that
+// file prints says it ran. Any other program gets nothing.
+describe('lumopolisWay (#29)', () => {
+  it('bash has lumopolis from its environment, file or no file', () => {
+    expect(lumopolisWay('bash', null)).toBe('defined')
+    expect(lumopolisWay('bash', '/x')).toBe('defined')
+  })
+
+  it('the PowerShell family, cmd and fish have it from their file, and not without one', () => {
+    for (const kind of ['powershell', 'pwsh', 'cmd', 'fish'] as const) {
+      expect(lumopolisWay(kind, '/d/file')).toBe('defined')
+      expect(lumopolisWay(kind, null)).toBe('none')
+    }
+  })
+
+  it('zsh says so with its ready mark, and has nothing without its files; any other program has nothing', () => {
+    expect(lumopolisWay('zsh', '/d/termpolis-zsh/.zshenv')).toBe('reports')
+    expect(lumopolisWay('zsh', null)).toBe('none')
+    expect(lumopolisWay('unknown', '/x')).toBe('none')
+  })
+
+  it("the ready mark is the zsh prompt hook's own, printed with each report", () => {
+    expect(LUMOPOLIS_READY_SEQUENCE).toBe('\x1b]7377;ready\x07')
+    const hook = ZSH_ZSHRC.split('\n').find((l) => l.startsWith('function __termpolis_report_cwd'))!
+    expect(hook).toContain(String.raw`\033]7377;ready\007`)
   })
 })

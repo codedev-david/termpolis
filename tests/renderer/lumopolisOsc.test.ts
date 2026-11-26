@@ -88,3 +88,12 @@ describe('lumopolisOscHandler', () => {
     expect(notices).toEqual([{ message: 'Another terminal asked to map app in Lumopolis.', folder: '/repo/app' }])
   })
 })
+
+describe('the zsh ready mark (#29)', () => {
+  it('is swallowed and asks main nothing: main reads it from the output itself', () => {
+    const { handler, open } = make()
+    expect(handler('ready')).toBe(true)
+    expect(ask).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+})

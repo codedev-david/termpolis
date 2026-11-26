@@ -2,7 +2,7 @@
 // once, so the last 32 KB of its output no longer draw one.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  appendOutput, liveScreen, readOutput, readOutputFrom, replayPreamble, reportedFamilies, resizeScreen, unwatchScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
+  appendOutput, liveScreen, lumopolisReady, readOutput, readOutputFrom, replayPreamble, reportedFamilies, resizeScreen, unwatchScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
   SCREEN_CHUNK_MAX, SCREEN_BYTES_PER_SECOND, _setScreenClockForTest,
   type OutputBuffers,
 } from '../../src/main/terminalOutputBuffer'
@@ -353,5 +353,36 @@ describe('unwatching a terminal\'s screen once its agent is gone (SAFETY-R3-8)',
     unwatchScreen(b, 't1')
     resizeScreen(b, 't1', { cols: 50, rows: 8 })
     expect(liveScreen(b, 't1')).toBeNull()
+  })
+})
+
+// #29. The zsh integration prints a ready mark with each prompt report once its .zshrc ran to the end (lumopolis is defined).
+// Kept, like the reports, after the mark itself left the window, so a terminal an agent has filled still says it.
+describe('the lumopolis ready mark a terminal has printed (#29)', () => {
+  const READY = `${E}]7377;ready${String.fromCharCode(7)}`
+
+  it('is not there for a terminal that printed none, a lumopolis request, or nothing at all', () => {
+    const buffers: OutputBuffers = new Map()
+    expect(lumopolisReady(buffers, 'missing')).toBe(false)
+    appendOutput(buffers, 't', `${E}]7;file://h/home/me${String.fromCharCode(7)}% ${E}]7377;lumopolis;abc;/x${String.fromCharCode(7)}`)
+    expect(lumopolisReady(buffers, 't')).toBe(false)
+  })
+
+  it('is noted inside a larger chunk, and kept after it left the window', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', `last login\r\n${E}]7;file://h/home/me${String.fromCharCode(7)}${READY}% `)
+    expect(lumopolisReady(buffers, 't')).toBe(true)
+    for (let i = 0; i < 60; i++) appendOutput(buffers, 't', 'x'.repeat(1000))
+    expect(readOutput(buffers, 't')).not.toContain(READY)
+    expect(lumopolisReady(buffers, 't')).toBe(true)
+  })
+
+  it('a mark cut between two chunks is noted at the next prompt, which prints it again', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', READY.slice(0, 6))
+    appendOutput(buffers, 't', `${READY.slice(6)}% `)
+    expect(lumopolisReady(buffers, 't')).toBe(false)
+    appendOutput(buffers, 't', `ls\r\n${READY}% `)
+    expect(lumopolisReady(buffers, 't')).toBe(true)
   })
 })

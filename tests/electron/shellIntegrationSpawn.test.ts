@@ -205,6 +205,8 @@ describe('zsh, started for real with the integration', () => {
       const sh = start(zshPath!, ['--login', ...integrationArgs('zsh', script)], env, root)
       try {
         await waitFor(sh.out, /\x1b\]7;file:\/\//, 'the first prompt (its OSC 7)')
+        // #29: Termpolis's .zshrc ran to its end, and says so with the ready mark beside the report.
+        await waitFor(sh.out, /\x1b\]7377;ready\x07/, 'the ready mark (#29)')
         const seen = withOwnZdotdir ? userDir : 'none'
         expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([`zshenv:${seen}`, `zprofile:${seen}`, `zshrc:${seen}`, `zlogin:${seen}`])
 
