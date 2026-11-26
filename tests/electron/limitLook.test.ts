@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import type { SwitchIO } from '../../src/main/accountSwitch'
+import { liveness } from '../../src/main/accountSwitch'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
@@ -460,5 +461,15 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(agentGone(io(BEFORE + FIRST), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
     expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, 30)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
     expect(agentGone(io(BEFORE + FIRST + 'ls -la\r\n'), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+  })
+
+  // The switch reads the same output for its first step (liveness): read as the shell back, it pressed the shell's line clear
+  // and a sacrificial Enter in the live agent's box, which confirmed the option a rate-limit menu had picked (the full run
+  // of 2026-11-26).
+  it('is the agent live to the switch too, and gone once the shell reports a prompt after it', () => {
+    const rec = { at: BEFORE.length, commands: [LINE] }
+    expect(liveness(io(BEFORE + FIRST + ECHO + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
+    expect(liveness(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
   })
 })
