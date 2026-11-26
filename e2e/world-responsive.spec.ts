@@ -1333,8 +1333,9 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const width = await split(null)
     expect(width, 'the pane sits beside the terminals at 1920x1080').not.toBeNull()
     expect((await paneState()).overlays, 'the pane has a divider at 1920x1080').toBe(false)
-    // A line between two buildings, both on the map: its card opened as the agent opens one.
-    const line = await page.evaluate(async (r) => {
+    // A line between two buildings, both drawn on the map (a district shown folded into parts draws no building of its
+    // own, so a line of the doc may have no end on the map): its card opened as the agent opens one.
+    const findLine = (): Promise<{ id: string; from: string; to: string } | null> => page.evaluate(async (r) => {
       type Doc = { buildings: { id: string }[]; edges: { id: string; from: string; to: string }[] }
       const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
       const probe = (window as unknown as { __termpolis_world?: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
@@ -1342,17 +1343,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
       const res = await api.worldGet(top.success && top.data ? top.data : r)
       if (!res.success || !res.data || !probe) return null
       const ids = new Set(res.data.buildings.map((b) => b.id))
-      const e = res.data.edges.find((x) => x.from !== x.to && ids.has(x.from) && ids.has(x.to))
+      const e = res.data.edges.find((x) => x.from !== x.to && ids.has(x.from) && ids.has(x.to) && probe.screenPoint(x.from) !== null && probe.screenPoint(x.to) !== null)
       return e ? { id: e.id, from: e.from, to: e.to } : null
     }, path.resolve('.'))
-    expect(line, 'the world has a line between two buildings').not.toBeNull()
-    const { id, from, to } = line as { id: string; from: string; to: string }
-    await expect
-      .poll(() => page.evaluate(([a, b]) => {
-        const probe = (window as unknown as { __termpolis_world?: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
-        return !!probe && probe.screenPoint(a) !== null && probe.screenPoint(b) !== null
-      }, [from, to]), { message: 'both ends of the line are drawn', timeout: 60_000 })
-      .toBe(true)
+    await expect.poll(findLine, { message: 'the world has a line between two buildings drawn on the map', timeout: 60_000 }).not.toBeNull()
+    const { id, from, to } = (await findLine()) as { id: string; from: string; to: string }
     await page.evaluate((id) => (window as unknown as { __termpolis_world: { apply(a: { type: 'openCard'; id: string }): Promise<void> } }).__termpolis_world.apply({ type: 'openCard', id }), id)
     await expect(page.locator('[data-testid="world-card"]'), 'the line card is open').toBeVisible({ timeout: 30_000 })
     await glideDone('the line card opened')
