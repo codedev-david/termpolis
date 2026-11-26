@@ -420,3 +420,45 @@ describe('a long launch line Git Bash on Windows echoes late (the CI run of 2026
     expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, 40) + ' ' + LINE.slice(0, 30) + 'zzz'), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
   })
 })
+
+describe('a launch line typed before Git Bash printed its first prompt (the loaded laptop of 2026-11-26)', () => {
+  // What ConPTY sent before the shell's first prompt (its modes), then, after the line was entered: bash's first prompt
+  // report, ConPTY's first paint (a wipe), the prompt with the line echoed at it, and the agent's box.
+  const LINE = 'unset CLAUDE_CONFIG_DIR && claude --session-id 3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+  const report = `${E}]7;file://host/tmp/project\x07`
+  const BEFORE = `${E}[?9001h${E}[?1004h`
+  const FIRST = `${report}${E}[?25l${E}[2J${E}[m${E}[H${E}]0;C:\Program Files\Git\bin\bash.exe\x07${E}[?25h${E}[?2004hbash-5.3$ `
+  const ECHO = `${LINE}${E}[?2004l\r\n`
+  const BOX = `${E}[?25l${E}[H${E}[?25h${E}[2J${E}[?25l▐▛███▜▌ Claude Code v2.1.309 (mock)${E}[K\r\n\r\n${RULE}\r\n❯${E}[K\r\n${RULE}\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)${E}[K\r\n`
+  const AGAIN = `${report}${E}[?2004hbash-5.3$ `
+  function io(out: string): SwitchIO {
+    return {
+      output: () => ({ raw: out, end: out.length }),
+      outputFrom: (_id, from) => out.slice(from),
+      end: () => out.length,
+      size: () => ({ cols: 120, rows: 30 }),
+      write: () => undefined,
+      sleep: async () => undefined,
+      now: () => 0,
+    }
+  }
+  const start = (): LiveStart => ({ at: BEFORE.length, commands: [LINE], agent: 'claude', time: 0 })
+
+  it('is no exit at that first prompt once the line is echoed after it, however long the agent takes to start', () => {
+    for (const now of [FOREGROUND_GRACE_MS, FOREGROUND_GRACE_MS * 10]) {
+      expect(agentGone(io(BEFORE + FIRST + ECHO), 't', start(), now)).toBe(false)
+      expect(agentGone(io(BEFORE + FIRST + ECHO + BOX), 't', start(), now)).toBe(false)
+      expect(lookForLimit(io(BEFORE + FIRST + ECHO + BOX), 't', start(), now).live).toBe(true)
+    }
+  })
+
+  it('still reads the agent as gone once the shell reports a prompt after it', () => {
+    expect(agentGone(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN), 't', start(), FOREGROUND_GRACE_MS * 10)).toBe(true)
+  })
+
+  it('reads that first prompt with only part of the line, or another line, after it as the shell back once the moment is past', () => {
+    expect(agentGone(io(BEFORE + FIRST), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, 30)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+    expect(agentGone(io(BEFORE + FIRST + 'ls -la\r\n'), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+  })
+})
