@@ -229,7 +229,7 @@ test('the readout shows fps, p95 and tier only when Show frame rate is on', ...)
 
 **Acceptance:** shard 7 is green on three OSes, and `perf` artifacts are uploaded. The look spec carries the real floor number and the baseline table.
 
-**Deviation (Task 2, 2026-11-25).** The CI bounds are not 1.5 × the Linux median, and the first-frame gate is not 3000 ms on every runner. A median-based floor and a flat 3 s left an 11-12% margin on the worst soak copies, which flakes on shared runners, and the first frame on GPU-less runners swings from 0.5 s to 5.7 s on one commit (macOS). These are CI regression guards, not the spec's targets (look spec §6.2): each world gets a warm-up orbit, not counted, then three orbits, and the gate takes the median p95 against a per-system, per-world floor, the worst counted orbit seen × 1.3 (Linux 810/440, Windows 510/300 ms; macOS reported, not asserted, because its runner swings 2-5× and Macs do not draw in software in use). The first frame is held to 2.7 × a small warm-up world's first frame in the same launch (worst seen 2.04 in 52 first frames) and under the 15 s software watchdog; on a GPU to 1000 ms. The 3 s first frame in software and 400 ms on the iGPU stay the real-hardware targets, timed by Task 20. Test titles follow: `3 scripted orbits of 10 s after a warm-up orbit report frame times`, `in software the median orbit stays within the floor`.
+**Deviation (Task 2, 2026-11-25).** The CI bounds are not 1.5 × the Linux median, and the first-frame gate is not 3000 ms on every runner. A median-based floor and a flat 3 s left an 11-12% margin on the worst soak copies, which flakes on shared runners, and the first frame on GPU-less runners swings from 0.5 s to 5.7 s on one commit (macOS). These are CI regression guards, not the spec's targets (look spec §6.2): each world gets a warm-up orbit, not counted, then three orbits, and the gate takes the median p95 against a per-system, per-world floor, the worst counted orbit seen × 1.3 (Linux 810/440, Windows 510/300 ms; macOS reported, not asserted, because its runner swings 2-5× and Macs do not draw in software in use). The first frame is held to 2.7 × a small warm-up world's first frame in the same launch (worst seen 2.04 in 52 first frames) and under the 15 s software watchdog; on a GPU to 1000 ms. Fix round 1 (review I1, I2) adds, once both worlds are drawn, in software on Linux and Windows: each world's first frame under a time per system, the worst seen × 1.3 and no more than 3 s where that is less (Windows 1320 ms; Linux 3140 ms, a CI-runner deviation over the 3 s target, look spec §6.2), and the first frames against the runner's own speed (`FIRST_FRAME_PER_GL`), so a 2× first frame on every world fails. The 3 s first frame in software and 400 ms on the iGPU stay the real-hardware targets. Task 20 times the 400 ms in its GPU runs; its GPU runs cannot time the 3 s, so its release bar has a software run on real hardware with the GPU off. Test titles follow: `3 scripted orbits of 10 s after a warm-up orbit report frame times`, `in software the median orbit stays within the floor`.
 
 ---
 
@@ -765,11 +765,13 @@ The e2e helpers in `world-visual` and `world-scenarios` that take overview metri
 - Run on:
   1. David's laptop (Intel Arc) at 1080p, in High, Low and Flat;
   2. david-linux, through `linked_machines`;
-  3. the D3 low-end device.
+  3. the D3 low-end device;
+  4. a software run: David's laptop again with the GPU off (without `TERMPOLIS_PERF_HW=1`, so the launch forces SwiftShader with `--use-angle=swiftshader` as CI does, and the map draws in software as on a GPU-less machine), at 1080p.
 - Modify: the look spec §6, a results table. Release bar:
   - High p95 ≤ 16.7 ms on the iGPU;
   - Low p95 ≤ 16.7 ms on the weak GPU;
   - first frame ≤ 400 ms on the iGPU;
+  - first frame ≤ 3 s in software (run 4): a GPU run cannot time it;
   - the software floor from Task 2.
 - Modify: the 2.0 spec:
   - §5.1, the depth-tricks line: name the Holotable stage marks and the `holotable` theme;
