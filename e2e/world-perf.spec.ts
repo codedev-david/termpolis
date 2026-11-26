@@ -8,7 +8,7 @@
  *     median, and every orbit) are written to test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a
  *     `world-perf {...}` line;
  *   - in software on Linux and Windows, the median orbit's p95 stays at or under this system's floor for that world
- *     (SOFTWARE_FLOOR_P95_MS);
+ *     (SOFTWARE_FLOOR_P95_MS) and, against the runner's own speed, under ORBIT_PER_GL;
  *   - in software on Linux and Windows, once both worlds are drawn: each world's first frame stays under this system's
  *     time (FIRST_FRAME_SW_MS), and the first frames against the runner's own speed under FIRST_FRAME_PER_GL;
  *   - the quality governor (look spec §5.1, plan Task 3): in software an Auto map starts at Flat, and one forced to
@@ -45,10 +45,34 @@ import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, pa
  * software only in a VM or with its GPU blocklisted, and the macOS runner's LLVM backend swings 2-5x from one runner to
  * the next on one commit (the big world's median orbit 100-504 ms), so a bound there would track runners, not the app.
  * The macOS numbers are still written to the JSON and the upload.
+ * Linux's floors were raised from 810 / 440 ms when a slower Linux runner turned up (look-a2 soaks 45763264132 and
+ * 45765629026: runnerSpeed()'s glMs 103-111 ms, where every runner before ran 62-79): there the median orbits ran
+ * 705-846 / 420-462 ms at the same draw calls and triangles, 6.3-8.0 / 3.8-4.5 x glMs against 5.2-6.4 / 3.5-4.2 on the
+ * others (ORBIT_PER_GL; Windows, on runners of either speed, ran as before), so x 1.3: 1100 / 610 ms. Windows' worst is
+ * still 344.4 / 209.7 ms.
  */
 const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
-  linux: { termpolis: 810, big: 440 },
+  linux: { termpolis: 1100, big: 610 },
   windows: { termpolis: 510, big: 300 },
+}
+/**
+ * The median orbit against the runner's own speed (§6.2): the median orbit's p95 / the glMs runnerSpeed() timed
+ * before the warm-up in the same launch (FIRST_FRAME_PER_GL's unit). A floor in ms has to sit over the slowest runner
+ * seen, so it cannot see an app that got 2x slower on a fast one (Linux's Termpolis orbit: 394 ms on one runner, 846
+ * on another, in one soak); a slower runner moves glMs as well. Per system and per world, the worst seen x 1.3,
+ * rounded up to 0.1, from the soaks 45740645423, 45747049554, 45763264132 and 45765629026 (Linux, 15 Termpolis and 13
+ * big launches) and 45747055496, 45763270474 and 45765632881 (Windows, 8 each):
+ *   - Linux: Termpolis 5.15-8.01 (worst 845.5 / 105.6, 45765629026), so 10.5; big 3.48-4.48 (462.2 / 103.2,
+ *     45763264132), so 5.9;
+ *   - Windows: Termpolis 2.86-3.31 (344.4 / 104.1, 45763270474), so 4.4; big 1.66-1.94 (204.9 / 105.4, 45747055496),
+ *     so 2.6.
+ * Twice the work on every frame doubles the measure: over the bound on every launch seen but two Linux Termpolis
+ * ones (5.15 and 5.19, x 2 = 10.3 and 10.4).
+ * macOS is reported only, as SOFTWARE_FLOOR_P95_MS says (0.54-2.23 in soaks 45763276618 and 45765636039).
+ */
+const ORBIT_PER_GL: Record<string, Record<string, number>> = {
+  linux: { termpolis: 10.5, big: 5.9 },
+  windows: { termpolis: 4.4, big: 2.6 },
 }
 /**
  * The first frame (§5.2), in software: the spec opens a small world first (the warm-up, WARM_UP_FILES files in each of
@@ -428,9 +452,14 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       const r = orbits.get(fx.label)
       expect(r, 'the orbit test did not run').toBeDefined()
       test.skip(!r!.software, 'drawn on a GPU: the floor is for software')
+      expect(warmUpSpeed?.glMs, 'the runner speed was not timed').toBeGreaterThan(0)
+      const perGl = r!.p95 / (warmUpSpeed as { glMs: number }).glMs
+      console.log(`world-perf ${fx.label} median orbit against the runner: ${perGl.toFixed(2)} x glMs ${(warmUpSpeed as { glMs: number }).glMs.toFixed(1)} ms`)
       test.skip(!(OS_NAME in SOFTWARE_FLOOR_P95_MS), 'reported only on macOS: SOFTWARE_FLOOR_P95_MS says why')
       const floor = SOFTWARE_FLOOR_P95_MS[OS_NAME][fx.label]
-      expect(r!.p95, `${fx.label}: the median orbit p95 ${r!.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
+      const bound = ORBIT_PER_GL[OS_NAME][fx.label]
+      expect.soft(r!.p95, `${fx.label}: the median orbit p95 ${r!.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
+      expect.soft(perGl, `${fx.label}: the median orbit p95 is ${perGl.toFixed(2)} x the runner's glMs, over ${bound}`).toBeLessThanOrEqual(bound)
     })
   }
 

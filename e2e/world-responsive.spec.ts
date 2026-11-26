@@ -1317,7 +1317,19 @@ test.describe.serial('Lumopolis at every screen size', () => {
       await createTerminal('Repo', path.resolve('.'))
       await openPane()
     }
+    // The repository's own world, whose line is picked below: the test before this one leaves its big project's world in
+    // the pane (and deletes the project), so the world is asked for by folder, as any opener does.
+    const root = await page.evaluate(async (r) => {
+      const top = await (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }> } }).termpolis.gitFindRoot(r)
+      return top.success && top.data ? top.data : r
+    }, path.resolve('.'))
+    await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), root)
+    await expect(page.locator(PANE)).toBeVisible({ timeout: 60_000 })
     await settled(180_000)
+    if (await provisional(root)) {
+      await expect.poll(() => provisional(root), { timeout: 240_000 }).toBe(false)
+      await settled(180_000)
+    }
     const width = await split(null)
     expect(width, 'the pane sits beside the terminals at 1920x1080').not.toBeNull()
     expect((await paneState()).overlays, 'the pane has a divider at 1920x1080').toBe(false)
@@ -1335,6 +1347,12 @@ test.describe.serial('Lumopolis at every screen size', () => {
     }, path.resolve('.'))
     expect(line, 'the world has a line between two buildings').not.toBeNull()
     const { id, from, to } = line as { id: string; from: string; to: string }
+    await expect
+      .poll(() => page.evaluate(([a, b]) => {
+        const probe = (window as unknown as { __termpolis_world?: { screenPoint(id: string): { x: number; y: number } | null } }).__termpolis_world
+        return !!probe && probe.screenPoint(a) !== null && probe.screenPoint(b) !== null
+      }, [from, to]), { message: 'both ends of the line are drawn', timeout: 60_000 })
+      .toBe(true)
     await page.evaluate((id) => (window as unknown as { __termpolis_world: { apply(a: { type: 'openCard'; id: string }): Promise<void> } }).__termpolis_world.apply({ type: 'openCard', id }), id)
     await expect(page.locator('[data-testid="world-card"]'), 'the line card is open').toBeVisible({ timeout: 30_000 })
     await glideDone('the line card opened')
