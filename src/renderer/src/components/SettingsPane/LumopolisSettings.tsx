@@ -231,6 +231,7 @@ export function LumopolisSettings(): JSX.Element {
           onClick={toggleRate}
           role="switch"
           aria-checked={rate}
+          // PENDING SIGN-OFF (look A1): the switch's name for a screen reader.
           aria-label="Toggle the Lumopolis frame rate readout"
           data-testid="settings-world-frame-rate-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
@@ -246,6 +247,7 @@ export function LumopolisSettings(): JSX.Element {
             <i className="fa-solid fa-gauge-high text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
             Show frame rate
           </span>
+          {/* PENDING SIGN-OFF (look A1): the frame-rate setting's description. */}
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Shows how smoothly the 3D map draws in a corner of the pane: frames per second, the slow-frame time and the
             graphics level. Off by default.
