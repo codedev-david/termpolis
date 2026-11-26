@@ -368,8 +368,18 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
       return found.map(([old]) => old)
     }, deps.lock)
   } catch {
-    return [] // the file could not be written: every older key's file stays as it was
+    // The file could not be written: every older key's file stays as it was. HOLD-B #17 (WP5 N1): every key this open wanted
+    // goes in the record, tried once more, so a later open tries it again after its back-off. The record is also what tells a
+    // later open that a lowered key was this folder's (adoptWorldAliases), once its recent-list line has moved.
+    await keepPending(pendingFile, [...later, ...triedNow(wanted)])
+    return []
   }
+}
+
+/** HOLD-B #17: the older keys the record beside `key`'s annotations still holds (due, waiting, or given up on), or none.
+ *  Each was handed to adoptAnnotationAliases as this folder's on an earlier open. */
+export async function pendingAdoptionKeys(dir: string, key: string): Promise<string[]> {
+  return ((await readPending(`${annotationsFileOf(dir, key)}${ADOPT_PENDING_SUFFIX}`)) ?? []).map((p) => p.key)
 }
 
 /** Seams for tests: the file read, the wait between reads of a held file, and the clock that stamps a backup. */

@@ -2999,6 +2999,7 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
       registry: worldSources,
       keyOf: keyForSource,
       lowered: new Set(loweredAliasKeys(root)),
+      annotationsDir: worldUserData, // HOLD-B #17: a lowered key still to adopt is kept until its notes are copied
     })
     await adoptAnnotationAliases(worldUserData, key, adopted.aliases)
     return adopted.aliases
