@@ -340,9 +340,38 @@ test.describe.serial('Lumopolis export in the real app', () => {
       }
       return out
     }, selector)
-    const partSpots = await liveSpots('[data-testid="world-fallback"] [data-kind="building"]')
+    // Where Export sits: opened once and cancelled, so the spots can be picked beside it with the pane still live. On a
+    // small window (macOS) it covers every row of the 2D map in view, so the map is scrolled until a part shows beside it.
+    await page.locator('[data-testid="world-export"]').click()
+    await page.locator('[data-testid="world-export-world"]').click()
+    await expect(dialog).toBeVisible()
+    const box = await dialog.evaluate((d) => {
+      const r = d.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
+    })
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    const beside = (p: { x: number; y: number }): boolean => p.x < box.left || p.x > box.right || p.y < box.top || p.y > box.bottom
+    const parts = '[data-testid="world-fallback"] [data-kind="building"]'
+    let partSpots = (await liveSpots(parts)).filter(beside)
+    let geometry = ''
+    for (let step = 0; partSpots.length === 0 && step < 60; step++) {
+      const moved = await page.evaluate((sel) => {
+        let el = document.querySelector<HTMLElement>(sel)?.parentElement ?? null
+        while (el !== null && !(el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY))) el = el.parentElement
+        if (el === null) return 'no scroller'
+        const r = el.getBoundingClientRect()
+        const before = el.scrollTop
+        el.scrollTop = before + Math.max(40, el.clientHeight / 3)
+        return el.scrollTop === before ? `scroller ${Math.round(r.top)}-${Math.round(r.bottom)} x ${Math.round(r.left)}-${Math.round(r.right)} at its end` : ''
+      }, parts)
+      await page.waitForTimeout(100)
+      partSpots = (await liveSpots(parts)).filter(beside)
+      if (moved !== '') { geometry = moved; break }
+    }
     const askSpots = await liveSpots('[data-testid="world-ask-row"] input')
-    expect(partSpots.length, 'a part of the 2D map takes a click').toBeGreaterThan(0)
+    const where = `dialog ${Math.round(box.top)}-${Math.round(box.bottom)} x ${Math.round(box.left)}-${Math.round(box.right)}, ${geometry}`
+    expect(partSpots.length, `a part of the 2D map takes a click beside the dialog (${where})`).toBeGreaterThan(0)
     expect(askSpots.length, 'the Ask box takes a click').toBeGreaterThan(0)
     await page.locator('[data-testid="world-export"]').click()
     await page.locator('[data-testid="world-export-world"]').click()
@@ -362,7 +391,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
       return null
     }, spots)
     const partAt = await spot(partSpots)
-    expect(partAt, `a part of the 2D map lies outside the dialog (${partSpots.length} live points, none outside it)`).not.toBeNull()
+    expect(partAt, 'a part of the 2D map lies outside the dialog').not.toBeNull()
     expect.soft(partAt?.hit, 'the scrim lies over the part').toBe('world-pane-scrim')
     await page.mouse.click((partAt as { x: number }).x, (partAt as { y: number }).y)
     await page.waitForTimeout(400)
