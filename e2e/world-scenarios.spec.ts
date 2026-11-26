@@ -444,29 +444,51 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     await expect(pane()).toHaveCount(0)
   }
 
+  /** Saves the Quality menu's choice, as the menu does: a map opened after it starts at that tier and keeps it. */
+  const chooseQuality = (quality: 'auto' | 'high' | 'low' | 'flat'): Promise<unknown> => page.evaluate(
+    (q) => (window as unknown as { termpolis: { worldSettingsSet(p: { quality: string }): Promise<unknown> } }).termpolis.worldSettingsSet({ quality: q }),
+    quality
+  )
+
+  /** The frames the map draws over 5 s, after a second to settle. */
+  async function framesOver5s(): Promise<number> {
+    await page.waitForTimeout(1000)
+    const f0 = (await drawnNow())!.frames
+    await page.waitForTimeout(5000)
+    return (await drawnNow())!.frames - f0
+  }
+
   test('an idle 3D map draws no frames under reduced motion, and starts again live when motion is allowed', async () => {
-    test.setTimeout(240_000)
-    await openOneFile()
-    // Reduced motion, switched on while the map is open (R13): the opening turn and the looping motions stop, and
-    // after a few frames to settle the map asks for none. The map before on-demand frames drew every frame.
-    await page.emulateMedia({ reducedMotion: 'reduce' })
+    test.setTimeout(300_000)
+    // PENDING SIGN-OFF (look A2 fix): the map is held at Low, a tier whose dust drifts (look spec §5's table: 600
+    // dust at Low). In software an Auto map starts at Flat (§5), which draws no dust and holds its disc and scan lines
+    // still, so the one-file city has nothing that loops there and sleeps with motion allowed too (the end of this test).
+    await chooseQuality('low')
     try {
-      await page.waitForTimeout(1500)
-      const f0 = (await drawnNow())!.frames
-      await page.waitForTimeout(5000)
-      const reducedFrames = (await drawnNow())!.frames - f0
+      await openOneFile()
+      // Reduced motion, switched on while the map is open (R13): the opening turn and the looping motions stop, and
+      // after a few frames to settle the map asks for none. The map before on-demand frames drew every frame.
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await page.waitForTimeout(500)
+      const reducedFrames = await framesOver5s()
       // Motion allowed again, live: the looping motions draw every frame once more.
       await page.emulateMedia({ reducedMotion: 'no-preference' })
-      await page.waitForTimeout(1000)
-      const m0 = (await drawnNow())!.frames
-      await page.waitForTimeout(5000)
-      const movingFrames = (await drawnNow())!.frames - m0
-      console.log(`[idle-frames] ${JSON.stringify({ reducedMotion5s: reducedFrames, motion5s: movingFrames })}`)
-      test.info().annotations.push({ type: 'idle-frames', description: JSON.stringify({ reducedMotion5s: reducedFrames, motion5s: movingFrames }) })
-      expect(reducedFrames, 'frames drawn over 5 s idle under reduced motion').toBeLessThanOrEqual(6)
-      expect(movingFrames, 'frames drawn over 5 s with motion allowed').toBeGreaterThan(6)
+      const movingFrames = await framesOver5s()
+      await closePane()
+      // At Flat, with motion allowed: nothing in the one-file city loops (no dust, a still disc and still scan lines,
+      // look spec §5), so the idle map sleeps.
+      await chooseQuality('flat')
+      await openOneFile()
+      const flatFrames = await framesOver5s()
+      const report = { reducedMotion5s: reducedFrames, motion5s: movingFrames, flatMotion5s: flatFrames }
+      console.log(`[idle-frames] ${JSON.stringify(report)}`)
+      test.info().annotations.push({ type: 'idle-frames', description: JSON.stringify(report) })
+      expect(reducedFrames, 'frames drawn over 5 s idle under reduced motion, at Low').toBeLessThanOrEqual(6)
+      expect(movingFrames, 'frames drawn over 5 s with motion allowed, at Low (its dust drifts)').toBeGreaterThan(6)
+      expect(flatFrames, 'frames drawn over 5 s idle with motion allowed, at Flat (nothing loops)').toBeLessThanOrEqual(6)
     } finally {
       await page.emulateMedia({ reducedMotion: null })
+      await chooseQuality('auto')
     }
     await closePane()
   })
