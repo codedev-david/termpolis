@@ -4238,10 +4238,14 @@ const deliverSecondOpinion = secondOpinionRuns.deliver
 const linkedNoPersist = createNoPersistProbe({ deliver: deliverSecondOpinion })
 
 /** The memory primer a headless run starts with, scoped to the folder it runs in. One function
- *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
-async function headlessPrimer(cwd: string): Promise<string | null> {
+ *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm.
+ *  HOLD-B #50 (WPA): someone waits on a headless run (a terminal, a git hook, the other computer of a linked job), so its reads
+ *  ride the memory host's interactive lane, as an Ask's do: a read sent with no lane waited behind the host's background work at
+ *  its lowered priority (primer-diagnosis.md: 0.6 to 321 s under full CPU). They stop when the run is cancelled. The digest is
+ *  the one it was: rerank and the deeper reads stay, and it is not cached (the Ask's cached primer is the fast, rerank-off one). */
+async function headlessPrimer(cwd: string, signal?: AbortSignal): Promise<string | null> {
   const project = cwd ? normalizeProjectSlug(cwd) : ''
-  return await buildContextPrimer(correctedSearch, {
+  return await buildContextPrimer((o) => correctedSearch({ ...o, lane: 'interactive' }), {
     query: project
       ? `recent work, decisions, conventions, and context for ${project}`
       : 'recent work, key decisions, and conventions',
@@ -4249,8 +4253,9 @@ async function headlessPrimer(cwd: string): Promise<string | null> {
     maxSnippetChars: 400,
     project: project || undefined,
     projectPath: cwd || undefined,
-    recent: primerRecent,
+    recent: askPrimerRecent(signal, 'interactive'),
     hasWorld: worldPrimerProbe,
+    ...(signal ? { signal } : {}),
   })
 }
 

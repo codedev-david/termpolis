@@ -502,7 +502,7 @@ vi.mock('../../src/main/headlessExec', async (importOriginal) => {
 })
 vi.mock('../../src/main/contextPrimer', () => ({ buildContextPrimer: M.buildContextPrimer }))
 vi.mock('../../src/main/memoryCorrectionStore', () => ({
-  initMemoryCorrections: vi.fn(), correctMemory: M.correctMemory, applyCorrections: vi.fn((x: unknown) => x), correctedMemoryIds: vi.fn(() => []),
+  initMemoryCorrections: vi.fn(), correctMemory: M.correctMemory, applyCorrections: vi.fn((x: unknown) => x), applyEntryCorrections: vi.fn((x: unknown) => x), correctedMemoryIds: vi.fn(() => []),
 }))
 vi.mock('../../src/main/recallBench', () => ({
   buildProbes: M.buildProbes, runBench: M.runBench, checkRegression: M.checkRegression,
