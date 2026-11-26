@@ -283,10 +283,13 @@ test('a clean tree with an unpushed commit pulses AND says what is unpushed', as
     'commit', '-m', 'unpushed: the row this test exists for',
   )
 
-  // The poll owns the clock here too.
+  // The poll owns the clock here too, and it is the title that waits on it: a poll that lands while the file is being
+  // written, added or committed already makes the dot dirty ("1 modified"), and the next one is 15 s away
+  // (COUNTS_POLL_MS), so a dirty dot is no sign the commit was seen (HOLD-B #107). The title must say only what
+  // is unpushed: nothing modified, staged or untracked rides along.
   const dot = page.locator(anyDot).first()
-  await expect(dot).toHaveAttribute('data-dirty', 'true', { timeout: 60000 })
-  await expect(dot).toHaveAttribute('title', /1 to push/)
+  await expect(dot).toHaveAttribute('title', /— 1 to push$/, { timeout: 60000 })
+  await expect(dot).toHaveAttribute('data-dirty', 'true')
 
   await dot.click()
   const panel = page.locator('[data-testid="changes-panel"]')
