@@ -16,6 +16,7 @@ import {
   MAX_EVIDENCE_REF,
   MAX_ANNOTATIONS_PER_ITEM,
   mergeAnnotations,
+  MOVED_SUFFIX,
   withAnnotations
 } from '../../src/main/world/annotations'
 import { CLAIM_TRIES } from '../../src/main/world/storeFiles'
@@ -437,8 +438,8 @@ describe('annotation store copyRenamed (WP5)', () => {
     await store.add('k', 'p', person('shared'))
     await store.copyRenamed('k', { p: 'q', q: 'p' })
     const shown = await store.list('k')
-    expect(shown.p).toEqual([person('about Q'), person('shared')])
-    expect(shown.q).toEqual([person('about P'), person('shared')])
+    expect(shown.p).toEqual([person('shared'), person('about Q')])
+    expect(shown.q).toEqual([person('shared'), person('about P')])
   })
 
   it('a note added again on an id renamed away shows there, and so does a new one', async () => {
@@ -451,6 +452,42 @@ describe('annotation store copyRenamed (WP5)', () => {
     await store.add('k', 'b-foo', person('about A'))
     expect((await store.list('k'))['b-foo']).toEqual([person('new part'), person('about A')])
     expect((await store.list('k'))['b-foo--a1']).toEqual([person('about A')])
+    // Another note copied away from the id stays out of sight when one is added again.
+    await store.add('k', 'c', person('one'))
+    await store.add('k', 'c', person('two'))
+    await store.copyRenamed('k', { c: 'c--x' })
+    await store.add('k', 'c', person('two'))
+    expect((await store.list('k')).c).toEqual([person('two')])
+  })
+
+  it('a record beside the annotations that is missing, broken or odd hides nothing it does not name', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'a', person('one'))
+    await store.add('k', 'b', person('two'))
+    const record = `${fileFor('k')}${MOVED_SUFFIX}`
+    await writeFile(record, '{ not json')
+    expect(await store.list('k')).toEqual({ a: [person('one')], b: [person('two')] })
+    await writeFile(record, JSON.stringify([JSON.stringify(person('one'))]))
+    expect(await store.list('k')).toEqual({ a: [person('one')], b: [person('two')] })
+    await writeFile(record, JSON.stringify({ a: JSON.stringify(person('one')), b: [7, JSON.stringify(person('two'))], c: [] }))
+    expect(await store.list('k')).toEqual({ a: [person('one')] })
+  })
+
+  it('a rename whose record cannot be written rejects after the copy, and the next one records it', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'b-foo', person('about A'))
+    const record = `${fileFor('k')}${MOVED_SUFFIX}`
+    await mkdir(join(record, 'held'), { recursive: true }) // a folder where the record goes: it cannot be written
+    await expect(store.copyRenamed('k', { 'b-foo': 'b-foo--a1' })).rejects.toThrow()
+    // The copy is in; the old id still shows its claims, as before the record.
+    expect(await store.list('k')).toEqual({ 'b-foo': [person('about A')], 'b-foo--a1': [person('about A')] })
+    await rm(record, { recursive: true, force: true })
+    await store.copyRenamed('k', { 'b-foo': 'b-foo--a1' })
+    expect(await store.list('k')).toEqual({ 'b-foo--a1': [person('about A')] })
+    // Run again, nothing changes and nothing is written.
+    const before = await readFile(record, 'utf8')
+    await store.copyRenamed('k', { 'b-foo': 'b-foo--a1' })
+    expect(await readFile(record, 'utf8')).toBe(before)
   })
 })
 

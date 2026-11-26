@@ -32,8 +32,9 @@ export interface AnnotationStore {
   add(key: string, itemId: string, claim: Claim): Promise<void>
   /**
    * Copies each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
-   * both kept once and the item capped as an add caps it (idMigration.ts). The old ids keep theirs (WP5 fix I2). Writes only
-   * when a claim was not yet under its new id, and rejects when that write fails.
+   * both kept once and the item capped as an add caps it (idMigration.ts). The old ids keep theirs (WP5 fix I2) but no longer
+   * show them (MOVED_SUFFIX). Writes only when a claim was not yet under its new id or the record changes, and rejects when a
+   * write fails.
    */
   copyRenamed(key: string, renames: Record<string, string>): Promise<void>
 }
@@ -382,6 +383,67 @@ export async function pendingAdoptionKeys(dir: string, key: string): Promise<str
   return ((await readPending(`${annotationsFileOf(dir, key)}${ADOPT_PENDING_SUFFIX}`)) ?? []).map((p) => p.key)
 }
 
+/**
+ * HOLD-B #37 (WP5 M4/N3): beside a world's annotations, the claims an id rename copied away from each old id, as
+ * `{ [oldId]: claim JSON[] }`. The old id keeps them in its file (an older build, which still gives that id, finds them there:
+ * WP5 fix I2), but this build no longer shows them under it, so a different part that later gets the old id shows only its
+ * own: a namesake folder that took the plain name back once the other went, say. A part renamed back to the id, or the same
+ * note added there again, shows again.
+ */
+export const MOVED_SUFFIX = '.moved'
+type Moved = Record<string, string[]>
+const claimKey = (c: Claim): string => JSON.stringify(c)
+
+/** The record, empty when it is missing or cannot be read (what the file holds then shows, as before the record). */
+async function readMoved(file: string): Promise<Moved> {
+  const out: Moved = Object.create(null)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(file, 'utf8'))
+  } catch {
+    return out
+  }
+  if (!isRec(parsed)) return out
+  for (const [id, list] of Object.entries(parsed)) {
+    const keys = Array.isArray(list) ? list.filter((k): k is string => typeof k === 'string') : []
+    if (keys.length > 0) out[id] = keys
+  }
+  return out
+}
+
+/** Writes the record, or removes it when it holds nothing. Rejects when that fails. */
+async function writeMoved(file: string, moved: Moved): Promise<void> {
+  if (Object.keys(moved).length > 0) await writeAtomic(file, JSON.stringify(moved))
+  else await rm(file, { force: true })
+}
+
+/** The claims as shown: `all` less those the record says were copied away from their id. */
+function shownClaims(all: Record<string, Claim[]>, moved: Moved): Record<string, Claim[]> {
+  const out: Record<string, Claim[]> = Object.create(null)
+  for (const [id, list] of Object.entries(all)) {
+    const away = new Set(moved[id] ?? [])
+    const keep = list.filter((c) => !away.has(claimKey(c)))
+    if (keep.length > 0) out[id] = keep
+  }
+  return out
+}
+
+/** The record once `map` has copied the claims `all` held (read before the copy): each old id's claims are copied away from
+ *  it, and those copied to an id show there again (a part renamed back, or two parts that swapped ids). Null when unchanged. */
+function movedAfter(all: Record<string, Claim[]>, map: ReadonlyMap<string, string>, moved: Moved): Moved | null {
+  const out: Moved = Object.create(null)
+  for (const [id, keys] of Object.entries(moved)) out[id] = keys
+  const pairs = [...map].filter(([from, to]) => from !== to && all[from] !== undefined)
+  for (const [from] of pairs) out[from] = [...new Set([...(out[from] ?? []), ...all[from].map(claimKey)])]
+  for (const [from, to] of pairs) {
+    const back = new Set(all[from].map(claimKey))
+    const left = (out[to] ?? []).filter((k) => !back.has(k))
+    if (left.length > 0) out[to] = left
+    else delete out[to]
+  }
+  return JSON.stringify(out) === JSON.stringify(moved) ? null : out
+}
+
 /** Seams for tests: the file read, the wait between reads of a held file, and the clock that stamps a backup. */
 export interface AnnotationStoreDeps {
   readFile?: (file: string, encoding: 'utf8') => Promise<string>
@@ -393,6 +455,7 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
   const folder = annotationsFolder(dir)
   const lock = createKeyedLock()
   const fileOf = (key: string): string => annotationsFileOf(dir, key)
+  const movedOf = (key: string): string => `${fileOf(key)}${MOVED_SUFFIX}`
   const readText = deps.readFile ?? readFile
   const sleep = deps.sleep ?? pause
   const now = deps.now ?? Date.now
@@ -438,7 +501,7 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
   }
 
   return {
-    list: (key) => read(key),
+    list: async (key) => shownClaims(await read(key), await readMoved(movedOf(key))),
     add: (key, itemId, claim) =>
       lock(key, async () => {
         const clean = cleanClaim(claim)
@@ -447,7 +510,19 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
         // The file lock as well as the keyed one: an adoption in main writes this file too (adoptAnnotationAliases).
         await withAnnotationFileLock(fileOf(key), async () => {
           const all = await readForWrite(key)
-          all[itemId] = capClaims([...(all[itemId] ?? []), clean])
+          let have = all[itemId] ?? []
+          const moved = await readMoved(movedOf(key))
+          const mine = claimKey(clean)
+          if (moved[itemId]?.includes(mine)) {
+            // HOLD-B #37: a note copied away from this id and added here again is this part's now: shown, once, as the newest.
+            // The record goes first: when it cannot be written, nothing is.
+            const left = moved[itemId].filter((k) => k !== mine)
+            if (left.length > 0) moved[itemId] = left
+            else delete moved[itemId]
+            await writeMoved(movedOf(key), moved)
+            have = have.filter((c) => claimKey(c) !== mine)
+          }
+          all[itemId] = capClaims([...have, clean])
           await writeAtomic(fileOf(key), JSON.stringify(all))
         })
       }),
@@ -458,12 +533,20 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
           const next = copyClaims(all, map)
           return next === all ? null : next
         }
-        if (pending(await read(key)) === null) return // the common case: nothing to copy, no lock file taken
+        const first = await read(key)
+        // The common case: nothing to copy and nothing to record, no lock file taken.
+        if (pending(first) === null && movedAfter(first, map, await readMoved(movedOf(key))) === null) return
         await withAnnotationFileLock(fileOf(key), async () => {
-          const next = pending(await read(key))
-          if (next === null) return
-          for (const id of Object.keys(next)) next[id] = capClaims(next[id])
-          await writeAtomic(fileOf(key), JSON.stringify(next))
+          const all = await read(key)
+          const next = pending(all)
+          const moved = movedAfter(all, map, await readMoved(movedOf(key)))
+          if (next !== null) {
+            for (const id of Object.keys(next)) next[id] = capClaims(next[id])
+            await writeAtomic(fileOf(key), JSON.stringify(next))
+          }
+          // HOLD-B #37: after the copy, so a failure between the two leaves the old id's claims shown, as before the record.
+          // A record that cannot be written rejects, so the compile saves nothing and the next one copies and records again.
+          if (moved !== null) await writeMoved(movedOf(key), moved)
         })
       })
   }
