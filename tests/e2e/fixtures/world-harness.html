@@ -60,6 +60,8 @@
         viewer.load(next.doc, opts)
       },
       drawn: () => viewer.drawn(),
+      /** Asks for a frame (a view at rest draws none of its own: reduced motion moves nothing). */
+      requestFrame: () => viewer.requestFrame(),
       screenPoint: (id) => viewer.screenPoint(id),
     }
     document.body.dataset.ready = '1'

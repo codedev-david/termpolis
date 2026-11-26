@@ -5,7 +5,8 @@ import { EvidenceView } from '../../../src/renderer/src/components/World/Evidenc
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE, FOLDER_UNSUPPORTED_MESSAGE } from '../../../src/shared/world/types'
-import { QUALITY_CHOICES, QUALITY_TITLE, TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { QUALITY_CHOICES, QUALITY_TITLE } from '../../../src/renderer/src/components/World/qualityChoices'
 import { SOLID_PANEL, UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
@@ -762,6 +763,8 @@ describe('WorldToolbar in a narrow pane', () => {
     expect(menu.value).toBe('auto') // no quality given: Auto
     expect(menu.parentElement).toHaveAttribute('title', QUALITY_TITLE)
     expect(QUALITY_CHOICES.map((c) => c.label)).toEqual(['Auto', 'High', 'Low', 'Flat'])
+    // PENDING SIGN-OFF (look A2.1): Auto lowers the quality, and raises it at most once a session (MAX_RISES).
+    expect(QUALITY_TITLE).toBe('How much the 3D map draws. Auto lowers it when frames come too slowly, and can raise it once when they stay fast.')
     // Right after the theme, among the secondary controls.
     expect(screen.getByTestId('world-theme').nextElementSibling).toBe(menu.parentElement)
     fireEvent.change(menu, { target: { value: 'low' } })

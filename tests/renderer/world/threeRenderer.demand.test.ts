@@ -3,6 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
+import { BUFFER_FIT_MEASURE } from '../../../src/renderer/src/world/engine/bufferFit'
 import { BUFFER_SETTLE_MS, createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
@@ -1380,6 +1381,73 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     } finally {
       v.done()
       vi.unstubAllGlobals()
+    }
+  })
+
+  it('a tier changed while a buffer waits to be fitted fits it once, at once, and the wait is let go', () => {
+    const v = drawnView()
+    try {
+      const before = v.fits()
+      resizeHost(h.host, 700, 600)
+      v.resized()
+      expect(v.fits()).toBe(before)
+      v.r.setTier('low')
+      expect(v.fits()).toBe(before + 1)
+      expect(lastSize(rendererOf().sizes)).toEqual([700, 600])
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS * 2)
+      expect(v.fits()).toBe(before + 1) // no second fit from the timer
+    } finally {
+      v.done()
+    }
+  })
+
+  it('a settled fit is named on the page\'s timeline (BUFFER_FIT_MEASURE), from the timer\'s call to its end; without User Timing it goes unnamed', () => {
+    const v = drawnView()
+    const measure = vi.spyOn(performance, 'measure')
+    try {
+      resizeHost(h.host, 700, 600)
+      v.resized()
+      expect(measure).not.toHaveBeenCalled() // only the settled fit is named, not the stretch
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(measure).toHaveBeenCalledTimes(1)
+      const [name, span] = measure.mock.calls[0] as [string, { start: number; end: number }]
+      expect(name).toBe(BUFFER_FIT_MEASURE)
+      expect(span.end).toBeGreaterThanOrEqual(span.start)
+      measure.mockImplementation(() => { throw new TypeError('no User Timing') })
+      const fits = v.fits()
+      resizeHost(h.host, 650, 600)
+      v.resized()
+      expect(() => vi.advanceTimersByTime(BUFFER_SETTLE_MS)).not.toThrow()
+      expect(v.fits()).toBe(fits + 1) // fitted all the same
+    } finally {
+      measure.mockRestore()
+      v.done()
+    }
+  })
+
+  it('a click while the buffer is stretched over a new size picks what is drawn there, as after the fit', () => {
+    const v = drawnView()
+    try {
+      void v.r.flyTo({ pos: [1, 18, 26], target: [1, 3, 2] }, true) // close enough that p and q take a click
+      settle(h.frames)
+      resizeHost(h.host, 500, 600)
+      v.resized()
+      boxCanvas(v.r.canvas, 500, 600) // the canvas laid out at its stretched size
+      expect(v.r.canvas.style.width).toBe('500px')
+      const picks = (): Array<ReturnType<ThreeRenderer['pick']>> => (['p', 'q'] as const).map((id) => {
+        const pt = v.r.screenPoint(id) as { x: number; y: number }
+        return v.r.pick(pt.x, pt.y)
+      })
+      const fitted = (): { p: { x: number; y: number } | null; q: { x: number; y: number } | null } => ({ p: v.r.screenPoint('p'), q: v.r.screenPoint('q') })
+      const stretched = picks()
+      const points = fitted()
+      expect(stretched).toEqual([{ kind: 'node', id: 'p' }, { kind: 'node', id: 'q' }])
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(lastSize(rendererOf().sizes)).toEqual([500, 600]) // fitted now
+      expect(fitted()).toEqual(points) // the parts stand where they stood stretched
+      expect(picks()).toEqual(stretched)
+    } finally {
+      v.done()
     }
   })
 

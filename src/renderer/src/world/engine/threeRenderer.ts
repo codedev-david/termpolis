@@ -25,6 +25,7 @@ import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
+import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS } from './bufferFit'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
 export interface SceneText {
@@ -228,13 +229,7 @@ const CSS = `
 `
 
 const FLOOR_W = 5
-/**
- * How long the view's size must hold before the drawing buffer is fitted to it, once the view has drawn (resize).
- * Fitting the buffer gives the canvas a new size, which waits for the frames the GPU still has to draw (in software
- * rendering, a frame of a big world: 250 ms and more), so a pane divider dragged, which resizes the view every frame,
- * stretches the buffer it has over the new size and has it fitted once, when the drag holds still.
- */
-export const BUFFER_SETTLE_MS = 150
+export { BUFFER_SETTLE_MS } from './bufferFit'
 /** A changed part's outline shell is this much larger than the building. */
 const OUTLINE_SCALE = 1.08
 /** A removed part's opacity pulse: between 0.15 and 0.45. */
@@ -2549,6 +2544,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (settleTimer !== null) clearTimeout(settleTimer)
     settleTimer = null
   }
+  /** The settled fit, named for the page's timeline (BUFFER_FIT_MEASURE): a page without User Timing goes without. */
+  const measureFit = (start: number): void => {
+    try {
+      performance.measure(BUFFER_FIT_MEASURE, { start, end: performance.now() })
+    } catch {
+      // no User Timing here: the fit is not named
+    }
+  }
   /**
    * The buffer for the new size, and whether the look is owed its check at once (after the city's fit and the camera's
    * framing for the size): a pane shown again at a size, drawn at once with no settle to wait for, is a size that has
@@ -2575,7 +2578,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const armSettle = (): void => {
     settleTimer = setTimeout(() => {
       settleTimer = null
-      if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) fitBuffer()
+      if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) {
+        const start = performance.now()
+        fitBuffer()
+        measureFit(start)
+      }
       settleCheck()
       wake()
     }, BUFFER_SETTLE_MS)
@@ -3558,10 +3565,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setTier(t) {
       if (disposed || t === look) return
       look = t
+      // A buffer waiting to be fitted is fitted here, once; a resize's settle still pending owes the look its check, so
+      // it is put off again, never dropped (as onRatio), and fits nothing more unless the size changes before it.
+      const owed = settleTimer !== null
+      settleBuffer()
       if (TIER_LOOK[t].composer && !composer) buildComposer()
       else if (!TIER_LOOK[t].composer && composer) freeComposer()
       fitDust()
       fitBuffer() // the tier's pixel ratio and budget, and the bloom's size; the next frames are not counted
+      if (owed) armSettle()
       newWindow()
       wake()
     },

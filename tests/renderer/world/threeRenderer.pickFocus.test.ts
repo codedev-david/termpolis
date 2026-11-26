@@ -985,6 +985,30 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     }
   })
 
+  it('a tier changed during a drag fits the buffer at once and puts the settle off without dropping its check: an end the drag hid searches again once the size holds', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      r.setTier('low') // Auto lowered the quality mid-drag: the waiting buffer fitted here, once
+      settle()
+      expect(n.count()).toBe(0)
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      // A tier change with no resize pending owes no check: none is armed.
+      r.setTier('high')
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('a pixel ratio change, then the observer reporting the same size again: the settle fits no buffer but still checks the look', async () => {
     const changes: Array<() => void> = []
     vi.stubGlobal('matchMedia', (media: string) => ({

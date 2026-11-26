@@ -93,7 +93,8 @@ const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/w
 type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
 interface Harness {
   load(doc: unknown, opts?: { animateFrom?: unknown }): void
-  drawn(): { changing: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }> }
+  requestFrame(): void
+  drawn(): { changing: number; presented: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }> }
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -158,11 +159,23 @@ async function motionTwice(): Promise<[Visual, Visual]> {
   return [first, await readMotion()]
 }
 
+/** Frames presented so far (drawn().presented), each read asking for one more. */
+const presentedNow = (): Promise<number> => page.evaluate(() => {
+  const t = (window as unknown as HarnessWindow).__worldTest
+  t.requestFrame()
+  return t.drawn().presented
+})
+
 test('reduced motion freezes the ring, fog drift, wireframe pulse and selection ring', async () => {
   const base = page.url().split('?')[0]
   await page.goto(base) // reduced motion: the harness default
-  const [a, b] = await motionTwice()
-  expect(b).toEqual(a)
+  const [a] = await motionTwice()
+  // Frozen is judged across frames drawn: a busy software runner may draw none in 800 ms, and with no frame drawn a
+  // ring that turns reads the same twice (look A2 review N9). Two more frames are asked for and waited for.
+  const drawnBefore = await presentedNow()
+  await expect.poll(async () => (await presentedNow()) - drawnBefore, { message: 'two frames are drawn between the two reads', timeout: 10_000 }).toBeGreaterThanOrEqual(2)
+  const b = await readMotion()
+  expect(b, 'with reduced motion, nothing moves across the frames drawn').toEqual(a)
   await page.goto(base + '?motion=1')
   const [c] = await motionTwice()
   // Moving, the ring and the fog drift change from frame to frame. Drawn in software on a busy runner, no frame may be

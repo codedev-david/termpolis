@@ -14,6 +14,7 @@ import { ExportMenu } from './ExportMenu'
 import type { ExportKind } from './ExportMenu'
 import { UiScaleContext, useUiZoom } from './worldPane'
 import { screenRect } from '../../world/engine/screenRect'
+import { QUALITY_CHOICES, QUALITY_TITLE } from './qualityChoices'
 
 /** Below this width, in the pane's own px (its width over its scale), the toolbar folds its secondary controls into More. */
 export const TOOLBAR_FOLD_PX = 440
@@ -101,18 +102,6 @@ export interface WorldToolbarProps {
   /** A narrow pane: the secondary controls fold into the More menu. */
   compact?: boolean
 }
-
-/**
- * The Quality menu's choices, in order (look spec §5.1).
- * PENDING SIGN-OFF (look A2): the menu's label, its four choices and its tooltip.
- */
-export const QUALITY_CHOICES: { value: WorldQuality; label: string }[] = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'high', label: 'High' },
-  { value: 'low', label: 'Low' },
-  { value: 'flat', label: 'Flat' },
-]
-export const QUALITY_TITLE = 'How much the 3D map draws. Auto lowers it by itself when frames come too slowly.'
 
 /** The toolbar's popups, one open at a time. */
 type Popup = 'bookmarks' | 'more' | 'export'
