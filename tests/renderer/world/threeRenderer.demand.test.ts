@@ -566,6 +566,58 @@ describe('threeRenderer drawn in software', () => {
     expect(Math.abs(fast.turned)).toBeGreaterThan(0.01)
   })
 
+  it('the glide after a drag on a 15 fps screen takes the same wall time as at 60 fps (within 5%): input events between frames spend none of it', () => {
+    /**
+     * A drag of 240 ms with a pointer move every 4 ms (the events OrbitControls answers with an update of its own),
+     * on a screen drawing a frame every `ms`, then its glide: how far the camera turned after the hand let go, how
+     * long that took, and how far it turned in all.
+     */
+    const dragGlide = (ms: number): { glide: number; ms: number; turned: number } => {
+      const r = idle(REDUCED, still())
+      const canvas = r.canvas
+      Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 800 })
+      Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 600 })
+      canvas.setPointerCapture = (): void => {}
+      canvas.releasePointerCapture = (): void => {}
+      const az = (): number => { const c = r.getCamera(); return Math.atan2(c.pos[0] - c.target[0], c.pos[2] - c.target[2]) }
+      const a0 = az()
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, clientX: 100, clientY: 100, pointerType: 'mouse', bubbles: true }))
+      let sinceFrame = 0
+      for (let k = 1; k <= 60; k++) {
+        h.frames.advance(4)
+        sinceFrame += 4
+        const x = 100 + k * 3
+        canvas.ownerDocument.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 100, pointerType: 'mouse', bubbles: true }))
+        canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: x, clientY: 100, pointerType: 'mouse', bubbles: true }))
+        if (sinceFrame >= ms) { h.frames.step(0); sinceFrame = 0 } // the screen's next frame
+      }
+      canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, button: 0, clientX: 280, clientY: 100, pointerType: 'mouse', bubbles: true }))
+      const aUp = az()
+      const t0 = h.frames.now
+      let last = t0
+      let prev = aUp
+      for (let k = 0; k < 5000 && h.frames.pending() > 0; k++) {
+        h.frames.step(ms)
+        const a = az()
+        if ((Math.abs(a - prev) / ms) * 1000 > 0.01) last = h.frames.now // the last frame still turning faster than 0.01 rad/s
+        prev = a
+      }
+      const out = { glide: az() - aUp, ms: last - t0, turned: az() - a0 }
+      r.dispose()
+      h.host.remove()
+      h.host = makeHost(800, 600)
+      return out
+    }
+    const fast = dragGlide(1000 / 60)
+    const slow = dragGlide(1000 / 15)
+    expect(Math.abs(fast.glide)).toBeGreaterThan(0.05)
+    // The hand's moves leave the same glide at any frame rate (to the controls' stopping threshold; a share fixed per
+    // frame left a 15 fps glide a third of the 60 fps one), and it lasts as long, to within 5%.
+    expect(Math.abs(slow.glide - fast.glide)).toBeLessThan(Math.abs(fast.glide) * 1e-3)
+    expect(Math.abs(slow.ms - fast.ms)).toBeLessThanOrEqual(fast.ms * 0.05)
+    expect(Math.abs(slow.turned - fast.turned)).toBeLessThan(Math.abs(fast.turned) * 1e-3)
+  })
+
   /** Runs screen frames until the next one drawn. */
   const toNextFrame = (r: ThreeRenderer): void => {
     const n = frames(r)

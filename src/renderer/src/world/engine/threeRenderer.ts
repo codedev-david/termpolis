@@ -18,6 +18,7 @@ import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { shrunk, tierPixelRatio, type TierName } from './tierBudget'
+import { timedUpdate } from './timedDamping'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
@@ -665,6 +666,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   camera.position.copy(overviewPos)
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
+  // Every update, the controls' own input handlers' too, spends the glide by the time since the last (timedUpdate):
+  // many pointer moves inside one slow frame no longer spend it during the drag (VISFLAKE Minor 2).
+  timedUpdate(controls, CONTROLS_DAMPING_RATE, () => performance.now())
   controls.target.copy(overviewTarget)
   controls.maxPolarAngle = Math.PI * 0.495
   controls.minDistance = 6
@@ -687,6 +691,25 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.addEventListener('start', onControlStart)
   controls.addEventListener('change', onControlChange)
   controls.addEventListener('end', onControlEnd)
+  /**
+   * Where the held pointer last was. Timed damping applies none of a pointer move that lands with no time since the
+   * controls' last update (it is applied by the next one), so the controls' change can come only after the hand let go.
+   * A held pointer that really moves takes the camera over and wakes the loop itself, then, as its change would have.
+   */
+  let handAt = { x: NaN, y: NaN }
+  const onHandDown = (e: PointerEvent): void => { handAt = { x: e.clientX, y: e.clientY } }
+  const onHandMove = (e: PointerEvent): void => {
+    if (!handHeld || (e.clientX === handAt.x && e.clientY === handAt.y)) return
+    handAt = { x: e.clientX, y: e.clientY }
+    rig.move()
+    wake()
+  }
+  renderer.domElement.addEventListener('pointerdown', onHandDown)
+  renderer.domElement.addEventListener('pointermove', onHandMove)
+  undo.push(() => {
+    renderer.domElement.removeEventListener('pointerdown', onHandDown)
+    renderer.domElement.removeEventListener('pointermove', onHandMove)
+  })
   /**
    * The wheel below a device pixel ratio of 1 (a zoomed-out page). OrbitControls divides a wheel step
    * by 100 * (devicePixelRatio | 0), which is 0 there: one notch slams the camera to its nearest or
@@ -3051,12 +3074,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     // The slow opening turn (it loops until a hand, a key or a flight ends it), or the glide after a hand lets go (damping).
     // The turn takes the frame's time, so it keeps its speed at any frame rate (the 60 fps turn of one call before).
-    // So does the glide: OrbitControls spends a share of what is left of it on each update, and that share is the
-    // frame's (CONTROLS_DAMPING_RATE, 0.05 at 60 fps). A share fixed per frame made a glide last as many frames at any
-    // rate, so drawn in software (about 5 frames a second) each one ran in slow motion for half a minute, every
-    // frame of it a whole draw of the city.
+    // So does the glide: OrbitControls spends a share of what is left of it on each update, and that share is the time
+    // since the last update's (timedUpdate; CONTROLS_DAMPING_RATE, 0.05 at 60 fps). A share fixed per frame made a
+    // glide last as many frames at any rate, so drawn in software (about 5 frames a second) each one ran in slow motion
+    // for half a minute, every frame of it a whole draw of the city; and it was spent again on every input event.
     const turning = controls.autoRotate
-    if (dt > 0) controls.dampingFactor = easeShare(CONTROLS_DAMPING_RATE, dt)
     if (controls.update(dt) && !turning) moving = true
     // Semantic zoom: districts (blocks, district names), buildings (blocks, building names), floors (floors, seams, floor labels).
     retier()

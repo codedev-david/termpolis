@@ -239,6 +239,41 @@ describe('threeRenderer wheel and orbit limits', () => {
     for (let i = 0; i < 3; i++) expect(after.pos[i]).toBeCloseTo(still.pos[i], 3)
     r.dispose()
   })
+
+  it('a held pointer that stays put, or one that moves while no hand is on the controls, leaves a flight under way', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    readyCanvas(r)
+    r.draw(smallCity(), smallText(), false)
+    void r.flyTo({ pos: [50, 50, 50], target: [0, 0, 0] }, false)
+    h.frames.run(3, 20)
+    // a move with no button down: OrbitControls has no hand on it
+    r.canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, pointerType: 'mouse', clientX: 460, clientY: 320, bubbles: true }))
+    // a press whose pointer moves to where it already is (a plain click)
+    press(r, 'pointerdown')
+    r.canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, pointerType: 'mouse', clientX: 400, clientY: 300, bubbles: true }))
+    press(r, 'pointerup')
+    h.frames.step(20)
+    expect(r.motionState().flight.active).toBe(true)
+    r.dispose()
+  })
+
+  it('a pointer move with no time since the controls last updated still hands the camera over and wakes the loop', () => {
+    // timed damping applies none of such a move until the next update, after the hand let go here
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    readyCanvas(r)
+    r.draw(smallCity(), smallText(), false)
+    void r.flyTo({ pos: [50, 50, 50], target: [0, 0, 0] }, false)
+    h.frames.run(3, 20)
+    const before = r.getCamera()
+    press(r, 'pointerdown')
+    r.canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, pointerType: 'mouse', clientX: 460, clientY: 320, bubbles: true }))
+    expect(r.getCamera()).toEqual(before) // nothing of the move applied yet
+    expect(r.motionState().flight.active).toBe(false)
+    press(r, 'pointerup')
+    h.frames.step(20)
+    expect(r.getCamera()).not.toEqual(before) // the next frame applies it
+    r.dispose()
+  })
 })
 
 describe('threeRenderer resize', () => {
