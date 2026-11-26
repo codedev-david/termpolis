@@ -50,7 +50,9 @@ function cleanClaim(v: unknown): Claim | null {
   for (const e of v.evidence) {
     if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
     if (isRec(e) && EVIDENCE_KINDS.has(e.kind as string) && typeof e.ref === 'string') {
-      evidence.push(typeof e.excerpt === 'string' ? { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF), excerpt: capped(e.excerpt, MAX_EVIDENCE_EXCERPT) } : { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF) })
+      // HOLD-B #92: a test's excerpt says where its result came from ("from a test report", testStatus.ts), and the card shows
+      // it. Only the test status may say that, so a note's test evidence keeps none, written or read back.
+      evidence.push(typeof e.excerpt === 'string' && e.kind !== 'test' ? { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF), excerpt: capped(e.excerpt, MAX_EVIDENCE_EXCERPT) } : { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF) })
     }
   }
   if (evidence.length === 0) return null

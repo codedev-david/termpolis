@@ -879,7 +879,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const projectKey = doc ? doc.projectKey : null
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   // A bookmark's restore flies to its part's card first, then takes the saved pose. Anything the user does in
-  // between (a drag, a click, the wheel, Esc) or a switch to another world moves this on, and a restore whose number
+  // between (a drag, a click, the wheel, a WASD/QE key, Esc) or a switch to another world moves this on, and a restore whose number
   // is no longer the latest leaves the camera where it is: the cut-short flight still resolves.
   const bookmarkSeqRef = useRef(0)
   const cancelBookmark = (): void => { bookmarkSeqRef.current++ }
@@ -1311,6 +1311,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden', background: 'var(--world-bg, #03050a)' }}
             onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
             onWheel={cancelBookmark}
+            // HOLD-B #92: the renderer's WASD/QE keys move the camera as a drag does, so they cut a restore short too.
+            onKeyDown={(e) => { if (/^[wasdqe]$/i.test(e.key)) cancelBookmark() }}
           />
         )}
         {rateLine !== null && doc && (

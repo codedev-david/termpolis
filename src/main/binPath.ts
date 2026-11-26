@@ -1,5 +1,6 @@
-// Where a program is, found without starting anything. Used for `git` everywhere Termpolis runs it, and for `gh`
-// (Lumopolis CI results).
+// Where a program is, found without starting anything. Used for `git` everywhere the app and the world host run it
+// (gitCommand.ts), and for `gh` (Lumopolis CI results). The Commit Shield hook, which git starts in a plain `node`, finds
+// git by the same rules through its synchronous twin, src/mcp-adapter/binPath.cjs.
 //
 // Why it exists: on Windows, a program started by its bare name (`git`) is looked for in the folder the process
 // runs in BEFORE the PATH folders. Git runs with its working folder set to a repository, and Lumopolis maps any
