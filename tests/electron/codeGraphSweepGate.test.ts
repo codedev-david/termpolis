@@ -82,7 +82,7 @@ describe('HP-3: the sweep asks the loop governor at its boundaries', () => {
   })
 })
 
-describe('HP-3: index.ts waits on the governor before a code ingest and hands it to every sweep', () => {
+describe('HP-3: index.ts waits on the governor before a code ingest and hands it (with the typing gate) to every sweep', () => {
   const index = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'index.ts'), 'utf8')
   const handler = (name: string): string => {
     const start = index.indexOf(`ipcMain.handle('${name}'`)
@@ -91,17 +91,18 @@ describe('HP-3: index.ts waits on the governor before a code ingest and hands it
     return index.slice(start, next)
   }
 
-  it("memory:ingest-code awaits whenNotShed() before runCodeIngest, and its sweep is given pause: whenNotShed", () => {
+  it("memory:ingest-code awaits whenNotShed() before runCodeIngest, and its sweep is given pause: sweepPause (governor, then typing quiet)", () => {
     const h = handler('memory:ingest-code')
     const wait = h.indexOf('await whenNotShed()')
     expect(wait).toBeGreaterThan(-1)
     expect(wait).toBeLessThan(h.indexOf('runCodeIngest('))
-    expect(h).toMatch(/buildCodeGraph\(\{[^}]*pause: \(\) => whenNotShed\(\)/)
+    expect(h).toMatch(/buildCodeGraph\(\{[^}]*pause: \(\) => sweepPause\(\)/)
   })
 
-  it('every buildCodeGraph call in index.ts passes the governor', () => {
+  it('every buildCodeGraph call in index.ts passes sweepPause, which waits for the governor and for typing quiet', () => {
     const calls = index.match(/buildCodeGraph\(\{[^}]*\}/g) ?? []
     expect(calls.length).toBeGreaterThanOrEqual(2)
-    expect(calls.filter((c) => !c.includes('pause: () => whenNotShed()'))).toEqual([])
+    expect(calls.filter((c) => !c.includes('pause: () => sweepPause()'))).toEqual([])
+    expect(index).toMatch(/import \{ sweepPause \} from '\.\/sweepPause'/)
   })
 })

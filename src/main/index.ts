@@ -328,6 +328,7 @@ import { setSafeStorage } from './secureKeyStore'
 import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
+import { sweepPause } from './sweepPause' // a code-graph sweep waits for the governor and for typing quiet
 import { runCodeIngest, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, graphSweeping, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
@@ -2735,7 +2736,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // only a microtask — Node drains those to completion WITHOUT running the event loop. That made
       // the whole repo sweep one unbroken 2.8s block: no PTY, no IPC, "(Not Responding)". A real
       // async read hits the threadpool and gives the main thread back between files.
-      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, graphKeyForRoot(opts.repoRoot))
+      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => sweepPause() }, graphKeyForRoot(opts.repoRoot))
       // Keep the graph FRESH: watch the repo and, on source-file changes (debounced), incrementally
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
@@ -2756,7 +2757,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
  *  someone else's content: a committed symlink never leads a read out of the clone. */
 function buildGraphFor(root: string) {
   const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
-  return buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => whenNotShed() }, graphKeyForRoot(root))
+  return buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => sweepPause() }, graphKeyForRoot(root))
 }
 /** Background indexes started for a first world, one per graph key at a time. */
 const worldGraphBuilds = new Map<string, Promise<void>>()

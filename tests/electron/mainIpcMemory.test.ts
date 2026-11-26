@@ -1151,6 +1151,8 @@ describe('memory:ingest-code', () => {
     expect(mem.memoryPruneCodePath).toHaveBeenCalledWith('/repos/x/a.ts')
 
     const graphDeps = cg.buildCodeGraph.mock.calls[0][0]
+    // sweepPause (the governor, then the typing gate), not whenNotShed alone: it resolves with nothing, at once here.
+    await expect(graphDeps.pause()).resolves.toBeUndefined()
     expect(graphDeps.listFiles()).toEqual(['a.ts'])
     expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/x')
     await expect(graphDeps.readFile('a.ts')).resolves.toBe('{}')
@@ -4270,7 +4272,7 @@ describe('Lumopolis world wiring in index.ts', () => {
     await vi.waitFor(() => expect(cg.buildCodeGraph).toHaveBeenCalledTimes(1))
     const [deps, key] = cg.buildCodeGraph.mock.calls[0] as unknown as [any, string]
     expect(key).toBe('key:/repos/y')
-    await deps.pause()
+    await expect(deps.pause()).resolves.toBeUndefined() // sweepPause: the governor, then the typing gate
     await deps.listFiles()
     expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y')
     await expect(deps.readFile('a.ts')).resolves.toBe('{}')
