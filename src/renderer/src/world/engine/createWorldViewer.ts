@@ -344,9 +344,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         // blocks WebGL for the page, and a cached yes would show the 3D legend over the 2D map (RESP review I-2).
         onContextLost: () => { lossPending = true; forgetWebGL(); if (++losses === 1) graphics('lost'); else dropToFlat() },
         onContextRestored: () => { lossPending = false; if (r3) graphics('restored') },
-        // Twice the GPU could not hold even the smallest buffer: a lower drawn tier would be next (the governor, look
-        // plan Task 3); until there is one, the 2D map.
-        onBufferShrunk: () => { if (++shrinkFails >= 2) dropToFlat('watchdog') },
+        // Twice the GPU could not hold even the smallest buffer: one tier down (onTierRequest).
+        onBufferShrunk: () => { if (++shrinkFails >= 2) onTierRequest('down') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
       })
@@ -761,25 +760,36 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // ---------------- first-frame watchdog (look spec §5.3) ----------------
   // A 4K canvas the GPU could not allocate, or a driver that hangs, leaves the 3D map blank with no error. From the first
   // load the watchdog looks every half second until a frame has presented: past the deadline, or with the context lost
-  // two looks running and no loss event to wait out, the viewer shows the 2D map.
+  // two looks running and no loss event to wait out, the viewer asks for one tier down (onTierRequest).
   let paused = false
   let watchArmed = false
   let watch: ReturnType<typeof setTimeout> | undefined
   /** Time counted toward the deadline: the view shown, not paused, no loss waited out. */
   let watched = 0
   let lostTicks = 0
-  /** The counts with whether the tier is chosen for you added to their frame times. */
+  /**
+   * The watchdog asks for one tier down (look spec §5.3), and the 2D map is the last step. Until the governor lands
+   * there is no drawn tier to step to, so the request goes straight to that last step, the 2D map with the watchdog
+   * notice: the look plan's Task 0 has "onTierRequest('down') (stubbed to Flat until Task 3)", and its Task 3 has
+   * "Task 0's watchdog stub becomes governor steps".
+   */
+  function onTierRequest(dir: 'down'): void {
+    void dir
+    dropToFlat('watchdog')
+  }
+  /** The frame times of the 2D map: no frames, at the flat tier. */
   const noPerf = (): RendererPerf => ({ tier: 'flat', ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
+  /** The counts with whether the tier is chosen for you added to their frame times. */
   const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: opts.quality === undefined } })
   function watchTick(): void {
     // dropToFlat and dispose clear the timer, so the renderer is still there.
     const d = (r3 as ThreeRenderer).drawnCounts()
     if (d.presented > 0) return
     if (d.contextLost && !lossPending) {
-      if (++lostTicks >= 2) { dropToFlat('watchdog'); return }
+      if (++lostTicks >= 2) { onTierRequest('down'); return }
     } else lostTicks = 0
     if (!paused && !lossPending && document.visibilityState !== 'hidden') watched += WATCH_TICK_MS
-    if (watched >= (d.software ? FIRST_FRAME_MS_SW : FIRST_FRAME_MS_HW)) { dropToFlat('watchdog'); return }
+    if (watched >= (d.software ? FIRST_FRAME_MS_SW : FIRST_FRAME_MS_HW)) { onTierRequest('down'); return }
     watch = setTimeout(watchTick, WATCH_TICK_MS)
   }
 
