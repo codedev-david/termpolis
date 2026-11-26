@@ -52,6 +52,12 @@ const MIN_LABEL_FONT_PX = 11
 const MAX_HOVER_LINE_LABELS = 6
 /** Where else round the aim point a click must open the same building's card, in pixels. */
 const CLICK_JITTER: Array<[number, number]> = [[2, 0], [-2, 0], [0, 3], [0, -3]]
+/**
+ * How far below the probe's point for a building, in pixels, its aim point may be: the probe's point is the top floor,
+ * where the building's own lines leave its roof, so in a busy world (this repository's) a line takes the point a few
+ * pixels above it on every building; the floor or two below it are the building's face alone.
+ */
+const AIM_DROP_PX = 10
 
 const THEMES = ['neon', 'blueprint', 'glass'] as const
 const SHOTS = path.resolve('test-results/world-visual')
@@ -312,46 +318,71 @@ async function world(root: string): Promise<World> {
   }, root)
 }
 
+/** The tier, and the frames drawn, as the last frame drawn left them, and the camera's distance now. */
+const zoomState = (): Promise<{ tier: string; frames: number; dist: number }> =>
+  page.evaluate(() => {
+    const probe = (window as unknown as { __termpolis_world: { drawn(): { tier: string; frames: number }; cameraState(): { pos: number[]; target: number[] } } }).__termpolis_world
+    const d = probe.drawn()
+    const c = probe.cameraState()
+    return { tier: d.tier, frames: d.frames, dist: Math.hypot(...c.pos.map((v, k) => v - c.target[k])) }
+  })
+
 /**
- * From the overview (the districts tier: one slab per district, no buildings to hover) wheels in
- * until the buildings show, then takes the pointer off the canvas.
+ * One wheel notch in (the pointer must be over the canvas), and the tier for the camera after it. The tier is set as
+ * a frame is drawn, so it is read from a frame begun after the notch moved the camera: drawn in software, no frame is
+ * drawn while the GPU is still drawing the last (SOFTWARE_FENCE_MAX_MS, 10 s at most), so the tier can trail a notch
+ * by a frame. Read at a fixed time after the notch it named the tier of one notch earlier now and then, the wheeling
+ * stopped a notch early or late, and the click checks below came in at another camera than the one their aim point
+ * was found from.
  */
-async function toBuildingsTier(further = 0): Promise<void> {
-  // The tier, and the frames drawn, as the last frame drawn left them, and the camera's distance now.
-  const state = (): Promise<{ tier: string; frames: number; dist: number }> =>
-    page.evaluate(() => {
-      const probe = (window as unknown as { __termpolis_world: { drawn(): { tier: string; frames: number }; cameraState(): { pos: number[]; target: number[] } } }).__termpolis_world
-      const d = probe.drawn()
-      const c = probe.cameraState()
-      return { tier: d.tier, frames: d.frames, dist: Math.hypot(...c.pos.map((v, k) => v - c.target[k])) }
-    })
-  // The tier for the camera after a notch. The tier is set as a frame is drawn, so it is read from a frame begun
-  // after the notch moved the camera: drawn in software, no frame is drawn while the GPU is still drawing the last
-  // (SOFTWARE_FENCE_MAX_MS, 10 s at most), so the tier can trail a notch by a frame. Read at a fixed time after the
-  // notch it named the tier of one notch earlier now and then, the wheeling stopped a notch early or late, and the
-  // click checks below came in at another camera than the one their aim point was found from.
-  const notch = async (): Promise<string> => {
-    const before = (await state()).dist
-    await page.mouse.wheel(0, -100)
-    await expect.poll(async () => (await state()).dist, { message: 'a wheel notch never moved the camera', timeout: 5_000 }).not.toBe(before)
-    const moved = (await state()).frames
-    await expect.poll(async () => (await state()).frames, { message: 'no frame was drawn after a wheel notch', timeout: 15_000 }).toBeGreaterThan(moved)
-    return (await state()).tier
-  }
+async function notch(): Promise<string> {
+  const before = (await zoomState()).dist
+  await page.mouse.wheel(0, -100)
+  await expect.poll(async () => (await zoomState()).dist, { message: 'a wheel notch never moved the camera', timeout: 5_000 }).not.toBe(before)
+  const moved = (await zoomState()).frames
+  await expect.poll(async () => (await zoomState()).frames, { message: 'no frame was drawn after a wheel notch', timeout: 15_000 }).toBeGreaterThan(moved)
+  return (await zoomState()).tier
+}
+
+/** The pointer to the canvas's middle, where the wheel notches go in. */
+async function pointerOnCanvas(): Promise<void> {
   const box = await page.locator('[data-testid="world-canvas-host"] canvas').boundingBox()
   // This window reports a device pixel ratio a hair under 1 (0.99999998), and OrbitControls
   // (three r160) divides the wheel delta by `devicePixelRatio | 0`: zero, so one notch would fly
   // straight to the nearest distance. Reported as exactly 1, a notch of 100 px is the intended 5%.
   await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
-  // OrbitControls scales the distance by 0.95 per 100 px of wheel: about 14 steps from the overview to half its distance.
-  let tier = (await state()).tier
-  for (let i = 0; i < 40 && tier === 'districts'; i++) tier = await notch()
-  expect(tier, 'wheeling in from the overview never reached the buildings').not.toBe('districts')
-  // `further` notches more, past the first one that shows buildings.
-  for (let i = 0; i < further; i++) await notch()
+}
+
+/** The pointer off the canvas, and the hover it left gone. */
+async function pointerOff(): Promise<void> {
   await page.mouse.move(2, 400)
   await page.waitForTimeout(1500)
+}
+
+/**
+ * From the overview (the districts tier: one slab per district, no buildings to hover) wheels in
+ * until the buildings show, then `further` notches more, then takes the pointer off the canvas.
+ */
+async function toBuildingsTier(further = 0): Promise<void> {
+  await pointerOnCanvas()
+  // OrbitControls scales the distance by 0.95 per 100 px of wheel: about 14 steps from the overview to half its distance.
+  let tier = (await zoomState()).tier
+  for (let i = 0; i < 40 && tier === 'districts'; i++) tier = await notch()
+  expect(tier, 'wheeling in from the overview never reached the buildings').not.toBe('districts')
+  for (let i = 0; i < further; i++) await notch()
+  await pointerOff()
+}
+
+/**
+ * One notch nearer than the camera is (from where toBuildingsTier left it, one notch at a time: the same wheel steps
+ * from the same start as toBuildingsTier with one more `further`), and the tier after it.
+ */
+async function nearer(): Promise<string> {
+  await pointerOnCanvas()
+  const tier = await notch()
+  await pointerOff()
+  return tier
 }
 
 /** The first building whose point on screen has the bare canvas under it, and that point. */
@@ -368,40 +399,53 @@ async function aimAtABuilding(ids: string[]): Promise<{ id: string; x: number; y
 }
 
 /**
- * The first building (the busiest first) whose aim point has the bare canvas under it and which the
- * renderer's pick gives the building there and at every CLICK_JITTER point round it.
+ * The first building (the busiest first) with an aim point that has the bare canvas under it and that the renderer's
+ * pick gives the building there and at every CLICK_JITTER point round it. The aim point is the probe's point for the
+ * building (its top floor, where its lines leave the roof) or, when a line or a neighbour takes a point round that,
+ * a point straight below it down the building's face, at most AIM_DROP_PX lower. When no building has one, `why`
+ * names, for the few that came nearest, the probe's point, each point round it the pick or the page gives to
+ * something else, and what took it.
  */
-async function jitterAim(ids: string[]): Promise<{ hit: { id: string; x: number; y: number } | null; why: string }> {
-  return page.evaluate(({ all, jitter }) => {
+async function jitterAim(ids: string[]): Promise<{ hit: { id: string; x: number; y: number; drop: number } | null; why: string }> {
+  return page.evaluate(({ all, jitter, most }) => {
     const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
     const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
     const name = (el: Element | null): string => (el ? `${el.tagName.toLowerCase()}.${el.className}${el.textContent && el.textContent.length < 40 ? ` "${el.textContent}"` : ''}` : 'nothing')
+    // Each point round (x, y), the aim point itself first, that the pick or the page gives to something else, and what.
+    const misses = (id: string, x: number, y: number): string[] => {
+      const out: string[] = []
+      for (const [dx, dy] of [[0, 0], ...jitter]) {
+        const pick = probe?.pickAt(x + dx, y + dy) ?? null
+        const top = document.elementFromPoint(x + dx, y + dy)
+        if (pick?.id !== id) out.push(`${dx},${dy} pick ${pick ? `${pick.kind}:${pick.id}` : 'none'}`)
+        else if (top !== host) out.push(`${dx},${dy} under ${name(top)}`)
+      }
+      return out
+    }
     let off = 0
-    const tried: Array<{ id: string; bad: number; text: string }> = []
+    const tried: Array<{ bad: number; text: string }> = []
     for (const id of all) {
       const p = probe?.screenPoint(id) ?? null
       if (!p) {
         off++
         continue
       }
-      // Each point round the aim point that the pick or the page gives to something else, and what.
-      const misses: string[] = []
-      for (const [dx, dy] of [[0, 0], ...jitter]) {
-        const pick = probe?.pickAt(p.x + dx, p.y + dy) ?? null
-        const top = document.elementFromPoint(p.x + dx, p.y + dy)
-        if (pick?.id !== id) misses.push(`${dx},${dy} pick ${pick ? `${pick.kind}:${pick.id}` : 'none'}`)
-        else if (top !== host) misses.push(`${dx},${dy} under ${name(top)}`)
+      let fewest = jitter.length + 2
+      for (let drop = 0; drop <= most; drop++) {
+        const m = misses(id, p.x, p.y + drop)
+        if (m.length === 0) return { hit: { id, x: p.x, y: p.y + drop, drop }, why: '' }
+        fewest = Math.min(fewest, m.length)
       }
-      if (misses.length === 0) return { hit: { id, ...p }, why: '' }
-      tried.push({ id, bad: misses.length, text: `${id} aim ${p.x.toFixed(1)},${p.y.toFixed(1)}: ${misses.length}/${jitter.length + 1} off (${misses.join('; ')})` })
+      const m = misses(id, p.x, p.y)
+      tried.push({ bad: fewest, text: `${id} aim ${p.x.toFixed(1)},${p.y.toFixed(1)}: ${m.length}/${jitter.length + 1} off (${m.join('; ')}), at best ${fewest} off down to ${most} px lower` })
     }
     tried.sort((a, b) => a.bad - b.bad)
     const d = probe?.drawn()
     const cam = (probe as unknown as { cameraState?: () => { pos: number[]; target: number[] } } | undefined)?.cameraState?.()
     const dist = cam ? Math.hypot(...cam.pos.map((v, k) => v - cam.target[k])).toFixed(1) : '?'
     const c = host?.getBoundingClientRect()
-    return { hit: null, why: `${all.length} candidates, ${off} with no aim point in view, tier ${d?.tier ?? '?'}, camera ${dist} from its target, canvas ${c ? `${Math.round(c.width)}x${Math.round(c.height)}` : '?'} at dpr ${window.devicePixelRatio}; best:${tried.slice(0, 5).map((t) => t.text).join(' | ') || 'none'}` }
-  }, { all: ids, jitter: CLICK_JITTER })
+    return { hit: null, why: `${all.length} candidates, ${off} with no aim point in view, tier ${d?.tier ?? '?'}, camera ${dist} from its target, canvas ${c ? `${Math.round(c.width)}x${Math.round(c.height)}` : '?'} at dpr ${window.devicePixelRatio}; best: ${tried.slice(0, 5).map((t) => t.text).join(' | ') || 'none'}` }
+  }, { all: ids, jitter: CLICK_JITTER, most: AIM_DROP_PX })
 }
 
 /** Connection labels on show (the hovered or selected part's lines). */
@@ -683,20 +727,24 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
       // drawn across a building's face rightly takes the click where it runs). From the same
       // distance in each time: the overview itself shows district slabs, no buildings.
       // A big world's buildings can be too small at the first buildings notch for any to fill the
-      // jitter round its aim point, so the camera goes a few notches nearer until one does.
+      // jitter round its aim point, so the camera goes nearer a notch at a time until one does, as
+      // far as the buildings tier goes (the next notch would draw the floors). Each notch shrinks what
+      // the few pixels of the jitter cover on the ground by 5%.
+      await toOverview()
+      await toBuildingsTier()
       let further = 0
-      let steady: { id: string; x: number; y: number } | null = null
+      let steady: { id: string; x: number; y: number; drop: number } | null = null
       const whys: string[] = []
-      for (; further <= 12; further += 4) {
-        await toOverview()
-        await toBuildingsTier(further)
+      for (;;) {
         const aim = await jitterAim(connected)
         steady = aim.hit
         if (steady) break
         whys.push(`${further} further: ${aim.why}`)
+        if ((await nearer()) !== 'buildings') break
+        further++
       }
-      if (!steady) throw new Error(`${tag}: no steady aim at any zoom tried (up to ${further - 4} further):\n${whys.join('\n')}`)
-      console.log(`[world-visual] ${tag} steady aim on ${steady.id} at ${steady.x.toFixed(1)},${steady.y.toFixed(1)}, ${further} further${whys.length ? `, after:\n${whys.join('\n')}` : ''}`)
+      if (!steady) throw new Error(`${tag}: no steady aim at any zoom in the buildings tier (0 to ${further} further):\n${whys.join('\n')}`)
+      console.log(`[world-visual] ${tag} steady aim on ${steady.id} at ${steady.x.toFixed(1)},${steady.y.toFixed(1)} (${steady.drop} px below the probe's point), ${further} further${whys.length ? `, after:\n${whys.join('\n')}` : ''}`)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
         await toBuildingsTier(further)
@@ -890,7 +938,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     await settled(240_000)
     await (await toolbarControl(page, 'world-theme')).selectOption('neon')
     await closeMore(page)
-    // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see toBuildingsTier).
+    // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see pointerOnCanvas).
     await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
     motionDoc = await page.evaluate(async (r) => {
       const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: MotionDoc | null }> } }).termpolis
