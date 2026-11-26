@@ -51,16 +51,18 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
  * the warm-up open did not remove that spread (a287b581: 2.2-4.6 s on macOS; on Linux 1.1-2.4 s, where the same worlds
  * took 0.4-1.6 s without it), so the time alone is not asserted. The ratio is: on one runner the warm-up's first frame
  * and the worlds' move together (macOS 3.6-4.0 s and 2.2-4.6 s, Linux 1.1-1.9 s and 1.1-2.4 s, Windows 0.25-0.65 s and
- * 0.25-0.39 s). The worst ratio seen is 1.53 (Windows, the big world, soak 45646568734) over 20 first frames on the
- * three systems (soaks 45646550636, 45646568734, 45646589568); x 1.3 is 1.99, and the bound is 2.5 because 20 is a
- * small sample and one world's ratio on one system spans 0.5-1.5. It grows when the app's first frame costs more for a
+ * 0.25-0.39 s). The worst ratio seen is 2.04 (Linux, the Termpolis world, soak 45731354296, where that copy's warm-up
+ * drew in 779 ms against 1.0-1.3 s on the other Linux copies) over 52 first frames on the three systems (the a287b581
+ * soaks 45646550636, 45646568734 and 45646589568, and the 2-copy soaks 45651837832, 45652182123, 45716423172,
+ * 45728023782, 45728044383, 45728064997, 45731354296 and 45731375685); x 1.3 is 2.65, and the bound is 2.7. Linux's
+ * Termpolis ratio alone spans 0.97-2.04. It grows when the app's first frame costs more for a
  * bigger world (building, uploading and drawing it); a cost that every first frame pays alike is Task 20's to find on
  * real hardware. Above it all, the first frame must come before
  * the product's own software watchdog drops the map to 2D (FIRST_FRAME_MS_SW in createWorldViewer.ts). On a GPU the
  * bound is FIRST_FRAME_HARDWARE_MS, wider than the 400 ms target that Task 20 times.
  */
 const WARM_UP_FILES = 2
-const FIRST_FRAME_RATIO = 2.5
+const FIRST_FRAME_RATIO = 2.7
 const FIRST_FRAME_WATCHDOG_MS = 15_000
 const FIRST_FRAME_HARDWARE_MS = 1000
 /**
