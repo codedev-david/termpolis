@@ -41,6 +41,8 @@ const H = vi.hoisted(() => {
     AppExited,
     StopHere,
     userData: '',
+    /** Holds a launch inside its import while pending: the way a launch outlives a test that ran out of time. */
+    gate: Promise.resolve() as Promise<void>,
     appExit: vi.fn((code?: number): never => { throw new AppExited(code) }),
     // Witnesses for everything below the block. None of them may fire during an uninstall.
     initTelemetry: vi.fn(),
@@ -101,10 +103,10 @@ vi.mock('electron', () => {
   return { ...electron, default: electron }
 })
 
-vi.mock('../../src/main/telemetry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/main/telemetry')>()),
-  initTelemetry: H.initTelemetry,
-}))
+vi.mock('../../src/main/telemetry', async (importOriginal) => {
+  await H.gate
+  return { ...(await importOriginal<typeof import('../../src/main/telemetry')>()), initTelemetry: H.initTelemetry }
+})
 
 vi.mock('../../src/main/sentry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/sentry')>()),
@@ -324,5 +326,24 @@ describe('--disconnect-agents, the way the uninstaller runs it', () => {
         else process.env[k] = v
       }
     }
+  })
+
+  // HOLD-B #106: a test that runs out of time leaves its launch running, holding the flag on argv and calling the
+  // mocks. On a loaded machine the next test then saw the flag (or counted that launch's calls as its own) and failed
+  // for no fault of its own. These two run in order: the first leaves a launch running, the second must not see it.
+  it('a launch still running when its test ends, as after a timeout, is left running here', async () => {
+    let release!: () => void
+    H.gate = new Promise<void>((done) => { release = done })
+    H.resolvePaths.mockReturnValueOnce(SCRATCH_PATHS)
+    H.disconnect.mockReturnValueOnce([])
+    void launch(true)
+    expect(process.argv).toContain('--disconnect-agents')
+    setTimeout(release, 300)
+  })
+
+  it('and the next test starts after it has ended: no flag on argv, and none of its calls counted', () => {
+    expect(process.argv).not.toContain('--disconnect-agents')
+    expect(H.disconnect).not.toHaveBeenCalled()
+    expect(H.appExit).not.toHaveBeenCalled()
   })
 })
