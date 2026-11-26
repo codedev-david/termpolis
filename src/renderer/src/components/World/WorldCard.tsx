@@ -216,14 +216,19 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       needRef.current?.(readableNeed(body))
     }
     measure()
+    // Bare text at the body's top is no element, so no observer below sees a late font make it taller: the card
+    // measures again when the page's fonts finish loading (HOLD-B #106, landing m2).
+    const fonts = document.fonts as FontFaceSet | undefined
+    fonts?.addEventListener('loadingdone', measure)
+    const stop = (): void => fonts?.removeEventListener('loadingdone', measure)
     // The scrollbar comes and goes as the card meets its cap; its width is taken from the body's content box.
-    if (typeof ResizeObserver !== 'function') return
+    if (typeof ResizeObserver !== 'function') return stop
     const watch = new ResizeObserver(measure)
     watch.observe(body)
     // A capped body keeps its size when its content grows or shrinks (a late font, an icon): the content is watched too,
     // so the fade follows what lies below.
     for (const part of Array.from(body.children)) watch.observe(part)
-    return () => watch.disconnect()
+    return () => { watch.disconnect(); stop() }
   }, [html])
   const save = (e: FormEvent): void => {
     e.preventDefault()
