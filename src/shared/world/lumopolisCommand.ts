@@ -16,6 +16,14 @@ export const LUMOPOLIS_OSC = 7377
 /** The first field of the payload: names the request. */
 export const LUMOPOLIS_TAG = 'lumopolis'
 
+/** The payload of the mark Termpolis's zsh integration prints with each prompt report (#29): its .zshrc ran to the end, so
+ *  `lumopolis` is defined in that shell. A system zshenv that sets ZDOTDIR keeps the file from running at all, and then
+ *  no mark comes. It carries no nonce: a forged one changes only the wording of the sidebar hint. */
+export const LUMOPOLIS_READY = 'ready'
+
+/** The ready mark as printed. */
+export const LUMOPOLIS_READY_SEQUENCE = `\x1b]${LUMOPOLIS_OSC};${LUMOPOLIS_READY}\x07`
+
 /** The environment variable every Termpolis shell gets the run's nonce in. */
 export const LUMOPOLIS_NONCE_ENV = 'TERMPOLIS_LUMOPOLIS_NONCE'
 

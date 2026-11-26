@@ -111,6 +111,8 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: vi.fn(), killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''), getTerminalPid: vi.fn(),
   computeWindowsPty: vi.fn(() => ({})),
   hasTerminal: vi.fn((id: string) => id === 'pty-1'),
+  // #29: pty-1 a zsh long started, pty-2 a bash.
+  terminalLumopolis: vi.fn((id: string) => (id === 'pty-1' ? { way: 'reports', startedAt: 0 } : id === 'pty-2' ? { way: 'defined', startedAt: 0 } : null)),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
@@ -4194,6 +4196,13 @@ describe('Lumopolis world wiring in index.ts', () => {
     const looks = fsMock.promises.stat.mock.calls.length
     expect(await invoke('world:terminal-open', { terminalId: 'pty-9', payload: payload(folder), cwd: null })).toMatchObject({ success: false })
     expect(fsMock.promises.stat.mock.calls.length).toBe(looks)
+  })
+
+  it('registers the lumopolis typing check over the terminals and their output (#29)', async () => {
+    // A bash: yes. A zsh started long ago whose output never held the ready mark: no. Not a terminal: refused.
+    expect(await invoke('world:terminal-typable', { terminalId: 'pty-2' })).toEqual({ success: true, data: true })
+    expect(await invoke('world:terminal-typable', { terminalId: 'pty-1' })).toEqual({ success: true, data: false })
+    expect(await invoke('world:terminal-typable', { terminalId: 'pty-9' })).toMatchObject({ success: false })
   })
 
   it('a watched change refreshes the world after the re-index, and the gate still waits on the re-index alone', async () => {

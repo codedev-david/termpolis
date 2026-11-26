@@ -259,3 +259,15 @@ describe('terminalManager: the direct typing line (1.61.0)', () => {
     expect((host.sent.at(-1) as Extract<PtyHostRequest, { kind: 'spawn' }>).direct).toEqual({ id: 'd3', base: 0, until: 5000 })
   })
 })
+
+describe('terminalManager: how a hosted terminal has lumopolis (#29)', () => {
+  it('is known for a terminal in the host as for one here: bash defined, cmd with no file none, with when it started', async () => {
+    hostUp()
+    const before = Date.now()
+    void tm.spawnTerminal('hl-bash', 'C:/Program Files/Git/bin/bash.exe', 'C:/', vi.fn(), undefined, undefined, vi.fn(), PREP)
+    void tm.spawnTerminal('hl-cmd', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, vi.fn(), PREP)
+    expect(tm.terminalLumopolis('hl-bash')).toEqual({ way: 'defined', startedAt: expect.any(Number) })
+    expect(tm.terminalLumopolis('hl-bash')!.startedAt).toBeGreaterThanOrEqual(before)
+    expect(tm.terminalLumopolis('hl-cmd')?.way).toBe('none')
+  })
+})

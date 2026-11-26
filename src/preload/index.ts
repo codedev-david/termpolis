@@ -299,6 +299,7 @@ const api: TermpolisAPI = {
   worldMapProject: (root: string) => ipcRenderer.invoke('world:map-project', { root }),
   // The `lumopolis` shell command's OSC 7377 payload, from terminal terminalId's own output: main checks it and answers the folder.
   worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => ipcRenderer.invoke('world:terminal-open', args),
+  worldTerminalTypable: (terminalId: string) => ipcRenderer.invoke('world:terminal-typable', { terminalId }),
   worldOpenFolder: () => ipcRenderer.invoke('world:open-folder'),
   worldPickFolder: () => ipcRenderer.invoke('world:pick-folder'),
   // `access` is how the person chose to sign in; a token travels only in this one request.

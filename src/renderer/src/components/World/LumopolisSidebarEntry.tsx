@@ -3,10 +3,17 @@
 // Lumopolis settings (worldSettings.ts: worldOpened, worldHintDismissed), not in this browser's storage,
 // so they stay gone across updates and profiles. Nothing shows until the settings have answered, so a
 // returning user never sees the badge flash. Small and engine-free: the sidebar is in App's main chunk.
-import { useEffect, useState } from 'react'
+// "or type lumopolis" is said only where typing it works (#29): main answers for the active terminal
+// (world:terminal-typable), and a terminal answered no (a zsh whose Termpolis .zshrc never ran) gets the hint without
+// those words. With no terminal, while main has not answered, or when it cannot say, the whole hint shows: every
+// shell Termpolis integrates has the command.
+import { useEffect, useRef, useState } from 'react'
+import { useTerminalStore } from '../../store/terminalStore'
 import { openLumopolis, WORLD_OPENED_EVENT } from './worldOpen'
 
 export const LUMOPOLIS_HINT = 'Lumopolis: see any project as a 3D city. Open it here, click the globe on a terminal, or type lumopolis.'
+/** The hint for an active terminal where typing lumopolis does not work (#29). PENDING SIGN-OFF. */
+export const LUMOPOLIS_HINT_UNTYPED = 'Lumopolis: see any project as a 3D city. Open it here, or click the globe on a terminal.'
 
 interface Flags { opened: boolean; dismissed: boolean }
 
@@ -26,13 +33,28 @@ export function LumopolisSidebarEntry(): JSX.Element {
     return () => { live = false; window.removeEventListener(WORLD_OPENED_EVENT, onOpened) }
   }, [])
 
+  const isNew = flags !== null && !flags.opened
+  const hint = isNew && !(flags as Flags).dismissed
+
+  // Main's answer for each terminal asked about while the hint shows: asked once, and only an answer is kept.
+  const active = useTerminalStore((s) => s.activeTerminalId)
+  const [typable, setTypable] = useState<Record<string, boolean>>({})
+  const asked = useRef(new Set<string>())
+  useEffect(() => {
+    if (!hint || active === null || asked.current.has(active)) return
+    asked.current.add(active)
+    // Through a promise, so a build or a test bridge without the call keeps the whole hint.
+    Promise.resolve().then(() => window.termpolis.worldTerminalTypable(active)).then(
+      (res) => { if (res.success) setTypable((t) => ({ ...t, [active]: res.data })) },
+      () => undefined,
+    )
+  }, [hint, active])
+
   const dismiss = (): void => {
     setFlags((f) => ({ ...(f as Flags), dismissed: true })) // the hint only shows once the flags have answered
     Promise.resolve().then(() => window.termpolis.worldSettingsSet({ worldHintDismissed: true })).catch(() => undefined)
   }
 
-  const isNew = flags !== null && !flags.opened
-  const hint = isNew && !(flags as Flags).dismissed
   return (
     <div className="px-1.5 py-1.5">
       <button
@@ -52,7 +74,7 @@ export function LumopolisSidebarEntry(): JSX.Element {
         <div role="note" data-testid="sidebar-lumopolis-hint" className="relative mt-1 rounded border border-[#0078d4]/60 bg-[#0078d4]/10 px-2.5 py-2 pr-7 text-xs leading-snug text-[#d4d4d4]">
           {/* Points up at the entry it describes. */}
           <span aria-hidden="true" className="absolute -top-1.5 left-4 h-3 w-3 rotate-45 border-l border-t border-[#0078d4]/60 bg-[#1f2d3a]"></span>
-          {LUMOPOLIS_HINT}
+          {active !== null && typable[active] === false ? LUMOPOLIS_HINT_UNTYPED : LUMOPOLIS_HINT}
           <button
             type="button"
             onClick={dismiss}

@@ -16,14 +16,29 @@
 // times a minute, and no more: it cannot keep Lumopolis mapping and labelling folders on the person's tokens. A
 // repeat inside the 3 seconds is still said, with the folder, so the notice can offer an Open button: the person who
 // closed the pane and typed the command again at once gets it back with one click.
+//
+// The sidebar hint says "or type lumopolis" only where typing it works (#29), and asks
+//   world:terminal-typable { terminalId } → ok(boolean)
+// bash, the PowerShell family, cmd and fish have the command from what Termpolis started them with. zsh has it only if
+// Termpolis's .zshrc ran, which a system zshenv that sets ZDOTDIR prevents, and that file prints a ready mark with each
+// prompt report; so a zsh terminal is waited on until main has seen the mark in its output or READY_WAIT_MS have passed
+// since it started, and is answered no after that.
 // `ipc` and the checks are parameters, so this module never imports Electron and tests pass fakes.
 import { randomBytes } from 'crypto'
 import { posix, win32 } from 'path'
 import { normalizeShellPath } from '../../shared/cwdPath'
 import { parseLumopolisPayload } from '../../shared/world/lumopolisCommand'
 import { err, ok } from '../ipcResult'
+import type { LumopolisWay } from '../shellIntegration'
 
 export const TERMINAL_OPEN_CHANNEL = 'world:terminal-open'
+export const TERMINAL_TYPABLE_CHANNEL = 'world:terminal-typable'
+
+/** How long after a zsh terminal starts its ready mark is waited for: a slow .zshrc (a plugin manager's first run) takes
+ *  seconds, and a .zshrc that never runs prints nothing at all. */
+export const READY_WAIT_MS = 10_000
+/** How often the wait looks for the mark. */
+const READY_POLL_MS = 250
 
 export const NOT_A_TERMINAL = 'That is not a Termpolis terminal.'
 export const NOT_A_REQUEST = 'That was not a lumopolis request from this Termpolis.'
@@ -78,6 +93,20 @@ export interface LumopolisOpenDeps {
   homedir: string
   /** The limiter's clock; Date.now by default. */
   now?(): number
+  /** Answers world:terminal-typable when given (#29). */
+  typing?: LumopolisTypingDeps
+}
+
+/** What lumopolisTypable reads about a terminal (terminalManager's terminalLumopolis, the output buffer's lumopolisReady). */
+export interface LumopolisTypingDeps {
+  /** How the terminal's shell has lumopolis and when it started; null for no open terminal. */
+  way(id: string): { way: LumopolisWay; startedAt: number } | null
+  /** Whether the terminal printed the zsh ready mark. */
+  ready(id: string): boolean
+  /** Date.now by default. */
+  now?(): number
+  /** A timer by default. */
+  sleep?(ms: number): Promise<void>
 }
 
 export interface LumopolisOpenIpc {
@@ -132,7 +161,29 @@ export async function resolveLumopolisOpen(args: unknown, deps: LumopolisOpenDep
   return ok(folder)
 }
 
+const timer = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Whether typing `lumopolis` works in this terminal (see the header): at once for a shell given it on start or given
+ *  none; for zsh, as soon as its ready mark is seen, or no once READY_WAIT_MS have passed since it started. */
+export async function lumopolisTypable(args: unknown, deps: LumopolisTypingDeps) {
+  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+  const terminalId = str(a.terminalId)
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? timer
+  for (;;) {
+    const t = terminalId === null ? null : deps.way(terminalId)
+    if (terminalId === null || t === null) return err(NOT_A_TERMINAL)
+    if (t.way !== 'reports') return ok(t.way === 'defined')
+    if (deps.ready(terminalId)) return ok(true)
+    const left = t.startedAt + READY_WAIT_MS - now()
+    if (left <= 0) return ok(false)
+    await sleep(Math.min(READY_POLL_MS, left))
+  }
+}
+
 export function registerLumopolisIpc(ipc: LumopolisOpenIpc, deps: LumopolisOpenDeps): void {
   const limit = createOpenLimiter(deps.now)
   ipc.handle(TERMINAL_OPEN_CHANNEL, (_event: unknown, args?: unknown) => resolveLumopolisOpen(args, deps, limit))
+  const typing = deps.typing
+  if (typing) ipc.handle(TERMINAL_TYPABLE_CHANNEL, (_event: unknown, args?: unknown) => lumopolisTypable(args, typing))
 }

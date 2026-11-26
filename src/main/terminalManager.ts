@@ -38,13 +38,21 @@ import {
   integrationDisabled,
   integrationFile,
   integrationFileSet,
+  lumopolisWay,
   type IntegrationFile,
+  type LumopolisWay,
 } from './shellIntegration'
 
 /** What a terminal's pty is to this module: node-pty's own (in this process), or one in the pty host (ptyHostClient.ts). */
 type TerminalPty = pty.IPty | HostPty
 
-interface PtyProcess {
+/** How a terminal's shell has `lumopolis`, and when it was started (#29, terminalLumopolis). */
+interface LumopolisFacts {
+  lumopolis: LumopolisWay
+  startedAt: number
+}
+
+interface PtyProcess extends LumopolisFacts {
   pty: TerminalPty
   /** Batches this terminal's output before it crosses to the renderer. Disposed on
    *  exit and on kill so trailing output is delivered, never dropped. */
@@ -300,9 +308,10 @@ export function spawnTerminal(
   ]
 
   const spawnOpts = { name: 'xterm-256color', cols: SPAWN_COLS, rows: SPAWN_ROWS, cwd: resolvedCwd, env }
+  const facts: LumopolisFacts = { lumopolis: integrate ? lumopolisWay(shellKind, scriptPath) : 'none', startedAt: Date.now() }
   // Windows, once the pty host is up (perf155 P14): the shell starts there, and ConPTY's CreateProcess blocks that
   // process instead of this thread. Until then, or with TERMPOLIS_NO_PTY_HOST=1, or after the host died, here as always.
-  if (process.platform === 'win32' && ptyHostReady()) return spawnHosted(id, executable, resolvedCwd, args, spawnOpts, onData, onExit, direct)
+  if (process.platform === 'win32' && ptyHostReady()) return spawnHosted(id, executable, resolvedCwd, args, spawnOpts, onData, onExit, direct, facts)
 
   let proc: pty.IPty
   try {
@@ -320,7 +329,7 @@ export function spawnTerminal(
   const pid = proc.pid
   const shell: RunningShell = { pid }
   if (pid) running.add(shell)
-  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable }
+  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable, ...facts }
   proc.onExit((e: { exitCode: number }) => {
     shellExited(shell)
     // Flush BEFORE the exit callback: a shell's last line (a prompt, an error, an exit
@@ -348,8 +357,9 @@ function spawnHosted(
   args: string[],
   opts: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string> },
   onData: (data: string) => void,
-  onExit?: (exitCode: number) => void,
-  direct?: { base: number; until?: number },
+  onExit: ((exitCode: number) => void) | undefined,
+  direct: { base: number; until?: number } | undefined,
+  facts: LumopolisFacts,
 ): Promise<void> {
   const spec: DirectSpawn | undefined = direct
     ? (direct.until !== undefined ? { id, base: direct.base, until: direct.until } : { id, base: direct.base })
@@ -360,7 +370,7 @@ function spawnHosted(
   // Counted from now, not from the pid: a quit while the host is still starting the shell waits for it too.
   const shell: RunningShell = { pid: 0 }
   running.add(shell)
-  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable }
+  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable, ...facts }
   proc.onExit((e) => {
     shellExited(shell)
     try { coalescer.dispose() } catch {}
@@ -568,6 +578,12 @@ export function _resetTerminalExitsForTests(): void {
 /** Whether a terminal with this id is open (started by this app, and not yet exited). */
 export function hasTerminal(id: string): boolean {
   return processes.has(id)
+}
+
+/** How an open terminal's shell has `lumopolis`, and when it started; null for no open terminal (#29, lumopolisTypable). */
+export function terminalLumopolis(id: string): { way: LumopolisWay; startedAt: number } | null {
+  const proc = processes.get(id)
+  return proc === undefined ? null : { way: proc.lumopolis, startedAt: proc.startedAt }
 }
 
 export function getTerminalPid(id: string): number | null {

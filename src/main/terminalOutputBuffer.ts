@@ -33,6 +33,7 @@
 // reads that judge what the agent shows use it (liveScreen). The window stays for the offset reads.
 import { screenOfReplay } from '../shared/terminalScreen'
 import type { ScreenSize, TerminalScreen } from '../shared/terminalScreen'
+import { LUMOPOLIS_READY_SEQUENCE } from '../shared/world/lumopolisCommand'
 
 /** Chars of scrollback retained per terminal. Not bytes: `.length` is UTF-16 code
  *  units, which is what the previous implementation counted, and changing the unit
@@ -66,6 +67,9 @@ export interface OutputWindow {
    *  since main last asked (takeRestarted): the terminal's account is no longer the one Termpolis put it on (SW3-3). A latch: the
    *  line itself leaves the window within moments, as the resumed conversation redraws. */
   restarted?: boolean
+  /** The terminal printed Termpolis's zsh ready mark (LUMOPOLIS_READY_SEQUENCE): its shell has `lumopolis` (#29). Kept after
+   *  the mark left the window, as `reported` is. Absent until it is seen. */
+  lumopolisReady?: true
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -96,6 +100,8 @@ export function appendOutput(
   win.total += data.length
   if (win.reported?.posix !== true || win.reported.windows !== true) noteReports(win, data)
   noteRestart(win, data)
+  // Whole in one chunk only: the zsh hook prints it at every prompt, so a mark cut in two is seen at the next.
+  if (win.lumopolisReady !== true && data.includes(LUMOPOLIS_READY_SEQUENCE)) win.lumopolisReady = true
   if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
@@ -170,6 +176,11 @@ export function takeRestarted(buffers: OutputBuffers, id: string): boolean {
 export function reportedFamilies(buffers: OutputBuffers, id: string): { posix: boolean; windows: boolean } {
   const r = buffers.get(id)?.reported
   return { posix: r?.posix === true, windows: r?.windows === true }
+}
+
+/** Whether this terminal ever printed the zsh ready mark (OutputWindow.lumopolisReady). */
+export function lumopolisReady(buffers: OutputBuffers, id: string): boolean {
+  return buffers.get(id)?.lumopolisReady === true
 }
 
 /** The retained tail as one string.

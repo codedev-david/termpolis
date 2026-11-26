@@ -134,6 +134,7 @@ import {
   clearOutput,
   replayPreamble,
   liveScreen,
+  lumopolisReady,
   reportedFamilies,
   resizeScreen,
   takeRestarted,
@@ -142,7 +143,7 @@ import {
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, hasTerminal, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, hasTerminal, terminalLumopolis, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
 import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -3062,6 +3063,8 @@ registerLumopolisIpc(ipcMain, {
   isDirectory: (p) => fsPromises.stat(p).then((s) => s.isDirectory(), () => false),
   platform: process.platform,
   homedir: homedir(),
+  // world:terminal-typable (#29): how each terminal's shell has lumopolis, and whether a zsh one printed its ready mark.
+  typing: { way: (id) => terminalLumopolis(id), ready: (id) => lumopolisReady(terminalOutputBuffers, id) },
 })
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies

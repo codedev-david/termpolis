@@ -224,7 +224,9 @@ export const ZSH_ZSHRC = ZSH_HEADER +
   'if [[ "${HISTFILE-}" == "$__termpolis_zdotdir/.zsh_history" ]]; then HISTFILE="${ZDOTDIR:-$HOME}/.zsh_history"; fi\n' +
   `${zshSource('.zshrc')}\n` +
   `if [[ -o login ]]; then ${ZSH_HANDBACK}; else ${ZSH_DONE}; fi\n` +
-  `function __termpolis_report_cwd { builtin printf '\\033]7;file://%s%s\\007' "\${HOST-}" "$PWD"; }\n` +
+  // With the report, the ready mark (LUMOPOLIS_READY_SEQUENCE): this file ran, so lumopolis is defined (#29). At every
+  // prompt, so a mark cut between two chunks of output is seen at the next one.
+  `function __termpolis_report_cwd { builtin printf '\\033]7;file://%s%s\\007\\033]7377;ready\\007' "\${HOST-}" "$PWD"; }\n` +
   'builtin autoload -Uz add-zsh-hook\n' +
   'if ! add-zsh-hook precmd __termpolis_report_cwd 2>/dev/null; then precmd_functions+=(__termpolis_report_cwd); fi\n' +
   `if ! builtin typeset -f lumopolis >/dev/null 2>&1; then ${ZSH_LUMOPOLIS_FUNCTION}; fi\n` +
@@ -402,6 +404,19 @@ export function integrationEnv(
 
   if (Object.keys(out).length > 0) out[INTEGRATION_MARKER] = '1'
   return out
+}
+
+/** How a shell Termpolis started was given `lumopolis` (#29): 'defined' when it has it from what it was started with,
+ *  'reports' when only its ready mark can say (zsh: a system zshenv that sets ZDOTDIR keeps Termpolis's .zshrc from
+ *  running), 'none' when it was given nothing. */
+export type LumopolisWay = 'defined' | 'reports' | 'none'
+
+/** bash has it from its environment; the PowerShell family, cmd and fish from the file they are started with; zsh from
+ *  the .zshrc in Termpolis's ZDOTDIR, if that runs. Without its file a shell has none, and any other program has none. */
+export function lumopolisWay(kind: ShellKind, scriptPath: string | null): LumopolisWay {
+  if (kind === 'bash') return 'defined'
+  if (kind === 'unknown' || scriptPath === null) return 'none'
+  return kind === 'zsh' ? 'reports' : 'defined'
 }
 
 /** Has the user switched integration off? */

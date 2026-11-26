@@ -716,6 +716,9 @@ export interface TermpolisAPI {
   worldMapProject: (root: string) => Promise<IpcResponse<WorldEntry>>
   /** `show`: a refusal the person should read (world/lumopolisOpen.ts); without it the refusal stays quiet. */
   worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => Promise<IpcResponse<string> & { show?: boolean; folder?: string }>
+  /** Whether typing lumopolis works in this terminal (world/lumopolisOpen.ts lumopolisTypable): a zsh terminal is answered
+   *  once its ready mark came, or no about 10 seconds after it started without one. */
+  worldTerminalTypable: (terminalId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home: the native folder dialog; the folder becomes a world (null when cancelled). */
   worldOpenFolder: () => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: the native folder dialog only, and whether the folder is empty (null when cancelled). */
