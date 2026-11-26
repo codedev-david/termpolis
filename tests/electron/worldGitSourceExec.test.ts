@@ -29,12 +29,18 @@ import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } fro
 class FakeChild extends EventEmitter {
   stderr = new EventEmitter()
   kill = vi.fn()
-  // As a real ChildProcess while it runs: the stop kills git itself only while it is still running (WP4b F-R6).
+  // As a real ChildProcess while it runs: it has a pid, and the stop kills git itself only while it is still running
+  // (WP4b F-R6). A child with no pid never started, and is never killed.
+  pid: number | undefined = 4242
   exitCode: number | null = null
   signalCode: NodeJS.Signals | null = null
 }
 let child: FakeChild
 const spawnCalls: unknown[][] = []
+
+// The tree-end is processTree's own (tested there). Here it reaches nothing, as a taskkill or group signal that failed,
+// so the fake pid can never name a real process.
+vi.mock('../../src/main/processTree', () => ({ endProcessTree: vi.fn(async () => false) }))
 
 vi.mock('node:child_process', () => ({
   spawn: (...a: unknown[]) => {

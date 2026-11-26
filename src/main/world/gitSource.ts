@@ -233,7 +233,9 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
       // git's child, and outlived git when only git was killed (WP4b F-R6). Windows: taskkill /T /F, tried once more
       // while git is still ours and running. POSIX: git leads its own process group (detached below), so the group is
       // signalled, and git alone through its handle if the group was never made.
-      const running = (): boolean => child.exitCode === null && child.signalCode === null
+      // A program that never started (spawn failed: no pid) is not running: there is nothing to end, and
+      // child.kill() on it throws EINVAL on Windows, out of a promise nobody catches.
+      const running = (): boolean => child.pid !== undefined && child.exitCode === null && child.signalCode === null
       void endProcessTree(child.pid, { canRetry: running, leader: child.kill.bind(child) }).then((sent) => {
         if (!sent && running()) child.kill()
       })

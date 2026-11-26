@@ -1,3 +1,4 @@
+import { ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1089,6 +1090,29 @@ describe('real deps', () => {
     const r = await nodeExecFile(join(dir, 'no-such-binary'), [], { env, timeout: 20_000, signal: ctl.signal, killGraceMs: 200 })
     expect(r.code).toBe(1)
     expect(r.stderr).not.toBe('')
+  })
+
+  it('a stop of a program that never started ends nothing: no kill on a handle with no pid, so no unhandled EINVAL', async () => {
+    // Windows: child.kill() on a child whose spawn failed throws EINVAL, and it was called from a promise nobody
+    // caught (main CI 45726995451). Every OS: the stop must leave nothing behind it to reject.
+    const seen: unknown[] = []
+    const onRejection = (e: unknown): void => { seen.push(e) }
+    process.on('unhandledRejection', onRejection)
+    // Node 24 answers false where CI's Node 22 throws, so the proof is that no kill is tried at all.
+    const kill = vi.spyOn(ChildProcess.prototype, 'kill')
+    try {
+      const ctl = new AbortController()
+      ctl.abort()
+      const r = await nodeExecFile(join(dir, 'no-such-binary'), [], { env, timeout: 20_000, signal: ctl.signal, killGraceMs: 50 })
+      expect(r.code).toBe(1)
+      // The tree-end's own promise settles after the stop; give it, and a taskkill that found no pid, time to.
+      await new Promise((res) => setTimeout(res, 1500))
+      expect(seen).toEqual([])
+      expect(kill).not.toHaveBeenCalled()
+    } finally {
+      kill.mockRestore()
+      process.off('unhandledRejection', onRejection)
+    }
   })
 
   it('nodeExecFile with stdoutMax collects stdout, fails past the cap, and says when the program is missing', async () => {
