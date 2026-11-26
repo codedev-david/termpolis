@@ -290,6 +290,7 @@ test.describe.serial('Lumopolis in the real app', () => {
         // Only plain letters are samples: Ctrl+U (the Linux/mac line clear) is e.key 'u' too.
         if (!/^[a-z]$/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return
         s.down.push(performance.now())
+        performance.mark('tf-key')
         s.echo.push(0)
         s.lineKeys += e.key
       }, true)
@@ -302,7 +303,7 @@ test.describe.serial('Lumopolis in the real app', () => {
             let n = 0
             while (n < s.lineKeys.length && line[at + marker.length + n] === s.lineKeys[n]) n++
             const now = performance.now()
-            for (let k = 0; k < n; k++) if (!s.echo[s.lineBase + k]) s.echo[s.lineBase + k] = now
+            for (let k = 0; k < n; k++) if (!s.echo[s.lineBase + k]) { s.echo[s.lineBase + k] = now; performance.mark('tf-echo') }
           }
         }
         setTimeout(poll, 1)
@@ -418,8 +419,10 @@ test.describe.serial('Lumopolis in the real app', () => {
     // And the page's side: its own 10 ms timer's lateness and its long tasks (50 ms or more of its own script or
     // layout), so a slow last leg shows whether the page's thread was busy with its own work or not run at all.
     await page.evaluate(() => {
-      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[], raf: [] as number[][], stop: () => {} }
+      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[], raf: [] as number[][], recv: [] as number[][], stop: () => {} }
       ;(window as unknown as { __pageDiag: typeof s }).__pageDiag = s
+      // DIAG typeflake-trace: each terminal:data chunk with a letter, as the preload hands it to the page.
+      const offRecv = (window as unknown as { termpolis: { onTerminalData: (cb: (id: string, d: string) => void) => () => void } }).termpolis.onTerminalData((_id, d) => { if (/[a-z]/.test(d)) { s.recv.push([performance.now(), d.length]); performance.mark('tf-recv') } })
       // The page's frames as requestAnimationFrame runs them: how often the page gets to paint.
       let lastRaf = performance.now()
       let rafId = 0
@@ -443,13 +446,13 @@ test.describe.serial('Lumopolis in the real app', () => {
         })
         frameObs.observe({ type: 'long-animation-frame', buffered: false })
       } catch { frameObs = null }
-      s.stop = () => { clearInterval(timer); cancelAnimationFrame(rafId); obs?.disconnect(); frameObs?.disconnect() }
+      s.stop = () => { clearInterval(timer); cancelAnimationFrame(rafId); obs?.disconnect(); frameObs?.disconnect(); offRecv() }
     })
     // It also stamps, in main, each typed letter's arrival (a second terminal:write listener, run after the real
     // one) and each terminal:data message as it leaves for the page, so every key's echo splits into page to main,
     // main to the shell and back (the pty host and the shell), and main to the page's screen.
-    await app.evaluate(({ app: eapp, ipcMain, BrowserWindow }) => {
-      const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], writes: [] as number[], out: [] as [number, string][], stop: () => {} }
+    await app.evaluate(async ({ app: eapp, ipcMain, BrowserWindow, contentTracing }) => {
+      const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], writes: [] as number[], out: [] as [number, string][], sends: [] as [number, string, unknown][], invokes: [] as [number, number, string, unknown][], stop: () => {} }
       ;(globalThis as unknown as { __mainDiag: typeof s }).__mainDiag = s
       // Monotonic epoch ms, as the page's timeOrigin + now(). Date.now() can drift from the page's monotonic clock
       // while the system's time sync adjusts it: on one macOS run it put the page 60 to 80 ms behind main.
@@ -460,6 +463,7 @@ test.describe.serial('Lumopolis in the real app', () => {
       const send = wc.send
       wc.send = function (channel: string, ...args: unknown[]) {
         if (channel === 'terminal:data' && typeof args[1] === 'string') s.out.push([clock(), args[1]])
+        else s.sends.push([clock(), channel, channel.startsWith('world:') ? args[0] : null])
         return send.call(this, channel, ...args)
       }
       let last = clock()
@@ -477,7 +481,21 @@ test.describe.serial('Lumopolis in the real app', () => {
         prevTicks = now
         s.cpu.push({ t: clock(), p: [...eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })), { k: 'machine', c: machine }] })
       }, 250)
-      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send }
+      // DIAG typeflake-trace: each world:* invoke as main answers it (start, end, and the reply, sized at the end).
+      type Handler = (e: unknown, ...a: unknown[]) => unknown
+      const ih = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers
+      const wrapped: [string, Handler][] = []
+      for (const ch of ['world:compile', 'world:relayout', 'world:get']) {
+        const h = ih?.get(ch)
+        if (!ih || !h) continue
+        wrapped.push([ch, h])
+        ih.set(ch, async (e: unknown, ...a: unknown[]) => { const t0 = clock(); const res = await h(e, ...a); s.invokes.push([t0, clock(), ch, res]); return res })
+      }
+      await contentTracing.startRecording({
+        recording_mode: 'record-continuously', trace_buffer_size_in_kb: 400_000,
+        included_categories: ['toplevel', 'toplevel.flow', 'ipc', 'ipc.flow', 'mojom', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'v8.execute', 'v8', 'sequence_manager', 'scheduler', 'renderer.scheduler', 'electron', 'cc', 'viz', 'gpu', 'benchmark', 'input', '__metadata'],
+      })
+      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send; for (const [ch, h] of wrapped) ih?.set(ch, h) }
     })
 
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
@@ -527,15 +545,19 @@ test.describe.serial('Lumopolis in the real app', () => {
       s.done = true
       return { down: s.down, echo: s.echo, compiling: s.compiling, runs: s.runs, compileError: s.compileError }
     })
-    const diag = await app.evaluate(() => {
-      const s = (globalThis as unknown as { __mainDiag: { lag: number[][]; cpu: { t: number; p: { k: string; c: number }[] }[]; writes: number[]; out: [number, string][]; stop: () => void } }).__mainDiag
+    const tracePath = test.info().outputPath('typeflake-trace.json')
+    const diag = await app.evaluate(async ({ contentTracing }, tp) => {
+      const s = (globalThis as unknown as { __mainDiag: { lag: number[][]; cpu: { t: number; p: { k: string; c: number }[] }[]; writes: number[]; out: [number, string][]; sends: [number, string, unknown][]; invokes: [number, number, string, unknown][]; stop: () => void } }).__mainDiag
       s.stop()
-      return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out }
-    })
+      let traced = ''
+      try { traced = await contentTracing.stopRecording(tp) } catch (e) { traced = `failed: ${String(e)}` }
+      const size = (x: unknown): number => { try { return x == null ? 0 : JSON.stringify(x).length } catch { return -1 } }
+      return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out, traced, sends: s.sends.map(([t, ch, a]) => [t, ch, size(a)] as [number, string, number]), invokes: s.invokes.map(([t0, t1, ch, r]) => [t0, t1, ch, size(r)] as [number, number, string, number]) }
+    }, tracePath)
     const pageDiag = await page.evaluate(() => {
-      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[]; raf: number[][]; stop: () => void } }).__pageDiag
+      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[]; raf: number[][]; recv: number[][]; stop: () => void } }).__pageDiag
       s.stop()
-      return { lag: s.lag, long: s.long, frames: s.frames, raf: s.raf }
+      return { lag: s.lag, long: s.long, frames: s.frames, raf: s.raf, recv: s.recv }
     })
     const pageIn = (t: number): boolean => r.runs.some((w) => t >= w.start && t < w.end)
     const longOf = (during: boolean): string => {
@@ -569,7 +591,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     }
     // Each key pressed after the hooks went in, in order, to the next letter main received, then to the first
     // terminal:data after that write that holds a letter, then to the page seeing its echo.
-    const stages: { during: boolean; t1: number; t2: number; t3: number }[] = []
+    const stages: { during: boolean; t1: number; t2: number; t3: number; i: number; run: number; S: number; R: number; E: number }[] = []
     {
       let wi = 0
       let oi = 0
@@ -583,7 +605,8 @@ test.describe.serial('Lumopolis in the real app', () => {
         while (oi < diag.out.length && (diag.out[oi][0] < W || !/[a-z]/.test(diag.out[oi][1]))) oi++
         if (oi >= diag.out.length) return
         const S = diag.out[oi][0]
-        stages.push({ during: r.runs.some((w) => d >= w.start && d < w.end), t1: W - D, t2: S - W, t3: origin + r.echo[i] - S })
+        const rv = pageDiag.recv.find((x) => origin + x[0] >= S - 1)
+        stages.push({ during: r.runs.some((w) => d >= w.start && d < w.end), t1: W - D, t2: S - W, t3: origin + r.echo[i] - S, i, run: r.runs.findIndex((w) => d >= w.start && d < w.end), S, R: rv ? origin + rv[0] : NaN, E: origin + r.echo[i] })
       })
     }
     const stageOf = (during: boolean): string => {
@@ -592,6 +615,20 @@ test.describe.serial('Lumopolis in the real app', () => {
       return `${xs.length} keys: page to main ${q('t1')}, main to shell and back ${q('t2')}, main to the page's screen ${q('t3')} ms`
     }
     console.log(`[typing while compiling, stages] during compiles ${stageOf(true)}; with none running ${stageOf(false)}`)
+    {
+      // DIAG typeflake-trace: the last leg split at the page's terminal:data listener, for every key in a compile,
+      // and what else main sent in the window, plus each world:* invoke with its reply's size.
+      const rel = (t: number): string => (t - origin - r.runs[0].start).toFixed(0)
+      console.log(`[typeflake diag] traced ${diag.traced}; origin ${origin}; runs ${r.runs.map((w) => `${(w.start - r.runs[0].start).toFixed(0)}-${(w.end - r.runs[0].start).toFixed(0)}`).join(' ')}`)
+      console.log(`[typeflake diag] invokes ${diag.invokes.map(([t0, t1, ch, n]) => `${ch} ${rel(t0)}-${rel(t1)} ${n}B`).join('; ')}`)
+      const chans: Record<string, [number, number]> = {}
+      for (const [, ch, n] of diag.sends) { const c = chans[ch] ?? [0, 0]; c[0]++; c[1] += n; chans[ch] = c }
+      console.log(`[typeflake diag] other sends ${Object.entries(chans).map(([ch, [k, n]]) => `${ch} x${k} ${n}B`).join('; ')}`)
+      for (const x of stages.filter((y) => y.during)) {
+        const others = diag.sends.filter(([t]) => t >= x.S - 100 && t <= x.E).map(([t, ch, n]) => `${ch}@${(t - x.S).toFixed(0)}${n ? `/${n}B` : ''}`).join(',')
+        console.log(`[typeflake key] i=${x.i} run=${x.run} at=${rel(x.S)} S=${x.S.toFixed(1)} t3=${x.t3.toFixed(1)} send-to-recv=${(x.R - x.S).toFixed(1)} recv-to-seen=${(x.E - x.R).toFixed(1)}${others ? ` others=${others}` : ''}`)
+      }
+    }
     const compileMs = r.runs.reduce((a, w) => a + (w.end - w.start), 0)
     const rafOf = (during: boolean): string => {
       const xs = pageDiag.raf.filter((x) => pageIn(x[0]) === during).map((x) => x[1])
