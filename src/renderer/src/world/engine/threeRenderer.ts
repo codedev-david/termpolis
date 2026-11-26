@@ -171,6 +171,8 @@ export interface ThreeRenderer {
    * something moves or has just changed (an idle city draws nothing).
    */
   setPaused(paused: boolean): void
+  /** The frame times alone, as drawnCounts().perf gives them, without the rest of its count (a cheap read for the readout). */
+  perf(): RendererPerf
   /** Starts a frame-time window for the e2e harness (look spec §6.1): the counted gaps from now on. */
   perfBegin(): void
   /** Ends the window perfBegin started, and gives its frame times (no frames when none was started). */
@@ -850,6 +852,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** When the view was last resized (0 once a frame has drawn it), and the longest a resize waited for its frame. */
   let resizedAt = 0
   let resizeWorstMs = 0
+  const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs })
   const breakChain = (): void => {
     chained = false
     sampler.skip(SAMPLER_SKIP_FRAMES)
@@ -3186,7 +3189,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       tickChanges()
       return {
         processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, triangles, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
-        perf: { tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs },
+        perf: perfNow(),
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
         slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
@@ -3270,6 +3273,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       wake()
     },
     requestFrame: () => { wake() },
+    perf: () => perfNow(),
     perfBegin: () => { bench = [] },
     perfEnd: () => {
       const st = frameStats(bench ?? [])

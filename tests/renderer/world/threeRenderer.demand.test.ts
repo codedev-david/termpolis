@@ -1130,6 +1130,10 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     h.frames.run(9)
     h.frames.step(30)
     expect(r.perfEnd()).toEqual({ frames: 10, p50: 16, p95: 30, p99: 30, worst: 30 })
+    // perf() is drawnCounts().perf, read alone.
+    expect(r.perf()).toEqual(r.drawnCounts().perf)
+    expect(r.perf().tier).toBe('high')
+    expect(r.perf().frames).toBeGreaterThan(0)
     h.frames.run(5)
     expect(r.perfEnd().frames).toBe(0)
     r.dispose()

@@ -478,6 +478,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     const { viewer } = setup({ doc: minimal() })
     viewer.perfBegin()
     expect(viewer.perfEnd()).toEqual({ frames: 0, p50: 0, p95: 0, p99: 0, worst: 0 })
+    expect(viewer.perf()).toEqual({ tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -574,6 +575,7 @@ function fakeRenderer(host: HTMLElement) {
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
     drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, triangles: 900, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF } })),
+    perf: vi.fn(() => ({ ...RPERF })),
     perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 2, p50: 16, p95: 17, p99: 17, worst: 17 })),
     motionState: vi.fn(() => ({ ...MOTION })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(), setReducedMotion: vi.fn(), requestFrame: vi.fn(), stopFlight: vi.fn(),
@@ -1278,6 +1280,11 @@ describe('WebGL path (stand-in renderer)', () => {
   it('drawn().perf is the frame times of the renderer, auto unless a quality was asked for; perfBegin/perfEnd go to the renderer', () => {
     const { viewer, r } = setup3d()
     expect(viewer.drawn().perf).toEqual({ ...RPERF, auto: true })
+    // perf() is the same frame times, read alone: no drawnCounts.
+    const counts = r.drawnCounts.mock.calls.length
+    expect(viewer.perf()).toEqual({ ...RPERF, auto: true })
+    expect(r.perf).toHaveBeenCalledTimes(1)
+    expect(r.drawnCounts.mock.calls.length).toBe(counts)
     viewer.perfBegin()
     expect(r.perfBegin).toHaveBeenCalledTimes(1)
     expect(viewer.perfEnd()).toEqual({ frames: 2, p50: 16, p95: 17, p99: 17, worst: 17 })
@@ -1287,6 +1294,7 @@ describe('WebGL path (stand-in renderer)', () => {
     createThreeRenderer.mockImplementation((host: HTMLElement) => fakeRenderer(host).r)
     const asked = setup({ reducedMotion: true, quality: 'low' })
     expect(asked.viewer.drawn().perf.auto).toBe(false)
+    expect(asked.viewer.perf().auto).toBe(false)
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {

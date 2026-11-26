@@ -30,6 +30,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software, ...(h.perf ? { perf: h.perf } : {}) })),
+        perf: vi.fn(() => h.perf),
         perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })),
         cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
         setCamera: vi.fn(async () => undefined),
@@ -1358,6 +1359,67 @@ describe('WorldView', () => {
       bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: true })) })
       await mount()
       expect(readout()).toBeNull()
+    })
+
+    it('reads only the frame times, and stops reading once the setting goes off or the pane closes', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      h.perf = at(16.7, 17)
+      bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: true })) })
+      const m = await mount()
+      expect(readout()).toHaveTextContent('60 fps · 17.0 ms · high')
+      // The light read: never the whole drawn() count.
+      const drawnReads = viewer().drawn.mock.calls.length
+      const reads = () => viewer().perf.mock.calls.length
+      let before = reads()
+      act(() => { vi.advanceTimersByTime(1500) })
+      expect(reads()).toBeGreaterThanOrEqual(before + 3)
+      expect(viewer().drawn.mock.calls.length).toBe(drawnReads)
+      // Turned off in Settings: the timer stops.
+      act(() => { window.dispatchEvent(new CustomEvent(FRAME_RATE_EVENT, { detail: false })) })
+      expect(readout()).toBeNull()
+      before = reads()
+      act(() => { vi.advanceTimersByTime(5000) })
+      expect(reads()).toBe(before)
+      // On again, then the pane closes: the timer stops with it.
+      act(() => { window.dispatchEvent(new CustomEvent(FRAME_RATE_EVENT, { detail: true })) })
+      expect(readout()).toHaveTextContent('60 fps · 17.0 ms · high')
+      const v = viewer()
+      m.unmount()
+      before = v.perf.mock.calls.length
+      act(() => { vi.advanceTimersByTime(5000) })
+      expect(v.perf.mock.calls.length).toBe(before)
+    })
+
+    it('does not read while the window is hidden or the map is still loading, and reads at once when it can be seen', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      let shownCb: ((s: boolean) => void) | null = null
+      ;(window as any).windowControls = { onShown: vi.fn((cb: (s: boolean) => void) => { shownCb = cb; return () => undefined }) }
+      try {
+        h.perf = at(16.7, 17)
+        const get = deferred<Res<WorldDoc | null>>()
+        bridge({ worldGet: vi.fn(() => get.promise), worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: true })) })
+        await mount()
+        // The loading screen covers the map: no reads, nothing shown.
+        expect(viewer()).toBeTruthy()
+        act(() => { vi.advanceTimersByTime(2000) })
+        expect(viewer().perf).not.toHaveBeenCalled()
+        expect(readout()).toBeNull()
+        await act(async () => { get.resolve(ok(minimal())) })
+        await settle()
+        expect(readout()).toHaveTextContent('60 fps · 17.0 ms · high')
+        // Minimised: the line goes and the timer stops.
+        act(() => { (shownCb as (s: boolean) => void)(false) })
+        expect(readout()).toBeNull()
+        const before = viewer().perf.mock.calls.length
+        act(() => { vi.advanceTimersByTime(5000) })
+        expect(viewer().perf.mock.calls.length).toBe(before)
+        // Shown again: read at once.
+        act(() => { (shownCb as (s: boolean) => void)(true) })
+        expect(viewer().perf.mock.calls.length).toBe(before + 1)
+        expect(readout()).toHaveTextContent('60 fps · 17.0 ms · high')
+      } finally {
+        delete (window as any).windowControls
+      }
     })
   })
 

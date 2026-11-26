@@ -695,15 +695,16 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     return () => { if (pw.__worldPerf === perf) delete pw.__worldPerf }
   }, [viewer])
 
-  // The frame-rate readout, read from the viewer while it is on and the 3D map shows.
+  // The frame-rate readout, read from the viewer's frame times while it is on and the 3D map can be seen: not over the
+  // 2D map, and not while the window is hidden or the home or a loading screen covers the map (the loop is paused then).
   const [rateLine, setRateLine] = useState<string | null>(null)
-  const rateShown = frameRate && viewer !== null && !shows2d
+  const rateShown = frameRate && viewer !== null && !shows2d && shown && !covered
   useEffect(() => {
     if (!rateShown || !viewer) {
       setRateLine(null)
       return
     }
-    const read = (): void => setRateLine(frameRateLine(viewer.drawn().perf))
+    const read = (): void => setRateLine(frameRateLine(viewer.perf()))
     read()
     const timer = window.setInterval(read, FRAME_RATE_EVERY_MS)
     return () => window.clearInterval(timer)

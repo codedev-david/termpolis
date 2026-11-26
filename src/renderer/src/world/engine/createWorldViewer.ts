@@ -101,6 +101,8 @@ export interface WorldViewer {
    * capture of the canvas (an image of the city) asks for one first. Nothing in 2D.
    */
   requestFrame(): void
+  /** The frame times, as drawn().perf gives them, without the rest of drawn() (what the frame-rate readout reads). */
+  perf(): WorldPerf
   /** Starts a frame-time window for the e2e harness (__worldPerf.begin, look spec §6.1). Nothing in 2D. */
   perfBegin(): void
   /** Ends the window perfBegin started and gives its frame times (none in 2D, or with no window started). */
@@ -767,6 +769,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let watched = 0
   let lostTicks = 0
   /** The counts with whether the tier is chosen for you added to their frame times. */
+  const noPerf = (): RendererPerf => ({ tier: 'flat', ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
   const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: opts.quality === undefined } })
   function watchTick(): void {
     // dropToFlat and dispose clear the timer, so the renderer is still there.
@@ -1053,7 +1056,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: { tier: 'flat' as const, ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 } }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: noPerf() }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()
@@ -1072,6 +1075,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     requestFrame() {
       if (!disposed) r3?.requestFrame()
     },
+    perf: () => ({ ...(r3 ? r3.perf() : noPerf()), auto: opts.quality === undefined }),
     perfBegin() {
       r3?.perfBegin()
     },
