@@ -428,7 +428,7 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
   const LINE = 'unset CLAUDE_CONFIG_DIR && claude --session-id 3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
   const report = `${E}]7;file://host/tmp/project\x07`
   const BEFORE = `${E}[?9001h${E}[?1004h`
-  const FIRST = `${report}${E}[?25l${E}[2J${E}[m${E}[H${E}]0;C:\Program Files\Git\bin\bash.exe\x07${E}[?25h${E}[?2004hbash-5.3$ `
+  const FIRST = `${report}${E}[?25l${E}[2J${E}[m${E}[H${E}]0;C:\\Program Files\\Git\\bin\\bash.exe\x07${E}[?25h${E}[?2004hbash-5.3$ `
   const ECHO = `${LINE}${E}[?2004l\r\n`
   const BOX = `${E}[?25l${E}[H${E}[?25h${E}[2J${E}[?25l▐▛███▜▌ Claude Code v2.1.309 (mock)${E}[K\r\n\r\n${RULE}\r\n❯${E}[K\r\n${RULE}\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)${E}[K\r\n`
   const AGAIN = `${report}${E}[?2004hbash-5.3$ `
