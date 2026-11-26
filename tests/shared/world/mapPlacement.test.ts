@@ -62,7 +62,7 @@ describe('a world of 50,000 one-file districts (E3)', () => {
     const t = performance.now()
     const html = renderFallback(doc, 'p')
     expect(performance.now() - t).toBeLessThan(5_000)
-    expect(html).toContain('<h3>d49999</h3><p></p><ul><li data-kind="building" data-id="b49999" tabindex="0">b49999 ')
+    expect(html).toContain('<h3><button type="button" data-kind="district" data-id="d49999">d49999</button></h3><p></p><ul><li><button type="button" data-kind="building" data-id="b49999">b49999 ')
     expect(html.match(/<polygon /g)).toHaveLength(50_000)
   })
 })
