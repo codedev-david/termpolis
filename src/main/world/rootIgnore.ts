@@ -51,7 +51,8 @@ function rule(line: string, foldCase: boolean): Rule | null {
     if (part === '**') re += i === 0 ? (last ? '.*' : '(?:.*/)?') : last ? '/.+' : '(?:/.+)?'
     else re += (i > 0 && !(i === 1 && parts[0] === '**') ? '/' : '') + glob(part)
   })
-  return { re: new RegExp(`^${re}$`, foldCase ? 'i' : ''), dirOnly, negated }
+  // `s`: a name may hold a line break (Linux and macOS allow one), and git's ** still matches it (HOLD-B #87, WP1 F3).
+  return { re: new RegExp(`^${re}$`, foldCase ? 'is' : 's'), dirOnly, negated }
 }
 
 /** The matcher for a .gitignore's text; `foldCase` matches its patterns ignoring case, as git does with core.ignorecase. */

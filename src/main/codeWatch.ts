@@ -74,6 +74,11 @@ const MAX_PENDING_FILES = 2048
 const MAX_APPEARED = 256
 /** Directories one listing reads at most. */
 const MAX_LIST_DIRS = 4096
+/** HOLD-B #87 (WP1 F2): full re-sweeps for learned nested repositories that may map nothing new, per watch. git never lists a
+ *  folder its .gitignore covers, so a repository there never reaches the listing and its re-sweep is spent for nothing: a
+ *  .cache/ of 40 clones asked for 40 full re-sweeps of a big repository. Past this many, a learned repository asks for none
+ *  (the 15-minute re-sweep and the next open still map it). One whose re-sweep mapped it, or one that failed, is not counted. */
+export const MAX_IDLE_RESWEEPS = 3
 const skippedDir = makeNameRule(CODE_SKIP_NAMES)
 
 /** The source files below `dir` (relative, slash-separated), at most `limit`, never descending into an
@@ -182,14 +187,22 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   }
   /** Nested repositories a re-sweep was already asked for: one each, however often they are learned again. */
   const resweepAsked = new Set<string>()
+  /** The repositories the next full re-sweep is asked for, and how many re-sweeps mapped none of theirs. */
+  const awaiting = new Set<string>()
+  let idleResweeps = 0
   let resweep = false
   const onLearn = (dir: string): void => {
-    if (!refreshKept()) return
+    if (idleResweeps >= MAX_IDLE_RESWEEPS || !refreshKept()) return
     const key = keyOf(dir)
     if (keptKeys.has(key) || resweepAsked.has(key)) return
     resweepAsked.add(key)
+    awaiting.add(key)
     resweep = true
     gate.note()
+  }
+  /** After a re-sweep that ran (and relisted), whether the listing now maps any repository it was asked for. */
+  const tally = (asked: readonly string[]): void => {
+    if (asked.length > 0 && !asked.some((key) => keptKeys.has(key))) idleResweeps++
   }
   const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested, onLearn })
   refreshKept()
@@ -205,6 +218,8 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     run: () => {
       refreshKept()
       const all = overflowed || resweep
+      const asked = resweep ? [...awaiting] : []
+      awaiting.clear()
       const files = all ? [] : [...changed]
       const names = all ? [] : [...appeared]
       changed.clear()
@@ -215,11 +230,12 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
       // A full re-sweep relists the repository: what it now maps is kept from the next event on, not the next run.
       if (done instanceof Promise) {
         return done.then(
-          (got) => { refreshKept(); return got },
+          (got) => { refreshKept(); tally(asked); return got },
           (err: unknown) => { refreshKept(); throw err },
         )
       }
       refreshKept()
+      tally(asked)
       return done
     },
   })
