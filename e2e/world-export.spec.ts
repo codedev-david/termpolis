@@ -279,15 +279,14 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await expect(page.locator('[data-testid="world-export"]')).toBeFocused()
 
     const relayout = page.locator('[data-testid="world-relayout"]')
-    if (!(await relayout.isVisible())) await page.locator('[data-testid="world-more"]').click()
+    const inMore = !(await relayout.isVisible())
+    if (inMore) await page.locator('[data-testid="world-more"]').click()
     await relayout.click()
     await expect(page.locator('[data-testid="world-relayout-cancel"]'), 'Cancel, not Re-layout, takes the focus').toBeFocused()
     await holds('world-relayout-confirm')
-    // Back on Re-layout, or on the pane when Re-layout was in the More menu that closed.
-    await expect.poll(() => page.evaluate(() => {
-      const at = document.activeElement as HTMLElement | null
-      return at?.getAttribute('data-testid') ?? null
-    })).toMatch(/^world-(relayout|view)$/)
+    // Back on Re-layout, or on the More button when Re-layout was in its menu: the menu gave its button the focus as it
+    // closed, before the question opened.
+    await expect(page.locator(`[data-testid="${inMore ? 'world-more' : 'world-relayout'}"]`)).toBeFocused()
   })
 
   test('4. the renderer logged no error and threw nothing', () => {
