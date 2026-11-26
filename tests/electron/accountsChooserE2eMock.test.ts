@@ -13,7 +13,7 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { spawnSync } from 'child_process'
 import { ACCOUNT_IDS, EMAILS, chooserShimEnv, makeChooserHome, readMockLog, removeChooserHome, seedRegistry, setClaudeSignIn, setCodexSignIn, setMockControl } from '../../e2e/helpers/chooserFixture'
-import { claudeSignedInNow, codexSignedInNow } from '../../src/main/accountIdentity'
+import { CHECK_TIMEOUT_MS, claudeSignedInNow, codexSignedInNow } from '../../src/main/accountIdentity'
 import type { ChooserHome, MockEvent } from '../../e2e/helpers/chooserFixture'
 import { RealTerminal, cleanEnv, loadPty, prependPath, shellsHere, sleep } from './_realPty'
 import type { PtyModule, ShellSpec } from './_realPty'
@@ -131,15 +131,23 @@ describe('the e2e fixture', () => {
       cwd: h.project,
       env: { PATH: `${chooserShimEnv().TERMPOLIS_TEST_SHIM_DIR}${sep}${process.env.PATH ?? ''}`, TERMPOLIS_TEST_AGENT_HOME: h.home, SystemRoot: process.env.SystemRoot, COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT },
     }
-    expect(await claudeSignedInNow(null, deps)).toMatchObject({ identity: { signedIn: true, email: EMAILS.claudeMain } })
-    expect(await claudeSignedInNow(h.claudeSide, deps)).toMatchObject({ identity: { signedIn: true, email: EMAILS.claudeSide } })
+    // Each check may take what the product gives it, CHECK_TIMEOUT_MS a run (a signed-in Codex runs twice, login status and
+    // then its app server), and one that takes longer fails in the product's own words. Run one after another the six were
+    // allowed up to 120 s, four times the test's 30 s, so on a loaded machine the test's clock ran out first and named no
+    // check (#106). The checks read different profiles, so they run side by side: two rounds take at most three runs' time.
+    const [claudeMain, claudeSide, codexMain, codexSide] = await Promise.all([
+      claudeSignedInNow(null, deps), claudeSignedInNow(h.claudeSide, deps), codexSignedInNow(null, deps), codexSignedInNow(h.codexSide, deps),
+    ])
+    expect(claudeMain).toMatchObject({ identity: { signedIn: true, email: EMAILS.claudeMain } })
+    expect(claudeSide).toMatchObject({ identity: { signedIn: true, email: EMAILS.claudeSide } })
+    expect(codexMain).toMatchObject({ identity: { signedIn: true, email: EMAILS.codexMain, plan: 'plus' } })
+    expect(codexSide).toMatchObject({ identity: { signedIn: true, email: EMAILS.codexSide } })
     setClaudeSignIn(join(h.claudeSide, '.claude.json'), null)
-    expect(await claudeSignedInNow(h.claudeSide, deps)).toMatchObject({ identity: { signedIn: false, email: null } })
-    expect(await codexSignedInNow(null, deps)).toMatchObject({ identity: { signedIn: true, email: EMAILS.codexMain, plan: 'plus' } })
-    expect(await codexSignedInNow(h.codexSide, deps)).toMatchObject({ identity: { signedIn: true, email: EMAILS.codexSide } })
     setCodexSignIn(h.codexSide, null)
-    expect(await codexSignedInNow(h.codexSide, deps)).toMatchObject({ identity: { signedIn: false } })
-  })
+    const [claudeOut, codexOut] = await Promise.all([claudeSignedInNow(h.claudeSide, deps), codexSignedInNow(h.codexSide, deps)])
+    expect(claudeOut).toMatchObject({ identity: { signedIn: false, email: null } })
+    expect(codexOut).toMatchObject({ identity: { signedIn: false } })
+  }, 3 * CHECK_TIMEOUT_MS + 10_000)
 
   it('refuses to run a mock agent anywhere but in a test home', () => {
     const empty = mkdtempSync(join(tmpdir(), 'termpolis-notahome-'))
