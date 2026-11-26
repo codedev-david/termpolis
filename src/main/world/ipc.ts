@@ -60,6 +60,7 @@ import type { WorldClient } from './worldClient'
 import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
 import { isShownAsIs, windowMessage } from './windowError'
 import { isWorldQuality, type WorldSettings, type WorldSettingsStore } from './worldSettings'
+import { progressGate } from './progressGate'
 
 export interface WorldIpcMain {
   handle(channel: string, listener: (event: unknown, args?: unknown) => unknown): void
@@ -406,15 +407,18 @@ export function registerWorldIpc(
 
   if (sources) registerSourceHandlers(ipc, sources, client)
 
-  // A closed or reloading window must never break the host's event stream.
-  const offProgress = client.onProgress((e) => {
+  // A closed or reloading window must never break the host's event stream. Progress goes through the gate
+  // (progressGate.ts): at most one report a project every PROGRESS_MIN_MS, the latest, none after its `updated`.
+  const progress = progressGate((e) => {
     try {
       win()?.webContents.send('world:progress', e)
     } catch {
       // window gone
     }
   })
+  const offProgress = client.onProgress((e) => progress.push(e))
   const offUpdated = client.onUpdated((e) => {
+    progress.end(e.projectKey)
     try {
       win()?.webContents.send('world:updated', e)
     } catch {
@@ -423,6 +427,7 @@ export function registerWorldIpc(
   })
   return () => {
     offProgress()
+    progress.dispose()
     offUpdated()
   }
 }
