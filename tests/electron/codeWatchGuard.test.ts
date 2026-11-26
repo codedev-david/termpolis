@@ -175,6 +175,44 @@ describe('codeWatch storm guard', () => {
     expect(reindex).toHaveBeenCalledTimes(3)
   })
 
+  // HOLD-B #87 (WP1 F2): git never lists a folder its .gitignore covers, so a nested repository there never reaches the
+  // listing, and the re-sweep it asks for maps nothing. A .cache/ of 40 clones asked for 40 full re-sweeps of a big repository.
+  it('stops asking for re-sweeps once three of them mapped nothing new; one that mapped its repository does not count', async () => {
+    let kept: string[] = []
+    const reindex = vi.fn(() => undefined)
+    const h = harness({ nestedKept: () => kept, reindex })
+    watchRepo('/repo', h.deps)
+    const fulls = (): number => reindex.mock.calls.filter((c) => (c as unknown[])[1] && ((c as unknown[])[1] as string[]).length === 0).length
+    const learn = (dir: string): void => { h.emit(`${dir}/.git/HEAD`); h.flush() }
+    learn('.cache/a')
+    learn('.cache/b')
+    expect(fulls()).toBe(2)
+    // A fresh clone the listing maps: its re-sweep is not wasted.
+    reindex.mockImplementationOnce(() => { kept = ['vendor/new']; return undefined })
+    learn('vendor/new')
+    expect(fulls()).toBe(3)
+    learn('.cache/c') // the third that maps nothing
+    expect(fulls()).toBe(4)
+    for (const d of ['.cache/d', '.cache/e', 'vendor/later']) learn(d)
+    expect(fulls()).toBe(4)
+    // What the listing keeps is still indexed file by file.
+    h.emit('vendor/new/src/a.ts')
+    h.flush()
+    expect(reindex).toHaveBeenLastCalledWith('/repo', ['vendor/new/src/a.ts'])
+  })
+
+  it('a re-sweep that fails is not counted as one that mapped nothing', async () => {
+    const reindex = vi.fn(() => Promise.reject(new Error('index busy')))
+    const h = harness({ nestedKept: () => [], reindex })
+    watchRepo('/repo', h.deps)
+    for (const d of ['.cache/a', '.cache/b', '.cache/c', '.cache/d']) {
+      h.emit(`${d}/.git/HEAD`)
+      h.flush()
+      await new Promise((r) => setImmediate(r))
+    }
+    expect(reindex).toHaveBeenCalledTimes(4)
+  })
+
   it('compares a learned repository with the listing by the platform: case folded on Windows and macOS, as written on Linux', () => {
     const real = process.platform
     for (const [platform, sweeps] of [['linux', 1], ['win32', 0], ['darwin', 0]] as const) {

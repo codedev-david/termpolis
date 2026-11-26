@@ -54,6 +54,17 @@ describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', 
     expect(parseRootIgnore('**/**/tmp\n')('a/tmp', true)).toBe(true)
   })
 
+  // HOLD-B #87 (WP1 F3): a file name may hold a line break on Linux and macOS, and git still matches it.
+  it('** matches names that hold a line break, as git does', () => {
+    const ig = parseRootIgnore('src/**\n**/x.ts\nout/**/y\n')
+    for (const name of ['src/a\nb.ts', 'src/a\rb.ts', 'src/a b.ts', 'src/a b.ts']) expect(ig(name, false), JSON.stringify(name)).toBe(true)
+    expect(ig('src/new\nfolder/a.ts', false)).toBe(true)
+    expect(ig('line\nbreak/x.ts', false)).toBe(true)
+    expect(ig('out/a\nb/y', false)).toBe(true)
+    expect(parseRootIgnore('**\n')('a\nb', false)).toBe(true)
+    expect(ig('elsewhere/a\nb.ts', false)).toBe(false)
+  })
+
   it('a leading ! re-includes what an earlier line left out; the last line that matches decides, as in git', () => {
     const top = parseRootIgnore('/*\n!/src\n!package.json\n')
     expect(top('src', true)).toBe(false)
