@@ -1340,8 +1340,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // 45888319728 and 45888323274), so the renderer names it (BUFFER_FIT_MEASURE) and the task that holds that measure is
     // the one left out. Long animation frames cannot time this (look plan Task 5 deviation, PENDING SIGN-OFF): the app's
     // pages are file:// pages, whose long animation frames name no scripts, so a timer's work showed in none of them (a
-    // 250 ms busy timer 400 ms after the last resize passed that check). Every other long task counts: a frame's drawing
-    // (BeginMainFrame) ran at most 151 ms in those traces.
+    // 250 ms busy timer 400 ms after the last resize passed that check). Every other long task counts. The frame drawn right
+    // after a fit once waited inside the page for the GPU process to make the new buffer (175 to 189 ms on Linux in
+    // 45905235103, which flaked the long-animation-frame check before it); the fit now puts in a fence that frame waits
+    // for, held back as any frame is while the GPU is busy, and the other tasks ran at most 123 ms (45907635461).
     test.setTimeout(600_000)
     const v = VIEWPORTS.find((x) => x.name === '1920x1080') as Viewport
     await setViewport(v)

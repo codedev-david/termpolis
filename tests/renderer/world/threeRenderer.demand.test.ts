@@ -1425,6 +1425,54 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     }
   })
 
+  // world-responsive's divider drag on the Linux runners: drawn in software, the first frame after a settled fit took
+  // 150 to 190 ms of the page's own time (a long task right after the fit's, 45905235103), the GPU process making the
+  // new buffer while the page waited inside the frame. The fit puts in a fence of its own, and the frame waits for it
+  // as any frame waits while the GPU is busy, timed from the fit (the last frame may be long gone).
+  it('drawn in software, the frame after a settled fit waits for the GPU to finish the fit', () => {
+    gpu.gpuName = SWIFTSHADER
+    gpu.fences.on = true
+    gpu.fences.signalAfter = 0
+    const resized = observeResizes()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const drawnOver = (r: ThreeRenderer, ms: number): number => {
+      const n = frames(r)
+      h.frames.run(Math.round(ms / 16))
+      return frames(r) - n
+    }
+    const fitAfter = (r: ThreeRenderer, w: number): number => {
+      resizeHost(h.host, w, 600)
+      resized()
+      const made = gpu.fences.made.length
+      const n = frames(r)
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(frames(r)).toBe(n) // the fit draws nothing itself
+      expect(gpu.fences.made.length).toBe(made + 1) // its fence
+      return performance.now()
+    }
+    try {
+      // A still city sleeps (and has slept past SOFTWARE_FENCE_MAX_MS): the fit's fence still holds the frame it wakes.
+      const calm = createThreeRenderer(h.host, REDUCED)
+      boxCanvas(calm.canvas, 800, 600)
+      resized()
+      calm.draw(still(), smallText(), false)
+      settle(h.frames)
+      expect(h.frames.pending()).toBe(0)
+      h.frames.advance(SOFTWARE_FENCE_MAX_MS * 2)
+      gpu.fences.signalAfter = 400 // the GPU process takes 400 ms over the new buffer
+      const at = fitAfter(calm, 700)
+      expect(drawnOver(calm, 400 - 32)).toBe(0)
+      const n = frames(calm)
+      for (let k = 0; k < 100 && frames(calm) === n; k++) h.frames.step()
+      expect(frames(calm)).toBe(n + 1)
+      expect(performance.now() - at).toBeGreaterThanOrEqual(400)
+      expect(performance.now() - at).toBeLessThan(400 + 16)
+      calm.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a click while the buffer is stretched over a new size picks what is drawn there, as after the fit', () => {
     const v = drawnView()
     try {

@@ -512,9 +512,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * Drawn in software: the fence put in after the last frame drawn (signalled once the GPU has finished drawing it),
    * and the time the looping motions alone wait from one frame to the next (softwareLoopGap of the last frame's cost).
-   * A context with no fences (WebGL 1) keeps SOFTWARE_LOOP_MS.
+   * A context with no fences (WebGL 1) keeps SOFTWARE_LOOP_MS. A settled buffer fit puts one in too, so the frame
+   * after it waits for the GPU to finish the new buffer rather than blocking the page on it (that frame is a change's,
+   * drawn once the fence signals, and its own fence sets the pace again).
    */
   let fence: WebGLSync | null = null
+  /** When the fence was put in (performance.now). */
+  let fencedAt = 0
   let loopGap = SOFTWARE_LOOP_MS
   /** The context, with its WebGL 2 fences where it has them. */
   const fences = (): WebGL2RenderingContext => renderer.getContext() as WebGL2RenderingContext
@@ -523,12 +527,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (fence && deleted) fences().deleteSync(fence)
     fence = null
   }
-  /** A fence after the frame just drawn, in place of the last one. */
+  /** A fence after the frame just drawn (or the buffer just fitted), in place of the last one. */
   const putFence = (): void => {
     const gl = fences()
     if (typeof gl.fenceSync !== 'function') return
     dropFence(true)
     fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    fencedAt = performance.now()
   }
   /**
    * The pixel ratio for the view's size: the tier's share of the screen's (tierPixelRatio: High at most 2 inside a 4K
@@ -2606,6 +2611,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const start = performance.now()
         fitBuffer()
         measureFit(start)
+        // Drawn in software, the first frame into the new buffer would wait for the GPU process to make it, with the
+        // frames it still has to draw, inside the page's own frame (150 to 190 ms on the Linux runners, right after the
+        // fit's task): it waits for this fence instead, held back as any frame is while the GPU is busy (animate).
+        if (software) putFence()
       }
       settleCheck()
       wake()
@@ -3145,7 +3154,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    */
   function lastDrawn(now: number): boolean {
     if (!fence) return true
-    const since = now - drawnAt
+    const since = now - fencedAt
     const gl = fences()
     if (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED && since < SOFTWARE_FENCE_MAX_MS) return false
     loopGap = softwareLoopGap(since)
