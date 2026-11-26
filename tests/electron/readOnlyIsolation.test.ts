@@ -2,7 +2,7 @@ import { promises as fsp } from 'fs'
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
-import { join, relative } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AGY_NO_MCP_SERVERS, AGY_READ_ONLY_SETTINGS, CLAUDE_ISOLATE_ARGS, CODEX_MCP_OFF_COMMAND, CODEX_MCP_OFF_URL, CODEX_MCP_SERVER_OFF,
@@ -467,6 +467,22 @@ describe('prepareIsolatedLaunch for Codex in a linked git worktree', () => {
     await expect(prepareIsolatedLaunch('codex', wt, {}, run, realIO(), { keepTermpolis: KEPT }))
       .rejects.toThrow(`can't keep Termpolis's MCP server for the run: ${cfg} sets a server of its own named termpolis`)
     expect(run).not.toHaveBeenCalled()
+  })
+
+  // HOLD-A R3-2. Codex matches a trusted project by its real path, so a trust spelled another way (a link, a junction,
+  // an 8.3 short name) to the main repository is its trust too.
+  it('a trust spelled another way than the main repository is its trust when both name the same real folder', async () => {
+    const { main, wt } = await worktree()
+    const alias = join(base, 'main-alias')
+    await userConfig(trust(alias))
+    await projectConfig(wt, '[mcp_servers.wtsrv]\ncommand = "w"\n')
+    const same = (a: string, b: string): boolean => resolve(a).toLowerCase() === resolve(b).toLowerCase()
+    // The alias leads to the main repository, as a link would; every other path is its own.
+    const aliased: IsolationIO = { ...realIO(), realpath: async (p) => defaultIsolationIO.realpath(same(p, alias) ? main : p) }
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), aliased)).args).toEqual([...OFF_CMD('wtsrv'), ...TAIL])
+    // Without the alias leading anywhere, the trust is another folder's, and nothing of the worktree is read.
+    clearIsolationChecks()
+    expect((await prepareIsolatedLaunch('codex', wt, {}, passing(), realIO())).args).toEqual(TAIL)
   })
 
   it('reads nothing of the worktree when neither it nor its main repository is trusted', async () => {

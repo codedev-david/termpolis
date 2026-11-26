@@ -450,6 +450,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /** The keys `codex mcp list --json` prints for a server and for a stdio transport (codex-cli 0.164.0). */
+/* Codex also reads keys it never prints (required, enabled_tools, disabled_tools, scopes, supports_parallel_tool_calls,
+ * experimental_environment) and takes unknown keys silently, so this list can't see them. None of those change the
+ * program, args, env or folder started; if a later Codex adds one that does, the refusal of a project layer that
+ * names termpolis (KEEP_REFUSED) is the only guard. */
 const LISTED_SERVER_KEYS: readonly string[] = ['name', 'enabled', 'disabled_reason', 'transport', 'startup_timeout_sec', 'tool_timeout_sec', 'auth_status']
 const LISTED_STDIO_KEYS: readonly string[] = ['type', 'command', 'args', 'env', 'env_vars', 'cwd']
 

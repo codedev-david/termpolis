@@ -305,6 +305,12 @@ const mockFsPromises = {
   rename: vi.fn(async () => undefined),
   rm: vi.fn(async () => undefined),
   unlink: vi.fn(async () => undefined),
+  // The read-only isolation a review runs under (readOnlyIsolation.ts) looks for the agent's config
+  // files: here there are none.
+  open: vi.fn(async () => { throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }) }),
+  lstat: vi.fn(async () => { throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }) }),
+  realpath: vi.fn(async (p: string) => p),
+  mkdtemp: vi.fn(async (prefix: string) => `${prefix}run`),
 }
 vi.mock('fs', () => ({
   writeFileSync: mockWriteFileSync,
@@ -3389,28 +3395,44 @@ describe('agent:second-opinion handler', () => {
     })
     return child
   }
+  /** The review plays `plan`. The read-only isolation's MCP list check (codex, agy) is spawned before
+   *  it, as the review is (its argv on POSIX, its PowerShell script on Windows), and shows every MCP
+   *  server off. */
+  function armReview(plan: Parameters<typeof fakeChild>[0]): void {
+    mockSpawn.mockImplementation((cmd: string, argv: string[]) => {
+      const all = [cmd, ...argv].join(' ')
+      if (argv[0] === 'mcp' || all.includes("& $c 'mcp' 'list'")) return fakeChild({ stdout: all.includes('agy') ? agyNoServers : '[]', code: 0 })
+      return fakeChild(plan)
+    })
+  }
+  // Imported here, not at the top: a module that imports fs, loaded before the fs mock's variables
+  // exist, would fail the whole file.
+  let agyNoServers = ''
+  beforeAll(async () => { agyNoServers = (await import('../../src/main/readOnlyIsolation')).AGY_NO_MCP_SERVERS })
+  afterEach(() => { mockSpawn.mockReset() })
 
   it('rejects an unsupported agent before spawning anything', async () => {
     const r = await invokeHandler('agent:second-opinion', { agent: 'bogus', content: 'x' })
     expect(r).toEqual({ success: false, error: 'unsupported agent' })
   })
   it('returns trimmed feedback on a successful review', async () => {
-    mockSpawn.mockReturnValueOnce(fakeChild({ stdout: '  Looks correct to me.  ', code: 0 }))
+    armReview({ stdout: '  Looks correct to me.  ', code: 0 })
     const r = await invokeHandler('agent:second-opinion', { agent: 'codex', content: 'some answer' })
     expect(r.success).toBe(true)
     expect(r.data.feedback).toBe('Looks correct to me.')
     expect(mockSpawn).toHaveBeenCalled()
   })
   it('surfaces the agent stderr when it exits non-zero', async () => {
-    mockSpawn.mockReturnValueOnce(fakeChild({ stderr: 'not authenticated', code: 1 }))
+    armReview({ stderr: 'not authenticated', code: 1 })
     const r = await invokeHandler('agent:second-opinion', { agent: 'gemini', content: 'answer' })
     expect(r.success).toBe(false)
     expect(r.error).toContain('not authenticated')
   })
   it('reports a spawn error event as a failure', async () => {
-    mockSpawn.mockReturnValueOnce(fakeChild({ errorEvent: 'spawn ENOENT' }))
+    armReview({ errorEvent: 'spawn ENOENT' })
     const r = await invokeHandler('agent:second-opinion', { agent: 'claude', model: 'opus', content: 'answer' })
     expect(r.success).toBe(false)
+    expect(r.error).toContain('ENOENT')
   })
 })
 

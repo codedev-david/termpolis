@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } 
 import { EventEmitter } from 'events'
 import { homedir } from 'os'
 import { globalHotkeys } from '../../src/main/appMenu'
+import { AGY_NO_MCP_SERVERS, MCP_LIST_PASS_MS } from '../../src/main/readOnlyIsolation'
+import { REVIEW_ISOLATION_FAILED } from '../../src/main/secondOpinion'
 
 // Platform-specific accelerators (Super+Shift+* on Windows/Linux, Control+Alt+* on macOS). Derived
 // from the same source index.ts registers with, so these pass on every CI runner.
@@ -347,6 +349,9 @@ vi.mock('child_process', () => ({
 }))
 
 vi.mock('fs', () => {
+  // The read-only isolation a review runs under (readOnlyIsolation.ts) looks for the agent's config
+  // files: here there are none.
+  const missing = async (): Promise<never> => { throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }) }
   const impl = {
     writeFileSync: M.writeFileSync,
     existsSync: M.existsSync,
@@ -366,6 +371,12 @@ vi.mock('fs', () => {
       writeFile: vi.fn(async () => {}),
       rename: vi.fn(async () => {}),
       mkdir: vi.fn(async () => {}),
+      open: vi.fn(missing),
+      stat: vi.fn(missing),
+      lstat: vi.fn(missing),
+      realpath: vi.fn(async (p: string) => p),
+      mkdtemp: vi.fn(async (prefix: string) => `${prefix}run`),
+      rm: vi.fn(async () => {}),
     },
   }
   return { ...impl, default: impl }
@@ -1723,9 +1734,23 @@ class FakeChild extends EventEmitter {
 }
 
 describe('agent:second-opinion — the scraped prompt never reaches a shell', () => {
-  function armSpawn(drive: (c: FakeChild) => void): FakeChild {
+  /** Whether a spawn is the read-only isolation's MCP list check (codex, agy), which runs before the
+   *  review: its argv on POSIX, its PowerShell script on Windows. */
+  const isListCheck = (argv: string[]): boolean => argv[0] === 'mcp' || argv.some((a) => a.includes("& $c 'mcp' 'list'"))
+  /** An agent with every MCP server off, as the MCP list check prints it. */
+  const allOff = (cmd: string, argv: string[]) => (c: FakeChild): void => {
+    c.stdout.emit('data', Buffer.from([cmd, ...argv].join(' ').includes('agy') ? AGY_NO_MCP_SERVERS : '[]'))
+    c.emit('close', 0)
+  }
+  /** `drive` plays the review; `list` the MCP list check before it, all servers off unless given. */
+  function armSpawn(drive: (c: FakeChild) => void, list?: (c: FakeChild) => void): FakeChild {
     const child = new FakeChild()
-    M.spawn.mockImplementation(() => {
+    M.spawn.mockImplementation((cmd: string, argv: string[]) => {
+      if (isListCheck(argv)) {
+        const check = new FakeChild()
+        setImmediate(() => (list ?? allOff(cmd, argv))(check))
+        return check as never
+      }
       setImmediate(() => drive(child))
       return child as never
     })
@@ -1780,6 +1805,33 @@ describe('agent:second-opinion — the scraped prompt never reaches a shell', ()
     })
     expect(r.success).toBe(false)
     expect(r.error).toContain('ENOENT')
+  })
+
+  it('starts no review when the isolation check fails, and says the review could not be isolated', async () => {
+    // codex prints something that isn't its JSON list, so the check can't show every MCP server off.
+    // A check that passed within MCP_LIST_PASS_MS isn't run again: the clock is moved past that.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 2 * MCP_LIST_PASS_MS)
+    try {
+      armSpawn(
+        (c) => { c.stdout.emit('data', Buffer.from('a review that must not run')); c.emit('close', 0) },
+        (c) => { c.stdout.emit('data', Buffer.from('not a list')); c.emit('close', 0) },
+      )
+      let r: any
+      await withPlatform('linux', async () => {
+        r = await invoke('agent:second-opinion', { agent: 'codex', content: 'x' })
+      })
+      expect(r).toEqual({ success: false, error: REVIEW_ISOLATION_FAILED })
+      const calls = M.spawn.mock.calls as [string, string[]][]
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toBe('codex')
+      expect(calls[0][1].slice(0, 3)).toEqual(['mcp', 'list', '--json'])
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('did not show every MCP server off'))
+    } finally {
+      vi.useRealTimers()
+      warn.mockRestore()
+    }
   })
 
   it('treats missing content as empty rather than sending "undefined" to another model', async () => {
