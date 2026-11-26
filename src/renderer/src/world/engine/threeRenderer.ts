@@ -75,6 +75,12 @@ export interface RendererOptions {
    * spec §5.3): the GPU cannot hold even the smallest one, and frames draw only part of the view, or nothing.
    */
   onBufferShrunk?: () => void
+  /**
+   * Test only (the e2e harness, through WorldView under the worldProbe test flag; never set in use): how many times
+   * its real length the first frame is made to take, read when it is drawn. Above 1, the frame waits out the rest
+   * before firstFrameMs is timed, so a first-frame regression can be staged to prove the e2e guard catches it.
+   */
+  firstFrameSlowdown?: () => number
 }
 
 export interface ThreeRenderer {
@@ -867,6 +873,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** When the view was last resized (0 once a frame has drawn it), and the longest a resize waited for its frame. */
   let resizedAt = 0
   let resizeWorstMs = 0
+  /** The first frame's time, stretched to opts.firstFrameSlowdown times itself by waiting (test only). */
+  const slowFirstFrame = (ms: number, askedAt: number): number => {
+    const by = opts.firstFrameSlowdown?.() ?? 1
+    if (!(by > 1)) return ms
+    const until = askedAt + ms * by
+    while (performance.now() < until) { /* the staged regression: the frame takes this long */ }
+    return performance.now() - askedAt
+  }
   const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs })
   const breakChain = (): void => {
     chained = false
@@ -3075,7 +3089,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     else renderer.render(scene, camera)
     presented++
     const done = performance.now()
-    if (firstFrameMs === null && drawAskedAt !== null) firstFrameMs = done - drawAskedAt
+    if (firstFrameMs === null && drawAskedAt !== null) firstFrameMs = slowFirstFrame(done - drawAskedAt, drawAskedAt)
     if (resizedAt > 0) {
       resizeWorstMs = Math.max(resizeWorstMs, done - resizedAt)
       resizedAt = 0

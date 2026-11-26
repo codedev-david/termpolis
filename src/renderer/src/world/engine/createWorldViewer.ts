@@ -227,6 +227,8 @@ export interface WorldViewerOptions {
   readOnly?: boolean
   /** What became of the 3D map's graphics (a lost WebGL context): the host shows a notice. */
   onGraphics?: (state: WorldGraphics) => void
+  /** Test only: passed to the renderer (RendererOptions.firstFrameSlowdown). */
+  firstFrameSlowdown?: () => number
 }
 
 /**
@@ -348,6 +350,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         onBufferShrunk: () => { if (++shrinkFails >= 2) onTierRequest('down') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
+        ...(opts.firstFrameSlowdown ? { firstFrameSlowdown: opts.firstFrameSlowdown } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
     } catch {

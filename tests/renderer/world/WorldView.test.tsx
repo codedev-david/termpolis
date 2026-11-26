@@ -1306,6 +1306,24 @@ describe('WorldView', () => {
       vi.useRealTimers()
     })
 
+    it('a staged first-frame slowdown reaches the viewer only under the probe flag, read from the window when asked', async () => {
+      bridge()
+      const a = await mount()
+      expect(viewer().opts).not.toHaveProperty('firstFrameSlowdown')
+      a.unmount()
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      bridge()
+      await mount()
+      const slow = viewer().opts.firstFrameSlowdown as () => number
+      expect(slow()).toBe(1)
+      ;(window as any).__worldFirstFrameSlowdown = 2
+      try {
+        expect(slow()).toBe(2)
+      } finally {
+        delete (window as any).__worldFirstFrameSlowdown
+      }
+    })
+
     it('__worldPerf exists only with the probe flag', async () => {
       bridge()
       const a = await mount()

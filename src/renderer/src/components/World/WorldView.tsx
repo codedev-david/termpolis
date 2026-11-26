@@ -645,6 +645,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
       rightReserve: legendReserveScaled(legendOpenRef.current, widthRef.current, scaleRef.current),
+      // Test only: under the e2e harness's worldProbe flag, window.__worldFirstFrameSlowdown stages a slower first frame.
+      ...(exposesWorldProbe() ? { firstFrameSlowdown: () => Number((window as unknown as { __worldFirstFrameSlowdown?: unknown }).__worldFirstFrameSlowdown) || 1 } : {}),
       renderCard: (html, fromClick) => {
         if (html !== null) armedRef.current = false
         setCard(html)

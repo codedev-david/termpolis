@@ -1450,6 +1450,18 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('rightReserve')
   })
 
+  it('passes a staged first-frame slowdown (test only) to the renderer only when given one', () => {
+    withWebGL()
+    createThreeRenderer.mockImplementation((h: HTMLElement) => fakeRenderer(h).r)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const slow = (): number => 2
+    createWorldViewer(host, { firstFrameSlowdown: slow })
+    createWorldViewer(host)
+    expect((createThreeRenderer.mock.calls[0][1] as { firstFrameSlowdown?: () => number }).firstFrameSlowdown).toBe(slow)
+    expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('firstFrameSlowdown')
+  })
+
   it('passes the ask bar strip on to the renderer, at creation and when it changes, and not after dispose', () => {
     withWebGL()
     let fake: ReturnType<typeof fakeRenderer> | null = null

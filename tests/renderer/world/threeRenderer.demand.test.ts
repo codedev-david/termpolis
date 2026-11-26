@@ -1075,6 +1075,42 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     return () => { (observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }]) }
   }
 
+  it('a staged first-frame slowdown (test only) makes the first frame take that many times as long, read when it is drawn', () => {
+    gpu.gpuName = GEFORCE
+    let by = 1
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, firstFrameSlowdown: () => by })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    by = 2 // read at the frame, not at build
+    // The wait reads the clock until it has passed: here each read moves the manual clock on a millisecond.
+    const now = vi.mocked(performance.now)
+    let reads = 0
+    now.mockImplementation(() => { reads++; h.frames.advance(1); return h.frames.now })
+    const before = h.frames.now
+    h.frames.step(20)
+    now.mockImplementation(() => h.frames.now)
+    // The frame waited out the 20 ms it took once more, on the clock: twice as long.
+    expect(perf(r).firstFrameMs).toBeGreaterThanOrEqual(40)
+    expect(perf(r).firstFrameMs).toBeLessThan(40 + 30) // the frame's own clock reads, and no more than that
+    expect(h.frames.now - before).toBeGreaterThanOrEqual(40)
+    expect(reads).toBeGreaterThan(10)
+    // Only the first frame: the next ones are not held (the clock moves only by the frames).
+    const at = h.frames.now
+    h.frames.run(5)
+    expect(h.frames.now - at).toBe(5 * 16)
+    expect(perf(r).firstFrameMs).toBeGreaterThanOrEqual(40)
+    r.dispose()
+    // 1 or no number: the first frame is timed as it is.
+    for (const slow of [() => 1, () => NaN]) {
+      const q = createThreeRenderer(h.host, { ...DEFAULT_OPTS, firstFrameSlowdown: slow })
+      boxCanvas(q.canvas, 800, 600)
+      q.draw(smallCity(), smallText(), false)
+      h.frames.step(20)
+      expect(perf(q).firstFrameMs).toBe(20)
+      q.dispose()
+    }
+  })
+
   it('feeds each drawn frame: p50/p95 of the gaps, a frame over DROPPED_FRAME_MS is a drop, and the first frame is timed', () => {
     gpu.gpuName = GEFORCE
     const r = createThreeRenderer(h.host, DEFAULT_OPTS) // the looping motions never stop: a frame every 16 ms
