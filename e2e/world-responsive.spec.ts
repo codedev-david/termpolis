@@ -1389,17 +1389,19 @@ test.describe.serial('Lumopolis at every screen size', () => {
       window.addEventListener('pointermove', () => { w.__moves.push(performance.now()) }, { capture: true })
       w.__longObs = new PerformanceObserver((list) => { for (const t of list.getEntries()) w.__longTasks.push({ start: t.startTime, ms: t.duration }) })
       w.__longObs.observe({ type: 'longtask', buffered: false })
-      // A long animation frame's own work: the scripts that ran before it rendered, then its rendering (requestAnimation-
-      // Frame callbacks with the frame's drawing, the resize observer, style, layout and paint), up to its end.
-      type Loaf = PerformanceEntry & { renderStart: number; scripts: Array<{ startTime: number; duration: number }> }
-      const lw = window as unknown as { __frames: Array<{ start: number; own: number; ms: number }>; __loafObs?: PerformanceObserver }
+      // A long animation frame's own work, each piece where it began: the scripts that ran before it rendered (each named
+      // by what called it), then its rendering (requestAnimationFrame callbacks with the frame's drawing, the resize
+      // observer, style, layout and paint), up to its end.
+      type Loaf = PerformanceEntry & { renderStart: number; scripts: Array<{ startTime: number; duration: number; invokerType: string; invoker: string }> }
+      const lw = window as unknown as { __frames: Array<{ ms: number; work: Array<{ start: number; ms: number; what: string }> }>; __loafObs?: PerformanceObserver }
       lw.__frames = []
       lw.__loafObs = new PerformanceObserver((list) => {
         for (const e of list.getEntries() as Loaf[]) {
           const end = e.startTime + e.duration
-          const rendered = e.renderStart > 0 ? end - e.renderStart : 0
-          const before = e.scripts.filter((x) => e.renderStart <= 0 || x.startTime < e.renderStart).reduce((n, x) => n + x.duration, 0)
-          lw.__frames.push({ start: e.startTime, own: rendered + before, ms: e.duration })
+          const work = e.scripts.filter((x) => e.renderStart <= 0 || x.startTime < e.renderStart)
+            .map((x) => ({ start: x.startTime, ms: x.duration, what: `${x.invokerType} ${x.invoker}`.slice(0, 60) }))
+          if (e.renderStart > 0) work.push({ start: e.renderStart, ms: end - e.renderStart, what: 'rendering' })
+          lw.__frames.push({ ms: e.duration, work })
         }
       })
       lw.__loafObs.observe({ type: 'long-animation-frame', buffered: false })
@@ -1420,7 +1422,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     }
     await page.mouse.up()
     const after = await page.evaluate((settleMs) => {
-      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __frames: Array<{ start: number; own: number; ms: number }>; __moves: number[]; __longObs?: PerformanceObserver; __loafObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
+      const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __frames: Array<{ ms: number; work: Array<{ start: number; ms: number; what: string }> }>; __moves: number[]; __longObs?: PerformanceObserver; __loafObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; tier: string } } } }
       w.__longObs?.disconnect()
       w.__loafObs?.disconnect()
       const perf = w.__termpolis_world.drawn().perf
@@ -1428,12 +1430,20 @@ test.describe.serial('Lumopolis at every screen size', () => {
       // later, the hand held still and the buffer was fitted.
       const sinceMove = (t: number): number => t - Math.max(-Infinity, ...w.__moves.filter((m) => m <= t))
       const tasks = w.__longTasks.map((t) => ({ ms: t.ms, still: sinceMove(t.start) >= settleMs }))
-      const longFrames = w.__frames.map((f) => ({ ms: f.own, all: f.ms, still: sinceMove(f.start) >= settleMs }))
+      // A piece of a frame's work is the drag's when a move came while it ran (the pointer's events are handled in the
+      // frame's rendering, the resize observer after them) or within the settle time before it began. The buffer's fit
+      // runs from a timer once the size has held, with no move in it, and is the hand held still: in software a move can
+      // come 500 to 900 ms after the last, the page being slow to take it, so the fit can run between two moves.
+      const during = (x: { start: number; ms: number }): boolean => w.__moves.some((m) => m > x.start - settleMs && m <= x.start + x.ms)
+      const longFrames = w.__frames.map((f) => {
+        const drag = f.work.filter(during)
+        return { ms: drag.reduce((n, x) => n + x.ms, 0), all: f.ms, still: drag.length === 0, what: drag.filter((x) => x.ms >= 50).map((x) => `${x.what} ${x.ms.toFixed(0)}`).join('; ') }
+      })
       const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
       return { resizeWorstMs: perf.resizeWorstMs, tier: perf.tier, tasks, longFrames, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
     }, BUFFER_SETTLE_MS)
     const show = (xs: Array<{ ms: number }>): string => xs.map((t) => t.ms.toFixed(0)).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), long tasks of the drag ${show(after.tasks.filter((t) => !t.still))}, once it held still ${show(after.tasks.filter((t) => t.still))}; long frames of the drag, own work of all ${after.longFrames.filter((f) => !f.still).map((f) => `${f.ms.toFixed(0)}/${f.all.toFixed(0)}`).join(', ') || 'none'}`)
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), long tasks of the drag ${show(after.tasks.filter((t) => !t.still))}, once it held still ${show(after.tasks.filter((t) => t.still))}; long frames of the drag, own work of all ${after.longFrames.filter((f) => !f.still).map((f) => `${f.ms.toFixed(0)}/${f.all.toFixed(0)}${f.what ? ` (${f.what})` : ''}`).join(', ') || 'none'}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     softly(after.resizeWorstMs, 'the drag resized the view, timed').toBeGreaterThan(0)
     softly(after.resizeWorstMs, 'each resize during the drag takes under 16 ms of its own').toBeLessThan(16)
