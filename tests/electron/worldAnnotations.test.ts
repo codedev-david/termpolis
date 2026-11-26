@@ -368,8 +368,13 @@ describe('annotation store copyRenamed (WP5)', () => {
     await store.add('k', 'x-api-foo-com--abc123', person('shared'))
     await store.add('k', 'b-keep', person('untouched'))
     await store.copyRenamed('k', { 'x-api-foo-com': 'x-api-foo-com--abc123', 'b-gone': 'b-new' })
-    expect(await store.list('k')).toEqual({
+    // The file keeps the old id's claims (an older build still finds them); HOLD-B #37: this build no longer shows them there.
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8'))).toEqual({
       'x-api-foo-com': [person('old note'), person('shared')],
+      'x-api-foo-com--abc123': [person('shared'), person('old note')],
+      'b-keep': [person('untouched')],
+    })
+    expect(await store.list('k')).toEqual({
       'x-api-foo-com--abc123': [person('shared'), person('old note')],
       'b-keep': [person('untouched')],
     })
@@ -396,14 +401,56 @@ describe('annotation store copyRenamed (WP5)', () => {
     const list = (await store.list('k')).new
     expect(list).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
     expect(list[list.length - 1]).toEqual(person('o19'))
-    expect((await store.list('k')).old).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8')).old).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
   })
 
   it('copies once when another writer (the other world host store) copies at the same time', async () => {
     await createAnnotationStore(dir).add('k', 'old', person('n'))
     const [a, b] = [createAnnotationStore(dir), createAnnotationStore(dir)]
     await Promise.all([a.copyRenamed('k', { old: 'new' }), b.copyRenamed('k', { old: 'new' })])
-    expect(await a.list('k')).toEqual({ old: [person('n')], new: [person('n')] })
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8'))).toEqual({ old: [person('n')], new: [person('n')] })
+    expect(await a.list('k')).toEqual({ new: [person('n')] })
+  })
+
+  // HOLD-B #37 (WP5 M4/N3): the old id keeps its claims in the file, so a different part that later gets that id must not
+  // show them. The case that happens: a namesake folder comes (A's id gets a suffix), then A goes (its namesake takes the
+  // plain id back). A's notes stayed under the plain id, and showed on the namesake.
+  it('a part that later gets an id renamed away does not show the claims that were copied from it', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'b-foo', person('about A'))
+    await store.copyRenamed('k', { 'b-foo': 'b-foo--a1' }) // B comes: A takes a suffix
+    await store.add('k', 'b-foo--b2', person('about B'))
+    await store.copyRenamed('k', { 'b-foo--b2': 'b-foo' }) // A goes: B takes the plain id back
+    expect((await store.list('k'))['b-foo']).toEqual([person('about B')])
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8'))['b-foo']).toEqual([person('about A'), person('about B')])
+  })
+
+  it('a part renamed back to its old id shows its claims there again, and a swap shows each part its own', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'x', person('about A'))
+    await store.copyRenamed('k', { x: 'y' })
+    await store.copyRenamed('k', { y: 'x' })
+    expect(await store.list('k')).toEqual({ x: [person('about A')] })
+    await store.add('k', 'p', person('about P'))
+    await store.add('k', 'q', person('about Q'))
+    await store.add('k', 'q', person('shared'))
+    await store.add('k', 'p', person('shared'))
+    await store.copyRenamed('k', { p: 'q', q: 'p' })
+    const shown = await store.list('k')
+    expect(shown.p).toEqual([person('about Q'), person('shared')])
+    expect(shown.q).toEqual([person('about P'), person('shared')])
+  })
+
+  it('a note added again on an id renamed away shows there, and so does a new one', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'b-foo', person('about A'))
+    await store.copyRenamed('k', { 'b-foo': 'b-foo--a1' })
+    await store.add('k', 'b-foo', person('new part'))
+    expect((await store.list('k'))['b-foo']).toEqual([person('new part')])
+    // Added again on this part: it is this part's now, once, as the newest.
+    await store.add('k', 'b-foo', person('about A'))
+    expect((await store.list('k'))['b-foo']).toEqual([person('new part'), person('about A')])
+    expect((await store.list('k'))['b-foo--a1']).toEqual([person('about A')])
   })
 })
 
