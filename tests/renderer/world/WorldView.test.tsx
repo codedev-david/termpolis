@@ -2491,6 +2491,27 @@ describe('WorldView 2D map switch and bookmarks', () => {
     }
   })
 
+  // HOLD-B #92: the keys move the camera as a drag does (the renderer's WASD/QE), so they cut the flight short too. Any
+  // other key (a letter that moves nothing, a shortcut's Shift) leaves the saved pose to land.
+  it('a WASD/QE key on the view during the flight leaves the camera where it is; another key does not', async () => {
+    localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Open b1', camera: cam, selection: ['b1'] }]))
+    bridge()
+    await mount()
+    const host = screen.getByTestId('world-canvas-host')
+    for (const [key, lands] of [['w', false], ['A', false], ['e', false], ['q', false], ['x', true], ['Shift', true]] as const) {
+      viewer().getSelection.mockReturnValue(['b1'])
+      const flight = deferred<undefined>()
+      viewer().apply.mockReturnValueOnce(flight.promise)
+      viewer().setCamera.mockClear()
+      openMenu()
+      fireEvent.click(screen.getByRole('button', { name: 'Open b1' }))
+      fireEvent.keyDown(host, { key })
+      await act(async () => { flight.resolve(undefined) })
+      await settle()
+      expect(viewer().setCamera.mock.calls.length, key).toBe(lands ? 1 : 0)
+    }
+  })
+
   it('a switch to another world during the flight leaves the camera alone', async () => {
     localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Open b1', camera: cam, selection: ['b1'] }]))
     const b = bridge()

@@ -63,6 +63,21 @@ describe('annotation store', () => {
     expect(c.evidence[0]).toEqual({ kind: 'file', ref: 'f0.ts:1', excerpt: 'x' })
   })
 
+  // HOLD-B #92: a test's excerpt is where its result came from ("from a test report", testStatus.ts), shown on the card
+  // (cardFacts evidenceText). Only the test status may say that: a note an agent wrote never carries one.
+  it('keeps no excerpt on a note\'s test evidence, written or read back, and keeps every other kind\'s', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'b1', {
+      text: 'the tests pass', state: 'verified',
+      evidence: [{ kind: 'test', ref: 'a.test.ts', excerpt: 'from a test report' }, { kind: 'file', ref: 'a.ts:1', excerpt: 'x' }],
+    })
+    expect((await store.list('k')).b1[0].evidence).toEqual([{ kind: 'test', ref: 'a.test.ts' }, { kind: 'file', ref: 'a.ts:1', excerpt: 'x' }])
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8')).b1[0].evidence[0]).toEqual({ kind: 'test', ref: 'a.test.ts' })
+    // One an older build wrote is read back without it.
+    await writeFile(fileFor('k'), JSON.stringify({ b2: [{ text: 'old', state: 'verified', evidence: [{ kind: 'test', ref: 't', excerpt: 'from CI (gh)' }] }] }))
+    expect((await store.list('k')).b2[0].evidence).toEqual([{ kind: 'test', ref: 't' }])
+  })
+
   it('caps an evidence ref at 512 and an excerpt at 400, ending in an ellipsis, and leaves shorter ones alone', async () => {
     const store = createAnnotationStore(dir)
     expect([MAX_EVIDENCE_REF, MAX_EVIDENCE_EXCERPT]).toEqual([512, 400])
