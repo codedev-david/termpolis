@@ -515,6 +515,48 @@ describe('hookStatus', () => {
     const deps: HookDeps = { ...fs.deps, readFile: () => null }
     expect(hookStatus(PATHS, deps)['pre-commit']).toBe('foreign')
   })
+
+  // HOLD-B (hold-a-review re-review 1): a block of ours that is not the one Protect writes now is 'outdated', not
+  // 'installed', so the person is told to protect the repository again. Protect again replaces it, in place.
+  const OLD_BLOCK = [BEGIN, 'command -v node >/dev/null 2>&1 || exit 0', 'node "/old/termpolis-githook.cjs" pre-commit || exit 1', END, ''].join('\n')
+
+  it('reports outdated for a block an older Termpolis wrote (node looked up on PATH), and installed once protected again', () => {
+    const fs = fakeFs({ [PRE_COMMIT]: `#!/bin/sh\n${OLD_BLOCK}` })
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'absent' })
+    installHooks(PATHS, fs.deps)
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
+  })
+
+  it('reports outdated for an old block chained into a foreign hook, and protecting again keeps the foreign lines', () => {
+    const fs = fakeFs({ [PRE_COMMIT]: HUSKY.replace('\n', `\n${OLD_BLOCK}`) })
+    expect(hookStatus(PATHS, fs.deps)['pre-commit']).toBe('outdated')
+    installHooks(PATHS, fs.deps)
+    expect(hookStatus(PATHS, fs.deps)['pre-commit']).toBe('installed')
+    expect(fs.files.get(PRE_COMMIT)).toContain('npx lint-staged || exit 1')
+    expect(fs.files.get(PRE_COMMIT)).not.toContain('command -v node')
+  })
+
+  it('reports outdated when node or the scanner moved since the block was written', () => {
+    const fs = fakeFs()
+    installHooks(PATHS, fs.deps)
+    expect(hookStatus({ ...PATHS, nodePath: 'C:\\Users\\me\\nvm\\v24\\node.exe' }, fs.deps)['pre-push']).toBe('outdated')
+    expect(hookStatus({ ...PATHS, scriptPath: 'D:\\Termpolis\\termpolis-githook.cjs' }, fs.deps)['pre-commit']).toBe('outdated')
+  })
+
+  it('reports outdated for a doubled block and for a block whose lines gained CRs (sh would choke on them)', () => {
+    const fs = fakeFs()
+    installHooks(PATHS, fs.deps)
+    const ours = fs.files.get(PRE_COMMIT)!
+    fs.files.set(PRE_COMMIT, ours + ours.slice('#!/bin/sh\n'.length))
+    fs.files.set(PRE_PUSH, fs.files.get(PRE_PUSH)!.replace(/\n/g, '\r\n'))
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'outdated' })
+  })
+
+  it('stays installed when Termpolis finds no node now (Protect would refuse) and for a block in a hook Protect skips', () => {
+    const fs = fakeFs({ [PRE_COMMIT]: `#!/bin/sh\n${OLD_BLOCK}`, [PRE_PUSH]: `${PYTHON_HOOK}${OLD_BLOCK}` })
+    expect(hookStatus({ ...PATHS, nodePath: '' }, fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
+    expect(hookStatus(PATHS, fs.deps)['pre-push']).toBe('installed')
+  })
 })
 
 // #36 (WPS M7). `rev-parse --git-path hooks` answers with core.hooksPath, and a repository's own config can point that

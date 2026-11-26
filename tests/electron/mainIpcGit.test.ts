@@ -1268,7 +1268,8 @@ describe('Commit Shield hooks — protected-repo list', () => {
     expect(r.success).toBe(true)
     // The bogus numeric entry is dropped by the type guard, never handed to git.
     expect(r.data.map((e: { repo: string }) => e.repo)).toEqual(['/repo-live', '/repo-gone'])
-    expect(r.data[0].status['pre-commit']).toBe('installed')
+    // A bare sentinel line is a block of ours, but not the one Protect writes now: outdated (HOLD-B).
+    expect(r.data[0].status['pre-commit']).toBe('outdated')
     expect(r.data[0].status['pre-push']).toBe('absent')
     expect(r.data[1].status).toBeNull()
   })

@@ -685,6 +685,39 @@ describe('SecuritySettings — Commit Shield git hooks', () => {
     expect(screen.getByTestId('security-hook-list').textContent).toContain('not installed')
   })
 
+  // HOLD-B: a shield an older Termpolis wrote, or one whose node or scanner moved, is not armed as it should be. The row
+  // says so and offers Protect again, which protects that repository without asking for a folder.
+  it.each([
+    [{ 'pre-commit': 'outdated', 'pre-push': 'installed' }],
+    [{ 'pre-commit': 'installed', 'pre-push': 'outdated' }],
+  ])('shows an outdated shield (%o) with Protect again, which protects that same repository', async (status) => {
+    const api = (window as any).aiSecurity
+    api.gitHooksList = vi.fn().mockResolvedValue({ success: true, data: [{ repo: '/repos/old', status }] })
+    api.gitHooksInstall = vi.fn().mockResolvedValue({ success: true, data: { canceled: false, repo: '/repos/old', written: ['pre-commit', 'pre-push'] } })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-hook-list'))
+    const list = screen.getByTestId('security-hook-list')
+    expect(list.textContent).toContain('outdated')
+    expect(list.textContent).not.toContain('armed')
+    fireEvent.click(within(list).getByRole('button', { name: 'Protect again' }))
+    await waitFor(() => expect(api.gitHooksInstall).toHaveBeenCalledWith('/repos/old'))
+    await waitFor(() => expect(screen.getByTestId('security-hook-msg').textContent).toMatch(/Protected \/repos\/old/))
+    expect(api.gitHooksList).toHaveBeenCalledTimes(2) // listed again after protecting
+  })
+
+  it('offers no Protect again on an armed or a missing shield', async () => {
+    ;(window as any).aiSecurity.gitHooksList = vi.fn().mockResolvedValue({
+      success: true,
+      data: [
+        { repo: '/repos/armed', status: { 'pre-commit': 'installed', 'pre-push': 'installed' } },
+        { repo: '/repos/gone', status: null },
+      ],
+    })
+    render(<SecuritySettings />)
+    await waitFor(() => screen.getByTestId('security-hook-list'))
+    expect(within(screen.getByTestId('security-hook-list')).queryByRole('button', { name: 'Protect again' })).toBeNull()
+  })
+
   it('surfaces an install failure instead of pretending it worked', async () => {
     ;(window as any).aiSecurity.gitHooksInstall = vi.fn().mockResolvedValue({
       success: false,
