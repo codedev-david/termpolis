@@ -8,7 +8,9 @@
  *     median, and every orbit) are written to test-results/world-perf/<os>-<fixture>-<tier>.json and logged as a
  *     `world-perf {...}` line;
  *   - in software on Linux and Windows, the median orbit's p95 stays at or under this system's floor for that world
- *     (SOFTWARE_FLOOR_P95_MS).
+ *     (SOFTWARE_FLOOR_P95_MS);
+ *   - in software on Linux and Windows, once both worlds are drawn: each world's first frame stays under this system's
+ *     time (FIRST_FRAME_SW_MS), and the first frames against the runner's own speed under FIRST_FRAME_PER_GL.
  *
  * Metrics only: no screenshot here is a golden image.
  */
@@ -63,6 +65,41 @@ const SOFTWARE_FLOOR_P95_MS: Record<string, Record<string, number>> = {
  */
 const WARM_UP_FILES = 2
 const FIRST_FRAME_RATIO = 2.7
+/**
+ * Each world's first frame in software, in time (§6.2). The spec's target is 3 s in software, on real machines with the
+ * GPU off (Task 20's software run); this is the CI guard, per system, the worst world's first frame seen on that
+ * system's runner x 1.3, rounded up to 10 ms, and no more than the 3 s target where that is less:
+ *   - Windows: worst 1010 ms (the Termpolis world, soak 45740654778), x 1.3 = 1313: 1320 ms;
+ *   - Linux: worst 2411 ms (the Termpolis world, soak 45646550636), x 1.3 = 3134: 3140 ms. That is over the 3 s
+ *     target, a CI-runner deviation (spec §6.2): the Linux runner's SwiftShader is slower than the software the target
+ *     is for, and 3 s would fail runs the app did nothing to slow;
+ *   - macOS: reported only (1.1-5.0 s on its LLVM backend, worst 4994 ms in soak 45733807004).
+ * The time alone cannot see an app that got 2x slower on every world: Linux's worlds ran 1.0-2.4 s, more than 2x apart
+ * from one runner to the next. FIRST_FRAME_PER_GL can.
+ */
+const FIRST_FRAME_SW_MS: Record<string, number> = { linux: 3140, windows: 1320 }
+/**
+ * The first frames against the runner's own speed (§6.2): a cost every first frame pays alike (a uniform regression)
+ * moves the warm-up and the worlds together, so FIRST_FRAME_RATIO cannot see it. Before the warm-up, runnerSpeed()
+ * times the runner on a fixed job that runs no app code; its `glMs` (compiling, linking and drawing shader programs in
+ * software, the bulk of a first frame there) is the unit. Two measures, per system, each the worst seen x 1.3, rounded
+ * up to 0.1:
+ *   - `warm`: the warm-up world's first frame / glMs;
+ *   - `median`: the median of the three first frames (the warm-up and both worlds) / glMs.
+ * From 16 launches per system on one commit (5c97a9c1): Linux soaks 45740645423 and 45743471773, warm 13.1-22.1 and
+ * median 15.2-20.2, so 28.8 and 26.3; Windows soaks 45740654778 and 45743478746, warm 8.9-11.8 and median 5.0-9.6, so
+ * 15.4 and 12.6. A 2x first frame on every world doubles both. On Linux the median catches it (2 x 15.2 = 30.4, over
+ * 26.3); on Windows the warm-up does (2 x 8.9 = 17.8, over 15.4), where one launch's Termpolis world at 1010 ms spreads
+ * the median 1.9x. The median against the runner's whole time (glMs + jsMs, jsMs a fixed allocate, sort and hash job)
+ * or against jsMs alone spread 1.9-2.0x on Windows as well, and the warm-up alone spreads 1.7x on Linux, so each
+ * system needs both measures to catch a 2x on either.
+ * The staged 2x (window.__worldFirstFrameSlowdown, under the worldProbe flag) fails on both: see the look-a1 report.
+ * macOS is reported only: 3 launches (soak 45740663763), warm 8.4-12.4 and median 5.2-12.4.
+ */
+const FIRST_FRAME_PER_GL: Record<string, { warm: number; median: number }> = {
+  linux: { warm: 28.8, median: 26.3 },
+  windows: { warm: 15.4, median: 12.6 },
+}
 const FIRST_FRAME_WATCHDOG_MS = 15_000
 const FIRST_FRAME_HARDWARE_MS = 1000
 /**
@@ -105,6 +142,10 @@ let userDataDir: string
 let bigDir: string
 let warmDir: string
 let coldFirstFrameMs: number | null = null
+/** The runner's speed timed before the warm-up, the unit of FIRST_FRAME_PER_GL. */
+let warmUpSpeed: { jsMs: number; glMs: number } | null = null
+/** Each world's first frame (ms) and whether it was drawn in software. */
+const firstFrames = new Map<string, { ms: number; software: boolean }>()
 const FIXTURES: Array<{ label: string; dir: () => string }> = [
   { label: 'termpolis', dir: () => path.resolve('.') },
   { label: 'big', dir: () => bigDir },
@@ -122,6 +163,8 @@ test.beforeAll(async () => {
   // Motion on, whatever this machine's setting: the looping motions keep the loop drawing between pointer moves.
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   // The warm-up: the runner's cold cost of drawing in software is paid here, on a small world of the same kinds.
+  warmUpSpeed = await runnerSpeed()
+  console.log(`world-perf runner speed before warm-up: ${JSON.stringify(warmUpSpeed)}`)
   await openOn('warm-up', warmDir)
   coldFirstFrameMs = (await drawn()).perf.firstFrameMs
   console.log(`world-perf cold first frame (warm-up world): ${coldFirstFrameMs} ms`)
@@ -174,6 +217,70 @@ async function openOn(label: string, dir: string): Promise<void> {
     await settled()
   }
 }
+
+/**
+ * The runner's own speed, timed in the map's renderer by fixed workloads that run no app code: `jsMs`, the median of 5
+ * runs of a fixed allocate, sort and hash job (the kind of work a scene build does), and `glMs`, the median of 3 runs
+ * that compile and link 6 shader programs never seen before (a literal salt in each) in a fresh WebGL context of this
+ * window, draw each once and read a pixel back (SwiftShader's compile and raster, the bulk of a first frame in software).
+ */
+const runnerSpeed = (): Promise<{ jsMs: number; glMs: number }> =>
+  page.evaluate(() => {
+    const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+    const js = (): number => {
+      const t0 = performance.now()
+      const items: Array<{ x: number; y: number; k: string }> = []
+      for (let i = 0; i < 150_000; i++) items.push({ x: Math.sin(i) * i, y: Math.sqrt(i), k: `n${i % 977}` })
+      items.sort((a, b) => a.x - b.x)
+      const sums = new Map<string, number>()
+      for (const o of items) sums.set(o.k, (sums.get(o.k) ?? 0) + o.y)
+      let acc = 0
+      for (const v of sums.values()) acc += v
+      if (!Number.isFinite(acc)) throw new Error('runner speed: the job went wrong')
+      return performance.now() - t0
+    }
+    const gl = (): number => {
+      const c = document.createElement('canvas')
+      c.width = 256
+      c.height = 256
+      const g = c.getContext('webgl')
+      if (!g) return NaN
+      const t0 = performance.now()
+      const quad = g.createBuffer()
+      g.bindBuffer(g.ARRAY_BUFFER, quad)
+      g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), g.STATIC_DRAW)
+      for (let n = 0; n < 6; n++) {
+        const salt = `${Math.random().toFixed(8)}`
+        const shader = (type: number, src: string): WebGLShader => {
+          const sh = g.createShader(type) as WebGLShader
+          g.shaderSource(sh, src)
+          g.compileShader(sh)
+          return sh
+        }
+        const prog = g.createProgram() as WebGLProgram
+        g.attachShader(prog, shader(g.VERTEX_SHADER, `attribute vec2 p; varying vec2 v; void main() { v = p * ${salt}; gl_Position = vec4(p, 0.0, 1.0); }`))
+        g.attachShader(
+          prog,
+          shader(
+            g.FRAGMENT_SHADER,
+            `precision highp float; varying vec2 v; void main() { vec3 c = vec3(0.0); for (int i = 0; i < 48; i++) { float f = float(i) * ${salt}; c += vec3(sin(v.x * f + 1.3), cos(v.y * f), fract(sin(dot(v, vec2(12.9898, 78.233)) + f) * 43758.5453)) / 48.0; } gl_FragColor = vec4(normalize(c + 0.001), 1.0); }`,
+          ),
+        )
+        g.linkProgram(prog)
+        if (!g.getProgramParameter(prog, g.LINK_STATUS)) throw new Error(`runner speed: ${g.getProgramInfoLog(prog)}`)
+        g.useProgram(prog)
+        const loc = g.getAttribLocation(prog, 'p')
+        g.enableVertexAttribArray(loc)
+        g.vertexAttribPointer(loc, 2, g.FLOAT, false, 0, 0)
+        g.drawArrays(g.TRIANGLES, 0, 3)
+      }
+      g.readPixels(0, 0, 1, 1, g.RGBA, g.UNSIGNED_BYTE, new Uint8Array(4))
+      const ms = performance.now() - t0
+      g.getExtension('WEBGL_lose_context')?.loseContext()
+      return ms
+    }
+    return { jsMs: median([js(), js(), js(), js(), js()]), glMs: median([gl(), gl(), gl()]) }
+  })
 
 /** The GL renderer's name, as WEBGL_debug_renderer_info gives it to a page in this window (the map's GPU process). */
 const rendererName = (): Promise<string> =>
@@ -228,6 +335,8 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
   for (const fx of FIXTURES) {
     test(`the first frame is fast (${fx.label})`, async () => {
       test.setTimeout(420_000)
+      const speed = await runnerSpeed()
+      console.log(`world-perf runner speed before ${fx.label}: ${JSON.stringify(speed)}`)
       await openOn(fx.label, fx.dir())
       const d = await drawn()
       const ms = d.perf.firstFrameMs
@@ -237,6 +346,7 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
           `(${d.software ? `software, limits ${FIRST_FRAME_RATIO} x and ${FIRST_FRAME_WATCHDOG_MS} ms` : `hardware, limit ${FIRST_FRAME_HARDWARE_MS} ms`})`,
       )
       expect(ms, 'no frame was ever drawn').not.toBeNull()
+      firstFrames.set(fx.label, { ms: ms as number, software: d.software })
       if (!d.software) {
         expect(ms as number, `${fx.label}: the first frame took too long`).toBeLessThanOrEqual(FIRST_FRAME_HARDWARE_MS)
         return
@@ -299,6 +409,29 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
       expect(r!.p95, `${fx.label}: the median orbit p95 ${r!.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
     })
   }
+
+  // After both worlds: the time and the runner checks see every first frame at once, each failure reported.
+  test("in software the first frames hold to this system's time and to the runner's speed", async () => {
+    expect([...firstFrames.keys()], "a world's first-frame test did not record its frame").toEqual(FIXTURES.map((f) => f.label))
+    test.skip(![...firstFrames.values()].every((f) => f.software), 'drawn on a GPU: FIRST_FRAME_HARDWARE_MS holds it')
+    expect(coldFirstFrameMs, 'the warm-up world drew no frame').not.toBeNull()
+    expect(warmUpSpeed?.glMs, 'the runner speed was not timed').toBeGreaterThan(0)
+    const gl = (warmUpSpeed as { glMs: number }).glMs
+    const all = [coldFirstFrameMs as number, ...[...firstFrames.values()].map((f) => f.ms)].sort((a, b) => a - b)
+    const per = { warm: (coldFirstFrameMs as number) / gl, median: all[Math.floor(all.length / 2)] / gl }
+    const time = FIRST_FRAME_SW_MS[OS_NAME]
+    const bound = FIRST_FRAME_PER_GL[OS_NAME]
+    console.log(
+      `world-perf first frames against the runner: warm ${per.warm.toFixed(2)}, median ${per.median.toFixed(2)} x glMs ${gl.toFixed(1)} ms ` +
+        `(${bound ? `limits ${bound.warm} and ${bound.median}, ${time} ms per world` : 'reported only'})`,
+    )
+    test.skip(!bound, 'reported only on macOS: FIRST_FRAME_SW_MS and FIRST_FRAME_PER_GL say why')
+    for (const [label, f] of firstFrames) {
+      expect.soft(f.ms, `${label}: the first frame ${f.ms} ms is over the ${OS_NAME} software time ${time} ms`).toBeLessThanOrEqual(time)
+    }
+    expect.soft(per.warm, `the warm-up's first frame is ${per.warm.toFixed(2)} x the runner's glMs, over ${bound.warm}`).toBeLessThanOrEqual(bound.warm)
+    expect.soft(per.median, `the first frames' median is ${per.median.toFixed(2)} x the runner's glMs, over ${bound.median}`).toBeLessThanOrEqual(bound.median)
+  })
 
   // The governor's drop in software (Task 3 turns it on).
   test.fixme('forced High in software drops through Low to Flat within 8 s and never rises', async () => {})
