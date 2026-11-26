@@ -1629,6 +1629,31 @@ describe('MCP tool table — operator verbs', () => {
       expect(await search({ query: 'q' })).toEqual([{ id: 'kept' }])
     })
 
+    // HOLD-B #50: someone waits on a headless run (a terminal, a git hook, the other computer of a linked job), so its reads go
+    // ahead of the memory host's background work, as an Ask's do, and stop when the run is cancelled. Rerank stays as it was.
+    it('reads on the interactive lane with the signal of the run, rerank left as it was', async () => {
+      const ctl = new AbortController()
+      M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('/work/termpolis', ctl.signal) }))
+      await mcp().agentExec({ prompt: 'p' })
+      const [search, opts] = M.buildContextPrimer.mock.calls.at(-1)!
+      expect(opts.signal).toBe(ctl.signal)
+      MEMC.memorySearch.mockClear()
+      MEMC.memorySearch.mockResolvedValueOnce([] as never)
+      await search({ query: 'q', limit: 4, signal: ctl.signal })
+      const [sent] = MEMC.memorySearch.mock.calls.at(-1)! as [Record<string, unknown>]
+      expect(sent).toMatchObject({ query: 'q', lane: 'interactive', signal: ctl.signal })
+      expect(sent).not.toHaveProperty('rerank')
+      MEMC.memoryList.mockClear()
+      MEMC.memoryList.mockResolvedValueOnce([] as never)
+      await opts.recent({ limit: 3, project: 'termpolis' })
+      expect(MEMC.memoryList.mock.calls.at(-1)![0]).toMatchObject({ lane: 'interactive', signal: ctl.signal })
+      // A run with no signal (the CLI verb) sends none.
+      M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('/work/termpolis') }))
+      await mcp().agentExec({ prompt: 'p' })
+      const [, plain] = M.buildContextPrimer.mock.calls.at(-1)!
+      expect(plain).not.toHaveProperty('signal')
+    })
+
     it('falls back to a generic primer query when there is no cwd', async () => {
       M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('') }))
       await mcp().agentExec({ prompt: 'p' })
