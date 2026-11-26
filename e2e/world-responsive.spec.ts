@@ -81,7 +81,7 @@ let shimDir: string
 let shims: Record<string, string>
 let current: Viewport | null = null
 
-interface Probe { pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): { changing: number } }
+interface Probe { pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): { changing: number; frames: number; presented: number; software: boolean; buildings: number } }
 
 test.beforeAll(async () => {
   ensureE2eBuild()
@@ -324,9 +324,30 @@ async function openPane(): Promise<void> {
 async function settled(compileMs = 120_000): Promise<void> {
   await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: compileMs })
   await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: compileMs })
-  await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn().changing ?? -1), { timeout: compileMs })
-    .toBe(0)
+  // #31: a change runs on the wall clock (RISE_MS, PULSE_MS, FADE_MS: 1.2 s at most) and ends on the first frame drawn
+  // after it, so a count held open longer means either no frame was drawn (paused, hidden, the GPU still busy) or newer
+  // worlds kept starting changes. Each look records the count with the frames drawn and shown, and the test's
+  // annotations keep how long the changes took, so a failure says which of the two it was, and a pass says how long a
+  // slow machine takes.
+  const looks: string[] = []
+  const t0 = Date.now()
+  let first: { frames: number; presented: number } | null = null
+  const read = async (): Promise<number> => {
+    const d = await page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null)
+    if (!d) return -1
+    first ??= { frames: d.frames, presented: d.presented }
+    if (d.changing !== 0 || looks.length === 0) looks.push(`${Date.now() - t0}ms changing=${d.changing} frames=${d.frames - first.frames} presented=${d.presented - first.presented}`)
+    return d.changing
+  }
+  let left = -1
+  try {
+    await expect.poll(async () => (left = await read()), { timeout: compileMs }).toBe(0)
+  } finally {
+    const d = await page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null).catch(() => null)
+    const summary = `${left === 0 ? 'ended' : `still ${left}`} after ${Date.now() - t0} ms (${d?.buildings ?? '?'} buildings${d?.software ? ', software' : ''}); looks: ${looks.slice(0, 4).join(', ')}${looks.length > 6 ? ` ... ${looks.slice(-2).join(', ')}` : looks.length > 4 ? `, ${looks.slice(4).join(', ')}` : ''}`
+    test.info().annotations.push({ type: 'world changes', description: summary })
+    console.log(`[world changes] ${test.info().title}: ${summary}`) // the soak's list reporter prints a test's output, not its annotations
+  }
   await still('the world')
 }
 
