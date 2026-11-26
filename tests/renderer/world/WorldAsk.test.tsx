@@ -10,16 +10,16 @@ const vm = vi.hoisted(() => ({
   args: null as unknown[] | null,
   start: vi.fn(),
   stop: vi.fn(),
-  /** The hook's `cancel` (WP-VOICE): absent unless a test gives it one. */
-  cancel: undefined as ReturnType<typeof vi.fn> | undefined,
-  /** The hook's `notice` (WP-VOICE, the 5-minute cap): undefined stands for a hook without it. */
-  notice: null as string | null | undefined,
+  /** The hook's `cancel`. */
+  cancel: vi.fn(),
+  /** The hook's `notice` (the 5-minute cap). */
+  notice: null as string | null,
 }))
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   useVoiceInput: (...args: unknown[]) => {
     vm.args = args
     vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
-    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop, ...(vm.cancel ? { cancel: vm.cancel } : {}), ...(vm.notice !== undefined ? { notice: vm.notice } : {}) }
+    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop, cancel: vm.cancel, notice: vm.notice }
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
@@ -231,10 +231,22 @@ describe('WorldAsk', () => {
     await settle()
     fireEvent.change(input(), { target: { value: 'q' } })
     fireEvent.keyDown(input(), { key: 'Enter' })
-    expect(screen.getByRole('status')).toHaveTextContent('Thinking…')
+    // Said by the one status region, which was there before the question (M8); the pill is for the eye only.
+    expect(screen.getByRole('status').textContent).toBe('Thinking…')
+    const pill = screen.getByTestId('world-ask-thinking')
+    expect(pill.getAttribute('aria-hidden')).toBe('true')
+    expect(pill.textContent).toBe('Thinking…')
     // It pulses only where motion is not reduced: an endless pulse is a motion like any other.
-    expect(screen.getByRole('status').className.split(' ')).toContain('motion-safe:animate-pulse')
-    expect(screen.getByRole('status').className.split(' ')).not.toContain('animate-pulse')
+    expect(pill.className.split(' ')).toContain('motion-safe:animate-pulse')
+    expect(pill.className.split(' ')).not.toContain('animate-pulse')
+  })
+
+  it('keeps one status region mounted, empty at rest, so what it says next is read out (M8)', async () => {
+    render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+    await settle()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe('')
+    expect(screen.getByRole('status').className.split(' ')).toContain('sr-only')
   })
 
   it('a new question while thinking cancels the previous ask and the running actions', async () => {
@@ -594,20 +606,36 @@ describe('WorldAsk', () => {
       expect(screen.getByLabelText('Ask by voice').className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
     })
 
-    it('shows the hook notice (the 5-minute cap) as a quiet status line, not an alert; none without one', () => {
-      vm.notice = 'Recording stopped after 5 minutes.'
+    it('shows the hook notice (the 5-minute cap) as a quiet line, said by the status region, not an alert; none without one', () => {
       const view = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.getByRole('status').textContent).toBe('')
+      vm.notice = 'Recording stopped after 5 minutes.'
+      view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
       expect(screen.getByRole('status').textContent).toBe('Recording stopped after 5 minutes.')
-      expect(screen.getByRole('status').className).toContain('text-[#9ca3af]')
+      const line = screen.getByTestId('world-ask-notice')
+      expect(line.textContent).toBe('Recording stopped after 5 minutes.')
+      expect(line.getAttribute('aria-hidden')).toBe('true')
+      expect(line.className).toContain('text-[#9ca3af]')
       expect(screen.queryByRole('alert')).toBeNull()
       vm.notice = null
       view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
-      expect(screen.queryByRole('status')).toBeNull()
-      // A hook from before WP-VOICE has no notice at all.
-      vm.notice = undefined
-      view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
-      expect(screen.queryByRole('status')).toBeNull()
-      vm.notice = null
+      expect(screen.getByRole('status').textContent).toBe('')
+      expect(screen.queryByTestId('world-ask-notice')).toBeNull()
+    })
+
+    it('says Thinking over the notice while a question runs, one region for both (M8)', async () => {
+      ask.mockImplementationOnce(() => new Promise(() => undefined))
+      vm.notice = 'Recording stopped after 5 minutes.'
+      try {
+        render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+        await settle()
+        fireEvent.change(input(), { target: { value: 'q' } })
+        fireEvent.keyDown(input(), { key: 'Enter' })
+        expect(screen.getAllByRole('status')).toHaveLength(1)
+        expect(screen.getByRole('status').textContent).toBe('Thinking…')
+      } finally {
+        vm.notice = null
+      }
     })
 
     it('shows the hook error as plain text under the input', () => {
@@ -619,11 +647,14 @@ describe('WorldAsk', () => {
     it('voice transcript fills the input and asks', async () => {
       render(<WorldAsk viewer={makeViewer() as never} root="r" />)
       await settle()
+      vm.cancel.mockClear()
       await act(async () => { vm.sink?.('where is memory stored') })
       await settle()
       expect(input().value).toBe('where is memory stored')
       expect(ask).toHaveBeenCalledTimes(1)
       expect((ask.mock.calls[0][0] as AskRequest).question).toBe('where is memory stored')
+      // Asked, like a typed question, it drops the cap's notice with the capture, so it never stays under the answer.
+      expect(vm.cancel).toHaveBeenCalledTimes(1)
     })
 
     it('is absent without a voice prop and drives it when given', async () => {
@@ -833,7 +864,7 @@ describe('WorldAsk', () => {
       act(() => { used = l.esc() })
       expect(used).toBe(true)
       expect(cancel).toHaveBeenCalledWith(ask.mock.calls[0][0].askId)
-      expect(screen.queryByRole('status')).toBeNull()
+      expect(screen.getByRole('status').textContent).toBe('')
     })
 
     it('tells the pane it is busy while thinking, playing or speaking, and idle once all of that is over', async () => {
@@ -1228,7 +1259,7 @@ describe('WorldAsk: speech stops with a different project and when the app is hi
 
 describe('WorldAsk: a capture is dropped on Esc, a typed question, a different project and a close (T8)', () => {
   beforeEach(() => { vm.cancel = vi.fn(); vm.status = 'idle' })
-  afterEach(() => { vm.cancel = undefined; vm.status = 'idle' })
+  afterEach(() => { vm.cancel = vi.fn(); vm.status = 'idle' })
 
   it('Esc drops a capture that is listening or transcribing and says it used the key; an idle mic is not counted', async () => {
     const l = makeLink()
@@ -1237,7 +1268,7 @@ describe('WorldAsk: a capture is dropped on Esc, a typed question, a different p
     for (const status of ['listening', 'transcribing']) {
       vm.status = status
       view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
-      ;(vm.cancel as ReturnType<typeof vi.fn>).mockClear()
+      vm.cancel.mockClear()
       let used: unknown
       act(() => { used = l.esc() })
       expect(used).toBe(true)
@@ -1251,7 +1282,7 @@ describe('WorldAsk: a capture is dropped on Esc, a typed question, a different p
   })
 
   it('a typed question, closing the answer, closing an error, a different project and unmount each drop it', async () => {
-    const c = (): ReturnType<typeof vi.fn> => vm.cancel as ReturnType<typeof vi.fn>
+    const c = (): ReturnType<typeof vi.fn> => vm.cancel
     const view = await submit(makeViewer(), 'q')
     expect(c()).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByLabelText('Close answer'))
@@ -1267,20 +1298,6 @@ describe('WorldAsk: a capture is dropped on Esc, a typed question, a different p
     expect(c()).toHaveBeenCalledTimes(5)
     view.unmount()
     expect(c()).toHaveBeenCalledTimes(6)
-  })
-
-  it('without the hook’s cancel (WP-VOICE not landed) a listening mic is not counted by Esc and nothing throws', async () => {
-    vm.cancel = undefined
-    vm.status = 'listening'
-    const l = makeLink()
-    const view = render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" link={l.link} />)
-    await settle()
-    let used: unknown
-    act(() => { used = l.esc() })
-    expect(used).toBe(false)
-    vm.status = 'idle'
-    view.rerender(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r2" link={l.link} />)
-    view.unmount()
   })
 })
 
@@ -1387,10 +1404,11 @@ describe('WorldAsk: the field, its keys and what a screen reader hears (U2, U7, 
   it('a Cancel beside Thinking stops the question and puts the focus back in the field (U11)', async () => {
     ask.mockImplementationOnce(() => new Promise(() => undefined))
     await submit(makeViewer(), 'q')
-    expect(screen.getByRole('status')).toHaveTextContent('Thinking…')
+    expect(screen.getByRole('status').textContent).toBe('Thinking…')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(cancel).toHaveBeenCalledWith(ask.mock.calls[0][0].askId)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('')
+    expect(screen.queryByTestId('world-ask-thinking')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
     expect(document.activeElement).toBe(input())
   })

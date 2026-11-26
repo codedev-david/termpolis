@@ -96,8 +96,11 @@ export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStart
         )}
       </div>
       {mic.errorMsg && <p role="alert" className="text-xs text-[#f48771]">{mic.errorMsg}</p>}
-      {mic.notice && <p role="status" className="text-xs text-[#9ca3af]">{mic.notice}</p>}
-      {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] motion-safe:animate-pulse">Drafting your design…</p>}
+      {/* One status region, there while the dialog is, so a screen reader reads each change (A11Y M8): the draft under
+          way, else the mic's cap notice. The lines below are for the eye. */}
+      <p role="status" className="sr-only" data-testid="design-start-status">{drafting !== null ? 'Drafting your design…' : mic.notice ?? ''}</p>
+      {mic.notice && <p aria-hidden="true" className="text-xs text-[#9ca3af]">{mic.notice}</p>}
+      {drafting !== null && <p aria-hidden="true" className="text-xs text-[#9ca3af] motion-safe:animate-pulse">Drafting your design…</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>

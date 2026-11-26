@@ -280,7 +280,9 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
   test("3. asking twice quickly yields one answer, the second's", async () => {
     await ask('What runs first?')
     // The mock holds the first reply back 4 s, so the second question lands while it still runs.
-    await expect(page.locator('[role="status"]:has-text("Thinking")')).toBeVisible()
+    // The pill shows it; the ask bar's one status region, there from the start, says it (M8).
+    await expect(page.getByTestId('world-ask-thinking')).toBeVisible()
+    await expect(page.getByRole('status').filter({ hasText: 'Thinking…' })).toHaveCount(1)
     const asked = Date.now()
     await ask('Where is the data kept?')
     await expect(answer()).toContainText('Answer to: Where is the data kept?', { timeout: 30_000 })
@@ -341,12 +343,15 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     const before = new Set(pidsNow())
     // "stalls": the mock holds its reply back two minutes, so only the cancel can end it.
     await ask('Where does it stalls?')
-    await expect(page.locator('[role="status"]:has-text("Thinking")')).toBeVisible()
+    // The pill shows it; the ask bar's one status region, there from the start, says it (M8).
+    await expect(page.getByTestId('world-ask-thinking')).toBeVisible()
+    await expect(page.getByRole('status').filter({ hasText: 'Thinking…' })).toHaveCount(1)
     await expect.poll(() => pidsNow().filter((p) => !before.has(p)).length, { timeout: 30_000 }).toBeGreaterThan(0)
     const pid = pidsNow().filter((p) => !before.has(p))[0]
     expect(alive(pid)).toBe(true)
     await askBox().press('Escape')
-    await expect(page.locator('[role="status"]:has-text("Thinking")')).toHaveCount(0)
+    await expect(page.getByTestId('world-ask-thinking')).toHaveCount(0)
+    await expect(page.getByTestId('world-ask-status')).toHaveText('')
     // Ended by the cancel (its tree killed), not by its own reply two minutes from now.
     await expect.poll(() => alive(pid), { timeout: 15_000 }).toBe(false)
     await expect(answer()).toHaveCount(0)

@@ -404,7 +404,9 @@ describe('CloneDialog', () => {
     expect(api.worldClone).toHaveBeenCalledTimes(1)
     await act(async () => { d.resolve(fail(CLONE_STOPPED_MESSAGE)) })
     expect(screen.getByRole('alert')).toHaveTextContent(CLONE_STOPPED_MESSAGE)
-    expect(screen.queryByRole('status')).toBeNull()
+    // The dialog's one status region stays, empty (A11Y M8).
+    expect(screen.getByRole('status').textContent).toBe('')
+    expect(screen.queryByText(STOPPING_MESSAGE)).toBeNull()
     expect(props.onCloned).not.toHaveBeenCalled()
     expect(props.onClose).not.toHaveBeenCalled()
     expect(screen.queryByRole('progressbar')).toBeNull()
@@ -701,13 +703,17 @@ describe('DesignStart', () => {
     ;(navigator as any).mediaDevices = { getUserMedia: vi.fn() }
     vm.notice = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
     mount()
-    expect(screen.getByRole('status')).toHaveTextContent('Recording stopped after 5 minutes.')
-    expect(screen.getByRole('status').className).not.toContain('f14c4c')
+    // Said by the dialog's one status region (A11Y M8); the quiet line under the box is for the eye.
+    expect(screen.getByRole('status').textContent).toBe('Recording stopped after 5 minutes. Ask a shorter question, or type it.')
+    const line = screen.getAllByText('Recording stopped after 5 minutes. Ask a shorter question, or type it.').find((e) => e.getAttribute('role') !== 'status') as HTMLElement
+    expect(line.getAttribute('aria-hidden')).toBe('true')
+    expect(line.className).not.toContain('f14c4c')
     expect(screen.queryByRole('alert')).toBeNull()
     cleanup()
     vm.notice = null // the next start() clears it
     mount()
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('')
+    expect(screen.queryByText(/Recording stopped/)).toBeNull()
   })
 
   it('Cancel while drafting stops the draft by its key and drops the late result', async () => {
@@ -716,8 +722,9 @@ describe('DesignStart', () => {
     const props = mount()
     fireEvent.change(box(), { target: { value: 'A shop' } })
     fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
-    expect(screen.getByRole('status')).toHaveTextContent('Drafting your design…')
-    expect(screen.getByRole('status').className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
+    expect(screen.getByRole('status').textContent).toBe('Drafting your design…')
+    const drafting = screen.getAllByText('Drafting your design…').find((e) => e.getAttribute('aria-hidden') === 'true') as HTMLElement
+    expect(drafting.className.split(' ')).toContain('motion-safe:animate-pulse') // still under reduced motion
     await settle()
     // Ctrl+Enter while drafting starts nothing new.
     fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true })
@@ -747,7 +754,21 @@ describe('DesignStart', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await settle()
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
+
+  it('says the draft under way over the cap notice, in one status region (A11Y M8)', async () => {
+    vm.notice = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+    try {
+      bridge({ worldDesignDraft: vi.fn(() => new Promise(() => undefined)) })
+      mount()
+      fireEvent.change(box(), { target: { value: 'A shop' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
+      expect(screen.getAllByRole('status')).toHaveLength(1)
+      expect(screen.getByRole('status').textContent).toBe('Drafting your design…')
+    } finally {
+      vm.notice = null
+    }
   })
 })
 

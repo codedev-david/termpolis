@@ -207,8 +207,10 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initia
         </div>
       )}
       {signingIn && <p className="text-xs text-[#9ca3af]">{SIGNING_IN_MESSAGE}</p>}
-      {stopping !== null && <p role="status" className="text-xs text-[#9ca3af]">{STOPPING_MESSAGE}</p>}
-      {kept && <p role="status" className="text-xs text-[#9ca3af]">{CLONE_KEPT_MESSAGE}</p>}
+      {/* One status region, there while the dialog is, so a screen reader reads each change (A11Y M8). */}
+      <p role="status" className="sr-only" data-testid="world-clone-status">{stopping !== null ? STOPPING_MESSAGE : kept ? CLONE_KEPT_MESSAGE : ''}</p>
+      {stopping !== null && <p aria-hidden="true" className="text-xs text-[#9ca3af]">{STOPPING_MESSAGE}</p>}
+      {kept && <p aria-hidden="true" className="text-xs text-[#9ca3af]">{CLONE_KEPT_MESSAGE}</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f48771]">{error}</p>}
       {login !== null && (
         // When the host only said it could not find the repository, the address is the likelier fault: the

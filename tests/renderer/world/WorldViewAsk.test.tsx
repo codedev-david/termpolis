@@ -28,7 +28,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
   }
 })
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
-  useVoiceInput: () => ({ status: 'idle', errorMsg: null, toggle: () => undefined }),
+  useVoiceInput: () => ({ status: 'idle', errorMsg: null, notice: null, toggle: () => undefined, cancel: () => undefined }),
 }))
 
 import { WorldView } from '../../../src/renderer/src/components/World'
@@ -179,11 +179,12 @@ describe('Ask bar inside the Lumopolis pane', () => {
     const b = bridge({ worldAsk: vi.fn(() => new Promise(() => undefined)) })
     const { onClose } = await mount()
     await askQ()
-    expect(screen.getByRole('status')).toHaveTextContent('Thinking')
+    expect(screen.getByTestId('world-ask-status').textContent).toBe('Thinking…')
     const askId = (b.api.worldAsk.mock.calls[0][0] as AskRequest).askId
     esc()
     expect(b.api.worldAskCancel).toHaveBeenCalledWith(askId)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByTestId('world-ask-status').textContent).toBe('')
+    expect(screen.queryByTestId('world-ask-thinking')).toBeNull()
     expect(viewer().resetView).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
     // Nothing left to stop: Esc is the pane's again (reset, then close).
@@ -377,7 +378,7 @@ describe('an Ask made on a first map (fix round 2, R1)', () => {
     expect(reading()).toHaveTextContent(/Still reading/)
     expect(exportOn()).toBe(false)
     await askQ()
-    expect(screen.getAllByRole('status').some((e) => /Thinking/.test(e.textContent ?? ''))).toBe(true)
+    expect(screen.getByTestId('world-ask-status').textContent).toBe('Thinking…')
     b.api.worldGet.mockResolvedValue(ok(c))
     await b.updated({ root: '/repo', projectKey: c.projectKey })
     await settle()

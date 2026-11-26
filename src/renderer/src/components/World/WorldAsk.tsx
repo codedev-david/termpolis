@@ -115,17 +115,17 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   const mic = useVoiceInput(null, false, {
     onTranscript: (t) => {
       if (micRoot.current !== null && micRoot.current !== rootRef.current) return
-      hush(); setText(t); ask(t)
+      // Asked like a typed question: the capture and the cap's notice go with it (M8), so the notice never stays
+      // under the answer. Called once the hook has delivered, so nothing of this capture is left to drop.
+      hush(); dropMicRef.current(); setText(t); ask(t)
     },
   })
   const micListening = mic.status === 'listening'
-  // Drops a capture and what it heard: on Esc, a typed question, a different project, a close and unmount, so a
-  // late transcript never asks over what the person did since. The hook's `cancel` comes with WP-VOICE; until it
-  // lands these calls do nothing (T8).
-  const micCancel = (mic as { cancel?: () => void }).cancel
-  // The 5-minute cap's note (WP-VOICE `notice`): shown quietly, not as an error; absent before WP-VOICE lands.
-  const micNotice = (mic as { notice?: string | null }).notice ?? null
-  const dropMic = (): void => { micCancel?.() }
+  // Drops a capture and what it heard: on Esc, a typed question, a spoken one, a different project, a close and
+  // unmount, so a late transcript never asks over what the person did since (T8).
+  const dropMic = mic.cancel
+  // The 5-minute cap's note: shown quietly, not as an error.
+  const micNotice = mic.notice
   const dropMicRef = useRef(dropMic)
   dropMicRef.current = dropMic
   useEffect(() => () => dropMicRef.current(), [root])
@@ -244,7 +244,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   // three stop together, speech on or off, so the camera is left where the tour put it (T4).
   const onEscape = useRef<(() => boolean) | null>(null)
   onEscape.current = () => {
-    const micBusy = micCancel !== undefined && (mic.status === 'listening' || mic.status === 'transcribing')
+    const micBusy = mic.status === 'listening' || mic.status === 'transcribing'
     const used = state === 'thinking' || speaking || playing || micBusy
     hush()
     stop()
@@ -296,9 +296,12 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   return (
     <div className="flex flex-col items-center gap-2 w-full" data-testid="world-ask">
       <p className="sr-only" aria-live="polite" data-testid="world-ask-live">{heard}</p>
+      {/* The one status region of the ask bar, there from the start so a screen reader reads each change (M8):
+          Thinking while a question runs, else the cap's notice, else nothing. What shows below is for the eye. */}
+      <p role="status" className="sr-only" data-testid="world-ask-status">{state === 'thinking' ? 'Thinking…' : micNotice ?? ''}</p>
       {state === 'thinking' && (
         <div className="flex items-center gap-2">
-          <div role="status" className="motion-safe:animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
+          <div aria-hidden="true" data-testid="world-ask-thinking" className="motion-safe:animate-pulse rounded bg-[#252526] border border-[#3c3c3c] px-3 py-1.5 text-xs text-[#9ca3af]">
             Thinking…
           </div>
           <button
@@ -401,7 +404,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
       {mic.errorMsg && (
         <div role="alert" className="max-w-full text-xs text-[#f48771]">{mic.errorMsg}</div>
       )}
-      {micNotice && <div role="status" className="max-w-full text-xs text-[#9ca3af]">{micNotice}</div>}
+      {micNotice && <div aria-hidden="true" data-testid="world-ask-notice" className="max-w-full text-xs text-[#9ca3af]">{micNotice}</div>}
     </div>
   )
 }
