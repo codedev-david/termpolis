@@ -17,7 +17,7 @@ import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
 import { CODEX_STARTING } from '../shared/accountSwitch'
-import { HINT_HEAD, hintAtFoot, indexOf, look, plain } from './accountSwitch'
+import { HINT_HEAD, echoedAtFirstPrompt, hintAtFoot, indexOf, look, plain } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { PROMPT_REPORT, sinceStarted } from './mcpServer'
 
@@ -77,24 +77,17 @@ export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: numbe
   // The replay is read only once a shell reported a prompt since the start: David's Git Bash, zsh
   // and fish report none.
   const since = l.raw.slice(from)
-  if (since.search(PROMPT_REPORT) >= 0 && !promptBeforeLine(since, start.commands, fresh) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell) return true
+  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell && !echoedAtFirstPrompt(since, start.commands)) return true
   return !fresh && io.atShell?.(id) === true
 }
 
 /** Nothing printed between the start and the shell's last prompt report since: the shell printed one more prompt
  *  after the line was entered and before it echoed that line (Git Bash on Windows CI did), not an agent that ran and
  *  exited. A look in that moment latched the agent gone before it started; in the moment the shell takes to start
- *  the agent (FOREGROUND_GRACE_MS) it is no exit. Nor at any moment once the whole line is echoed after that prompt: a
- *  line typed before a slow Git Bash printed its first prompt is echoed at it, after ConPTY's first paint wipes the
- *  screen (which hides the echo from sinceStarted), and an agent slower than the moment to draw its box on a loaded
- *  machine was latched gone while it ran (#106). An exit after it is a prompt reported after the echo. */
-function promptBeforeLine(since: string, commands: readonly string[], fresh: boolean): boolean {
+ *  the agent (FOREGROUND_GRACE_MS) it is no exit. */
+function quietUpToPrompt(since: string): boolean {
   const reports = [...since.matchAll(PROMPT_REPORT)]
-  const last = reports[reports.length - 1].index
-  if (plain(since.slice(0, last)).trim() !== '') return false
-  if (fresh) return true
-  const after = bareText(plain(since.slice(last)))
-  return commands.some((c) => after.includes(bareText(c)))
+  return plain(since.slice(0, reports[reports.length - 1].index)).trim() === ''
 }
 
 /** Can this terminal ever show an agent's exit? A shell that reports its prompts, or a PTY whose foreground can be read

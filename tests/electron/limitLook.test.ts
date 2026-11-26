@@ -470,6 +470,11 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     const rec = { at: BEFORE.length, commands: [LINE] }
     expect(liveness(io(BEFORE + FIRST + ECHO + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
     expect(liveness(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    // And a repaint after that prompt (a resize) that draws the line again where it still shows is no echo at a first prompt.
+    const repaint = `${E}[H${E}[2Jbash-5.3$ ${LINE}\r\nbash-5.3$ `
+    expect(liveness(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN + repaint), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
     expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    // The agent's name alone is no echo of a line: a prompt can show it, a folder's (a start Termpolis was not sure of).
+    expect(liveness(io(BEFORE + FIRST + 'claude\r\n' + BOX), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
   })
 })

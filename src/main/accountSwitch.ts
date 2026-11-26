@@ -327,7 +327,21 @@ export function joinWrapped(rows: readonly string[], cols: number): string[] {
 
 /** The shell printed its prompt after `at`, and no agent box was drawn after it. */
 function shellSince(io: SwitchIO, id: string, l: Look, at: number, commands: readonly string[] = []): boolean {
-  return sinceStarted(l.raw, indexOf(l, at), false, io.size(id), commands).shell
+  const from = indexOf(l, at)
+  return sinceStarted(l.raw, from, false, io.size(id), commands).shell && !echoedAtFirstPrompt(l.raw.slice(from), commands)
+}
+
+/** The output since a start, `since`, which holds a prompt report: the shell's last one is the first thing it printed, and a
+ *  launch line of more than the agent's name (a prompt can show that, a folder's) is echoed whole after it. A line typed before
+ *  a slow Git Bash printed its first prompt is echoed at that prompt, after ConPTY's first paint wipes the screen, which hides
+ *  the echo from sinceStarted: the agent it starts runs, and on a loaded machine one slower to draw its box was read as exited,
+ *  by the switch and by the limit look (#106). The shell back after an exit is a prompt reported after the echo. */
+export function echoedAtFirstPrompt(since: string, commands: readonly string[]): boolean {
+  const reports = [...since.matchAll(PROMPT_REPORT)]
+  const last = reports[reports.length - 1].index
+  if (plain(since.slice(0, last)).trim() !== '') return false
+  const after = bare(plain(since.slice(last)))
+  return commands.some((c) => c.trim().split(/\s+/).length > 1 && after.includes(bare(c)))
 }
 
 /** Claude Code waiting out its limit, the user's choice on its menu, on its status line over the
