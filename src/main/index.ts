@@ -2222,7 +2222,7 @@ ipcMain.handle('gitHooks:uninstall', async (_, { cwd }: { cwd: string }) => {
     // A shield may still be there: a block it left, or a hook file it never reads (a link, or not a regular file). The
     // repository then stays listed as protected and the person hears why; otherwise it leaves the list (HOLD-A R2-3).
     const unsafe = unsafeHook(paths, realHookDeps)
-    const stays = unsafe !== null || Object.values(hookStatus(paths, realHookDeps)).includes('installed')
+    const stays = unsafe !== null || Object.values(hookStatus(paths, realHookDeps)).some((st) => st === 'installed' || st === 'outdated')
     if (!stays) {
       writeShieldRepos(readShieldRepos().filter((r) => r !== cwd))
       return removed.length > 0 ? ok({ removed }) : ok({ removed, notice: SHIELD_NONE_TO_REMOVE })

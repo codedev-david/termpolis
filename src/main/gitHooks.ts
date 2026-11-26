@@ -79,8 +79,10 @@ export interface HookPaths {
 }
 
 /** 'foreign' = a hook file is there that carries no block of ours. 'link' and 'other' = a hook file that is a link,
- *  or not a regular file: never read (readHook), so whether it carries a block is not known. */
-export type HookState = 'installed' | 'absent' | 'foreign' | 'link' | 'other'
+ *  or not a regular file: never read (readHook), so whether it carries a block is not known. 'outdated' = a block of
+ *  ours is there, but Protect would write the file differently now: an older Termpolis's block (one that looked node up
+ *  on PATH), a node or scanner that has moved, a doubled block, or lines that gained CRs. Protect again replaces it. */
+export type HookState = 'installed' | 'outdated' | 'absent' | 'foreign' | 'link' | 'other'
 
 const HOOK_NAMES: readonly HookName[] = ['pre-commit', 'pre-push']
 const BEGIN = '# >>> termpolis commit shield >>>'
@@ -427,14 +429,21 @@ export function shieldNodePath(
 }
 
 /** Each hook's state, read the way install and uninstall read it (readHook): a link or a file that is not a regular
- *  one is reported by its kind and never read through, so 'installed' is always a block uninstallHooks can take out
- *  (HOLD-A R2-3). A regular file it cannot read counts as foreign. */
+ *  one is reported by its kind and never read through, so 'installed' and 'outdated' are always a block uninstallHooks
+ *  can take out (HOLD-A R2-3). A regular file it cannot read counts as foreign. A block is 'outdated' when Protect
+ *  would rewrite the file (installing twice is byte-identical, so any change is a block that is not today's), and only
+ *  when Protect could: with no node found now the install refuses, and a hook Protect skips (a non-shell one) keeps
+ *  whatever block it has, so both stay 'installed' rather than offer a Protect again that would change nothing. */
 export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, HookState> {
   const out = {} as Record<HookName, HookState>
   for (const name of HOOK_NAMES) {
     const file = hookPath(paths, name)
     const kind = deps.fileKind(file)
-    out[name] = kind === 'file' ? (hasBlock(deps.readFile(file) ?? '') ? 'installed' : 'foreign') : kind
+    if (kind !== 'file') { out[name] = kind; continue }
+    const text = deps.readFile(file) ?? ''
+    if (!hasBlock(text)) out[name] = 'foreign'
+    else if (paths.nodePath !== '' && isChainable(text) && composeHook(name, paths, text) !== text) out[name] = 'outdated'
+    else out[name] = 'installed'
   }
   return out
 }

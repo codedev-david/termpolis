@@ -29,10 +29,11 @@ interface GeminiAccountStatus {
 }
 
 /** A repo the Commit Shield git hooks have been installed into. `foreign` = a hook exists
- *  there that isn't ours (someone's husky/lint-staged) — we chain to it rather than clobber it. */
+ *  there that isn't ours (someone's husky/lint-staged) — we chain to it rather than clobber it. `outdated` = our block
+ *  is there but is not the one Protect writes now (gitHooks.ts HookState): the row offers Protect again. */
 interface ShieldRepo {
   repo: string
-  status: Record<string, 'installed' | 'absent' | 'foreign' | 'link' | 'other'> | null
+  status: Record<string, 'installed' | 'outdated' | 'absent' | 'foreign' | 'link' | 'other'> | null
 }
 
 // NOTE: there is no `setRedaction` here any more, and no `redactionEnabled` in the settings.
@@ -168,12 +169,13 @@ export function SecuritySettings() {
 
   useEffect(() => { void refreshHooks() }, [refreshHooks])
 
-  const protectRepo = async () => {
+  // With a repo (a row's Protect again), that repository is protected without asking for a folder.
+  const protectRepo = async (repo?: string) => {
     if (!api?.gitHooksInstall) return
     setHookBusy(true)
     setHookMsg('')
     try {
-      const res = await api.gitHooksInstall()
+      const res = await (repo === undefined ? api.gitHooksInstall() : api.gitHooksInstall(repo))
       if (!res.success) { setHookMsg(res.error || 'Could not install the hooks'); return }
       if (res.data?.canceled) return
       setHookMsg(`Protected ${res.data?.repo || 'repository'} — git commit and git push are now scanned, from any terminal.`)
@@ -472,7 +474,7 @@ export function SecuritySettings() {
         </span>
 
         <button
-          onClick={protectRepo}
+          onClick={() => { void protectRepo() }}
           disabled={hookBusy}
           data-testid="security-protect-repo"
           className="self-start text-xs px-3 py-1.5 rounded bg-[#0d9488] hover:bg-[#0f766e] disabled:opacity-40 disabled:cursor-not-allowed font-medium"
@@ -485,14 +487,27 @@ export function SecuritySettings() {
         {shieldRepos.length > 0 && (
           <div className="flex flex-col gap-1 mt-1" data-testid="security-hook-list">
             {shieldRepos.map((r) => {
-              const armed = r.status?.['pre-commit'] === 'installed'
+              // Either hook outdated: the shield is there but not as Protect writes it now (HOLD-B).
+              const outdated = r.status !== null && Object.values(r.status).includes('outdated')
+              const armed = !outdated && r.status?.['pre-commit'] === 'installed'
               return (
                 <div key={r.repo} className="flex items-center gap-2 text-xs p-2 rounded bg-[#1e1e1e]">
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${armed ? 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]' : 'bg-[#3a2a0d] text-[#FFB74D] border-[#6e4d1f]'}`}>
-                    {armed ? 'armed' : 'not installed'}
+                    {/* PENDING SIGN-OFF (new wording, HOLD-B): "outdated" and its Protect again button. */}
+                    {armed ? 'armed' : outdated ? 'outdated' : 'not installed'}
                   </span>
                   <span className="font-mono text-[11px] truncate" title={r.repo}>{r.repo}</span>
-                  <button onClick={() => unprotectRepo(r.repo)} className="ml-auto text-[10px] text-[#FFB4B4] hover:underline">
+                  {outdated && (
+                    <button
+                      onClick={() => { void protectRepo(r.repo) }}
+                      disabled={hookBusy}
+                      title="This repository's hooks were written by an older Termpolis, or name a node or scanner that has moved. Protect again replaces them."
+                      className="ml-auto text-[10px] text-[#7ee2a3] hover:underline disabled:opacity-40"
+                    >
+                      Protect again
+                    </button>
+                  )}
+                  <button onClick={() => unprotectRepo(r.repo)} className={`${outdated ? '' : 'ml-auto '}text-[10px] text-[#FFB4B4] hover:underline`}>
                     Remove
                   </button>
                 </div>
