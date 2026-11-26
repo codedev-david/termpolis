@@ -1074,8 +1074,12 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
   })
 
   test('camera flights ease', async () => {
-    await toOverview()
-    const samples = await page.evaluate(async (id) => {
+    // One flight's frames, as drawn. In software one frame can take longer than the whole flight: the macOS soak
+    // (45728064997) drew t=0.002 and t=0.012, then t=1. The ease is a function of t alone, so points from more than one
+    // flight to the same building lie on the same curve: the test flies again, at most FLIGHTS times, until it has
+    // seen at least 4 distinct points, and checks them all together.
+    const FLIGHTS = 4
+    const fly = async (): Promise<Array<{ t: number; eased: number }>> => page.evaluate(async (id) => {
       const probe = (window as unknown as { __termpolis_world: { drawn(): { visual: Visual }; apply(a: { type: 'focus'; ids: string[] }): Promise<void> } }).__termpolis_world
       void probe.apply({ type: 'focus', ids: [id] })
       const out: Array<{ t: number; eased: number }> = []
@@ -1091,9 +1095,18 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       })
       return out
     }, motionDoc.buildings[0].id)
-    // Distinct points of the flight, in time order.
-    const pts = samples.filter((s, i) => i === 0 || s.t > samples[i - 1].t)
-    expect(pts.length, `flight samples ${JSON.stringify(samples)}`).toBeGreaterThanOrEqual(4)
+    const flights: Array<Array<{ t: number; eased: number }>> = []
+    let pts: Array<{ t: number; eased: number }> = []
+    for (let n = 0; n < FLIGHTS && pts.length < 4; n++) {
+      await toOverview()
+      const samples = await fly()
+      // Each flight's own points must rise with time: a sample never goes back along the flight.
+      for (let i = 1; i < samples.length; i++) expect(samples[i].t, `flight ${n} went back at sample ${i}: ${JSON.stringify(samples)}`).toBeGreaterThanOrEqual(samples[i - 1].t)
+      flights.push(samples)
+      // Distinct points of every flight so far, in order of t.
+      pts = flights.flat().sort((a, b) => a.t - b.t).filter((p, i, all) => i === 0 || p.t > all[i - 1].t)
+    }
+    expect(pts.length, `flight samples ${JSON.stringify(flights)}`).toBeGreaterThanOrEqual(4)
     for (let i = 1; i < pts.length; i++) expect(pts[i].eased, `eased falls at sample ${i}`).toBeGreaterThanOrEqual(pts[i - 1].eased)
     // Eased: slow off the mark, fastest mid-flight (the rise per unit of time, so uneven frames do not count).
     const rate = (i: number): number => (pts[i + 1].eased - pts[i].eased) / (pts[i + 1].t - pts[i].t)
