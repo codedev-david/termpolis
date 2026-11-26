@@ -35,7 +35,7 @@ import { sameParts } from '../../../../shared/world/diff'
 import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, escapeHtml, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
-import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
+import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldQuality, WorldViewer, WorldViewerOptions } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { TOOLBAR_FOLD_PX, WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
@@ -137,6 +137,20 @@ const FRAME_RATE_EVERY_MS = 500
 /** The frame-rate readout (look spec §6.1): fps from the median frame, the p95 frame in ms, and the tier. PENDING SIGN-OFF (look A1): the line's format. */
 const frameRateLine = (p: WorldDrawn['perf']): string =>
   p.frames === 0 ? `-- fps · -- ms · ${p.tier}` : `${Math.round(1000 / p.p50)} fps · ${p.p95.toFixed(1)} ms · ${p.tier}`
+
+/**
+ * Test only, under the e2e harness's worldProbe flag: the viewer's staged first-frame slowdown
+ * (window.__worldFirstFrameSlowdown, read when the first frame is drawn) and the tier an Auto map starts at
+ * (window.__worldStartTier, read when the viewer is made; anything but a tier's name is ignored).
+ */
+const probeOptions = (): Pick<WorldViewerOptions, 'firstFrameSlowdown' | 'startTier'> => {
+  const w = window as unknown as { __worldFirstFrameSlowdown?: unknown; __worldStartTier?: unknown }
+  const start = w.__worldStartTier
+  return {
+    firstFrameSlowdown: () => Number(w.__worldFirstFrameSlowdown) || 1,
+    ...(start === 'high' || start === 'low' || start === 'flat' ? { startTier: start } : {}),
+  }
+}
 
 /** #65: a world call that threw (main never answered) shows fixed words; the throw's own text names internals. */
 const messageOf = (e: unknown): string => {
@@ -310,10 +324,21 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // Settings ▸ Lumopolis ▸ Show frame rate (look spec §6.1): off until the settings say a literal true; Settings tells an
   // open map of each flip.
   const [frameRate, setFrameRate] = useState(false)
+  // The toolbar's Quality menu (look spec §5): Auto until the settings say otherwise; a pick is saved.
+  const [quality, setQuality] = useState<WorldQuality>('auto')
+  const onQuality = (q: WorldQuality): void => {
+    setQuality(q)
+    window.termpolis.worldSettingsSet?.({ quality: q })?.catch(() => undefined)
+  }
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setFrameRate(res.data.showFrameRate === true) } })
+      ?.then((res) => {
+        if (!live || !res.success) return
+        setLabelling(res.data.worldLabelling)
+        setFrameRate(res.data.showFrameRate === true)
+        setQuality(res.data.quality ?? 'auto')
+      })
       ?.catch(() => undefined)
     return () => { live = false }
   }, [doc])
@@ -680,8 +705,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
       rightReserve: legendReserveScaled(legendOpenRef.current, widthRef.current, scaleRef.current),
-      // Test only: under the e2e harness's worldProbe flag, window.__worldFirstFrameSlowdown stages a slower first frame.
-      ...(exposesWorldProbe() ? { firstFrameSlowdown: () => Number((window as unknown as { __worldFirstFrameSlowdown?: unknown }).__worldFirstFrameSlowdown) || 1 } : {}),
+      // Test only: under the e2e harness's worldProbe flag, window.__worldFirstFrameSlowdown stages a slower first frame,
+      // and window.__worldStartTier the tier an Auto map starts at (so a run can watch software step down from High).
+      ...(exposesWorldProbe() ? probeOptions() : {}),
       renderCard: (html, fromClick) => {
         if (html !== null) armedRef.current = false
         setCard(html)
@@ -719,6 +745,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       loadedRef.current = null
     }
   }, [webgl])
+
+  // The Quality menu's choice reaches the viewer as it is read from the settings and as it is picked.
+  useEffect(() => { viewer?.setQuality(quality) }, [viewer, quality])
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc
@@ -1262,6 +1291,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         map2d={shows2d}
         map2dDisabled={glPaused}
         onMap2d={onMap2d}
+        // The Quality menu, where the map is drawn in 3D.
+        quality={quality}
+        onQuality={webgl ? onQuality : undefined}
         // Always folded below TOOLBAR_FOLD_PX; above it the toolbar folds itself where it would take too many rows.
         compact={width / scale < TOOLBAR_FOLD_PX}
         labelCost={labelling !== false && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}

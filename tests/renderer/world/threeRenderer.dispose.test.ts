@@ -120,10 +120,10 @@ describe('threeRenderer dispose', () => {
     expect(gpu.composers[0].disposed).toBe(1)
   })
 
-  it('at low quality (no composer, no dust) and with no world drawn, it frees what there is', () => {
+  it('at Flat (no composer, no dust) and with no world drawn, it frees what there is', () => {
     const log = trackListeners(h.host)
-    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })
-    h.frames.step() // at low quality the scene is seen on the renderer's first frame
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: true })
+    h.frames.step() // at Flat the scene is seen on the renderer's first frame
     const all = everyResource(sceneOf())
     const freed = new Set<unknown>()
     for (const x of all) x.addEventListener('dispose', () => freed.add(x))

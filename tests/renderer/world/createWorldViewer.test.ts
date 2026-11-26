@@ -5,7 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { CANVAS_DESCRIPTION, createWorldViewer, FIRST_FRAME_MS_HW, FIRST_FRAME_MS_SW, forgetWebGL, hasWebGL, type WorldGraphics, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
+import { CANVAS_DESCRIPTION, createWorldViewer, FIRST_FRAME_MS_HW, FIRST_FRAME_MS_SW, forgetWebGL, hasWebGL, type WorldGraphics, type WorldQuality, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
+import type { FrameStats } from '../../../src/renderer/src/world/engine/frameSampler'
+import type { TierName } from '../../../src/renderer/src/world/engine/tierBudget'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
 import type { TourStop } from '../../../src/renderer/src/world/engine/cards'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
@@ -16,7 +18,7 @@ vi.mock('../../../src/renderer/src/world/engine/threeRenderer', () => ({ createT
 
 type Card = string | null
 
-function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc; quality?: 'high' | 'low' } = {}) {
+function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc; quality?: WorldQuality } = {}) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const cards: Card[] = []
@@ -591,12 +593,14 @@ const MOTION = {
 }
 
 /** The stand-in renderer's frame times. */
-const RPERF = { tier: 'high' as const, frames: 9, p50: 16, p95: 20, p99: 22, worst: 30, drops: 1, firstFrameMs: 120, resizeWorstMs: 34 }
+const RPERF = { tier: 'high' as TierName, frames: 9, p50: 16, p95: 20, p99: 22, worst: 30, drops: 1, firstFrameMs: 120, resizeWorstMs: 34 }
 
-function fakeRenderer(host: HTMLElement) {
+/** The stand-in, drawing at `start` (what the viewer asked for; 'auto' is High, as on a GPU) until setTier changes it. */
+function fakeRenderer(host: HTMLElement, start: TierName | 'auto' = 'auto') {
   const canvas = document.createElement('canvas')
   host.appendChild(canvas)
   let hit: RenderPick | null = null
+  let tier: TierName = start === 'auto' ? 'high' : start
   const r = {
     canvas,
     draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
@@ -605,8 +609,9 @@ function fakeRenderer(host: HTMLElement) {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']), isShown: vi.fn((id: string) => id !== 'b1'),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, triangles: 900, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF } })),
-    perf: vi.fn(() => ({ ...RPERF })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, triangles: 900, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF, tier } })),
+    perf: vi.fn(() => ({ ...RPERF, tier })),
+    setTier: vi.fn((t: TierName) => { tier = t }),
     perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 2, p50: 16, p95: 17, p99: 17, worst: 17 })),
     motionState: vi.fn(() => ({ ...MOTION })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(), setReducedMotion: vi.fn(), requestFrame: vi.fn(), stopFlight: vi.fn(),
@@ -1313,8 +1318,9 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(viewer.drawn().perf).toEqual({ ...RPERF, auto: true })
     // perf() is the same frame times, read alone: no drawnCounts.
     const counts = r.drawnCounts.mock.calls.length
+    const perfs = r.perf.mock.calls.length
     expect(viewer.perf()).toEqual({ ...RPERF, auto: true })
-    expect(r.perf).toHaveBeenCalledTimes(1)
+    expect(r.perf).toHaveBeenCalledTimes(perfs + 1)
     expect(r.drawnCounts.mock.calls.length).toBe(counts)
     viewer.perfBegin()
     expect(r.perfBegin).toHaveBeenCalledTimes(1)
@@ -2012,14 +2018,17 @@ describe('read-only viewer', () => {
 function mount3d(opts: Parameters<typeof createWorldViewer>[1] = {}) {
   withWebGL()
   let fake: ReturnType<typeof fakeRenderer> | null = null
-  createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+  createThreeRenderer.mockImplementation((h: HTMLElement, o: { quality: TierName | 'auto' }) => { fake = fakeRenderer(h, o.quality); return fake.r })
   const host = document.createElement('div')
   document.body.appendChild(host)
   const cards: (string | null)[] = []
   const viewer = createWorldViewer(host, { renderCard: (h) => { cards.push(h) }, ...opts })
   viewer.load(rich())
   const f = fake as unknown as ReturnType<typeof fakeRenderer>
-  const made = createThreeRenderer.mock.calls[0][1] as { onContextLost: () => void; onContextRestored: () => void; onBufferShrunk: () => void; reducedMotion: boolean }
+  const made = createThreeRenderer.mock.calls[0][1] as {
+    quality: TierName | 'auto'; reducedMotion: boolean
+    onContextLost: () => void; onContextRestored: () => void; onBufferShrunk: () => void; onFrameWindow: (s: FrameStats, spanMs: number) => void
+  }
   return { host, viewer, cards, ...f, made }
 }
 
@@ -2045,6 +2054,7 @@ describe('WP2: a lost WebGL context (R03, R04)', () => {
     expect(r.dispose).not.toHaveBeenCalled()
     made.onContextRestored()
     expect(graphics).toEqual(['lost', 'restored'])
+    expect(r.setTier.mock.calls).toEqual([['low']]) // restored one tier down (look spec §5.1)
     made.onContextLost()
     expect(graphics).toEqual(['lost', 'restored', 'flat'])
     expect(r.dispose).toHaveBeenCalledTimes(1)
@@ -2297,7 +2307,7 @@ describe('the first-frame watchdog (look spec 5.3)', () => {
     return { ...m, graphics, set }
   }
 
-  it('drops to the 2D map when no frame presents within 4 s on a GPU; a paused view or a hidden page does not count', () => {
+  it('steps one tier down each time no frame presents within 4 s on a GPU, and from Flat to the 2D map; a paused view or a hidden page does not count', () => {
     expect(FIRST_FRAME_MS_HW).toBe(4000)
     const { host, viewer, r, graphics } = unpresented()
     viewer.setPaused(true)
@@ -2308,11 +2318,21 @@ describe('the first-frame watchdog (look spec 5.3)', () => {
     vi.advanceTimersByTime(20_000)
     expect(graphics).toEqual([])
     hidden.mockReturnValue('visible')
+    expect(r.setTier).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
+    expect(r.setTier).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(500)
+    expect(r.setTier.mock.calls).toEqual([['low']]) // High to Low, and the deadline starts again
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    vi.advanceTimersByTime(500)
+    expect(r.setTier.mock.calls).toEqual([['low'], ['flat']])
     vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
     expect(graphics).toEqual([])
     expect(r.dispose).not.toHaveBeenCalled()
     vi.advanceTimersByTime(500)
-    expect(graphics).toEqual(['watchdog'])
+    expect(graphics).toEqual(['watchdog']) // no tier below Flat: the 2D map
+    expect(r.setTier).toHaveBeenCalledTimes(2)
     expect(r.dispose).toHaveBeenCalledTimes(1)
     expect(host.querySelector('section.world-fallback')).not.toBeNull()
     expect(viewer.drawn()).toMatchObject({ presented: 0, contextLost: false, frames: 0 })
@@ -2324,24 +2344,35 @@ describe('the first-frame watchdog (look spec 5.3)', () => {
     viewer.dispose()
   })
 
-  it('waits 15 s in software', () => {
+  it('waits 15 s in software, where an auto map starts at Flat: then the next step is the 2D map', () => {
     expect(FIRST_FRAME_MS_SW).toBe(15_000)
-    const { viewer, graphics, set } = unpresented()
+    const { viewer, graphics, set, made, r } = unpresented({ startTier: 'flat' })
+    expect(made.quality).toBe('flat')
+    expect(viewer.perf()).toMatchObject({ tier: 'flat', auto: true })
     set({ software: true })
     vi.advanceTimersByTime(FIRST_FRAME_MS_SW - 500)
     expect(graphics).toEqual([])
     vi.advanceTimersByTime(500)
     expect(graphics).toEqual(['watchdog'])
+    expect(r.setTier).not.toHaveBeenCalled()
     viewer.dispose()
   })
 
-  it('a context lost with no event trips it after two ticks; one with its loss event pending is waited out', () => {
+  it('a context lost with no event steps a tier after two ticks, each step its own two; one with its loss event pending is waited out', () => {
     const a = unpresented()
     a.set({ contextLost: true })
     vi.advanceTimersByTime(500)
     a.set({ contextLost: false }) // one tick lost, then back: the count starts again
     vi.advanceTimersByTime(500)
     a.set({ contextLost: true })
+    vi.advanceTimersByTime(500)
+    expect(a.r.setTier).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(500)
+    expect(a.r.setTier.mock.calls).toEqual([['low']])
+    vi.advanceTimersByTime(500)
+    expect(a.r.setTier.mock.calls).toEqual([['low']])
+    vi.advanceTimersByTime(500)
+    expect(a.r.setTier.mock.calls).toEqual([['low'], ['flat']])
     vi.advanceTimersByTime(500)
     expect(a.graphics).toEqual([])
     vi.advanceTimersByTime(500)
@@ -2358,9 +2389,12 @@ describe('the first-frame watchdog (look spec 5.3)', () => {
     expect(b.graphics).toEqual(['lost']) // the loss is the context-loss ladder's to handle
     b.made.onContextRestored()
     b.set({ contextLost: false })
+    expect(b.r.setTier.mock.calls).toEqual([['low']]) // the restore's step
     vi.advanceTimersByTime(FIRST_FRAME_MS_HW - 500)
-    expect(b.graphics).toEqual(['lost', 'restored'])
+    expect(b.r.setTier.mock.calls).toEqual([['low']])
     vi.advanceTimersByTime(500)
+    expect(b.r.setTier.mock.calls).toEqual([['low'], ['flat']]) // the watchdog's
+    vi.advanceTimersByTime(FIRST_FRAME_MS_HW)
     expect(b.graphics).toEqual(['lost', 'restored', 'watchdog'])
     b.viewer.dispose()
   })
@@ -2390,15 +2424,140 @@ describe('the first-frame watchdog (look spec 5.3)', () => {
     expect(b.graphics).toEqual([])
   })
 
-  it('a drawing buffer still shrunk after its steps, twice, drops to the 2D map', () => {
-    const { viewer, made, graphics } = unpresented()
+  it('a drawing buffer still shrunk after its steps, twice, steps a tier down; twice at Flat, the 2D map', () => {
+    const { viewer, made, graphics, r } = unpresented()
+    made.onBufferShrunk()
+    expect(r.setTier).not.toHaveBeenCalled()
+    made.onBufferShrunk()
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    made.onBufferShrunk() // the count started again at Low
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    made.onBufferShrunk()
+    expect(r.setTier.mock.calls).toEqual([['low'], ['flat']])
     made.onBufferShrunk()
     expect(graphics).toEqual([])
     made.onBufferShrunk()
     expect(graphics).toEqual(['watchdog'])
     made.onBufferShrunk()
+    made.onBufferShrunk()
     vi.advanceTimersByTime(60_000)
     expect(graphics).toEqual(['watchdog'])
+    expect(r.setTier).toHaveBeenCalledTimes(2)
     viewer.dispose()
+  })
+
+  it('a buffer still shrunk at the tier stepped to counts as that tier\'s first failure, not a step on at once', () => {
+    const { viewer, made, graphics, r } = unpresented()
+    // setTier fits the buffer again, and a buffer still shrunk calls onBufferShrunk from inside it.
+    r.setTier.mockImplementation(() => { made.onBufferShrunk() })
+    made.onBufferShrunk()
+    made.onBufferShrunk()
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    made.onBufferShrunk()
+    expect(r.setTier.mock.calls).toEqual([['low'], ['flat']])
+    expect(graphics).toEqual([])
+    made.onBufferShrunk()
+    expect(graphics).toEqual(['watchdog'])
+    viewer.dispose()
+  })
+})
+
+describe('the quality governor in the viewer (look spec §5.1, plan Task 3)', () => {
+  /** A window of `frames` counted frames, every one `ms` apart. */
+  const win = (ms: number, frames = 120): FrameStats => ({ frames, p50: ms, p95: ms, p99: ms, worst: ms })
+
+  it('auto by default: the governor starts at the tier the renderer drew first, and two windows over budget drop it one tier', () => {
+    const { viewer, made, r } = mount3d({ reducedMotion: true })
+    expect(made.quality).toBe('auto')
+    expect(viewer.perf()).toMatchObject({ tier: 'high', auto: true })
+    made.onFrameWindow(win(25), 3000)
+    expect(r.setTier).not.toHaveBeenCalled()
+    made.onFrameWindow(win(25), 3000)
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    expect(viewer.perf()).toMatchObject({ tier: 'low', auto: true })
+    made.onFrameWindow(win(12), 2000) // within Low's budget: nothing changes
+    expect(r.setTier).toHaveBeenCalledTimes(1)
+    viewer.dispose()
+  })
+
+  it('a context restore starts one tier lower; the second loss still goes to the 2D map', () => {
+    const graphics: WorldGraphics[] = []
+    const { host, viewer, made, r } = mount3d({ reducedMotion: true, onGraphics: (g) => { graphics.push(g) } })
+    made.onContextLost()
+    made.onContextRestored()
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    expect(viewer.perf().tier).toBe('low')
+    made.onContextLost()
+    expect(graphics).toEqual(['lost', 'restored', 'flat'])
+    expect(host.querySelector('section.world-fallback')).not.toBeNull()
+    // A map that starts at Flat is restored at Flat: there is no tier below to restore at.
+    createThreeRenderer.mockReset()
+    forgetWebGL()
+    const f = mount3d({ reducedMotion: true, startTier: 'flat' })
+    f.made.onContextLost()
+    f.made.onContextRestored()
+    expect(f.r.setTier.mock.calls).toEqual([['flat']])
+    viewer.dispose()
+    f.viewer.dispose()
+  })
+
+  it('a user-chosen tier is never changed by the frame times; Auto hands it back to them', () => {
+    const { viewer, made, r } = mount3d({ reducedMotion: true, quality: 'low' })
+    expect(made.quality).toBe('low')
+    expect(viewer.perf()).toMatchObject({ tier: 'low', auto: false })
+    for (let i = 0; i < 6; i++) made.onFrameWindow(win(80), 3000)
+    expect(r.setTier).not.toHaveBeenCalled()
+    viewer.setQuality('auto') // auto goes on from the tier drawn now
+    expect(r.setTier.mock.calls).toEqual([['low']])
+    expect(viewer.perf().auto).toBe(true)
+    made.onFrameWindow(win(80), 3000)
+    made.onFrameWindow(win(80), 3000)
+    expect(r.setTier.mock.calls).toEqual([['low'], ['flat']])
+    viewer.setQuality('high')
+    expect(r.setTier.mock.calls).toEqual([['low'], ['flat'], ['high']])
+    expect(viewer.perf()).toMatchObject({ tier: 'high', auto: false })
+    viewer.setQuality('high') // the same choice again: nothing
+    for (let i = 0; i < 6; i++) made.onFrameWindow(win(80), 3000)
+    expect(r.setTier).toHaveBeenCalledTimes(3)
+    viewer.dispose()
+    viewer.setQuality('low') // after dispose: nothing
+    expect(r.setTier).toHaveBeenCalledTimes(3)
+  })
+
+  it('a startTier starts an auto map there; a chosen quality is drawn as chosen', () => {
+    const a = mount3d({ reducedMotion: true, startTier: 'high' })
+    expect(a.made.quality).toBe('high')
+    expect(a.viewer.perf().auto).toBe(true)
+    a.viewer.dispose()
+    createThreeRenderer.mockReset()
+    forgetWebGL()
+    const b = mount3d({ reducedMotion: true, quality: 'low', startTier: 'high' })
+    expect(b.made.quality).toBe('low')
+    expect(b.viewer.perf().auto).toBe(false)
+    b.viewer.dispose()
+  })
+
+  it('in the 2D map a window, a choice or a failed buffer only keeps the choice: there is nothing to draw', () => {
+    const graphics: WorldGraphics[] = []
+    const { viewer, made, r } = mount3d({ reducedMotion: true, onGraphics: (g) => { graphics.push(g) } })
+    made.onContextLost()
+    made.onContextRestored()
+    made.onContextLost() // the 2D map
+    r.setTier.mockClear()
+    made.onFrameWindow(win(80), 3000)
+    made.onFrameWindow(win(80), 3000)
+    made.onBufferShrunk()
+    made.onBufferShrunk()
+    viewer.setQuality('high')
+    expect(r.setTier).not.toHaveBeenCalled()
+    expect(graphics).toEqual(['lost', 'restored', 'flat'])
+    expect(viewer.perf()).toMatchObject({ tier: 'flat', auto: false, frames: 0 })
+    viewer.dispose()
+    // Without WebGL at all the same: the choice is kept, and read back by perf().
+    const flat = setup()
+    flat.viewer.setQuality('low')
+    expect(flat.viewer.perf().auto).toBe(false)
+    flat.viewer.setQuality('auto')
+    expect(flat.viewer.perf().auto).toBe(true)
   })
 })

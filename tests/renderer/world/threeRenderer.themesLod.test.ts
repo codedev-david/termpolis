@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { TIER_LOOK } from '../../../src/renderer/src/world/engine/tierBudget'
 import { THEMES, type ThemeName } from '../../../src/renderer/src/world/engine/themes'
 import { heatMix, type SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import {
@@ -220,6 +221,196 @@ describe('threeRenderer level of detail', () => {
     expect(r.drawnCounts().tier).toBe('buildings')
     r.setFocus(null)
     expect(r.drawnCounts().tier).toBe('districts')
+    r.dispose()
+  })
+})
+
+describe('threeRenderer quality tiers (look spec §5)', () => {
+  const SWIFTSHADER = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+  const GEFORCE = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'
+  /** The dust: the second point cloud (the stars are the first). */
+  const dustOf = (): THREE.Points => (sceneOf().children.filter((c) => c instanceof THREE.Points) as THREE.Points[])[1]
+  const lastBloomSize = (i = gpu.bloomPasses.length - 1): [number, number] => {
+    const s = gpu.bloomPasses[i].sizes
+    return s[s.length - 1]
+  }
+
+  it('the table: High draws everything; Low the bloom at half size, no grain, one shaft, 600 dust; Flat no composer, shafts, dust or beams', () => {
+    expect(TIER_LOOK).toEqual({
+      high: { composer: true, bloom: 'full', grain: true, shafts: 2, dust: 1800, discMoving: true, beams: true, scanLinesMoving: true },
+      low: { composer: true, bloom: 'half', grain: false, shafts: 1, dust: 600, discMoving: true, beams: true, scanLinesMoving: true },
+      flat: { composer: false, bloom: null, grain: false, shafts: 0, dust: 0, discMoving: false, beams: false, scanLinesMoving: false },
+    })
+  })
+
+  it('High: at most a 2x ratio, the composer with the bloom at full size, 1800 dust', () => {
+    vi.stubGlobal('devicePixelRatio', 3)
+    const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: false })
+    expect(gpu.renderers[0].pixelRatios).toEqual([2])
+    expect(gpu.composers).toHaveLength(1)
+    expect(lastBloomSize()).toEqual([1600, 1200])
+    expect(dustOf().geometry.getAttribute('position').count).toBe(1800)
+    expect(dustOf().geometry.drawRange.count).toBe(1800)
+    expect(r.motionState()).toMatchObject({ bloom: true, dust: 1800 })
+    expect(r.perf().tier).toBe('high')
+    r.dispose()
+  })
+
+  it('Low: three quarters of a 1x ratio, the composer with the bloom at half that size, 600 dust', () => {
+    vi.stubGlobal('devicePixelRatio', 3)
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: false })
+    expect(gpu.renderers[0].pixelRatios).toEqual([0.75])
+    expect(gpu.composers).toHaveLength(1)
+    expect(lastBloomSize()).toEqual([300, 225]) // 800 x 600 at 0.75 is 600 x 450; the bloom takes half
+    expect(dustOf().geometry.drawRange.count).toBe(600)
+    expect(dustOf().visible).toBe(true)
+    expect(r.motionState()).toMatchObject({ bloom: true, dust: 600 })
+    expect(r.perf().tier).toBe('low')
+    r.dispose()
+  })
+
+  it('Flat: a 1x ratio, no composer and no dust; frames render straight to the canvas', () => {
+    vi.stubGlobal('devicePixelRatio', 3)
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: false })
+    const gl = gpu.renderers[0]
+    expect(gl.pixelRatios).toEqual([1])
+    expect(gpu.composers).toHaveLength(0)
+    h.frames.step()
+    expect(gl.renders).toHaveLength(1)
+    expect(dustOf().visible).toBe(false)
+    expect(r.motionState()).toMatchObject({ bloom: false, dust: 0 })
+    expect(r.perf().tier).toBe('flat')
+    r.dispose()
+  })
+
+  it('auto starts at High on a GPU and at Flat in software', () => {
+    for (const [name, tier] of [[GEFORCE, 'high'], [null, 'high'], [SWIFTSHADER, 'flat']] as const) {
+      gpu.reset()
+      gpu.gpuName = name
+      const r = createThreeRenderer(h.host, { quality: 'auto', reducedMotion: false })
+      expect(r.perf().tier, String(name)).toBe(tier)
+      expect(gpu.composers, String(name)).toHaveLength(tier === 'high' ? 1 : 0)
+      r.dispose()
+    }
+  })
+
+  it('setTier changes pixel ratio, composer, bloom size, dust and shafts per the tier table without rebuilding', () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: false })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.step()
+    const gl = gpu.renderers[0]
+    const scene = sceneOf()
+    const built = (): Set<THREE.Object3D> => { const s = new Set<THREE.Object3D>(); scene.traverse((o) => { s.add(o) }); return s }
+    const before = built()
+    const strength = gpu.bloomPasses[0].strength
+    expect(gl.pixelRatios[gl.pixelRatios.length - 1]).toBe(2)
+    expect(lastBloomSize()).toEqual([1600, 1200])
+
+    r.setTier('low')
+    const composer = gpu.composers[0]
+    expect(gpu.composers).toHaveLength(1) // the same composer, its targets resized
+    expect(composer.disposed).toBe(0)
+    expect(gl.pixelRatios[gl.pixelRatios.length - 1]).toBe(0.75)
+    expect(lastBloomSize()).toEqual([300, 225])
+    expect(r.motionState()).toMatchObject({ bloom: true, dust: 600 })
+    expect(r.perf().tier).toBe('low')
+
+    r.setTier('flat')
+    expect(composer.disposed).toBe(1) // its render targets freed
+    expect([gpu.bloomPasses[0].disposed, gpu.renderPasses[0].disposed, gpu.outputPasses[0].disposed]).toEqual([1, 1, 1])
+    expect(gl.pixelRatios[gl.pixelRatios.length - 1]).toBe(1)
+    expect(r.motionState()).toMatchObject({ bloom: false, dust: 0 })
+    const straight = gl.renders.length
+    const composed = composer.renders
+    h.frames.step()
+    expect(gl.renders.length).toBe(straight + 1) // drawn straight to the canvas
+    expect(composer.renders).toBe(composed)
+
+    r.setTier('high')
+    expect(gpu.composers).toHaveLength(2) // a new composer, with the city's bloom strength
+    expect(gpu.bloomPasses[1].strength).toBe(strength)
+    expect(lastBloomSize(1)).toEqual([1600, 1200])
+    expect(gl.pixelRatios[gl.pixelRatios.length - 1]).toBe(2)
+    expect(r.motionState()).toMatchObject({ bloom: true, dust: 1800 })
+    h.frames.step()
+    expect(gpu.composers[1].renders).toBe(1)
+    // nothing in the scene was built again or taken away: the dust drawn is a range of the points built once
+    const after = built()
+    expect([...before].filter((o) => !after.has(o))).toEqual([])
+    expect([...after].filter((o) => !before.has(o))).toEqual([])
+
+    // the same tier again changes nothing; after dispose, nothing either
+    const sizes = gl.sizes.length
+    r.setTier('high')
+    expect(gl.sizes.length).toBe(sizes)
+    r.dispose()
+    r.setTier('low')
+    expect(gpu.composers).toHaveLength(2)
+    expect(gl.sizes.length).toBe(sizes)
+  })
+
+  it('a tier change wakes a sleeping loop, and the frames after it are not counted', () => {
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: true })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    for (let i = 0; i < 300 && h.frames.pending() > 0; i++) h.frames.step(16)
+    expect(h.frames.pending()).toBe(0)
+    r.setTier('low')
+    expect(h.frames.pending()).toBe(1)
+    r.dispose()
+    const m = createThreeRenderer(h.host, { quality: 'high', reducedMotion: false })
+    h.frames.run(40, 16)
+    const n = m.perf().frames
+    expect(n).toBeGreaterThan(30)
+    m.setTier('low')
+    h.frames.run(5, 16)
+    expect(m.perf().frames).toBe(n)
+    h.frames.run(1, 16)
+    expect(m.perf().frames).toBe(n + 1)
+    m.dispose()
+  })
+
+  it('cuts the counted frames into windows of 120 frames, or of 2 s of them, whichever comes first; a tier change starts a new one', () => {
+    const seen: Array<[number, number, number]> = []
+    const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: false, onFrameWindow: (s, span) => { seen.push([s.frames, s.p95, span]) } })
+    h.frames.run(5, 16) // the first five frames (a wake) are not counted
+    expect(seen).toEqual([])
+    h.frames.run(119, 16)
+    expect(seen).toEqual([])
+    h.frames.run(1, 16)
+    expect(seen).toEqual([[120, 16, 1920]])
+    // slow frames: 2 s of them come first (7 of 300 ms is 2100)
+    h.frames.run(6, 300)
+    expect(seen).toHaveLength(1)
+    h.frames.run(1, 300)
+    expect(seen[1]).toEqual([7, 300, 2100])
+    // half a window, then a tier change: the next window starts after the change's uncounted frames
+    h.frames.run(60, 16)
+    r.setTier('low')
+    h.frames.run(5 + 119, 16)
+    expect(seen).toHaveLength(2)
+    h.frames.run(1, 16)
+    expect(seen[2]).toEqual([120, 16, 1920])
+    r.dispose()
+  })
+
+  it('a window may change the tier before its frame is drawn: that frame is drawn at the new tier', () => {
+    const box: { r: ReturnType<typeof createThreeRenderer> | null } = { r: null }
+    const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: false, onFrameWindow: () => { box.r?.setTier('flat') } })
+    box.r = r
+    const gl = gpu.renderers[0]
+    h.frames.run(124, 16)
+    expect(r.perf().tier).toBe('high')
+    const straight = gl.renders.length
+    const composed = gpu.composers[0].renders
+    h.frames.run(1, 16) // the 120th counted frame: its window drops the tier, and the frame is drawn at Flat
+    expect(r.perf().tier).toBe('flat')
+    expect(gpu.composers[0].disposed).toBe(1)
+    expect(gpu.composers[0].renders).toBe(composed)
+    expect(gl.renders.length).toBe(straight + 1)
+    expect(h.frames.pending()).toBe(1) // one frame asked for, not two
     r.dispose()
   })
 })

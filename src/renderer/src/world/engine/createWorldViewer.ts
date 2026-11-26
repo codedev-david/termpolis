@@ -16,6 +16,8 @@ import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
 import type { SlabSignals } from './slabSignals'
 import { createThreeRenderer, type MotionState, type RenderFocus, type RenderPick, type RendererPerf, type SceneText, type ThreeRenderer } from './threeRenderer'
 import { frameStats, type FrameStats } from './frameSampler'
+import { createGovernor, type Governor } from './qualityGovernor'
+import type { TierName } from './tierBudget'
 import { THEMES, type ThemeName } from './themes'
 import type { ZoomTier } from './viewMath'
 
@@ -103,6 +105,11 @@ export interface WorldViewer {
   requestFrame(): void
   /** The frame times, as drawn().perf gives them, without the rest of drawn() (what the frame-rate readout reads). */
   perf(): WorldPerf
+  /**
+   * The Quality menu's choice (look spec §5): 'auto' lets the frame times pick the tier (the governor), a tier named
+   * is drawn and kept. In 2D there is nothing to draw: the choice is only kept.
+   */
+  setQuality(q: WorldQuality): void
   /** Starts a frame-time window for the e2e harness (__worldPerf.begin, look spec §6.1). Nothing in 2D. */
   perfBegin(): void
   /** Ends the window perfBegin started and gives its frame times (none in 2D, or with no window started). */
@@ -149,10 +156,13 @@ const noVisual = (): WorldDrawnVisual => ({
   floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0,
 })
 
-/** The 3D map's frame times (look spec §6.1), and whether its tier is chosen for you (no quality was asked for). */
+/** The 3D map's frame times (look spec §6.1), and whether its tier is chosen for you (the quality is 'auto'). */
 export interface WorldPerf extends RendererPerf {
   auto: boolean
 }
+
+/** What the 3D map draws (look spec §5): a tier, or 'auto' for the one its frame times pick. */
+export type WorldQuality = TierName | 'auto'
 
 export interface WorldDrawn {
   layers: LayerState
@@ -212,7 +222,13 @@ export interface WorldDrawn {
 export interface WorldViewerOptions {
   /** The project's display name: the 2D map's heading and label (never the hashed project key). */
   title?: string
-  quality?: 'high' | 'low'
+  /** The Quality menu's choice; 'auto' (the default) lets the frame times pick (look spec §5.1). */
+  quality?: WorldQuality
+  /**
+   * Test only (the e2e harness's worldProbe flag): the tier an 'auto' map starts at instead of its own pick (High on a
+   * GPU, Flat in software), so a run can watch the governor step a software map down from High.
+   */
+  startTier?: TierName
   reducedMotion?: boolean
   /**
    * Receives the inspector card HTML for the selection, or null when nothing is selected. `fromClick` is
@@ -339,17 +355,37 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let lossPending = false
   /** Fits that left the drawing buffer shrunk after all its steps (onBufferShrunk). */
   let shrinkFails = 0
+  /** The Quality menu's choice (setQuality). */
+  let quality: WorldQuality = opts.quality ?? 'auto'
+  /**
+   * Picks the tier the 3D map draws (look spec §5.1): from the frame times while the quality is 'auto', and one tier
+   * down on a restored context or a watchdog step in either mode. Made with the renderer, from the tier it started at.
+   */
+  let gov: Governor | null = null
   if (hasWebGL()) {
     const before = new Set(Array.from(container.children))
     try {
       r3 = createThreeRenderer(container, {
-        quality: opts.quality ?? 'high',
+        quality: quality === 'auto' && opts.startTier ? opts.startTier : quality,
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
+        // A window of frame times (120 frames or 2 s): the governor may pick another tier, drawn from this frame on.
+        onFrameWindow: (stats, span) => {
+          if (!r3) return
+          const t = (gov as Governor).onWindow(stats, span)
+          if (t) r3.setTier(t)
+        },
         // A loss forgets the context found before (hasWebGL), so the next open probes again: after repeated losses Chromium
         // blocks WebGL for the page, and a cached yes would show the 3D legend over the 2D map (RESP review I-2).
         onContextLost: () => { lossPending = true; forgetWebGL(); if (++losses === 1) graphics('lost'); else dropToFlat() },
-        onContextRestored: () => { lossPending = false; if (r3) graphics('restored') },
+        // The context came back: one tier lower than before it was lost (look spec §5.1; Flat stays Flat), as a second
+        // loss goes on to the 2D map.
+        onContextRestored: () => {
+          lossPending = false
+          if (!r3) return
+          r3.setTier((gov as Governor).onContextRestored())
+          graphics('restored')
+        },
         // Twice the GPU could not hold even the smallest buffer: one tier down (onTierRequest).
         onBufferShrunk: () => { if (++shrinkFails >= 2) onTierRequest('down') },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
@@ -357,6 +393,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         ...(opts.firstFrameSlowdown ? { firstFrameSlowdown: opts.firstFrameSlowdown } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
+      gov = createGovernor({ start: r3.perf().tier, mode: quality === 'auto' ? 'auto' : 'user' })
     } catch {
       // createThreeRenderer frees what it made before rethrowing; this also covers a throw from
       // setTheme after it returned. Whatever it appended (canvas, label layer) goes before the 2D list.
@@ -775,28 +812,41 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let watched = 0
   let lostTicks = 0
   /**
-   * The watchdog asks for one tier down (look spec §5.3), and the 2D map is the last step. Until the governor lands
-   * there is no drawn tier to step to, so the request goes straight to that last step, the 2D map with the watchdog
-   * notice: the look plan's Task 0 has "onTierRequest('down') (stubbed to Flat until Task 3)", and its Task 3 has
-   * "Task 0's watchdog stub becomes governor steps".
+   * The watchdog (or a drawing buffer the GPU could not hold twice) asks for one tier down (look spec §5.3): the
+   * governor steps the drawn tier down, in either mode, and the watchdog's deadline starts again at the new tier. At
+   * Flat there is no tier below, and the 2D map, with the watchdog notice, is the last step. Returns whether the 3D
+   * map is still drawn.
    */
-  function onTierRequest(dir: 'down'): void {
+  function onTierRequest(dir: 'down'): boolean {
     void dir
-    dropToFlat('watchdog')
+    // Not drawn: the 2D map already, or the renderer still being built (its first fit may find the buffer shrunk).
+    if (!r3) return false
+    const t = (gov as Governor).stepDown()
+    if (t === null) {
+      dropToFlat('watchdog')
+      return false
+    }
+    // The counts start again before the step: setTier fits the buffer again, and a buffer still shrunk at the new tier
+    // calls onBufferShrunk from inside it, which must count as that tier's first failure, not step on at once.
+    watched = 0
+    lostTicks = 0
+    shrinkFails = 0
+    r3.setTier(t)
+    return true
   }
   /** The frame times of the 2D map: no frames, at the flat tier. */
   const noPerf = (): RendererPerf => ({ tier: 'flat', ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
   /** The counts with whether the tier is chosen for you added to their frame times. */
-  const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: opts.quality === undefined } })
+  const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: quality === 'auto' } })
   function watchTick(): void {
     // dropToFlat and dispose clear the timer, so the renderer is still there.
     const d = (r3 as ThreeRenderer).drawnCounts()
     if (d.presented > 0) return
     if (d.contextLost && !lossPending) {
-      if (++lostTicks >= 2) { onTierRequest('down'); return }
+      if (++lostTicks >= 2 && !onTierRequest('down')) return
     } else lostTicks = 0
     if (!paused && !lossPending && document.visibilityState !== 'hidden') watched += WATCH_TICK_MS
-    if (watched >= (d.software ? FIRST_FRAME_MS_SW : FIRST_FRAME_MS_HW)) { onTierRequest('down'); return }
+    if (watched >= (d.software ? FIRST_FRAME_MS_SW : FIRST_FRAME_MS_HW) && !onTierRequest('down')) return
     watch = setTimeout(watchTick, WATCH_TICK_MS)
   }
 
@@ -1099,7 +1149,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     requestFrame() {
       if (!disposed) r3?.requestFrame()
     },
-    perf: () => ({ ...(r3 ? r3.perf() : noPerf()), auto: opts.quality === undefined }),
+    perf: () => ({ ...(r3 ? r3.perf() : noPerf()), auto: quality === 'auto' }),
+    setQuality(q) {
+      if (disposed || q === quality) return
+      quality = q
+      if (r3) r3.setTier((gov as Governor).choose(q))
+    },
     perfBegin() {
       r3?.perfBegin()
     },

@@ -5,7 +5,7 @@ import { EvidenceView } from '../../../src/renderer/src/components/World/Evidenc
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { UI_FAILED } from '../../../src/renderer/src/components/World/worldTargets'
 import { FOLDER_EMPTY_MESSAGE, FOLDER_UNREADABLE_MESSAGE, FOLDER_UNSUPPORTED_MESSAGE } from '../../../src/shared/world/types'
-import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { QUALITY_CHOICES, QUALITY_TITLE, TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
 import { SOLID_PANEL, UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
@@ -696,6 +696,34 @@ describe('WorldToolbar in a narrow pane', () => {
     fireEvent.click(more)
     fireEvent.click(more)
     expect(screen.queryByTestId('world-more-menu')).toBeNull()
+  })
+
+  it('the Quality menu: only with onQuality, a visible label tied to it, its four choices, and folded into More with the rest', () => {
+    const r = render(<WorldToolbar {...props()} />)
+    expect(screen.queryByTestId('world-quality')).toBeNull()
+    expect(screen.queryByText('Quality')).toBeNull()
+    const onQuality = vi.fn()
+    r.rerender(<WorldToolbar {...props({ onQuality })} />)
+    const menu = screen.getByLabelText('Quality') as HTMLSelectElement
+    expect(menu).toBe(screen.getByTestId('world-quality'))
+    expect(menu.value).toBe('auto') // no quality given: Auto
+    expect(menu.parentElement).toHaveAttribute('title', QUALITY_TITLE)
+    expect(QUALITY_CHOICES.map((c) => c.label)).toEqual(['Auto', 'High', 'Low', 'Flat'])
+    // Right after the theme, among the secondary controls.
+    expect(screen.getByTestId('world-theme').nextElementSibling).toBe(menu.parentElement)
+    fireEvent.change(menu, { target: { value: 'low' } })
+    expect(onQuality).toHaveBeenLastCalledWith('low')
+    r.rerender(<WorldToolbar {...props({ onQuality, quality: 'flat' })} />)
+    expect((screen.getByTestId('world-quality') as HTMLSelectElement).value).toBe('flat')
+    r.rerender(<WorldToolbar {...props({ onQuality, quality: 'flat', compact: true })} />)
+    expect(screen.queryByTestId('world-quality')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-more'))
+    const folded = screen.getByTestId('world-quality')
+    expect(screen.getByTestId('world-more-menu').contains(folded)).toBe(true)
+    // A pick leaves the menu open, as the theme does.
+    fireEvent.change(folded, { target: { value: 'high' } })
+    expect(onQuality).toHaveBeenLastCalledWith('high')
+    expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
   })
 
   it('closes on Esc (and keeps that Esc from the pane), on a click outside, and when the pane widens past the fold', async () => {

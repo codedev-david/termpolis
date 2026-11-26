@@ -161,6 +161,18 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists the Quality menu (quality) as auto or a tier', async () => {
+    const { invoke, settings } = setup()
+    for (const q of ['auto', 'high', 'low', 'flat']) {
+      await invoke('world:settings-set', { quality: q })
+      expect(settings.set).toHaveBeenLastCalledWith({ quality: q })
+    }
+    await invoke('world:settings-set', { quality: 'ultra' })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+    await invoke('world:settings-set', { quality: true })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set hands the new setting to the live world host after storing it', async () => {
     const { invoke, settings, client } = setup()
     await invoke('world:settings-set', { worldLabelling: false })

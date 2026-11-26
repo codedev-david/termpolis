@@ -171,7 +171,7 @@ export class FakeWebGLRenderer {
   }
 }
 
-interface Pass { dispose(): void }
+interface Pass { dispose(): void; setSize(w: number, h: number): void }
 
 export class FakeEffectComposer {
   readonly renderer: FakeWebGLRenderer
@@ -191,16 +191,22 @@ export class FakeEffectComposer {
   readonly buffers: Array<[number, number]> = []
   private ratio = 1
   private size: [number, number] = [0, 0]
-  addPass(p: Pass): void { this.passes.push(p) }
+  /** As r160's: a pass added, and every pass on each setSize or setPixelRatio, is given the buffer's size. */
+  addPass(p: Pass): void {
+    this.passes.push(p)
+    p.setSize(this.size[0] * this.ratio, this.size[1] * this.ratio)
+  }
   setSize(w: number, h: number): void {
     this.sizes.push([w, h])
     this.size = [w, h]
     this.buffers.push([w * this.ratio, h * this.ratio])
+    for (const p of this.passes) p.setSize(w * this.ratio, h * this.ratio)
   }
   setPixelRatio(r: number): void {
     this.pixelRatios.push(r)
     this.ratio = r
     this.buffers.push([this.size[0] * r, this.size[1] * r])
+    for (const p of this.passes) p.setSize(this.size[0] * r, this.size[1] * r)
   }
   /** As the real one: the render pass draws the scene (the bloom and output passes add full-screen quads). */
   render(): void {
@@ -214,14 +220,21 @@ export class FakeRenderPass {
   enabled = true
   disposed = 0
   constructor(readonly scene: THREE.Object3D, readonly camera: THREE.Camera) { gpu.renderPasses.push(this) }
+  setSize(): void {}
   dispose(): void { this.disposed++ }
 }
 
 export class FakeUnrealBloomPass {
   enabled = true
   disposed = 0
+  /** The sizes it was given (setSize), as the real one takes them: its bright pass and mips are half of each. */
+  readonly sizes: Array<[number, number]> = []
   constructor(readonly resolution: THREE.Vector2, public strength: number, public radius: number, public threshold: number) {
     gpu.bloomPasses.push(this)
+  }
+  setSize(w: number, h: number): void {
+    this.sizes.push([w, h])
+    this.resolution.set(w, h)
   }
   dispose(): void { this.disposed++ }
 }
@@ -230,6 +243,7 @@ export class FakeOutputPass {
   enabled = true
   disposed = 0
   constructor() { gpu.outputPasses.push(this) }
+  setSize(): void {}
   dispose(): void { this.disposed++ }
 }
 

@@ -17,7 +17,8 @@ import { createCameraRig, type FlightState, type Vec3 as RigVec } from './camera
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
-import { shrunk, tierPixelRatio, type TierName } from './tierBudget'
+import { shrunk, TIER_LOOK, tierPixelRatio, type TierName } from './tierBudget'
+import { WINDOW_FRAMES, WINDOW_MS } from './qualityGovernor'
 import { timedUpdate } from './timedDamping'
 import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
@@ -54,7 +55,11 @@ export type RenderPick = { kind: 'node'; id: string } | { kind: 'edge'; id: stri
 export interface RenderFocus { ids: Set<string>; edgeIds: Set<string>; hover?: boolean; passive?: Set<string>; held?: boolean }
 
 export interface RendererOptions {
-  quality: 'high' | 'low'
+  /**
+   * The tier to draw at (look spec §5): High, Low or Flat, or 'auto' for the one the context starts at, High on a GPU
+   * and Flat in software. setTier changes it later.
+   */
+  quality: TierName | 'auto'
   reducedMotion: boolean
   /** An edge's floating label was clicked. */
   onEdgeLabel?: (edgeId: string) => void
@@ -83,6 +88,11 @@ export interface RendererOptions {
    * before firstFrameMs is timed, so a first-frame regression can be staged to prove the e2e guard catches it.
    */
   firstFrameSlowdown?: () => number
+  /**
+   * A window of frame times (look spec §5.1): every WINDOW_FRAMES counted frames, or once they cover WINDOW_MS,
+   * whichever comes first, with the time its counted frames cover. A tier change starts a new window.
+   */
+  onFrameWindow?: (stats: FrameStats, spanMs: number) => void
 }
 
 export interface ThreeRenderer {
@@ -181,6 +191,11 @@ export interface ThreeRenderer {
   setPaused(paused: boolean): void
   /** The frame times alone, as drawnCounts().perf gives them, without the rest of its count (a cheap read for the readout). */
   perf(): RendererPerf
+  /**
+   * Draws at another quality tier (look spec §5) from the next frame, without building the city again: its pixel
+   * ratio and budget, the composer (freed at Flat), the bloom's size and the dust. The frames after it are not counted.
+   */
+  setTier(tier: TierName): void
   /** Starts a frame-time window for the e2e harness (look spec §6.1): the counted gaps from now on. */
   perfBegin(): void
   /** Ends the window perfBegin started, and gives its frame times (no frames when none was started). */
@@ -439,7 +454,6 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
 
 function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Array<() => void>): ThreeRenderer {
   ensureStyle()
-  const high = opts.quality === 'high'
   /** Reduced motion, as it stands now (setReducedMotion follows the system setting while the view is open). */
   let reduced = opts.reducedMotion
   // The render loop's state (see "loop" below), up here so a listener that fires while the renderer is built finds it.
@@ -518,8 +532,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * The pixel ratio for the view's size: the tier's share of the screen's (tierPixelRatio: High at most 2 inside a 4K
    * budget, Low at most three quarters inside a 1080p one, in software the 1080p one at either), lowered to the buffer
    * cap, then by the steps a shrunk buffer took (fitShrunk).
+   *
+   * The tier drawn now (setTier changes it): the one asked for, or for 'auto' High on a GPU and Flat in software
+   * (look spec §5: software starts at Flat).
    */
-  const look: TierName = high ? 'high' : 'low'
+  let look: TierName = opts.quality === 'auto' ? (software ? 'flat' : 'high') : opts.quality
   /**
    * The scale a drawing buffer the browser shrank brought the ratio down by (fitShrunk steps it 0.75 at a time). Each
    * later fit sets it again from the pixels the browser gave that shrunk buffer (budgetPixels): the largest scale whose
@@ -733,19 +750,42 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   host.addEventListener('wheel', onWheel, { capture: true, passive: false })
   undo.push(() => { host.removeEventListener('wheel', onWheel, { capture: true }) })
 
+  // The composer (bloom and grade), at the tiers that draw one (TIER_LOOK): built and freed as the tier changes.
   let composer: EffectComposer | null = null
   let renderPass: RenderPass | null = null
   let bloom: UnrealBloomPass | null = null
   let outputPass: OutputPass | null = null
-  if (high) {
+  /** The bloom's strength for the city drawn (a busy city glows less): kept, so a composer built later has it. */
+  let bloomStrength = 1.0
+  const buildComposer = (): void => {
     composer = new EffectComposer(renderer)
     renderPass = new RenderPass(scene, camera)
     composer.addPass(renderPass)
-    bloom = new UnrealBloomPass(new THREE.Vector2(width, height), 1.0, 0.55, 0.12)
-    composer.addPass(bloom)
+    const b = new UnrealBloomPass(new THREE.Vector2(width, height), bloomStrength, 0.55, 0.12)
+    // At Low the bloom takes half the buffer's size (a quarter of its pixels, as tierBudget's targetsPixels counts
+    // them): the composer gives each pass the buffer's size, when it is added and on every resize.
+    const fullSize = b.setSize.bind(b)
+    b.setSize = (w: number, h: number): void => {
+      const half = TIER_LOOK[look].bloom === 'half'
+      fullSize(half ? Math.round(w / 2) : w, half ? Math.round(h / 2) : h)
+    }
+    bloom = b
+    composer.addPass(b)
     outputPass = new OutputPass()
     composer.addPass(outputPass)
   }
+  /** Frees the composer, its passes and their render targets (a tier without one, or the view closing). */
+  const freeComposer = (): void => {
+    bloom?.dispose()
+    outputPass?.dispose()
+    renderPass?.dispose()
+    composer?.dispose()
+    composer = null
+    renderPass = null
+    outputPass = null
+    bloom = null
+  }
+  if (TIER_LOOK[look].composer) buildComposer()
   scene.add(new THREE.AmbientLight(0xffffff, 0.35))
   const sun = new THREE.DirectionalLight(0xffffff, 0.8)
   sun.position.set(40, 80, 30)
@@ -789,24 +829,29 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   stars.renderOrder = BACKDROP_ORDER // shows through the platforms
   scene.add(stars)
 
-  // Dust drifting upward through the city (high quality only).
-  let dustGeo: THREE.BufferGeometry | null = null
-  let dustMat: THREE.PointsMaterial | null = null
-  if (high) {
-    const n = 600
-    const p = new Float32Array(n * 3)
-    for (let i = 0; i < n; i++) {
-      p[i * 3] = (Math.random() - 0.5) * 200
-      p[i * 3 + 1] = Math.random() * 60 - 2
-      p[i * 3 + 2] = (Math.random() - 0.5) * 200
-    }
-    dustGeo = new THREE.BufferGeometry()
-    dustGeo.setAttribute('position', new THREE.BufferAttribute(p, 3))
-    dustMat = new THREE.PointsMaterial({ color: 0x7dd3fc, size: 0.6, map: dotTex, transparent: true, opacity: 0.5, alphaTest: 0.02, depthWrite: false })
-    const dust = new THREE.Points(dustGeo, dustMat)
-    dust.renderOrder = BACKDROP_ORDER // shows through the platforms
-    scene.add(dust)
+  // Dust drifting upward through the city: the most any tier draws is built once, and each tier draws its share of it
+  // (TIER_LOOK: 1800 at High, 600 at Low, none at Flat), so a tier change builds nothing.
+  const DUST_MOST = Math.max(TIER_LOOK.high.dust, TIER_LOOK.low.dust, TIER_LOOK.flat.dust)
+  const dustPos = new Float32Array(DUST_MOST * 3)
+  for (let i = 0; i < DUST_MOST; i++) {
+    dustPos[i * 3] = (Math.random() - 0.5) * 200
+    dustPos[i * 3 + 1] = Math.random() * 60 - 2
+    dustPos[i * 3 + 2] = (Math.random() - 0.5) * 200
   }
+  const dustGeo = new THREE.BufferGeometry()
+  dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3))
+  const dustMat = new THREE.PointsMaterial({ color: 0x7dd3fc, size: 0.6, map: dotTex, transparent: true, opacity: 0.5, alphaTest: 0.02, depthWrite: false })
+  const dust = new THREE.Points(dustGeo, dustMat)
+  dust.renderOrder = BACKDROP_ORDER // shows through the platforms
+  scene.add(dust)
+  /** The dust points the tier draws (the first of them). */
+  let dustDrawn = 0
+  const fitDust = (): void => {
+    dustDrawn = TIER_LOOK[look].dust
+    dustGeo.setDrawRange(0, dustDrawn)
+    dust.visible = dustDrawn > 0
+  }
+  fitDust()
 
   const fogTex = (() => {
     const c = document.createElement('canvas')
@@ -905,6 +950,28 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return performance.now() - askedAt
   }
   const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs })
+  /**
+   * The frame-time window (look spec §5.1) under way: its counted frames and the time they cover. It ends after
+   * WINDOW_FRAMES of them or once they cover WINDOW_MS (counted time, so an idle city's sleep never fills one), and
+   * goes to opts.onFrameWindow; a tier change starts a new one.
+   */
+  let winFrames = 0
+  let winMs = 0
+  const newWindow = (): void => {
+    sampler.window()
+    winFrames = 0
+    winMs = 0
+  }
+  const countWindow = (gap: number): void => {
+    winFrames++
+    winMs += gap
+    if (winFrames < WINDOW_FRAMES && winMs < WINDOW_MS) return
+    const span = winMs
+    const st = sampler.window()
+    winFrames = 0
+    winMs = 0
+    opts.onFrameWindow?.(st, span) // may change the tier (setTier) before this frame is drawn
+  }
   const breakChain = (): void => {
     chained = false
     sampler.skip(SAMPLER_SKIP_FRAMES)
@@ -1401,7 +1468,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     tubeOpacity = clamp(0.38 * busy, MIN_TUBE_OPACITY, 0.38)
     scene.background = new THREE.Color(theme.background)
     fog.color.set(theme.background)
-    if (bloom) bloom.strength = extras.bloom * Math.max(MIN_BLOOM, busy) // a busy city glows less
+    bloomStrength = extras.bloom * Math.max(MIN_BLOOM, busy) // a busy city glows less
+    if (bloom) bloom.strength = bloomStrength
     if (grid) { scene.remove(grid); grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
     const gridSize = Math.max(700, Math.ceil((overviewDist * 4) / 100) * 100)
     grid = new THREE.GridHelper(gridSize, gridSize / 5, extras.grid, extras.grid)
@@ -2981,12 +3049,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     const gap = now - lastFrameAt
     lastFrameAt = now
-    if (sampler.add(gap, chained)) {
+    const counted = sampler.add(gap, chained)
+    if (counted) {
       if (gap > DROPPED_FRAME_MS) drops++
       bench?.push(gap)
     }
     chained = true
     changed = false
+    if (counted) countWindow(gap)
     let motion: FrameMotion = 'moving' // a frame that throws keeps the loop going, as it always did
     drawing = true
     try {
@@ -3062,7 +3132,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
     // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
     // draws them at the pace loopGap sets: see animate).
-    const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true))
+    const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustDrawn > 0 || selRing?.visible === true))
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
@@ -3112,9 +3182,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       fog.density += (fogTarget - fog.density) * easeShare(FOG_RATE, dt)
       moving = true
     }
-    if (dustGeo && !reduced) {
+    if (dustDrawn > 0 && !reduced) {
       const dp = dustGeo.attributes.position.array as Float32Array
-      for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
+      for (let i = 1; i < dustDrawn * 3; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
       dustGeo.attributes.position.needsUpdate = true
     }
     // The slow opening turn (it loops until a hand, a key or a flight ends it), or the glide after a hand lets go (damping).
@@ -3315,7 +3385,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         selectionRingAngle: selRing?.rotation.z ?? 0,
         bloom: bloom !== null,
         stars: starGeo.getAttribute('position').count,
-        dust: dustGeo ? dustGeo.getAttribute('position').count : 0,
+        dust: dustDrawn,
         platformSides: Object.fromEntries(platformSides),
         platformLights,
         floorOrder,
@@ -3369,6 +3439,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       wake()
     },
     requestFrame: () => { wake() },
+    setTier(t) {
+      if (disposed || t === look) return
+      look = t
+      if (TIER_LOOK[t].composer && !composer) buildComposer()
+      else if (!TIER_LOOK[t].composer && composer) freeComposer()
+      fitDust()
+      fitBuffer() // the tier's pixel ratio and budget, and the bloom's size; the next frames are not counted
+      newWindow()
+      wake()
+    },
     perf: () => perfNow(),
     perfBegin: () => {
       bench = []
@@ -3422,14 +3502,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       instPool.clear()
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
       starGeo.dispose(); starMat.dispose()
-      dustGeo?.dispose(); dustMat?.dispose()
+      dustGeo.dispose(); dustMat.dispose()
       fogTex.dispose()
       dotTex.dispose()
       for (const g of shared) g.dispose()
-      bloom?.dispose()
-      outputPass?.dispose()
-      renderPass?.dispose()
-      composer?.dispose()
+      freeComposer()
       renderer.dispose()
       renderer.forceContextLoss()
     },

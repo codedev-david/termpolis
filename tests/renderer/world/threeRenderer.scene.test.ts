@@ -61,8 +61,8 @@ describe('threeRenderer scene build', () => {
     const sun = scene.children.find((c) => c instanceof THREE.DirectionalLight) as THREE.DirectionalLight
     expect(sun.position.toArray()).toEqual([40, 80, 30])
     const points = scene.children.filter((c) => c instanceof THREE.Points) as THREE.Points[]
-    expect(points.map((p) => p.geometry.getAttribute('position').count)).toEqual([3500, 600])
-    expect(r.motionState()).toMatchObject({ bloom: true, stars: 3500, dust: 600 })
+    expect(points.map((p) => p.geometry.getAttribute('position').count)).toEqual([3500, 1800])
+    expect(r.motionState()).toMatchObject({ bloom: true, stars: 3500, dust: 1800 })
     expect(document.getElementById('lumopolis-world-style')).not.toBeNull()
     r.dispose()
   })
@@ -77,12 +77,12 @@ describe('threeRenderer scene build', () => {
     expect(composer.renderTarget2.samples).toBe(0)
   })
 
-  it('at low quality: no antialias, three quarters of a 1x ratio, no composer and no dust; frames render straight', () => {
+  it('at Flat: no antialias, a 1x ratio, no composer and no dust; frames render straight', () => {
     vi.stubGlobal('devicePixelRatio', 3)
-    const r = createThreeRenderer(host, { quality: 'low', reducedMotion: false })
+    const r = createThreeRenderer(host, { quality: 'flat', reducedMotion: false })
     const gl = rendererOf()
     expect(gl.args).toEqual([{ antialias: false }])
-    expect(gl.pixelRatios).toEqual([0.75]) // min(3, 1) * 0.75 (look spec §5)
+    expect(gl.pixelRatios).toEqual([1]) // min(3, 1) (look spec §5)
     expect(gpu.composers).toHaveLength(0)
     frames.step()
     expect(gl.renders).toHaveLength(1)

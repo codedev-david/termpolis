@@ -462,7 +462,7 @@ describe('threeRenderer resize', () => {
 
   it('without a world only the view changes size; a zero-sized host counts as one pixel', () => {
     const ro = withObserver()
-    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: false })
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: false })
     resizeHost(h.host, 0, 0)
     ro.fire()
     expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([1, 1])

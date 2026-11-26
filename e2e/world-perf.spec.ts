@@ -10,7 +10,14 @@
  *   - in software on Linux and Windows, the median orbit's p95 stays at or under this system's floor for that world
  *     (SOFTWARE_FLOOR_P95_MS);
  *   - in software on Linux and Windows, once both worlds are drawn: each world's first frame stays under this system's
- *     time (FIRST_FRAME_SW_MS), and the first frames against the runner's own speed under FIRST_FRAME_PER_GL.
+ *     time (FIRST_FRAME_SW_MS), and the first frames against the runner's own speed under FIRST_FRAME_PER_GL;
+ *   - the quality governor (look spec §5.1, plan Task 3): in software an Auto map starts at Flat, and one forced to
+ *     start at High steps down through Low to Flat within GOVERNOR_FLAT_MS of its first frame and never rises; its
+ *     orbit at Flat is written to <os>-big-flat.json and, on Linux and Windows, held to the big world's floor.
+ *
+ * Every measure above but the governor's is taken with the Quality held at High (the profile's world settings), the
+ * tier its bounds were set at: Auto would draw them at Flat in software, where they would no longer catch what they
+ * were set to, and the tier must not change while a measure is taken.
  *
  * Metrics only: no screenshot here is a golden image.
  */
@@ -30,7 +37,7 @@ import { bigFiles, createTerminal, expectPaneOpens, launchWorldApp, makeRepo, pa
  *
  * The software floor (§6.2): the most the median orbit's p95 may reach when the map is drawn in software, per system and
  * per world. Each is the worst counted orbit's p95 seen on that system's runner x 1.3, rounded up to 10 ms; SwiftShader
- * at the High tier, as software has no Flat tier yet (Task 3 starts it at Flat, under these). Every world's first orbit
+ * at the High tier, where these runs hold the Quality (an Auto map starts at Flat in software, under these). Every world's first orbit
  * is a warm-up and is not counted: it is the one that draws parts for the first time (their shaders compiled, their
  * labels laid out) and was the slowest of three in 7 of 8 Termpolis copies on Linux and in every one on macOS.
  * Asserted on Linux and Windows, where a person can draw in software (a virtual machine with no GPU, Windows' basic
@@ -101,6 +108,12 @@ const FIRST_FRAME_PER_GL: Record<string, { warm: number; median: number }> = {
   windows: { warm: 15.4, median: 12.6 },
 }
 const FIRST_FRAME_WATCHDOG_MS = 15_000
+/**
+ * The governor (look spec §5.1, plan Task 3's acceptance): an Auto map forced to start at High, drawn in software at
+ * 1080p and kept drawing by an orbit, reaches Flat through Low within this long of its first frame. Each step takes two
+ * windows over the budget (DROP_WINDOWS) of WINDOW_MS (2 s) of frames each, so about 8 s.
+ */
+const GOVERNOR_FLAT_MS = 8000
 const FIRST_FRAME_HARDWARE_MS = 1000
 /**
  * How many counted orbits each world's gate takes the median of (after one warm-up orbit): one slow orbit on a shared
@@ -158,7 +171,8 @@ test.beforeAll(async () => {
   fs.mkdirSync(OUT, { recursive: true })
   bigDir = makeRepo('perf-big', bigFiles(14))
   warmDir = makeRepo('perf-warm', bigFiles(WARM_UP_FILES))
-  ;({ app, page, userDataDir } = await launchWorldApp())
+  // Held at High: the bounds below were set there (see the top of this file). The governor's test picks Auto.
+  ;({ app, page, userDataDir } = await launchWorldApp({ worldSettings: { quality: 'high' } }))
   await page.setViewportSize(VIEWPORT)
   // Motion on, whatever this machine's setting: the looping motions keep the loop drawing between pointer moves.
   await page.emulateMedia({ reducedMotion: 'no-preference' })
@@ -394,12 +408,15 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
         viewport: VIEWPORT,
       }
       orbits.set(fx.label, result)
+      // The tier must not change while a measure is taken: held at High, it never does.
+      expect.soft(d.perf.tier, `${fx.label}: drawn at another tier than the Quality held`).toBe('high')
+      expect.soft(d.perf.auto, `${fx.label}: the Quality is not held`).toBe(false)
       fs.writeFileSync(path.join(OUT, `${OS_NAME}-${fx.label}-${d.perf.tier}.json`), `${JSON.stringify(result, null, 2)}\n`)
       console.log(`world-perf ${JSON.stringify(result)}`)
       for (const r of runs) expect(r.frames, `${fx.label}: an orbit counted no frames`).toBeGreaterThan(0)
     })
 
-    // The floor only, for now: that software starts at Flat is asserted here once Task 3 gives it a Flat tier.
+    // At High, held (that an Auto map starts at Flat in software is the governor's test, below).
     test(`in software the median orbit stays within the floor (${fx.label})`, async () => {
       const r = orbits.get(fx.label)
       expect(r, 'the orbit test did not run').toBeDefined()
@@ -433,6 +450,75 @@ test.describe.serial('Lumopolis frame times (look spec 6.2)', () => {
     expect.soft(per.median, `the first frames' median is ${per.median.toFixed(2)} x the runner's glMs, over ${bound.median}`).toBeLessThanOrEqual(bound.median)
   })
 
-  // The governor's drop in software (Task 3 turns it on).
-  test.fixme('forced High in software drops through Low to Flat within 8 s and never rises', async () => {})
+  // The governor in software (look spec §5.1): Auto starts at Flat; forced to start at High it steps down by itself.
+  test(`forced High in software drops through Low to Flat within ${GOVERNOR_FLAT_MS / 1000} s and never rises`, async () => {
+    test.setTimeout(420_000)
+    test.skip(![...firstFrames.values()].every((f) => f.software), 'drawn on a GPU: a fast machine keeps High, so nothing drops')
+    // Auto from here on, as the Quality menu saves it.
+    await page.evaluate(() => (window as unknown as { termpolis: { worldSettingsSet(p: { quality: string }): Promise<unknown> } }).termpolis.worldSettingsSet({ quality: 'auto' }))
+    // Software starts at Flat.
+    await openOn('warm-up, Auto', warmDir)
+    const auto = (await drawn()).perf
+    expect(auto.tier, 'an Auto map drawn in software did not start at Flat').toBe('flat')
+    expect(auto.auto).toBe(true)
+
+    // Forced to start at High (window.__worldStartTier, read when the viewer is made, under the worldProbe flag).
+    await page.locator('[data-testid="world-close"]').click()
+    await expect(pane()).toHaveCount(0)
+    await page.evaluate(() => { (window as unknown as { __worldStartTier?: string }).__worldStartTier = 'high' })
+    await createTerminal(page, 'Perf governor', bigDir)
+    await paletteType(page, 'Open Lumopolis')
+    await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
+    await expectPaneOpens(page)
+    // The tier as each change is seen (every 100 ms), timed from the first frame shown.
+    await expect
+      .poll(() => page.evaluate(() => !!(window as unknown as { __termpolis_world?: unknown }).__termpolis_world), { timeout: 240_000 })
+      .toBe(true)
+    await page.evaluate(() => {
+      type W = { __termpolis_world?: { drawn(): Drawn }; __tierLog?: { first: number | null; seen: Array<{ at: number; tier: string }> }; __tierPoll?: number }
+      const w = window as unknown as W
+      const log = { first: null as number | null, seen: [] as Array<{ at: number; tier: string }> }
+      w.__tierLog = log
+      const read = (): void => {
+        const p = w.__termpolis_world?.drawn().perf
+        if (!p) return
+        const at = performance.now()
+        if (log.first === null && p.firstFrameMs !== null) log.first = at
+        if (!log.seen.length || log.seen[log.seen.length - 1].tier !== p.tier) log.seen.push({ at, tier: p.tier })
+      }
+      read()
+      w.__tierPoll = window.setInterval(read, 100)
+    })
+    const tierLog = (): Promise<{ first: number | null; seen: Array<{ at: number; tier: string }> }> =>
+      page.evaluate(() => (window as unknown as { __tierLog: { first: number | null; seen: Array<{ at: number; tier: string }> } }).__tierLog)
+    await expect(canvas()).toBeVisible({ timeout: 240_000 })
+    await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: 240_000 })
+    // Kept drawing (only frames drawn one after another are timed): orbits until Flat, then two more, 20 s past the
+    // 10 s of fast windows a rise needs (RISE_HOLD_MS): a warm-up orbit at Flat and a counted one, Flat's frame times.
+    const until = Date.now() + 120_000
+    while (Date.now() < until && (await drawn()).perf.tier !== 'flat') await orbit()
+    await orbit()
+    await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.begin())
+    await orbit()
+    const flat = await page.evaluate(() => (window as unknown as { __worldPerf: PerfProbe }).__worldPerf.end())
+    await page.evaluate(() => window.clearInterval((window as unknown as { __tierPoll: number }).__tierPoll))
+    const log = await tierLog()
+    const first = log.first as number
+    const steps = log.seen.map((s) => `${s.tier} at ${first === null ? '?' : Math.round(s.at - first)} ms`)
+    console.log(`world-perf governor: ${steps.join(', ')} (first frame ${log.first === null ? 'never' : 'seen'})`)
+    expect(log.first, 'no frame was ever drawn at High').not.toBeNull()
+    expect(log.seen.map((s) => s.tier), `the tiers seen: ${steps.join(', ')}`).toEqual(['high', 'low', 'flat'])
+    const flatAt = log.seen[2].at - first
+    expect(flatAt, `Flat came ${Math.round(flatAt)} ms after the first frame`).toBeLessThanOrEqual(GOVERNOR_FLAT_MS)
+    const end = (await drawn()).perf
+    expect(end.tier, 'the map rose from Flat').toBe('flat')
+    expect(end.auto).toBe(true)
+    // The big world's orbit at Flat, in software (spec §6.2's floor is for Flat): written, logged and held to the floor.
+    const result = { os: OS_NAME, fixture: 'big', tier: 'flat', auto: true, software: true, renderer: await rendererName(), ...flat, governor: steps, viewport: VIEWPORT }
+    fs.writeFileSync(path.join(OUT, `${OS_NAME}-big-flat.json`), `${JSON.stringify(result, null, 2)}\n`)
+    console.log(`world-perf ${JSON.stringify(result)}`)
+    expect(flat.frames, 'the orbit at Flat counted no frames').toBeGreaterThan(0)
+    const floor = SOFTWARE_FLOOR_P95_MS[OS_NAME]?.big
+    if (floor !== undefined) expect(flat.p95, `big at Flat: the orbit p95 ${flat.p95} ms is over the ${OS_NAME} software floor ${floor} ms`).toBeLessThanOrEqual(floor)
+  })
 })

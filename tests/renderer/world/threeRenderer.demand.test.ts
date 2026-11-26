@@ -70,10 +70,10 @@ describe('threeRenderer frames on demand', () => {
     h.frames.run(30)
     expect(frames(moving)).toBe(n + 30)
     moving.dispose()
-    // Low quality has no dust; this city has no lines, rings, fog or pulses; the turn is ended by a flight.
+    // Flat draws no dust; this city has no lines, rings, fog or pulses; the turn is ended by a flight.
     h.host.remove()
     h.host = makeHost(800, 600)
-    const calm = idle({ quality: 'low', reducedMotion: false }, still())
+    const calm = idle({ quality: 'flat', reducedMotion: false }, still())
     void calm.overview(true)
     expect(settle(h.frames)).toBeLessThan(2000)
     const m = frames(calm)
@@ -273,7 +273,7 @@ describe('threeRenderer frames on demand', () => {
     const fake = rendererOf()
     const render = fake.render.bind(fake)
     let fail = true
-    // Low quality draws through the renderer, high through the composer, whose render pass calls it: either way.
+    // Flat draws through the renderer, High and Low through the composer, whose render pass calls it: either way.
     fake.render = (scene, camera): void => { if (fail) { fail = false; throw new Error('gpu hiccup') } render(scene, camera) }
     r.setHovered('a')
     expect(() => h.frames.step()).toThrow('gpu hiccup')
@@ -431,10 +431,10 @@ describe('threeRenderer drawn in software', () => {
   })
 
   it("the opening turn alone loops (at the loop's pace in software); ended, a calm city sleeps", () => {
-    // Low quality has no dust, and this city has no lines, rings, fog or pulses: only the turn moves.
+    // Flat draws no dust, and this city has no lines, rings, fog or pulses: only the turn moves.
     for (const [name, every] of [[SWIFTSHADER, false], [GEFORCE, true]] as const) {
       gpu.gpuName = name
-      const r = idle({ quality: 'low', reducedMotion: false }, still())
+      const r = idle({ quality: 'flat', reducedMotion: false }, still())
       const turn = drawnOver(r, 1600)
       if (every) expect(turn).toBe(100)
       else expect(turn).toBeLessThanOrEqual(1600 / SOFTWARE_LOOP_MS + 1)
@@ -463,10 +463,10 @@ describe('threeRenderer drawn in software', () => {
   })
 
   it("an open building's flow dots loop at the loop's pace in software; a hand, a key, a hover and a flight are drawn every frame", async () => {
-    // Low quality has no dust and this city has no lines, rings, fog or pulses: once the turn ends, only the dots loop.
+    // Flat draws no dust and this city has no lines, rings, fog or pulses: once the turn ends, only the dots loop.
     for (const [name, every] of [[SWIFTSHADER, false], [GEFORCE, true]] as const) {
       gpu.gpuName = name
-      const r = idle({ quality: 'low', reducedMotion: false }, still())
+      const r = idle({ quality: 'flat', reducedMotion: false }, still())
       void r.overview(true)
       settle(h.frames)
       r.setExploded('p')
@@ -481,7 +481,7 @@ describe('threeRenderer drawn in software', () => {
       h.host = makeHost(800, 600)
     }
     gpu.gpuName = SWIFTSHADER
-    const r = idle({ quality: 'low', reducedMotion: false }, still())
+    const r = idle({ quality: 'flat', reducedMotion: false }, still())
     void r.overview(true)
     settle(h.frames)
     r.setExploded('p')
@@ -1140,17 +1140,22 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     now.mockImplementation(() => { reads++; h.frames.advance(1); return h.frames.now })
     const before = h.frames.now
     h.frames.step(20)
-    now.mockImplementation(() => h.frames.now)
     // The frame waited out the 20 ms it took once more, on the clock: twice as long.
-    expect(perf(r).firstFrameMs).toBeGreaterThanOrEqual(40)
-    expect(perf(r).firstFrameMs).toBeLessThan(40 + 30) // the frame's own clock reads, and no more than that
+    const first = perf(r).firstFrameMs as number
+    expect(first).toBeGreaterThanOrEqual(40)
+    expect(first).toBeLessThan(40 + 30) // the frame's own clock reads, and no more than that
     expect(h.frames.now - before).toBeGreaterThanOrEqual(40)
     expect(reads).toBeGreaterThan(10)
-    // Only the first frame: the next ones are not held (the clock moves only by the frames).
-    const at = h.frames.now
-    h.frames.run(5)
-    expect(h.frames.now - at).toBe(5 * 16)
-    expect(perf(r).firstFrameMs).toBeGreaterThanOrEqual(40)
+    // Only the first frame: the next ones are not held. The clock still moves on each read, so a frame held by mistake
+    // ends (its wait reads the clock past its end) and fails here, not by hanging the worker on a stopped clock: each
+    // frame takes its 16 ms and its own few reads, where one more hold would add at least the first frame's time.
+    for (let i = 0; i < 5; i++) {
+      const at = h.frames.now
+      h.frames.step(16)
+      expect(h.frames.now - at, `frame ${i + 2} was held`).toBeLessThan(16 + 20)
+    }
+    expect(perf(r).firstFrameMs).toBe(first)
+    now.mockImplementation(() => h.frames.now)
     r.dispose()
     // 1 or no number: the first frame is timed as it is.
     for (const slow of [() => 1, () => NaN]) {

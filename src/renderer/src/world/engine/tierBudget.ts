@@ -71,3 +71,34 @@ export function tierPixelRatio(tier: TierName, dpr: number, width: number, heigh
 export function shrunk(gl: { drawingBufferWidth: number; drawingBufferHeight: number }, canvas: { width: number; height: number }): boolean {
   return gl.drawingBufferWidth < canvas.width || gl.drawingBufferHeight < canvas.height
 }
+
+/** What each tier draws (look spec §5's table). */
+export interface TierLook {
+  /** The composer (bloom and grade): at High and Low; Flat draws straight to the canvas. */
+  composer: boolean
+  /** The bloom's input: the full buffer at High, half of it at Low. */
+  bloom: 'full' | 'half' | null
+  /** Film grain in the grade. */
+  grain: boolean
+  /** Light shafts under the disc. */
+  shafts: number
+  /** Dust points drifting through the city. */
+  dust: number
+  /** The table's disc moves (its rings turn); at Flat it is drawn still. */
+  discMoving: boolean
+  /** Whether the lines' beams and the track are drawn. */
+  beams: boolean
+  /** Whether the scan lines move; at Flat they are drawn still. */
+  scanLinesMoving: boolean
+}
+
+/**
+ * Look spec §5: High draws all of it, Low the bloom at half size, no grain, one shaft and a third of the dust, Flat no
+ * composer, a still disc and no shafts, dust or beams. (The renderer draws the composer, the bloom's size and the dust
+ * from it now; the disc, shafts, grain, beams and scan lines come with the Holotable look's later tasks.)
+ */
+export const TIER_LOOK: Record<TierName, TierLook> = {
+  high: { composer: true, bloom: 'full', grain: true, shafts: 2, dust: 1800, discMoving: true, beams: true, scanLinesMoving: true },
+  low: { composer: true, bloom: 'half', grain: false, shafts: 1, dust: 600, discMoving: true, beams: true, scanLinesMoving: true },
+  flat: { composer: false, bloom: null, grain: false, shafts: 0, dust: 0, discMoving: false, beams: false, scanLinesMoving: false },
+}

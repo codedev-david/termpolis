@@ -111,6 +111,8 @@ export interface WorldAppOptions {
   /** Launches with the GPU and its software fallback off, so the page has no WebGL and the pane shows its 2D
    *  list, as on a machine without WebGL. */
   noWebGL?: boolean
+  /** Added to the profile's world settings (labelling is always off), e.g. a Quality the map is held at. */
+  worldSettings?: Record<string, unknown>
 }
 
 export interface WorldApp {
@@ -128,7 +130,7 @@ export async function launchWorldApp(opts: WorldAppOptions = {}): Promise<WorldA
     JSON.stringify({ terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs' }),
   )
   // Names from the code alone: no model is asked to describe the parts.
-  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false }))
+  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false, ...opts.worldSettings }))
 
   const app = await electron.launch({
     args: [

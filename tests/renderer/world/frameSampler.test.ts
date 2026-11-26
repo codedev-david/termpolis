@@ -98,4 +98,18 @@ describe('frameSampler', () => {
     for (const g of [7, 3]) s.add(g, true)
     expect(s.window()).toEqual({ frames: 2, p50: 3, p95: 7, p99: 7, worst: 7 })
   })
+
+  // A window wrapped partway (its write point left mid-ring) and then begun again must overwrite from its own start once
+  // it wraps again: a write point left where it was would overwrite newer gaps and keep the oldest.
+  test.each([
+    ['window()', (s: ReturnType<typeof createFrameSampler>) => void s.window()],
+    ['reset()', (s: ReturnType<typeof createFrameSampler>) => s.reset()],
+  ])('after %s a wrapped window wraps again from its start and keeps the newest gaps', (_name, begin) => {
+    const s = createFrameSampler(2) // a window of 20
+    for (let i = 1; i <= 25; i++) s.add(i, true) // wrapped: the write point is 5 into the ring
+    begin(s)
+    // Five slow gaps first, then 20 fast ones: the newest 20 are the fast ones, so the slow ones must be gone.
+    for (let i = 0; i < 25; i++) s.add(i < 5 ? 9000 : 10 + i, true)
+    expect(s.window()).toEqual({ frames: 20, p50: 24, p95: 33, p99: 34, worst: 34 }) // 15..34
+  })
 })

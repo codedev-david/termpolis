@@ -59,7 +59,7 @@ import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
 import { isShownAsIs, windowMessage } from './windowError'
-import type { WorldSettings, WorldSettingsStore } from './worldSettings'
+import { isWorldQuality, type WorldSettings, type WorldSettingsStore } from './worldSettings'
 
 export interface WorldIpcMain {
   handle(channel: string, listener: (event: unknown, args?: unknown) => unknown): void
@@ -114,6 +114,7 @@ const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
   if (typeof a.worldOpened === 'boolean') patch.worldOpened = a.worldOpened
   if (typeof a.worldHintDismissed === 'boolean') patch.worldHintDismissed = a.worldHintDismissed
   if (typeof a.showFrameRate === 'boolean') patch.showFrameRate = a.showFrameRate
+  if (isWorldQuality(a.quality)) patch.quality = a.quality
   return patch
 }
 

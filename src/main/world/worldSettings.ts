@@ -30,9 +30,19 @@ export interface WorldSettings {
   worldHintDismissed: boolean
   /** Settings ▸ Lumopolis ▸ Show frame rate: the 3D map's corner readout of fps, p95 and tier (look spec §6.1). Off by default. */
   showFrameRate: boolean
+  /**
+   * The toolbar's Quality menu (look spec §5): 'auto' (the default) lets the map pick High, Low or Flat from its frame
+   * times; a tier named is drawn as chosen. An unknown value reads as 'auto'.
+   */
+  quality: WorldQuality
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false }
+/** What the 3D map draws (look spec §5): picked by the frame times ('auto'), or the tier chosen. */
+export type WorldQuality = 'auto' | 'high' | 'low' | 'flat'
+const QUALITIES: readonly string[] = ['auto', 'high', 'low', 'flat']
+export const isWorldQuality = (v: unknown): v is WorldQuality => typeof v === 'string' && QUALITIES.includes(v)
+
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -52,7 +62,7 @@ function parse(text: string): WorldSettings | null {
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as Record<string, unknown>
-  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude', worldOpened: rec.worldOpened === true, worldHintDismissed: rec.worldHintDismissed === true, showFrameRate: rec.showFrameRate === true }
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude', worldOpened: rec.worldOpened === true, worldHintDismissed: rec.worldHintDismissed === true, showFrameRate: rec.showFrameRate === true, quality: isWorldQuality(rec.quality) ? rec.quality : 'auto' }
 }
 
 let tmpCounter = 0
@@ -124,6 +134,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       if (typeof patch?.worldOpened === 'boolean') next.worldOpened = patch.worldOpened
       if (typeof patch?.worldHintDismissed === 'boolean') next.worldHintDismissed = patch.worldHintDismissed
       if (typeof patch?.showFrameRate === 'boolean') next.showFrameRate = patch.showFrameRate
+      if (isWorldQuality(patch?.quality)) next.quality = patch.quality
       settings = { ...settings, ...next }
       if (!loaded) early = { ...early, ...next }
       queueWrite()

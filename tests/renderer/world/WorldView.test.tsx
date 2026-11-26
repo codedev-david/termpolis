@@ -31,7 +31,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software, ...(h.perf ? { perf: h.perf } : {}) })),
         perf: vi.fn(() => h.perf),
-        perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })),
+        perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })), setQuality: vi.fn(),
         cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
         setCamera: vi.fn(async () => undefined),
       }
@@ -1368,6 +1368,30 @@ describe('WorldView', () => {
       }
     })
 
+    it('a staged start tier reaches the viewer only under the probe flag, and only a tier\'s name', async () => {
+      ;(window as any).__worldStartTier = 'high'
+      try {
+        bridge()
+        const a = await mount()
+        expect(viewer().opts).not.toHaveProperty('startTier')
+        a.unmount()
+        ;(window as any).termpolisTestFlags = { worldProbe: true }
+        for (const t of ['high', 'low', 'flat']) {
+          ;(window as any).__worldStartTier = t
+          bridge()
+          const m = await mount()
+          expect(viewer().opts.startTier).toBe(t)
+          m.unmount()
+        }
+        ;(window as any).__worldStartTier = 'ultra'
+        bridge()
+        await mount()
+        expect(viewer().opts).not.toHaveProperty('startTier')
+      } finally {
+        delete (window as any).__worldStartTier
+      }
+    })
+
     it('__worldPerf exists only with the probe flag', async () => {
       bridge()
       const a = await mount()
@@ -2549,6 +2573,47 @@ describe('WorldView asked for a folder', () => {
     await settle()
     expect(b.api.worldGet).toHaveBeenCalledTimes(2)
     outside.remove()
+  })
+
+  it('the Quality menu is reachable by keyboard and saves the choice', async () => {
+    const set = vi.fn(async () => ok({}))
+    bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: false, quality: 'low' })), worldSettingsSet: set })
+    await mount()
+    // A visible label names it; it is one of the toolbar's stops for Tab.
+    const menu = screen.getByLabelText('Quality') as HTMLSelectElement
+    expect(menu).toBe(screen.getByTestId('world-quality'))
+    expect(screen.getByText('Quality').tagName).toBe('LABEL')
+    expect(focusables(screen.getByRole('toolbar', { name: 'Lumopolis controls' }))).toContain(menu)
+    expect(Array.from(menu.options).map((o) => [o.value, o.text])).toEqual([['auto', 'Auto'], ['high', 'High'], ['low', 'Low'], ['flat', 'Flat']])
+    // The stored choice is read and given to the viewer.
+    expect(menu.value).toBe('low')
+    expect(viewer().setQuality).toHaveBeenLastCalledWith('low')
+    menu.focus()
+    expect(document.activeElement).toBe(menu)
+    fireEvent.change(menu, { target: { value: 'high' } })
+    expect(menu.value).toBe('high')
+    expect(viewer().setQuality).toHaveBeenLastCalledWith('high')
+    expect(set).toHaveBeenCalledWith({ quality: 'high' })
+    fireEvent.change(menu, { target: { value: 'auto' } })
+    expect(viewer().setQuality).toHaveBeenLastCalledWith('auto')
+    expect(set).toHaveBeenLastCalledWith({ quality: 'auto' })
+  })
+
+  it('the Quality menu reads Auto when the settings name none, keeps a pick a failed save loses, and is absent without WebGL', async () => {
+    bridge({ worldSettingsGet: vi.fn(async () => ok({ worldLabelling: true, showFrameRate: false })), worldSettingsSet: vi.fn(async () => { throw new Error('disk') }) })
+    const a = await mount()
+    const menu = screen.getByTestId('world-quality') as HTMLSelectElement
+    expect(menu.value).toBe('auto')
+    expect(viewer().setQuality).toHaveBeenLastCalledWith('auto')
+    fireEvent.change(menu, { target: { value: 'flat' } })
+    await settle()
+    expect(menu.value).toBe('flat') // the map is drawn as picked; only the save failed
+    expect(viewer().setQuality).toHaveBeenLastCalledWith('flat')
+    a.unmount()
+    h.webgl = false
+    bridge()
+    await mount()
+    expect(screen.queryByTestId('world-quality')).toBeNull()
   })
 
   it('opening the pane saves that Lumopolis has been opened and tells the sidebar', async () => {

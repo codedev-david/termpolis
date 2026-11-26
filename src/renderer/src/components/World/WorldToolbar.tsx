@@ -9,7 +9,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 
 import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
-import type { Bookmark, LayerState, ThemeName } from '../../world/engine'
+import type { Bookmark, LayerState, ThemeName, WorldQuality } from '../../world/engine'
 import { ExportMenu } from './ExportMenu'
 import type { ExportKind } from './ExportMenu'
 import { UiScaleContext, useUiZoom } from './worldPane'
@@ -94,9 +94,25 @@ export interface WorldToolbarProps {
   /** The 2D map shows until the 3D map's lost graphics come back: the switch cannot turn it off meanwhile. */
   map2dDisabled?: boolean
   onMap2d: (on: boolean) => void
+  /** The Quality menu's choice (look spec §5): Auto, or a tier the 3D map is drawn at and kept at. */
+  quality?: WorldQuality
+  /** Set where the map can be drawn in 3D: the Quality menu, which saves the choice. */
+  onQuality?: (q: WorldQuality) => void
   /** A narrow pane: the secondary controls fold into the More menu. */
   compact?: boolean
 }
+
+/**
+ * The Quality menu's choices, in order (look spec §5.1).
+ * PENDING SIGN-OFF (look A2): the menu's label, its four choices and its tooltip.
+ */
+export const QUALITY_CHOICES: { value: WorldQuality; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'high', label: 'High' },
+  { value: 'low', label: 'Low' },
+  { value: 'flat', label: 'Flat' },
+]
+export const QUALITY_TITLE = 'How much the 3D map draws. Auto lowers it by itself when frames come too slowly.'
 
 /** The toolbar's popups, one open at a time. */
 type Popup = 'bookmarks' | 'more' | 'export'
@@ -118,7 +134,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const [crowded, setCrowded] = useState(false)
   const crowdedAt = useRef(0)
   const crowdedFor = useRef('')
-  const holds = [scale, props.projectName, props.proposals.length > 0, props.tours.length > 0, !!props.onExport, !!props.onBuildIt].join('|')
+  const holds = [scale, props.projectName, props.proposals.length > 0, props.tours.length > 0, !!props.onExport, !!props.onBuildIt, !!props.onQuality].join('|')
   const compact = props.compact === true || crowded
   const [popup, setPopup] = useState<Popup | null>(null)
   const menu = popup === 'bookmarks'
@@ -259,6 +275,21 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
       >
         {THEME_NAMES.map((t) => <option key={t} value={t}>{themeLabel(t)}</option>)}
       </select>
+      {props.onQuality && (
+        <span className="flex items-center gap-1" title={QUALITY_TITLE}>
+          {/* A visible label, tied to the select, so its name is read and clicked as one (look plan Task 3). */}
+          <label htmlFor={`${ids}-quality`} className="text-xs text-[#cccccc]">Quality</label>
+          <select
+            id={`${ids}-quality`}
+            data-testid="world-quality"
+            value={props.quality ?? 'auto'}
+            onChange={(e) => (props.onQuality as (q: WorldQuality) => void)(e.target.value as WorldQuality)}
+            className="text-xs px-1.5 py-1 rounded border border-[#3c3c3c] bg-[#1e1e1e] text-[#cccccc]"
+          >
+            {QUALITY_CHOICES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </span>
+      )}
       <select
         aria-label="Tours"
         data-testid="world-tours"

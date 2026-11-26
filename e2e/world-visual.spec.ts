@@ -112,8 +112,9 @@ test.beforeAll(async () => {
     path.join(userDataDir, 'session.json'),
     JSON.stringify({ terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs' }),
   )
-  // Names from the code alone: no model is asked to describe the parts.
-  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false }))
+  // Names from the code alone: no model is asked to describe the parts. Held at High (look spec §5.1): what is drawn
+  // is checked at the full look, which Auto, drawn in software as here, would start at Flat (no bloom, no dust).
+  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false, quality: 'high' }))
 
   app = await electron.launch({
     args: [

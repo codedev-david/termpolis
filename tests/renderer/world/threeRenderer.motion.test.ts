@@ -311,7 +311,7 @@ describe('threeRenderer motion', () => {
   })
 
   it('motionState reports what is drawn: the selection ring turns, line labels count, no world reads zero', () => {
-    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: false })
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: false })
     expect(r.motionState()).toMatchObject({ ringAngle: 0, fogDrift: 0, selectionRingAngle: 0, dust: 0, bloom: false, explodeGap: 0, lineLabels: 0 })
     boxCanvas(r.canvas, 800, 600)
     r.draw(smallCity(), smallText(), true)

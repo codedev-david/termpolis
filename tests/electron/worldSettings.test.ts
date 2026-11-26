@@ -28,9 +28,9 @@ async function loaded(file: string | (() => string)) {
 
 describe('worldSettings', () => {
   it('defaults to labelling on when there is no file', async () => {
-    expect(DEFAULT_WORLD_SETTINGS).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(DEFAULT_WORLD_SETTINGS).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     expect(WORLD_SETTINGS_FILE).toBe('world-settings.json')
-    expect((await loaded(join(dir, WORLD_SETTINGS_FILE))).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect((await loaded(join(dir, WORLD_SETTINGS_FILE))).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
   })
 
   it('the worldSettings module imports none of existsSync, readFileSync, mkdirSync', () => {
@@ -41,37 +41,37 @@ describe('worldSettings', () => {
 
   it('worldSettings uses no sync fs: get() returns defaults before ready(); ready() loads; three quick sets write once', async () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
-    writeFileSync(file, JSON.stringify({ worldLabelling: false, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false }))
+    writeFileSync(file, JSON.stringify({ worldLabelling: false, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' }))
     const s = createWorldSettings(file)
     expect(s.get()).toEqual(DEFAULT_WORLD_SETTINGS) // nothing read yet
     const first = s.ready()
     expect(s.ready()).toBe(first) // one load, shared
     await first
     expect(vi.mocked(fsp.readFile)).toHaveBeenCalledTimes(1)
-    expect(s.get()).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.get()).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     s.set({ worldLabelling: true })
     s.set({ worldSpeakAnswers: true })
-    expect(s.set({ worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await s.flush()
     expect(vi.mocked(fsp.writeFile)).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     expect(readdirSync(dir)).toEqual([WORLD_SETTINGS_FILE]) // no temp file left behind
     // A set while a write is in flight queues one more write, with the newest values.
     s.set({ worldLabelling: false })
     await new Promise((r) => setTimeout(r, 0))
     s.set({ worldSpeakAnswers: false })
     await s.flush()
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
   })
 
   it('a set before the file has loaded keeps its field and the file keeps the others', async () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
-    writeFileSync(file, JSON.stringify({ worldLabelling: false, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false }))
+    writeFileSync(file, JSON.stringify({ worldLabelling: false, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' }))
     const s = createWorldSettings(file)
-    expect(s.set({ worldSpeakAnswers: true })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldSpeakAnswers: true })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await s.flush() // the write waits for the load
-    expect(s.get()).toEqual({ worldLabelling: false, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.get()).toEqual({ worldLabelling: false, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: true, worldCiResults: true, worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
   })
 
   it('only a literal false turns labelling off', async () => {
@@ -112,9 +112,9 @@ describe('worldSettings', () => {
 
   it('set applies worldSpeakAnswers on its own, with the other field unchanged', async () => {
     const s = await loaded(join(dir, WORLD_SETTINGS_FILE))
-    expect(s.set({ worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
-    expect(s.set({ worldSpeakAnswers: 'x' } as never)).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
-    expect(s.set({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
+    expect(s.set({ worldSpeakAnswers: 'x' } as never)).toEqual({ worldLabelling: true, worldSpeakAnswers: true, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
+    expect(s.set({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await s.flush()
   })
 
@@ -129,7 +129,7 @@ describe('worldSettings', () => {
     expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ worldOpened: true, worldHintDismissed: true })
     expect((await loaded(file)).get()).toMatchObject({ worldOpened: true, worldHintDismissed: true })
     writeFileSync(file, JSON.stringify({ worldOpened: 'true', worldHintDismissed: 1 }))
-    expect((await loaded(file)).get()).toMatchObject({ worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect((await loaded(file)).get()).toMatchObject({ worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
   })
 
   it('showFrameRate starts false, round-trips, and only a literal true on disk counts (look plan Task 1)', async () => {
@@ -145,11 +145,28 @@ describe('worldSettings', () => {
     expect((await loaded(file)).get().showFrameRate).toBe(false)
   })
 
+  it('quality starts auto, takes a tier or auto, round-trips, and an unknown value reads as auto (look plan Task 3)', async () => {
+    const file = join(dir, WORLD_SETTINGS_FILE)
+    const s = await loaded(file)
+    expect(s.get().quality).toBe('auto')
+    expect(s.set({ quality: 'ultra' } as never).quality).toBe('auto')
+    expect(s.set({ quality: 3 } as never).quality).toBe('auto')
+    for (const q of ['high', 'low', 'flat', 'auto'] as const) expect(s.set({ quality: q }).quality).toBe(q)
+    expect(s.set({ quality: 'low' }).quality).toBe('low')
+    await s.flush()
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ quality: 'low' })
+    expect((await loaded(file)).get().quality).toBe('low')
+    writeFileSync(file, JSON.stringify({ quality: 'LOW' }))
+    expect((await loaded(file)).get().quality).toBe('auto')
+    writeFileSync(file, JSON.stringify({ quality: null }))
+    expect((await loaded(file)).get().quality).toBe('auto')
+  })
+
   it('worldAgent defaults to claude; codex round-trips; llama on disk reads as claude', async () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
     const s = await loaded(file)
     expect(s.get().worldAgent).toBe('claude')
-    expect(s.set({ worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false }).worldAgent).toBe('codex')
+    expect(s.set({ worldAgent: 'codex', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' }).worldAgent).toBe('codex')
     await s.flush()
     expect((await loaded(file)).get().worldAgent).toBe('codex')
     expect(s.set({ worldAgent: 'llama' } as never).worldAgent).toBe('codex')
@@ -163,7 +180,7 @@ describe('worldSettings', () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
     for (const text of ['{ broken', '[false]', 'false', '"x"', 'null']) {
       writeFileSync(file, text)
-      expect((await loaded(file)).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+      expect((await loaded(file)).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     }
   })
 
@@ -173,12 +190,12 @@ describe('worldSettings', () => {
     const a = s.get()
     a.worldLabelling = false // a copy: the store is unchanged
     expect(s.get().worldLabelling).toBe(true)
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await s.flush()
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     expect((await loaded(file)).get().worldLabelling).toBe(false)
-    expect(s.set({ worldLabelling: 'yes' } as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
-    expect(s.set(undefined as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldLabelling: 'yes' } as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
+    expect(s.set(undefined as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await s.flush()
   })
 
@@ -187,7 +204,7 @@ describe('worldSettings', () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
     mkdirSync(join(file, 'x'), { recursive: true })
     const s = await loaded(file)
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await expect(s.flush()).resolves.toBeUndefined()
     expect(s.get().worldLabelling).toBe(false)
     expect(readdirSync(dir)).toEqual([WORLD_SETTINGS_FILE])
@@ -197,8 +214,8 @@ describe('worldSettings', () => {
     const s = await loaded(() => {
       throw new Error('no userData yet')
     })
-    expect(s.get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false })
+    expect(s.get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false, showFrameRate: false, quality: 'auto' })
     await expect(s.flush()).resolves.toBeUndefined()
   })
 })

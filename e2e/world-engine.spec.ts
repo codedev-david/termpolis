@@ -69,7 +69,8 @@ test('draws the world on a canvas that fills its container', async () => {
   expect(size.vh).toBeGreaterThanOrEqual(size.wh * 0.9)
   expect(size.w).toBeGreaterThanOrEqual(size.vw * 0.9)
   expect(size.h).toBeGreaterThanOrEqual(size.vh * 0.9)
-  // and its drawing buffer is real (low quality would halve it; the harness uses high)
+  // and its drawing buffer is real (the harness draws at Auto: High on a GPU, Flat in software, both at the full pixel
+  // ratio here; Low would draw at three quarters of it)
   expect(size.bw).toBeGreaterThanOrEqual(size.w * 0.9)
   expect(size.bh).toBeGreaterThanOrEqual(size.h * 0.9)
 })
