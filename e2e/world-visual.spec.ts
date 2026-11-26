@@ -1151,24 +1151,23 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     // (45728064997) drew t=0.002 and t=0.012, then t=1. The ease is a function of t alone, so points from more than one
     // flight to the same building lie on the same curve: the test flies again, at most FLIGHTS times, until it has seen
     // at least 4 distinct points with one in the ease-in window and one in the ease-out window, and checks them together.
-    // Frames that cost the same land at the same points of every flight: the macOS soak 45830192658 drew t=0.003, 0.013,
-    // then 0.48 in each of its 10 flights, never in the ease-in window. So each flight after the first starts with its
-    // first frame held back by LATE_MS (the page busy, as a slow frame keeps it), which moves its points along the curve.
+    // The windows are the two halves of the flight (its last stretch left out, where the ease is too near 1 to tell): an
+    // ease in and out is below the straight line all through the first half and above it all through the second. Drawn in
+    // software, a flight's first frame (the focus changing the look of the city) can take 0.7 s, so its next point comes
+    // near the middle: the macOS soaks 45830192658 and 45857087118 drew t=0.003, then 0.46-0.88, in all their 10 flights,
+    // and a window of [0.05, 0.45] saw no point in 10 flights. The first half now starts at 0 (t=0 itself left out, where
+    // every ease is 0), so the point drawn as the flight begins is checked too.
     // Each flight is also checked on its own, against the camera as drawn: mid-flight the camera is short of where the
     // flight ends, so a flight that snapped to its end goes red even when its points alone would pass.
     const FLIGHTS = 10
-    const LATE_MS = [0, 150, 300, 450]
-    const EASE_IN: [number, number] = [0.05, 0.45]
-    const EASE_OUT: [number, number] = [0.55, 0.95]
+    const EASE_IN: [number, number] = [0, 0.5]
+    const EASE_OUT: [number, number] = [0.5, 0.95]
     type Sample = { t: number; eased: number; pos: number[] }
     type Flight = { from: number[]; to: number[]; samples: Sample[] }
-    const fly = async (late: number): Promise<Flight> => page.evaluate(async ({ id, late }) => {
+    const fly = async (): Promise<Flight> => page.evaluate(async (id) => {
       const probe = (window as unknown as { __termpolis_world: { drawn(): { visual: Visual }; cameraState(): { pos: number[] } | null; apply(a: { type: 'focus'; ids: string[] }): Promise<void> } }).__termpolis_world
       const from = probe.cameraState()?.pos ?? []
       const landed = probe.apply({ type: 'focus', ids: [id] })
-      // The flight has begun (apply asks for its first frame at once): that frame comes `late` ms later, its step that long.
-      const busyUntil = performance.now() + late
-      while (performance.now() < busyUntil) { /* the page is busy */ }
       const samples: Sample[] = []
       const t0 = performance.now()
       await new Promise<void>((done) => {
@@ -1182,7 +1181,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       })
       await landed
       return { from, to: probe.cameraState()?.pos ?? [], samples }
-    }, { id: motionDoc.buildings[0].id, late })
+    }, motionDoc.buildings[0].id)
     const dist = (a: number[], b: number[]): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
     const inside = (t: number, [lo, hi]: [number, number]): boolean => t > lo && t < hi
     const flights: Flight[] = []
@@ -1190,7 +1189,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     const seen = (w: [number, number]): number => pts.filter((p) => inside(p.t, w)).length
     for (let n = 0; n < FLIGHTS && (pts.length < 4 || seen(EASE_IN) === 0 || seen(EASE_OUT) === 0); n++) {
       await toOverview()
-      const f = await fly(LATE_MS[n % LATE_MS.length])
+      const f = await fly()
       const at = JSON.stringify(f)
       // Each flight's own points must rise with time: a sample never goes back along the flight.
       for (let i = 1; i < f.samples.length; i++) expect(f.samples[i].t, `flight ${n} went back at sample ${i}: ${at}`).toBeGreaterThanOrEqual(f.samples[i - 1].t)
