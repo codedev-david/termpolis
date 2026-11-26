@@ -319,17 +319,24 @@ test.describe.serial('Lumopolis export in the real app', () => {
     }
     const terminalBefore = await axOf(terminalInput)
     expect((await axOf('[data-testid="world-ask-row"] input')).ignored, 'the Ask box is in the tree').toBe(false)
-    // The spots to click are picked while the pane is live: the centre of each part (and of the Ask box) where a hit
-    // test lands on that element itself, not clipped by the map's scroll area nor under another layer of the pane.
+    // The spots to click are picked while the pane is live: points of each part (and of the Ask box) where a hit test
+    // lands on that element itself, not clipped by the map's scroll area nor under another layer of the pane.
     const liveSpots = (selector: string): Promise<{ x: number; y: number }[]> => page.evaluate((sel) => {
       const out: { x: number; y: number }[] = []
       for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
         const r = el.getBoundingClientRect()
-        const x = r.left + r.width / 2
-        const y = r.top + r.height / 2
-        if (r.width === 0 || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
-        const at = document.elementFromPoint(x, y)
-        if (at !== null && el.contains(at)) out.push({ x, y })
+        if (r.width === 0 || r.height === 0) continue
+        // A grid over the element, not only its centre: a part of the 2D map is a wide row whose centre can sit
+        // under the dialog while its ends do not.
+        for (const fy of [0.5, 0.25, 0.75]) {
+          for (const fx of [0.5, 0.1, 0.9, 0.25, 0.75, 0.05, 0.95]) {
+            const x = r.left + r.width * fx
+            const y = r.top + r.height * fy
+            if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
+            const at = document.elementFromPoint(x, y)
+            if (at !== null && el.contains(at)) out.push({ x, y })
+          }
+        }
       }
       return out
     }, selector)
@@ -355,7 +362,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
       return null
     }, spots)
     const partAt = await spot(partSpots)
-    expect(partAt, 'a part of the 2D map lies outside the dialog').not.toBeNull()
+    expect(partAt, `a part of the 2D map lies outside the dialog (${partSpots.length} live points, none outside it)`).not.toBeNull()
     expect.soft(partAt?.hit, 'the scrim lies over the part').toBe('world-pane-scrim')
     await page.mouse.click((partAt as { x: number }).x, (partAt as { y: number }).y)
     await page.waitForTimeout(400)
