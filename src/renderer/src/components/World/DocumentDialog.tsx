@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { WorldSavedFile } from '../../../../shared/world/types'
 import { btnCls, dialogCls, fieldCls, primaryCls, UI_FAILED } from './worldTargets'
 import { useUiZoom } from './worldPane'
+import { usePaneDialog } from './usePaneDialog'
 
 /** Stops the save running now, if any; it is no longer this dialog's from here on. */
 function stopSave(run: MutableRefObject<string | null>): void {
@@ -33,6 +34,8 @@ export function DocumentDialog({ root, designKey, projectName, picture, onSaved,
   const zoom = useUiZoom()
   // Taken once, when the dialog opens: the view the person asked from.
   const [png] = useState(picture)
+  const box = useRef<HTMLDivElement>(null)
+  usePaneDialog(box)
   const [title, setTitle] = useState(() => projectName.slice(0, MAX_TITLE))
   const [withPicture, setWithPicture] = useState(png !== null)
   const [saving, setSaving] = useState(false)
@@ -78,7 +81,7 @@ export function DocumentDialog({ root, designKey, projectName, picture, onSaved,
   }
 
   return (
-    <div role="dialog" aria-label="Generate Lumopolis documentation" data-testid="world-document-dialog" className={dialogCls} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Generate Lumopolis documentation" data-testid="world-document-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Generate Lumopolis documentation</h2>
       <p className="text-xs text-[#9ca3af]">One page that explains the project: its parts, how they connect, and its tours.</p>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">

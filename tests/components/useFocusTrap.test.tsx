@@ -354,3 +354,153 @@ describe('where the focus goes when a sheet closes', () => {
     expect(() => fireEvent.keyDown(screen.getByTestId('sheet'), { key: 'Escape' })).not.toThrow()
   })
 })
+
+describe('a dialog inside a pane (Lumopolis, A11Y Y4)', () => {
+  // A pane beside the terminal: the dialog is modal inside the pane only, so the terminal can still take the focus.
+  function Pane({ restore }: { restore?: boolean }) {
+    const [open, setOpen] = useState(false)
+    const [menu, setMenu] = useState(true)
+    return (
+      <>
+        <div data-terminal-id="t1"><textarea data-testid="term" /></div>
+        <div data-testid="pane" tabIndex={-1} data-pane="">
+          <button type="button" data-testid="map">map</button>
+          {menu && <button type="button" data-testid="opener" onClick={() => { setMenu(false); setOpen(true) }}>Open</button>}
+          <button type="button" data-testid="stays" onClick={() => setOpen(true)}>Open too</button>
+          {open && <PaneDialog onClose={() => setOpen(false)} restore={restore} />}
+        </div>
+      </>
+    )
+  }
+  function PaneDialog({ onClose, restore }: { onClose: () => void; restore?: boolean }) {
+    const ref = React.useRef<HTMLDivElement>(null)
+    useFocusTrap(ref, { within: (el) => el.closest<HTMLElement>('[data-pane]'), ...(restore === undefined ? {} : { restore }) })
+    return (
+      <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" data-testid="dialog">
+        <button type="button" data-testid="one">one</button>
+        <button type="button" data-testid="two" onClick={onClose}>close</button>
+      </div>
+    )
+  }
+
+  it('gives the focus to the pane on close when the control that opened it went with its menu, not to the terminal', () => {
+    useTerminalStore.setState({ activeTerminalId: 't1' })
+    render(<Pane />)
+    screen.getByTestId('opener').focus()
+    fireEvent.click(screen.getByTestId('opener'))
+    expect(document.activeElement).toBe(screen.getByTestId('one'))
+    fireEvent.click(screen.getByTestId('two'))
+    expect(document.activeElement).toBe(screen.getByTestId('pane'))
+  })
+
+  it('gives the focus back to the control that opened it when that is still there', () => {
+    render(<Pane />)
+    screen.getByTestId('stays').focus()
+    fireEvent.click(screen.getByTestId('stays'))
+    fireEvent.click(screen.getByTestId('two'))
+    expect(document.activeElement).toBe(screen.getByTestId('stays'))
+  })
+
+  it('moves no focus on close when the caller gives it back itself', () => {
+    render(<Pane restore={false} />)
+    screen.getByTestId('stays').focus()
+    fireEvent.click(screen.getByTestId('stays'))
+    screen.getByTestId('map').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('one')) // pulled back: see the next test
+    ;(document.activeElement as HTMLElement).blur()
+    fireEvent.click(screen.getByTestId('two'))
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('brings the focus back when a click or a screen reader moves it to the pane behind; the terminal may take it', () => {
+    render(<Pane />)
+    screen.getByTestId('stays').focus()
+    fireEvent.click(screen.getByTestId('stays'))
+    screen.getByTestId('two').focus()
+    screen.getByTestId('map').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('two'))
+    screen.getByTestId('pane').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('two'))
+    screen.getByTestId('term').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('term'))
+  })
+
+  it('lets a dialog opened over it in the pane take the focus, and steps only once on Tab when traps are nested', () => {
+    function Top({ onClose }: { onClose: () => void }) {
+      const inner = React.useRef<HTMLDivElement>(null)
+      useFocusTrap(inner, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
+      return <div ref={inner} role="dialog" aria-modal="true" data-testid="top"><button type="button" data-testid="t1">t1</button><button type="button" data-testid="t2">t2</button><button type="button" data-testid="t3" onClick={onClose}>t3</button></div>
+    }
+    function Outer() {
+      const outer = React.useRef<HTMLDivElement>(null)
+      const [top, setTop] = useState(false)
+      useFocusTrap(outer, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
+      return <div ref={outer} role="dialog" aria-modal="true" data-testid="outer"><button type="button" data-testid="o1" onClick={() => setTop(true)}>o1</button>{top && <Top onClose={() => setTop(false)} />}</div>
+    }
+    function Stack() {
+      return <div data-pane=""><button type="button" data-testid="behind">behind</button><Outer /></div>
+    }
+    render(<Stack />)
+    expect(document.activeElement).toBe(screen.getByTestId('o1'))
+    fireEvent.click(screen.getByTestId('o1'))
+    expect(document.activeElement).toBe(screen.getByTestId('t1'))
+    expect(tab()).toBe('t2')
+    expect(tab(true)).toBe('t1')
+    // Closed, the top dialog gives the focus back to the control under it that opened it.
+    fireEvent.click(screen.getByTestId('t3'))
+    expect(document.activeElement).toBe(screen.getByTestId('o1'))
+  })
+
+  it('lets a dialog opened beside it in the pane (the token dialog beside the clone dialog) take the focus', () => {
+    function Side({ id }: { id: string }) {
+      const ref = React.useRef<HTMLDivElement>(null)
+      useFocusTrap(ref, { within: (el) => el.closest<HTMLElement>('[data-pane]') })
+      return <div ref={ref} role="dialog" aria-modal="true"><button type="button" data-testid={id}>{id}</button></div>
+    }
+    function Two() {
+      const [second, setSecond] = useState(false)
+      return <div data-pane=""><Side id="first" /><button type="button" data-testid="more" onClick={() => setSecond(true)}>more</button>{second && <Side id="second" />}</div>
+    }
+    render(<Two />)
+    expect(document.activeElement).toBe(screen.getByTestId('first'))
+    act(() => { fireEvent.click(screen.getByTestId('more')) })
+    expect(document.activeElement).toBe(screen.getByTestId('second'))
+  })
+
+  it('gives the focus back to the control that opened it when that control is greyed while the dialog is up', () => {
+    function Greyed() {
+      const [open, setOpen] = useState(false)
+      // A browser moves the focus off a control the moment it is greyed; jsdom does not, nor blurs a greyed control.
+      React.useLayoutEffect(() => {
+        if (!open) return
+        const away = document.body.appendChild(document.createElement('input'))
+        away.focus()
+        away.remove()
+      }, [open])
+      return (
+        <div data-pane="" tabIndex={-1} data-testid="pane">
+          <button type="button" data-testid="export" disabled={open} onClick={() => setOpen(true)}>Export</button>
+          {open && <PaneDialog onClose={() => setOpen(false)} />}
+        </div>
+      )
+    }
+    render(<Greyed />)
+    screen.getByTestId('export').focus()
+    fireEvent.click(screen.getByTestId('export'))
+    expect(document.activeElement).toBe(screen.getByTestId('one'))
+    fireEvent.click(screen.getByTestId('two'))
+    expect(document.activeElement).toBe(screen.getByTestId('export'))
+  })
+
+  it('leaves a Tab another handler already took', () => {
+    function Taken() {
+      const ref = React.useRef<HTMLDivElement>(null)
+      useFocusTrap(ref)
+      return <div ref={ref} data-testid="d"><button type="button" data-testid="a" onKeyDownCapture={(e) => { if (e.key === 'Tab') e.preventDefault() }}>a</button><button type="button" data-testid="b">b</button></div>
+    }
+    render(<Taken />)
+    const a = screen.getByTestId('a')
+    a.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(a)
+  })
+})

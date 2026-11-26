@@ -25,7 +25,7 @@
  * The map probe (window.__termpolis_world, TERMPOLIS_TEST_WORLD_PROBE) says which buildings are
  * drawn as wireframes. The launch adds the software GL switches, as world-view.spec.ts does.
  */
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { test, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import path from 'path'
@@ -200,6 +200,27 @@ async function terminalText(): Promise<string> {
   return text.replace(/\s+/g, '')
 }
 
+/**
+ * A dialog of the pane is modal in it (A11Y Y4, #43): it says so, holds the focus on Tab and Shift+Tab, brings back a
+ * focus moved behind it, and Esc closes it alone, the home or the world under it still open, the focus back on
+ * `opener`.
+ */
+async function holdsAndCloses(dialog: Locator, opener: Locator, under: Locator): Promise<void> {
+  await expect(dialog).toHaveAttribute('aria-modal', 'true')
+  const inside = (): Promise<boolean> => dialog.evaluate((d) => d.contains(document.activeElement))
+  await expect.poll(inside, 'the dialog took the focus').toBe(true)
+  for (const key of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
+    await page.keyboard.press(key)
+    expect(await inside(), `${key} kept the focus in the dialog`).toBe(true)
+  }
+  await page.locator('[data-testid="world-view"]').focus()
+  await expect.poll(inside, 'a focus moved behind the dialog came back to it').toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(under, 'Esc closed the dialog only').toBeVisible()
+  await expect(opener, 'the focus went back to the control that opened the dialog').toBeFocused()
+}
+
 test.describe.serial('Lumopolis sources, design and Build it in the real app', () => {
   test.setTimeout(150_000)
 
@@ -234,8 +255,11 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect(home().getByRole('list', { name: 'Recent worlds' })).toContainText(path.basename(project))
 
     // The viewer pauses while the home covers it, so the click needs no longer than the default.
-    await home().getByRole('button', { name: /^Design something new/ }).click()
+    const design = home().getByRole('button', { name: /^Design something new/ })
+    await design.click()
     const start = page.getByRole('dialog', { name: 'Design something new' })
+    await holdsAndCloses(start, design, home())
+    await design.press('Enter')
     await start.getByPlaceholder('Describe the app you want…').fill(DESCRIPTION)
     await start.getByRole('button', { name: 'Design it' }).click()
 
@@ -256,9 +280,12 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
 
   test('4. Build it opens the agent in the folder and the folder world matches the plan as code arrives', async () => {
     fs.writeFileSync(pickFile, buildDir)
-    await page.locator('[data-testid="world-build-it-open"]').click()
+    const open = page.locator('[data-testid="world-build-it-open"]')
+    await open.click()
     const dialog = page.getByRole('dialog', { name: 'Build it' })
     await expect(dialog).toContainText(DESCRIPTION)
+    await holdsAndCloses(dialog, open, canvasHost())
+    await open.press('Enter')
     await dialog.getByRole('button', { name: 'Choose folder…' }).click()
     await expect(dialog).toContainText(path.basename(buildDir))
     await expect(dialog).not.toContainText("This folder isn't empty")

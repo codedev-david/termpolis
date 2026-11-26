@@ -98,7 +98,8 @@ describe('RepoAccessDialog', () => {
   // WP-SRC N2: the dialog keeps Tab in itself wherever it is opened (the home, or the world view's notice), going round
   // its own controls, and the key goes no further, so a trap around it never steps a second time.
   it('Tab and Shift+Tab go round its own controls and stop there', () => {
-    const outer = vi.fn()
+    // A trap around the dialog sees each Tab already taken (its default prevented), so it never steps again.
+    const outer = vi.fn((e: { key: string; defaultPrevented: boolean }) => ({ key: e.key, taken: e.defaultPrevented }))
     render(
       <div onKeyDown={outer}>
         <button type="button">outside</button>
@@ -117,10 +118,10 @@ describe('RepoAccessDialog', () => {
     fireEvent.keyDown(order[0], { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(order[3])
     expect(dialog.contains(document.activeElement)).toBe(true)
-    expect(outer).not.toHaveBeenCalled()
+    expect(outer.mock.results.map((r) => r.value)).toEqual(Array(4).fill({ key: 'Tab', taken: true }))
     // Any other key goes on as before.
     fireEvent.keyDown(order[3], { key: 'a' })
-    expect(outer).toHaveBeenCalledTimes(1)
+    expect(outer.mock.results[4].value).toEqual({ key: 'a', taken: false })
   })
 
   it('while busy, Tab passes over the greyed Use this token', () => {

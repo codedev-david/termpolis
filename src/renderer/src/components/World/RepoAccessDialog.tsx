@@ -2,11 +2,11 @@
 // it is trimmed and checked here, handed to `onSubmit` once, and the field is emptied on submit, on
 // cancel and when the dialog goes away. Nothing outside the dialog keeps it.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react'
 import { normalizeToken } from '../../../../shared/world/repoAccess'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
 import { useUiZoom } from './worldPane'
-import { holdFocus, stepFocus } from '../../hooks/useFocusTrap'
+import { holdFocus } from '../../hooks/useFocusTrap'
+import { usePaneDialog } from './usePaneDialog'
 
 export const TOKEN_PAGE_URL = 'https://github.com/settings/personal-access-tokens/new'
 
@@ -50,19 +50,13 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
     onCancel()
   }
 
-  // Tab and Shift+Tab go round this dialog's own controls wherever it is opened, the home or the world view's notice
-  // (WP-SRC N2), and stop here, so a trap around it never steps again. The trap moves the focus itself (stepFocus), as
-  // the home's does: no unmount focus move, which useFocusTrap would make to the terminal.
-  const trapTab = (e: KeyboardEvent<HTMLDivElement>): void => {
-    if (e.key !== 'Tab') return
-    e.preventDefault()
-    e.stopPropagation()
-    stepFocus(e.currentTarget, e.shiftKey)
-  }
+  // Tab and Shift+Tab go round this dialog's own controls wherever it is opened, the clone dialog or the world view's
+  // notice (WP-SRC N2). The opener gives the focus back on close (CloneDialog, SignInNeededNotice): no move here.
+  usePaneDialog(dialog, false)
 
   const shown = refused ?? error
   return (
-    <div ref={dialog} tabIndex={-1} role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={`${dialogCls} focus:outline-none`} style={zoom} onKeyDown={trapTab}>
+    <div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Use a token" data-testid="world-repo-access" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Use a token</h2>
       <p className="text-xs text-[#9ca3af]">
         A token is a key you make on {host === 'github.com' ? 'GitHub' : host} that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.
@@ -76,7 +70,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
         Token
         <input
           ref={field}
-          autoFocus
+          data-autofocus=""
           type="password"
           autoComplete="off"
           spellCheck={false}

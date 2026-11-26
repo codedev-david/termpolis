@@ -2,10 +2,11 @@
 // when it already holds files (and must agree to build there anyway), chooses the agent, and
 // confirms. Main links the design to the folder; the pane then opens the agent's terminal there with
 // the first prompt and switches to the folder's world with the plan overlay on.
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { BuildItResult, WorldFolderPick } from '../../../../shared/world/types'
 import { btnCls, dialogCls, fieldCls, primaryCls, UI_FAILED } from './worldTargets'
 import { useUiZoom } from './worldPane'
+import { usePaneDialog } from './usePaneDialog'
 
 export interface BuildAgent { id: string; name: string }
 
@@ -27,6 +28,8 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
   const [agent, setAgent] = useState(() => (agents.some((a) => a.id === defaultAgent) ? defaultAgent as string : agents[0]?.id ?? ''))
   const [building, setBuilding] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const box = useRef<HTMLDivElement>(null)
+  usePaneDialog(box)
 
   const pick = (): void => {
     setError(null)
@@ -59,7 +62,7 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
   }
 
   return (
-    <div role="dialog" aria-label="Build it" data-testid="world-build-it" className={dialogCls} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Build it" data-testid="world-build-it" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Build “{title}”</h2>
       <p className="text-xs text-[#9ca3af]">
         Choose the folder the app goes in. Lumopolis links the design to it and opens your agent there with the design as its brief.

@@ -2,14 +2,13 @@
 // repository, a new design) and the recent worlds below them. A world whose folder or design is gone
 // shows "missing" and can only be removed (its files, if any, are left alone).
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent, MutableRefObject } from 'react'
+import type { CSSProperties, MutableRefObject } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
 import { DesignStart } from './DesignStart'
 import { missingNote, targetOf, UI_FAILED, whereOf } from './worldTargets'
 import type { OpenTarget } from './worldTargets'
 import { useUiZoom } from './worldPane'
-import { stepFocus } from '../../hooks/useFocusTrap'
 
 export { targetOf }
 export type { OpenTarget }
@@ -91,13 +90,6 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
       if (from !== null && from.isConnected) from.focus()
     }
   }, [open])
-  /** Tab and Shift+Tab go round the dialog on top: the trap moves the focus itself, so an inert dialog under it (the
-   *  clone dialog under the token dialog) is never stepped into and the focus never leaves for the app around. */
-  const trapTab = (e: KeyboardEvent<HTMLDivElement>): void => {
-    if (e.key !== 'Tab') return
-    e.preventDefault()
-    stepFocus(e.currentTarget, e.shiftKey)
-  }
   // An action that opens a world when it is done opens it only while the pane is still where the person started it: a
   // world picked meanwhile (the switcher, a terminal) stays (F-R4). The ticket is taken when the person commits (R3):
   // Clone or Design it pressed, a folder chosen. Opening a dialog or the picker and backing out leaves an earlier open.
@@ -272,7 +264,8 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef,
         </section>
       </div>
       {/* Not positioned: the scrim and the dialogs place themselves in the home, as before. */}
-      <div onKeyDown={trapTab}>
+      {/* Each dialog holds Tab itself (usePaneDialog); one under another (the clone dialog under the token one) is inert. */}
+      <div>
         {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
         {dialog === 'clone' && (
           <CloneDialog

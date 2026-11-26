@@ -7,6 +7,7 @@ import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
 import { lumopolisModel } from './worldAgentModel'
 import { useUiZoom } from './worldPane'
+import { usePaneDialog } from './usePaneDialog'
 
 export interface DesignStartProps {
   onDrafted: (key: string) => void
@@ -28,6 +29,9 @@ export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStart
   const [drafting, setDrafting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const current = useRef<string | null>(null)
+  // The home gives the focus back to the choice that opened this dialog (WorldHome).
+  const box = useRef<HTMLDivElement>(null)
+  usePaneDialog(box, false)
   const mic = useVoiceInput(null, false, {
     onTranscript: (t) => setText((prev) => (prev.trim() === '' ? t : `${prev.trimEnd()} ${t}`)),
   })
@@ -64,12 +68,12 @@ export function DesignStart({ onDrafted, onClose, onStart, escRef }: DesignStart
   if (escRef) escRef.current = cancel
 
   return (
-    <div role="dialog" aria-label="Design something new" data-testid="world-design-start" className={dialogCls} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Design something new" data-testid="world-design-start" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Design something new</h2>
       <p className="text-xs text-[#9ca3af]">Lumopolis drafts a planned world from your description. Nothing is written until you choose Build it.</p>
       <div className="relative">
         <textarea
-          autoFocus
+          data-autofocus=""
           value={text}
           rows={5}
           disabled={drafting !== null}

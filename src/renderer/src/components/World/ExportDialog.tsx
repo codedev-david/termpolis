@@ -10,6 +10,7 @@ import { NO_MODEL } from '../../../../shared/world/exportMeta'
 import { btnCls, dialogCls, fieldCls, primaryCls, UI_FAILED } from './worldTargets'
 import { fileNameOf, formatMb, savedAtText } from './exportFormat'
 import { useUiZoom } from './worldPane'
+import { usePaneDialog } from './usePaneDialog'
 
 type Step = WorldExportProgressEvent['step']
 
@@ -62,6 +63,8 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
   const [prog, setProg] = useState<WorldExportProgressEvent | null>(null)
   const [indexTotal, setIndexTotal] = useState<number | null>(null)
   /** The id of the export running now: progress for any other id is ignored. */
+  const box = useRef<HTMLDivElement>(null)
+  usePaneDialog(box)
   const runRef = useRef<string | null>(null)
   /** How many runs ended while the dialog was open: each asks main for the info again. */
   const [ended, setEnded] = useState(0)
@@ -176,7 +179,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
   }
 
   return (
-    <div role="dialog" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={dialogCls} style={zoom}>
+    <div ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Export Lumopolis world</h2>
       {info === null && error === null && (
         <p data-testid="world-export-loading" className="text-xs text-[#9ca3af]">Reading the world…</p>

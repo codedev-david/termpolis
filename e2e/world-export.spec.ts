@@ -246,6 +246,50 @@ test.describe.serial('Lumopolis export in the real app', () => {
     }
   })
 
+  test('3b. each dialog of the pane keeps Tab inside it, closes alone on Esc and gives the focus back (A11Y Y4)', async () => {
+    const pane = page.locator('[data-testid="world-view"]')
+    const inside = (testid: string) => page.evaluate((id) => document.querySelector(`[data-testid="${id}"]`)?.contains(document.activeElement) === true, testid)
+    /** Tab and Shift+Tab round the dialog, a focus moved to the toolbar behind it, then Esc: the dialog alone closes. */
+    async function holds(testid: string): Promise<void> {
+      const box = page.locator(`[data-testid="${testid}"]`)
+      await expect(box).toBeVisible()
+      await expect(box).toHaveAttribute('aria-modal', 'true')
+      await expect.poll(() => inside(testid), `the ${testid} took the focus`).toBe(true)
+      for (const key of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
+        await page.keyboard.press(key)
+        expect(await inside(testid), `${key} kept the focus in the ${testid}`).toBe(true)
+      }
+      // A focus moved to the pane behind the dialog (a screen reader's cursor, a click) comes back to it.
+      await page.locator('[data-testid="world-close"]').focus()
+      await expect.poll(() => inside(testid), `the ${testid} took the focus back`).toBe(true)
+      await page.keyboard.press('Escape')
+      await expect(box).toHaveCount(0)
+      await expect(pane, 'Esc closed the dialog only, never the pane').toBeVisible()
+    }
+
+    await page.locator('[data-testid="world-export"]').click()
+    await page.locator('[data-testid="world-export-world"]').click()
+    await holds('world-export-dialog')
+    // The menu item went with its menu: the focus is back on the Export button, which the dialog greyed.
+    await expect(page.locator('[data-testid="world-export"]')).toBeFocused()
+
+    await page.locator('[data-testid="world-export"]').click()
+    await page.locator('[data-testid="world-export-document"]').click()
+    await holds('world-document-dialog')
+    await expect(page.locator('[data-testid="world-export"]')).toBeFocused()
+
+    const relayout = page.locator('[data-testid="world-relayout"]')
+    if (!(await relayout.isVisible())) await page.locator('[data-testid="world-more"]').click()
+    await relayout.click()
+    await expect(page.locator('[data-testid="world-relayout-cancel"]'), 'Cancel, not Re-layout, takes the focus').toBeFocused()
+    await holds('world-relayout-confirm')
+    // Back on Re-layout, or on the pane when Re-layout was in the More menu that closed.
+    await expect.poll(() => page.evaluate(() => {
+      const at = document.activeElement as HTMLElement | null
+      return at?.getAttribute('data-testid') ?? null
+    })).toMatch(/^world-(relayout|view)$/)
+  })
+
   test('4. the renderer logged no error and threw nothing', () => {
     expect(consoleErrors).toEqual([])
   })

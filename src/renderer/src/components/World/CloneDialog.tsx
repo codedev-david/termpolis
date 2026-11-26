@@ -8,6 +8,7 @@ import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared
 import { btnCls, dialogCls, fieldCls, linkCls, primaryCls, signInLabel } from './worldTargets'
 import { RepoAccessDialog } from './RepoAccessDialog'
 import { holdFocus } from '../../hooks/useFocusTrap'
+import { usePaneDialog } from './usePaneDialog'
 import { useUiZoom } from './worldPane'
 
 export interface CloneDialogProps {
@@ -148,6 +149,8 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initia
   // Under the token dialog this one is inert, so Tab stays in that dialog; closed, the focus comes back to the button
   // that opened it, or to this dialog while that button is grey (F-R13).
   const dialogRef = useRef<HTMLDivElement>(null)
+  // Modal in the pane; the home gives the focus back to the choice that opened it (WorldHome).
+  usePaneDialog(dialogRef, false)
   const useTokenRef = useRef<HTMLButtonElement>(null)
   useLayoutEffect(() => {
     if (!tokenShown) return
@@ -170,12 +173,12 @@ export function CloneDialog({ onCloned, onClose, onStart, escRef, onKept, initia
 
   return (
     <>
-    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={`${dialogCls} focus:outline-none`} style={zoom}>
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Open a git repository" data-testid="world-clone" className={`${dialogCls} focus:outline-none`} style={zoom}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
         Repository URL
         <input
-          autoFocus
+          data-autofocus=""
           value={url}
           disabled={cloning}
           placeholder="https://github.com/owner/repo.git"

@@ -4,7 +4,7 @@
 // When the control that had the focus goes away at a step change, the focus comes back into the sheet
 // (so Esc and Tab keep working), and when the sheet closes it goes to the control that opened it, or to
 // the active terminal when that control went with the menu it was in.
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { focusTerminal } from '../lib/accountMenu'
 import { useTerminalStore } from '../store/terminalStore'
@@ -54,19 +54,47 @@ export function holdFocus(el: HTMLElement): void {
   if (at === document.body || (el.contains(at) && at.matches(':disabled'))) el.focus()
 }
 
-export function useFocusTrap(ref: RefObject<HTMLElement | null>): void {
+/** How a dialog that is modal inside a pane, not over the whole window, holds the focus (Lumopolis, A11Y Y4). */
+export interface FocusTrapOptions {
+  /** The pane the dialog is modal in, found from the dialog as it opens. The focus moved anywhere else in it (a click
+   *  on the map, a screen reader's cursor) comes back to the dialog, unless a dialog opened over it (aria-modal) takes
+   *  it; outside the pane (the terminal beside it) it is left alone. On close, with the control that opened the dialog
+   *  gone (a menu item), the pane takes the focus instead of the terminal. */
+  within?: (el: HTMLElement) => HTMLElement | null
+  /** false: the focus is not moved on close, as the caller gives it back itself (the Lumopolis home does). */
+  restore?: boolean
+}
+
+export function useFocusTrap(ref: RefObject<HTMLElement | null>, options: FocusTrapOptions = {}): void {
+  // Read once, as the dialog opens: what the trap does is fixed for as long as it is up.
+  const { within, restore = true } = options
+  // The control that opened the sheet, read as the sheet first renders: the commit that shows it may grey that control
+  // (a toolbar button while its dialog is up), and a browser then moves the focus off it before any effect runs.
+  const opener = useRef<HTMLElement | null | undefined>(undefined)
+  if (opener.current === undefined) opener.current = document.activeElement as HTMLElement | null
   useEffect(() => {
     // Set by the time the effect runs: the sheet renders the element the ref is on.
     const el = ref.current as HTMLElement
-    const before = document.activeElement as HTMLElement | null
+    const before = opener.current
+    const pane = within ? within(el) : null
     const first = el.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(el)[0] ?? el
     first.focus()
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Tab') return
+      // A trap nested in this one (a dialog over it) or another handler took this Tab already: one step only.
+      if (e.key !== 'Tab' || e.defaultPrevented) return
       e.preventDefault()
       stepFocus(el, e.shiftKey)
     }
     el.addEventListener('keydown', onKey)
+    // The control in the dialog that had the focus last, where a focus moved out to the pane behind comes back to.
+    let last: HTMLElement = first
+    const onFocusIn = (e: FocusEvent): void => {
+      const to = e.target as HTMLElement
+      if (el.contains(to)) { last = to; return }
+      if (!(pane as HTMLElement).contains(to) || to.closest('[aria-modal="true"]') !== null) return
+      ;(last.isConnected && el.contains(last) ? last : el).focus()
+    }
+    if (pane) document.addEventListener('focusin', onFocusIn)
     // The control that had the focus is gone (a step changed): <body> has it now, where Esc and Tab
     // reach nothing of the sheet. It comes back to the step's own control, or the sheet itself.
     const observer = new MutationObserver(() => {
@@ -78,12 +106,17 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>): void {
     return () => {
       observer.disconnect()
       el.removeEventListener('keydown', onKey)
-      // Back where it was: the control that opened the sheet; else the terminal the sheet opened over.
+      document.removeEventListener('focusin', onFocusIn)
+      if (!restore) return
+      // Back where it was: the control that opened the sheet; else the pane it is modal in, or the terminal the sheet
+      // opened over.
       if (before && before !== document.body && document.contains(before)) before.focus()
+      else if (pane && pane.isConnected) pane.focus()
       else {
         const id = useTerminalStore.getState().activeTerminalId
         if (id) focusTerminal(id)
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the options are read once, as the dialog opens
   }, [ref])
 }

@@ -49,6 +49,7 @@ import { SignInNeededNotice } from './SignInNeededNotice'
 import { RepoAccessDialog } from './RepoAccessDialog'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
+import { RelayoutConfirm } from './RelayoutConfirm'
 import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
@@ -1168,31 +1169,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           />
         )}
         {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}
-        {confirmRelayout && (
-          <div
-            role="alertdialog"
-            aria-label="Confirm re-layout"
-            data-testid="world-relayout-confirm"
-            className="p-3 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-2 text-xs"
-            style={{ position: 'absolute', top: 12, right: 12, width: 320, maxWidth: 'calc(100% - 24px)', boxSizing: 'border-box', zIndex: 5, background: '#252526', ...zoom }}
-          >
-            <p>Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                data-testid="world-relayout-cancel"
-                className="px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#37373d]"
-                onClick={() => setConfirmRelayout(false)}
-              >Cancel</button>
-              <button
-                type="button"
-                data-testid="world-relayout-go"
-                className="px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
-                onClick={relayout}
-              >Re-layout</button>
-            </div>
-          </div>
-        )}
+        {confirmRelayout && <RelayoutConfirm zoom={zoom} onCancel={() => setConfirmRelayout(false)} onConfirm={relayout} />}
         {(repoUpdate || busy || notice || saved || recompileShown) && (
           <div style={{ position: 'absolute', ...noticeAt, transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (
