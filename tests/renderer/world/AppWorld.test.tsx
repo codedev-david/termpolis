@@ -142,6 +142,47 @@ describe('App Lumopolis wiring', () => {
     expect(screen.queryByTestId('lumopolis-notice')).toBeNull()
   })
 
+  // HOLD-B #27 (F9): the "Code graph: N symbols indexed" banner came up on every first open of a project, over the
+  // terminals beside the pane, and took the eye from the pane's first impression. The pane shows that world itself.
+  const CODE_GRAPH = '🧭 Code graph: 6 symbols indexed in "My Project"'
+  const notice = () => useTerminalStore.getState().memoryNotice
+
+  it('opening the pane puts away a code graph banner already showing', async () => {
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.getState().setMemoryNotice(CODE_GRAPH) })
+    expect(screen.getByText(CODE_GRAPH)).toBeInTheDocument()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    await screen.findByTestId('world-view')
+    expect(screen.queryByText(CODE_GRAPH)).toBeNull()
+    expect(notice()).toBeNull()
+  })
+
+  it('a code graph banner that comes while the pane is open never shows, and does not come back when the pane closes', async () => {
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    await screen.findByTestId('world-view')
+    act(() => { useTerminalStore.getState().setMemoryNotice(CODE_GRAPH) })
+    expect(screen.queryByText(CODE_GRAPH)).toBeNull()
+    expect(notice()).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))
+    expect(screen.queryByText(CODE_GRAPH)).toBeNull()
+  })
+
+  it('other banners still show beside the pane, and a code graph banner shows while the pane is closed', async () => {
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    await screen.findByTestId('world-view')
+    act(() => { useTerminalStore.getState().setMemoryNotice('🧠 Loaded 3 memories for "app"') })
+    expect(screen.getByText('🧠 Loaded 3 memories for "app"')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))
+    act(() => { useTerminalStore.getState().setMemoryNotice(CODE_GRAPH) })
+    expect(screen.getByText(CODE_GRAPH)).toBeInTheDocument()
+    act(() => { useTerminalStore.getState().setMemoryNotice(null) })
+  })
+
   it('the divider resizes the pane, and the width is remembered', async () => {
     localStorage.setItem('termpolis.world.paneWidth', '400')
     // jsdom has no layout: say the terminals' column is 1200 px wide.
