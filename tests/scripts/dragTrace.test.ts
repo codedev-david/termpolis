@@ -337,7 +337,7 @@ describe('the drag trace (dragTrace)', () => {
 
   // Round 2, Opus m2-3: the limits are pinned, so a change of one touches a test.
   it('pins the limits (look plan A2.1 note (10), PENDING SIGN-OFF)', () => {
-    expect(DRAG_LIMITS).toEqual({ resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, traced: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 } })
+    expect(DRAG_LIMITS).toEqual({ resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, tracedResizes: 0.8, tracedFits: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 } })
   })
 
   // Codex minor: a resize whose measure the page failed to name dropped out of every rule.
@@ -349,12 +349,12 @@ describe('the drag trace (dragTrace)', () => {
     expect(fails(dragVerdict(input({ events: [META] })), 'of the resizes the page named')).toEqual(['0/10'])
   })
 
-  // Round 2, Codex minor: "most" of the resizes was 5 of 10.
-  it('wants 90% of the resizes the page named in the trace: 9 of 10, not 8', () => {
+  // Round 2, Codex minor: "most" of the resizes was 5 of 10. 80%, as the macOS trace drops up to 4 of 39.
+  it('wants 80% of the resizes the page named in the trace: 8 of 10, not 7', () => {
     const q = quiet()
     const drop = (n: number): TraceEvent[] => q.events.filter((e) => !(e.ph === 'b' && e.ts < us(1000 + n * 100)))
-    expect(fails(dragVerdict(input({ events: drop(1) })), 'of the resizes the page named')).toEqual([])
-    expect(fails(dragVerdict(input({ events: drop(2) })), 'of the resizes the page named')).toEqual(['8/10'])
+    expect(fails(dragVerdict(input({ events: drop(2) })), 'of the resizes the page named')).toEqual([])
+    expect(fails(dragVerdict(input({ events: drop(3) })), 'of the resizes the page named')).toEqual(['7/10'])
   })
 
   // Round 2, Opus m2-2, Codex minor: one 7000 ms gap for every OS, and the release after the last move not counted.

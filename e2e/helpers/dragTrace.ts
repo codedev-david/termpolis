@@ -179,12 +179,14 @@ export function ownTimes(events: TraceEvent[], named: PageSpan[], longTasks: Pag
  * - fitWall: each such task on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU
  *   process), so a wait on anything else (a sync call, a lock, an event) or one the trace does not name counts;
  * - fitCeiling: each such task on the wall, its waits on the GPU too;
- * - traced: the share of the resizes the page named, and of the fits' tasks, the trace must hold (a share, not ms);
+ * - tracedResizes: the share of the resizes the page named the trace must hold (a share, not ms; the macOS trace drops
+ *   up to 4 of 39, and one it drops is timed on the wall);
+ * - tracedFits: the share of the fits' tasks the trace must hold (a share; one it drops is charged its wall);
  * - gap: by OS (process.platform), the widest gap between two of the drag's pointer moves the page handled, or between
  *   the last and the pointer's release (the page answers none in it).
  */
-export const DRAG_LIMITS: { resizeOwn: number; resizeWall: number; taskOwn: number; taskWall: number; fitCpu: number; fitWall: number; fitCeiling: number; traced: number; gap: Record<string, number> } = {
-  resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, traced: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 },
+export const DRAG_LIMITS: { resizeOwn: number; resizeWall: number; taskOwn: number; taskWall: number; fitCpu: number; fitWall: number; fitCeiling: number; tracedResizes: number; tracedFits: number; gap: Record<string, number> } = {
+  resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, tracedResizes: 0.8, tracedFits: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 },
 }
 
 /** What the drag check is handed: the trace, and what the page measured from the first move to DRAG_AFTER_MS after the mouse-up. */
@@ -223,19 +225,19 @@ export function dragVerdict(input: DragInput, limits = DRAG_LIMITS): { checks: D
   const others = own.tasks.filter((_, i) => !input.tasks[i].fit)
   const fits = own.tasks.filter((_, i) => input.tasks[i].fit)
   const pair = (x: OwnTime, digits = 1): string => `${x.wall.toFixed(digits)}/${x.own.toFixed(digits)}`
-  const share = `${Math.round(limits.traced * 100)}%`
+  const share = (x: number): string => `${Math.round(x * 100)}%`
   const held = fits.filter((x) => x.matched).length
   const gap = limits.gap[input.platform] ?? Math.max(...Object.values(limits.gap))
   const checks: DragCheck[] = [
     { rule: 'the drag resized the view, each resize named (named/timed)', fails: input.resizeCount > 0 && input.resizes.length === input.resizeCount ? [] : [`${input.resizes.length}/${input.resizeCount}`] },
-    { rule: `the trace holds at least ${share} of the resizes the page named (one it dropped is timed on the wall): traced/named`, fails: own.traced >= Math.ceil(input.resizes.length * limits.traced) ? [] : [`${own.traced}/${input.resizes.length}`] },
+    { rule: `the trace holds at least ${share(limits.tracedResizes)} of the resizes the page named (one it dropped is timed on the wall): traced/named`, fails: own.traced >= Math.ceil(input.resizes.length * limits.tracedResizes) ? [] : [`${own.traced}/${input.resizes.length}`] },
     { rule: `each resize takes under ${limits.resizeOwn} ms of its own (wall/own ms)`, fails: own.resizes.filter((x) => x.own >= limits.resizeOwn).map((x) => pair(x)) },
     { rule: `each resize takes under ${limits.resizeWall} ms on the wall, a wait the trace does not name (ms)`, fails: own.resizes.filter((x) => x.wall >= limits.resizeWall).map((x) => x.wall.toFixed(1)) },
     { rule: 'the buffer was fitted during or after the drag, its fit named', fails: input.fitCount > 0 ? [] : ['no fit'] },
     { rule: "a long task holds a fit named, so the fits are scored (fits' tasks/fits named)", fails: input.fitCount > 0 && fits.length === 0 ? [`0/${input.fitCount}`] : [] },
     { rule: `no task runs over ${limits.taskOwn} ms of its own, the fit's left out (wall/own ms)`, fails: others.filter((x) => x.own > limits.taskOwn).map((x) => pair(x, 0)) },
     { rule: `no task runs over ${limits.taskWall} ms on the wall, the fit's left out, a wait the trace does not name (ms)`, fails: others.filter((x) => x.wall > limits.taskWall).map((x) => x.wall.toFixed(0)) },
-    { rule: `the trace holds at least ${share} of the fits' tasks: traced/fits`, fails: held >= Math.ceil(fits.length * limits.traced) ? [] : [`${held}/${fits.length}`] },
+    { rule: `the trace holds at least ${share(limits.tracedFits)} of the fits' tasks: traced/fits`, fails: held >= Math.ceil(fits.length * limits.tracedFits) ? [] : [`${held}/${fits.length}`] },
     { rule: `no fit's task runs over ${limits.fitCpu} ms of thread time, its waits left out, one the trace does not hold charged its wall (wall/thread ms)`, fails: fits.filter((x) => x.cpu > limits.fitCpu).map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.matched ? '' : ' (not traced)'}`) },
     { rule: `no fit's task runs over ${limits.fitWall} ms on the wall beyond its waits on the GPU, any other wait counted (wall/GPU-waited ms)`, fails: fits.filter((x) => x.wall - x.gpu > limits.fitWall).map((x) => `${x.wall.toFixed(0)}/${x.gpu.toFixed(0)}`) },
     { rule: `no fit's task runs over ${limits.fitCeiling} ms on the wall, its waits on the GPU too (ms)`, fails: fits.filter((x) => x.wall > limits.fitCeiling).map((x) => x.wall.toFixed(0)) },
