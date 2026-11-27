@@ -19,9 +19,10 @@
 // prompt the shell has already drawn, so the line editor's idea of the cursor goes wrong, and it is missing
 // from main's copy of the output, so a reload or the phone never shows it.
 // The zsh integration's ready mark (the same OSC, payload `ready`, printed with every prompt report) is swallowed too,
-// and asks nothing: main reads it from the terminal's output itself (#29).
+// and asks main nothing: main reads it from the terminal's output itself (#29). A live one tells the window which terminal
+// printed it (LUMOPOLIS_READY_EVENT), so the sidebar can ask main again about a terminal it was told no for.
 import { LUMOPOLIS_MAX_PAYLOAD, LUMOPOLIS_READY } from '../../../shared/world/lumopolisCommand'
-import { folderName, showLumopolisNotice } from '../components/World/worldOpen'
+import { folderName, LUMOPOLIS_READY_EVENT, showLumopolisNotice } from '../components/World/worldOpen'
 
 export interface LumopolisOscDeps {
   terminalId: string
@@ -38,7 +39,11 @@ export interface LumopolisOscDeps {
 /** The handler to pass to `term.parser.registerOscHandler(LUMOPOLIS_OSC, …)`. */
 export function lumopolisOscHandler(deps: LumopolisOscDeps): (payload: string) => boolean {
   return (payload) => {
-    if (deps.replaying() || payload === LUMOPOLIS_READY || payload.length > LUMOPOLIS_MAX_PAYLOAD) return true
+    if (deps.replaying() || payload.length > LUMOPOLIS_MAX_PAYLOAD) return true
+    if (payload === LUMOPOLIS_READY) {
+      window.dispatchEvent(new CustomEvent(LUMOPOLIS_READY_EVENT, { detail: deps.terminalId }))
+      return true
+    }
     const api = window.termpolis
     const cwd = deps.cwd()
     api.worldTerminalOpen({ terminalId: deps.terminalId, payload, ...(cwd ? { cwd } : {}) }).then(

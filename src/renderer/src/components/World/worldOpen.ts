@@ -16,6 +16,9 @@ export const FRAME_RATE_EVENT = 'termpolis:worldFrameRate'
 
 /** Dispatched for LumopolisNotice (App): one short line about a `lumopolis` request, with an Open button when it names a folder. */
 export const LUMOPOLIS_NOTICE_EVENT = 'termpolis:lumopolisNotice'
+/** Dispatched when a terminal prints the zsh ready mark live (detail: its id), so the sidebar can ask main again about a
+ *  terminal it was told cannot take `lumopolis` (#29, holdb-review M3). */
+export const LUMOPOLIS_READY_EVENT = 'termpolis:lumopolisReady'
 
 export interface LumopolisNotice {
   message: string

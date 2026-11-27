@@ -6,10 +6,11 @@
 // "or type lumopolis" is said only where typing it works (#29): main answers for the active terminal
 // (world:terminal-typable), and a terminal answered no (a zsh whose Termpolis .zshrc never ran) gets the hint without
 // those words. With no terminal, while main has not answered, or when it cannot say, the whole hint shows: every
-// shell Termpolis integrates has the command.
-import { useEffect, useRef, useState } from 'react'
+// shell Termpolis integrates has the command. A no is asked again when that terminal prints the zsh ready mark
+// (LUMOPOLIS_READY_EVENT): a .zshrc slower than main waits is answered no, then has the command at its first prompt.
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
-import { openLumopolis, WORLD_OPENED_EVENT } from './worldOpen'
+import { LUMOPOLIS_READY_EVENT, openLumopolis, WORLD_OPENED_EVENT } from './worldOpen'
 
 export const LUMOPOLIS_HINT = 'Lumopolis: see any project as a 3D city. Open it here, click the globe on a terminal, or type lumopolis.'
 /** The hint for an active terminal where typing lumopolis does not work (#29). PENDING SIGN-OFF. */
@@ -40,15 +41,34 @@ export function LumopolisSidebarEntry(): JSX.Element {
   const active = useTerminalStore((s) => s.activeTerminalId)
   const [typable, setTypable] = useState<Record<string, boolean>>({})
   const asked = useRef(new Set<string>())
+  const toldNo = useRef(new Set<string>())
+  const ask = useCallback((id: string): void => {
+    // Through a promise, so a build or a test bridge without the call keeps the whole hint.
+    Promise.resolve().then(() => window.termpolis.worldTerminalTypable(id)).then(
+      (res) => {
+        if (!res.success) return
+        if (res.data) toldNo.current.delete(id)
+        else toldNo.current.add(id)
+        setTypable((t) => ({ ...t, [id]: res.data }))
+      },
+      () => undefined,
+    )
+  }, [])
   useEffect(() => {
     if (!hint || active === null || asked.current.has(active)) return
     asked.current.add(active)
-    // Through a promise, so a build or a test bridge without the call keeps the whole hint.
-    Promise.resolve().then(() => window.termpolis.worldTerminalTypable(active)).then(
-      (res) => { if (res.success) setTypable((t) => ({ ...t, [active]: res.data })) },
-      () => undefined,
-    )
-  }, [hint, active])
+    ask(active)
+  }, [hint, active, ask])
+  // A no, asked again when that terminal's shell prints the ready mark (holdb-review M3).
+  useEffect(() => {
+    if (!hint) return
+    const onReady = (e: Event): void => {
+      const id = (e as CustomEvent<string>).detail
+      if (toldNo.current.has(id)) ask(id)
+    }
+    window.addEventListener(LUMOPOLIS_READY_EVENT, onReady)
+    return () => window.removeEventListener(LUMOPOLIS_READY_EVENT, onReady)
+  }, [hint, ask])
 
   const dismiss = (): void => {
     setFlags((f) => ({ ...(f as Flags), dismissed: true })) // the hint only shows once the flags have answered

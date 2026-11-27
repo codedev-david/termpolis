@@ -68,7 +68,8 @@ export interface OutputWindow {
    *  line itself leaves the window within moments, as the resumed conversation redraws. */
   restarted?: boolean
   /** The terminal printed Termpolis's zsh ready mark (LUMOPOLIS_READY_SEQUENCE): its shell has `lumopolis` (#29). Kept after
-   *  the mark left the window, as `reported` is. Absent until it is seen. */
+   *  the mark left the window, as `reported` is, until BARE_REPORTS prompt reports in a row come with no mark (noteReady).
+   *  Absent until it is seen. */
   lumopolisReady?: true
 }
 
@@ -99,9 +100,8 @@ export function appendOutput(
   win.bytes += data.length
   win.total += data.length
   if (win.reported?.posix !== true || win.reported.windows !== true) noteReports(win, data)
+  noteReady(win, data) // before noteRestart, which moves the tail on to this chunk
   noteRestart(win, data)
-  // Whole in one chunk only: the zsh hook prints it at every prompt, so a mark cut in two is seen at the next.
-  if (win.lumopolisReady !== true && data.includes(LUMOPOLIS_READY_SEQUENCE)) win.lumopolisReady = true
   if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
@@ -162,6 +162,44 @@ function noteRestart(win: OutputWindow, data: string): void {
     }
   }
   markTails.set(win, data.length >= LINE_KEEP ? data.slice(data.length - LINE_KEEP) : (tail + data).slice(-LINE_KEEP))
+}
+
+/** A posix prompt report (OSC 7, ended by BEL or ST) or the zsh ready mark (LUMOPOLIS_READY_SEQUENCE), which Termpolis's zsh
+ *  integration prints together at each prompt. */
+const REPORT_OR_READY = new RegExp(
+  `\\x1b\\]7;[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)|${LUMOPOLIS_READY_SEQUENCE.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`,
+  'g',
+)
+
+/** How many prompt reports in a row with no ready mark give the latch up: a shell that is no longer Termpolis's zsh (an
+ *  `exec bash`, an ssh to a zsh of its own) reports with none (holdb-review M8). Three, as a theme or a terminal script of
+ *  the person's own (oh-my-zsh, vte.sh) can print a second report at each prompt, before the mark or after it, so two
+ *  can fall between two marks. */
+const BARE_REPORTS = 3
+
+/** The prompt reports each terminal printed since its last ready mark (noteReady). */
+const bareReports = new WeakMap<OutputWindow, number>()
+
+/** Notes the zsh ready mark, and the prompt reports printed without it, in `data`, whole or cut between chunks: the tail
+ *  noteRestart keeps (LINE_KEEP characters, far longer than the mark) holds the start of one cut, and each is counted by
+ *  the chunk that completes it. A report whose folder runs past the tail and is cut is not counted, which only puts the
+ *  latch's end off. A chunk with no ESC or BEL completes neither, and costs two searches. */
+function noteReady(win: OutputWindow, data: string): void {
+  if (data.indexOf('\x1b') < 0 && data.indexOf('\x07') < 0) return
+  const tail = markTails.get(win) ?? ''
+  const text = tail + data
+  REPORT_OR_READY.lastIndex = 0
+  for (let m = REPORT_OR_READY.exec(text); m !== null; m = REPORT_OR_READY.exec(text)) {
+    if (m.index + m[0].length <= tail.length) continue // complete in the last chunk: counted then
+    if (m[0] === LUMOPOLIS_READY_SEQUENCE) {
+      win.lumopolisReady = true
+      bareReports.set(win, 0)
+    } else {
+      const bare = (bareReports.get(win) ?? 0) + 1
+      bareReports.set(win, bare)
+      if (bare >= BARE_REPORTS) delete win.lumopolisReady
+    }
+  }
 }
 
 /** Whether the restart line was printed in this terminal since the last time this was asked: the latch is given up with the answer. */
