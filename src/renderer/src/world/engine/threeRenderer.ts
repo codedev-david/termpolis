@@ -3023,9 +3023,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return im
   }
 
+  /**
+   * The materials of the batches dropped this frame, freed once the frame is drawn. three.js frees a shader program
+   * when the last material using it is freed, so a batch outgrown (or sorted under a new key) and freed before the
+   * frame drew its replacement took its program with it, and the replacement compiled the same program again:
+   * drawn in software, 100 to 250 ms inside one frame of a divider drag. Freed after the draw, the replacement
+   * finds the program still there.
+   */
+  const retiredMats: THREE.Material[] = []
+  function freeRetired(): void {
+    for (const m of retiredMats.splice(0)) m.dispose()
+  }
   function dropBatch(im: THREE.InstancedMesh): void {
     batchLayer.remove(im)
-    ;(im.material as THREE.Material).dispose()
+    retiredMats.push(im.material as THREE.Material)
     if (!shared.has(im.geometry)) im.geometry.dispose()
     im.dispose()
   }
@@ -3399,6 +3410,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     renderer.info.reset()
     if (composer) composer.render()
     else renderer.render(scene, camera)
+    freeRetired()
     presented++
     const done = performance.now()
     if (firstFrameMs === null && drawAskedAt !== null) firstFrameMs = slowFirstFrame(done - drawAskedAt, drawAskedAt)
@@ -3685,6 +3697,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // The batches' materials and their own geometries (a box batch's unit box with its outline colours).
       for (const im of instPool.values()) dropBatch(im)
       instPool.clear()
+      freeRetired()
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
       starGeo.dispose(); starMat.dispose()
       dustGeo.dispose(); dustMat.dispose()

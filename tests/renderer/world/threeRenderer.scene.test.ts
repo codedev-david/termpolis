@@ -257,5 +257,47 @@ describe('threeRenderer scene build', () => {
     for (const im of freed) expect(after).not.toContain(im)
     r.dispose()
   })
+
+  it('an outgrown batch frees its material only after the frame has drawn its replacement, so the two share one program', () => {
+    // three.js frees a shader program with the last material using it: freed before the frame drew the bigger
+    // batch, the old material took the program along and the new one compiled it again (100 to 250 ms in software).
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
+    frames.run(2)
+    const before = boxBatches(sceneOf())
+    const freed: THREE.Material[] = []
+    for (const im of before) (im.material as THREE.Material).addEventListener('dispose', (e) => freed.push(e.target as THREE.Material))
+    const gl = rendererOf()
+    const render = gl.render.bind(gl)
+    let freedAtFirstDraw: number | null = null
+    gl.render = (scene, camera): void => {
+      if (freedAtFirstDraw === null && boxBatches(sceneOf()).some((im) => im.instanceMatrix.count > 16)) freedAtFirstDraw = freed.length
+      render(scene, camera)
+    }
+    const many = smallCity()
+    many.buildings = [...many.buildings, ...Array.from({ length: 40 }, (_, i) => bldg(`n${i}`, [(i % 8) * 6 - 21, 0, Math.floor(i / 8) * 6 - 30]))]
+    r.draw(many, smallText(), false)
+    r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
+    frames.run(2)
+    expect(freedAtFirstDraw).toBe(0) // the bigger batch was drawn with the old material still alive
+    expect(freed.length).toBeGreaterThan(0) // and the old material was freed after that draw
+    r.dispose()
+  })
+
+  it('closing the view frees the batch materials then and there', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
+    frames.run(2)
+    const mats = [...boxBatches(sceneOf())].map((im) => im.material as THREE.Material)
+    expect(mats.length).toBeGreaterThan(0)
+    const freed = new Set<THREE.Material>()
+    for (const m of mats) m.addEventListener('dispose', () => freed.add(m))
+    r.dispose()
+    expect(freed.size).toBe(mats.length)
+  })
 })
 
