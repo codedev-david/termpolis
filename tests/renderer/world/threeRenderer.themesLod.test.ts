@@ -119,6 +119,19 @@ describe('threeRenderer themes', () => {
     r.dispose()
   })
 
+  it('draws the colours of the named theme even when the theme object that came with the name is another one', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r.draw(looks(), emptyText(), false)
+    r.setTheme('neon', THEMES.glass) // a saved neon with the wrong theme object: Holotable throughout, not glass colours on Holotable extras
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe(THEMES.holotable.background)
+    expect((sceneOf().background as THREE.Color).getHex()).toBe(new THREE.Color(THEMES.holotable.background).getHex())
+    expect(seamOf(worldOf(sceneOf()), 'amber').color.getHex()).toBe(PALETTE.holotable.amber)
+    r.setTheme('blueprint', THEMES.holotable)
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe(THEMES.blueprint.background)
+    expect((sceneOf().background as THREE.Color).getHex()).toBe(new THREE.Color(THEMES.blueprint.background).getHex())
+    r.dispose()
+  })
+
   it('a theme change on a drawn world draws it again in the new palette; a busy city glows less', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     const many: SceneModel = { ...smallCity(), conduits: Array.from({ length: 400 }, (_, i) => conduit(`m${i}`, [-6, 9, 0], [6, 6, 4 + i * 0.01])) }

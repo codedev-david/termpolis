@@ -465,7 +465,7 @@ describe('threeRenderer labels', () => {
   it('the stylesheet draws a district name left on a building over a dark halo, so it reads over the geometry', () => {
     const r = drawn()
     const css = (document.getElementById('lumopolis-world-style') as HTMLStyleElement).textContent ?? ''
-    expect(css).toMatch(/\.lw-district\.lw-on-solid\{text-shadow:0 0 [^}]*rgba\(0,0,0,/)
+    expect(css).toMatch(/\.lw-district\.lw-on-solid\{text-shadow:var\(--lw-halo\),0 0 [^}]*rgba\(0,0,0,/)
     r.dispose()
   })
 

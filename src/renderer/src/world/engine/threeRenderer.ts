@@ -24,7 +24,7 @@ import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import { DEFAULT_THEME, normalizeTheme, THEMES, type Theme, type ThemeName } from './themes'
-import { hexNumber, PALETTES } from './holoPalette'
+import { hexNumber, labelHalo, PALETTES } from './holoPalette'
 import { screenRect } from './screenRect'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
@@ -118,7 +118,10 @@ export interface ThreeRenderer {
   setPanels(els: readonly HTMLElement[]): void
   /** How many times their base size the map's labels are drawn (1, more on a big screen: uiScale). */
   setLabelScale(s: number): void
-  /** `name` may be a saved older name (`neon`); an unknown one is ignored. */
+  /**
+   * `name` may be a saved older name (`neon`); an unknown one is ignored. The colours drawn are always the named theme's
+   * (THEMES), so a name and a theme that disagree cannot mix two palettes.
+   */
   setTheme(name: ThemeName | 'neon', theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   /** The selected building or line (its card is open), or null. */
@@ -218,15 +221,15 @@ const EXTRAS: Record<ThemeName, Extras> = {
 
 const STYLE_ID = 'lumopolis-world-style'
 const CSS = `
-.lw-labels{position:absolute;top:0;left:0;z-index:0;pointer-events:none;--lw-s:1}
-.lw-district{font:700 calc(15px * var(--lw-s)) system-ui,sans-serif;letter-spacing:.13em;text-transform:uppercase;text-shadow:0 0 .8em currentColor;white-space:nowrap;text-align:center}
-.lw-district span{display:block;font-size:.8em;letter-spacing:.08em;font-weight:500;opacity:.8;text-shadow:none}
-.lw-district.lw-on-solid{text-shadow:0 0 2px rgba(0,0,0,.95),0 0 .3em rgba(0,0,0,.9),0 0 .7em rgba(0,0,0,.75),0 0 1.1em rgba(0,0,0,.5)}
-.lw-bldg{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.17em .67em;border-radius:.5em;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
-.lw-floor{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.08em .5em;border-radius:.33em;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
-.lw-edge{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.17em .58em;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer}
+.lw-labels{position:absolute;top:0;left:0;z-index:0;pointer-events:none;--lw-s:1;--lw-halo:0 0 1px #000,0 0 2px #010409}
+.lw-district{font:700 calc(15px * var(--lw-s)) system-ui,sans-serif;letter-spacing:.13em;text-transform:uppercase;text-shadow:var(--lw-halo),0 0 .8em currentColor;white-space:nowrap;text-align:center}
+.lw-district span{display:block;font-size:.8em;letter-spacing:.08em;font-weight:500;opacity:.8;text-shadow:var(--lw-halo)}
+.lw-district.lw-on-solid{text-shadow:var(--lw-halo),0 0 2px rgba(0,0,0,.95),0 0 .3em rgba(0,0,0,.9),0 0 .7em rgba(0,0,0,.75),0 0 1.1em rgba(0,0,0,.5)}
+.lw-bldg{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.17em .67em;border-radius:.5em;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap;text-shadow:var(--lw-halo)}
+.lw-floor{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.08em .5em;border-radius:.33em;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0;text-shadow:var(--lw-halo)}
+.lw-edge{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.17em .58em;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer;text-shadow:var(--lw-halo)}
 .lw-edge:hover{background:rgba(30,41,59,.95)}
-.lw-proc{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.08em .58em;border-radius:.33em;background:rgba(3,7,18,.8);border:1px dashed;white-space:nowrap}
+.lw-proc{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.08em .58em;border-radius:.33em;background:rgba(3,7,18,.8);border:1px dashed;white-space:nowrap;text-shadow:var(--lw-halo)}
 `
 
 const FLOOR_W = 5
@@ -606,6 +609,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const labelRenderer = new CSS2DRenderer()
   labelRenderer.setSize(width, height)
   labelRenderer.domElement.className = 'lw-labels'
+  /** Every label's text halo (look spec §3.6): a 1px black edge, then 2px of the theme's background, so ink keeps 4.5:1 on a lit slab. */
+  const paintHalo = (name: ThemeName): void => { labelRenderer.domElement.style.setProperty('--lw-halo', labelHalo(PALETTES[name])) }
+  paintHalo(DEFAULT_THEME)
   undo.push(() => { labelRenderer.domElement.remove() })
   host.appendChild(labelRenderer.domElement)
 
@@ -3333,11 +3339,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       compactSizes = new WeakMap()
       wake()
     },
-    setTheme(name, th) {
+    setTheme(name) {
       const known = normalizeTheme(name) // a saved neon is Holotable now (D2)
       if (known === null) return
+      const th = THEMES[known] // the named theme's colours, whatever theme object came with the name
       theme = th
       host.style.setProperty('--world-bg', th.background) // behind the canvas, painted before any frame is
+      paintHalo(known)
       extras = EXTRAS[known]
       fogTarget = fogFor()
       fog.density = fogTarget

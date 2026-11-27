@@ -52,7 +52,7 @@ const LEGEND_MAX_CARGO = 10
  */
 export const PAGE_CSS = `
 html{font-size:${BASE_PX}px}
-.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409);color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409);color:${PALETTES.holotable.ink};font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wx-page [hidden]{display:none!important}
 .wx-header{display:flex;flex-wrap:wrap;gap:${r(4)} ${r(16)};align-items:center;justify-content:space-between;padding:${r(6)} ${r(14)};font-size:${r(12)};color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
 .wx-header a{color:#7dd3fc}

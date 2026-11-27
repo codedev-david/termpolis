@@ -155,11 +155,11 @@ describe('buildPage: header and control set', () => {
     window.removeEventListener('error', onError)
     expect(thrown).toEqual([])
     expect(viewer.setTheme).toHaveBeenCalledTimes(1)
-    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#111827')
     // The page and the view behind the canvas take the theme's background, so it shows before a frame paints (look spec 5.3).
     expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#111827')
     const css = Array.from(document.querySelectorAll('style'), (s) => s.textContent).join('')
-    expect(css).toContain('.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409)')
+    expect(css).toContain('.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409);color:#d6f3ff;')
+    expect(PALETTES.holotable.ink).toBe('#d6f3ff') // the page's text is Holotable's ink, as main's export page CSS is
     expect(css).toContain('.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#010409)}')
     document.documentElement.style.removeProperty('--world-bg')
     change(control('labels') as HTMLSelectElement, 'tech')
