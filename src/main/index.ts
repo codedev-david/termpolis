@@ -108,7 +108,7 @@ initMainSentry()
   if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }
 import { join, dirname, isAbsolute } from 'path'
-import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync, renameSync } from 'fs'
 import { runSecondOpinion, type SecondOpinionAgent } from './secondOpinion'
 import { createSecondOpinionDeliver } from './secondOpinionDeliver'
 import { createNoPersistProbe } from './cliFlagProbe'
@@ -186,7 +186,7 @@ import {
   type ArtifactKind, type ArtifactFile, type AgentTarget,
 } from './artifactInstaller'
 import { readZip } from './zipArchive'
-import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists, lstatSync as ghLstat } from 'node:fs'
+import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists, lstatSync as ghLstat, accessSync as ghAccess, constants as ghConstants } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
 import * as ghPath from 'node:path'
 import {
@@ -196,6 +196,7 @@ import {
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // Commit Shield git hooks — the layer that makes the shield cover terminal-typed git.
 // (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
+import { keepScannerCopy, refreshScannerCopy, SHIELD_SCANNER_DIR, SHIELD_SCANNER_FILES, type ScannerCopyDeps } from './shieldScanner'
 import { installHooks, uninstallHooks, hookStatus, hookFileKind, unsafeHook, shieldHooksVerdict, shieldNodePath, type HookDeps, type HookPaths, type ShieldHooksVerdict } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
@@ -2113,27 +2114,44 @@ const realHookDeps: HookDeps = {
   readFile: (p) => { try { return ipRead(p, 'utf8') } catch { return null } },
   writeFile: (p, d) => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') },
   exists: (p) => ghExists(p),
+  // What the hook's `[ -x ]` asks of its node (I1). On Windows X_OK is only whether it is there.
+  canRun: (p) => { try { ghAccess(p, ghConstants.X_OK); return true } catch { return false } },
   chmod: (p, m) => { try { ghChmod(p, m) } catch { /* windows has no exec bit */ } },
   remove: (p) => { try { unlinkSync(p) } catch { /* already gone */ } },
   // lstat, never stat: a hook that is a link is reported as one, not as the file it names (I1).
   fileKind: (p) => hookFileKind(() => ghLstat(p)),
 }
 
+const scannerCopyDeps: ScannerCopyDeps = {
+  read: (p) => { try { return ipRead(p, 'utf8') } catch { return null } },
+  write: (p, d) => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') },
+  rename: (from, to) => renameSync(from, to),
+}
+const shippedScannerDir = (): string => join(process.resourcesPath, 'mcp-adapter')
+const scannerCopyDir = (): string => join(app.getPath('userData'), SHIELD_SCANNER_DIR)
+
+/** The scanner a hook Protect writes names. A packaged build names its copy in userData (shieldScanner.ts, I1), made or
+ *  refreshed here, because its own folder may not be there once this launch exits (an AppImage mount, a snap revision,
+ *  a translocated macOS app); the shipped one only when the copy can't be made. A dev build names the source file. */
+function shieldScannerPath(): string {
+  if (!app.isPackaged) return join(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs')
+  return keepScannerCopy(shippedScannerDir(), scannerCopyDir(), scannerCopyDeps) ?? join(shippedScannerDir(), SHIELD_SCANNER_FILES[0])
+}
+
 /** The person's own config files, which their git reads core.hooksPath from (gitCommand.ts GitOptions.keepEnv, M7). */
 const HOOKS_KEEP_ENV = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'] as const
 
 /** Resolve the repo's REAL hooks dir (honours worktrees / core.hooksPath), plus an absolute
- *  node ('' when none is found: the install refuses) and the shipped scanner. Null when `cwd` is not a git repository. */
-async function hookPathsFor(cwd: string): Promise<HookPaths | null> {
+ *  node ('' when none is found: the install refuses) and the scanner (shieldScannerPath, which Protect asks for: status
+ *  and removal read the node and scanner a block names from the block itself). Null when `cwd` is not a git repository. */
+async function hookPathsFor(cwd: string, scanner: () => string = () => ''): Promise<HookPaths | null> {
   try {
     const rel = (await safeGitAsync(['rev-parse', '--git-path', 'hooks'], { cwd, timeout: 5000, keepEnv: HOOKS_KEEP_ENV })).trim()
     if (!rel) return null
     return {
       hooksDir: ghResolve(cwd, rel),
       nodePath: shieldNodePath(process.env, (env) => resolveNodeCommand(env), ghPath, ghPath.delimiter) ?? '',
-      scriptPath: app.isPackaged
-        ? join(process.resourcesPath, 'mcp-adapter', 'termpolis-githook.cjs')
-        : join(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs'),
+      scriptPath: scanner(),
     }
   } catch { return null }
 }
@@ -2189,7 +2207,7 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
       if (picked.canceled || !picked.filePaths[0]) return ok({ canceled: true })
       repo = picked.filePaths[0]
     }
-    const paths = await hookPathsFor(repo)
+    const paths = await hookPathsFor(repo, shieldScannerPath)
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
     const verdict = await shieldMayWrite(repo, paths.hooksDir)
     if (verdict !== 'allowed') return err(SHIELD_NOT_INSTALLED[verdict])
@@ -4505,6 +4523,9 @@ if (!gotTheLock) {
     // Warm the shell-PATH cache off-thread so the sync readers of it never fork a login shell.
     // No-op on Windows, where PATH is global and the sync version short-circuits anyway.
     void primeInteractiveShellPath()
+    // A Commit Shield scanner copy that Protect made is brought up to this version's rules, so the hooks naming it scan
+    // with them (shieldScanner.ts, I1): four small files, in a packaged build only.
+    refreshScannerCopy(app.isPackaged, shippedScannerDir, scannerCopyDir, scannerCopyDeps)
     // Same idea for the bundled-tools probe: spawnTerminal asks whether jq/yq/nano exist, and
     // asking it there means three CreateProcess calls on the main thread while the user waits for
     // the terminal to open. Answered here instead, long before the first terminal.

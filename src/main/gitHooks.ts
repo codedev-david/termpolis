@@ -34,6 +34,8 @@ export interface HookDeps {
   readFile: (p: string) => string | null
   writeFile: (p: string, data: string) => void
   exists: (p: string) => boolean
+  /** Whether the program at `p` can be run, as the hook's `[ -x ]` asks (I1). Left out, a file that exists counts. */
+  canRun?: (p: string) => boolean
   chmod: (p: string, mode: number) => void
   remove: (p: string) => void
   /** What the file at `p` is, without following a link (hookFileKind). */
@@ -80,8 +82,11 @@ export interface HookPaths {
 
 /** 'foreign' = a hook file is there that carries no block of ours. 'link' and 'other' = a hook file that is a link,
  *  or not a regular file: never read (readHook), so whether it carries a block is not known. 'outdated' = a block of
- *  ours is there, but Protect would write the file differently now: an older Termpolis's block (one that looked node up
- *  on PATH), a node or scanner that has moved, a doubled block, or lines that gained CRs. Protect again replaces it. */
+ *  ours is there that no longer scans: one whose template is not today's (an older Termpolis's block that looked node
+ *  up on PATH, a doubled block, lines that gained CRs), or one whose node or scanner is gone or can't be run. A block
+ *  that names a node or scanner other than the ones this launch found, both still there, is 'installed' (I1): an nvm
+ *  shell against the Dock, a dev build against a packaged one, a snap revision or AppImage mount still mounted. Protect
+ *  again replaces an outdated block. */
 export type HookState = 'installed' | 'outdated' | 'absent' | 'foreign' | 'link' | 'other'
 
 const HOOK_NAMES: readonly HookName[] = ['pre-commit', 'pre-push']
@@ -153,6 +158,22 @@ function renderBlock(name: HookName, paths: HookPaths): string {
     END,
     '',
   ].join('\n')
+}
+
+/** A value shq wrote, read back as sh reads it; null for anything shq would not have written. */
+function unshq(v: string): string | null {
+  if (!/^'(?:[^']|'\\'')*'$/.test(v)) return null
+  return v.slice(1, -1).split(`'\\''`).join("'")
+}
+
+/** The node and scanner a block of ours names, read from its own lines; null when they are not there as today's
+ *  template writes them (an older template, or lines that gained CRs). */
+function namedPaths(text: string): { nodePath: string; scriptPath: string } | null {
+  const node = /^ {2}_termpolis_node=(.*)$/m.exec(text)
+  const shield = /^ {2}_termpolis_shield=(.*)$/m.exec(text)
+  const nodePath = node && unshq(node[1])
+  const scriptPath = shield && unshq(shield[1])
+  return nodePath && scriptPath ? { nodePath, scriptPath } : null
 }
 
 /** The whole script text for a hook we own outright. Pure. */
@@ -430,10 +451,11 @@ export function shieldNodePath(
 
 /** Each hook's state, read the way install and uninstall read it (readHook): a link or a file that is not a regular
  *  one is reported by its kind and never read through, so 'installed' and 'outdated' are always a block uninstallHooks
- *  can take out (HOLD-A R2-3). A regular file it cannot read counts as foreign. A block is 'outdated' when Protect
- *  would rewrite the file (installing twice is byte-identical, so any change is a block that is not today's), and only
- *  when Protect could: with no node found now the install refuses, and a hook Protect skips (a non-shell one) keeps
- *  whatever block it has, so both stay 'installed' rather than offer a Protect again that would change nothing. */
+ *  can take out (HOLD-A R2-3). A regular file it cannot read counts as foreign. A block is judged by what it names, not
+ *  by what this launch would write (I1): its template is today's when rendering it again with its own node and scanner
+ *  gives the same bytes (installing twice is byte-identical), and it still scans while that node runs and that scanner
+ *  is there. Either failing is 'outdated', even with no node found now, because the shield has stopped and the person
+ *  has to know. A hook Protect skips (a non-shell one) keeps whatever block it has and stays 'installed'. */
 export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, HookState> {
   const out = {} as Record<HookName, HookState>
   for (const name of HOOK_NAMES) {
@@ -441,9 +463,11 @@ export function hookStatus(paths: HookPaths, deps: HookDeps): Record<HookName, H
     const kind = deps.fileKind(file)
     if (kind !== 'file') { out[name] = kind; continue }
     const text = deps.readFile(file) ?? ''
-    if (!hasBlock(text)) out[name] = 'foreign'
-    else if (paths.nodePath !== '' && isChainable(text) && composeHook(name, paths, text) !== text) out[name] = 'outdated'
-    else out[name] = 'installed'
+    if (!hasBlock(text)) { out[name] = 'foreign'; continue }
+    const named = namedPaths(text)
+    const scans = named !== null && composeHook(name, { ...paths, ...named }, text) === text &&
+      deps.exists(named.nodePath) && (deps.canRun?.(named.nodePath) ?? true) && deps.exists(named.scriptPath)
+    out[name] = !scans && isChainable(text) ? 'outdated' : 'installed'
   }
   return out
 }

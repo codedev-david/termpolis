@@ -493,7 +493,7 @@ export function SecuritySettings() {
               return (
                 <div key={r.repo} className="flex items-center gap-2 text-xs p-2 rounded bg-[#1e1e1e]">
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${armed ? 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]' : 'bg-[#3a2a0d] text-[#FFB74D] border-[#6e4d1f]'}`}>
-                    {/* PENDING SIGN-OFF (new wording, HOLD-B): "outdated" and its Protect again button. */}
+                    {/* PENDING SIGN-OFF (new wording, HOLD-B): "outdated", its Protect again button and that button's tooltip. */}
                     {armed ? 'armed' : outdated ? 'outdated' : 'not installed'}
                   </span>
                   <span className="font-mono text-[11px] truncate" title={r.repo}>{r.repo}</span>
@@ -501,7 +501,7 @@ export function SecuritySettings() {
                     <button
                       onClick={() => { void protectRepo(r.repo) }}
                       disabled={hookBusy}
-                      title="This repository's hooks were written by an older Termpolis, or name a node or scanner that has moved. Protect again replaces them."
+                      title="This repository's shield no longer scans: its hooks were written by an older Termpolis, or the node or scanner they name is gone. Protect again rewrites Termpolis's part of them."
                       className="ml-auto text-[10px] text-[#7ee2a3] hover:underline disabled:opacity-40"
                     >
                       Protect again
