@@ -99,12 +99,46 @@ let dir: string | null = null
 const graphs = new Map<string, GraphState>()
 /** Full builds asked for and not yet finished, by project key (buildCodeGraph), with how many. They run one at a time. */
 const sweeping = new Map<string, number>()
-/** The full build of a project under way (buildCodeGraphImpl). `target` is the graph it fills: a new one aside (a
- *  rebuild, swapped in once whole) or the live one (a first build). `edited` holds the files an edit wrote while it ran
+/** The full build of a project under way (runBuild). `target` is the graph it fills: a new one aside (a rebuild,
+ *  swapped in once whole) or the live one (a first build). `edited` holds the files an edit wrote while it ran
  *  (indexFileContent, or a watcher batch let in at one of its boundaries): the build leaves those as the edit left
- *  them. It is registered before the build lists the project's files, so an edit made while it lists is kept too. */
-interface BuildRec { target: GraphState; aside: boolean; edited: Set<string> }
+ *  them. `retry` holds the files a watcher batch could not read while it ran (and removed): the build reads each once
+ *  more before it publishes, so a read failure that passes (EBUSY while an editor saves) does not outlast the build.
+ *  It is registered before the build lists the project's files, so an edit made while it lists is kept too. */
+interface BuildRec { target: GraphState; aside: boolean; edited: Set<string>; retry: Set<string> }
 const builds = new Map<string, BuildRec>()
+/** A full build asked for while another of the project runs, by project key: it waits for that one. A later request of
+ *  the project joins it: one listing serves every request made before it starts, and the last request's deps are the
+ *  ones it runs with. Once it starts, a new request waits for a new build, which lists after it. A build asked for
+ *  while none runs starts at once and is never joined. */
+interface PendingBuild { deps: CodeGraphDeps; result: Promise<CodeGraphStats> }
+const pendingBuilds = new Map<string, PendingBuild>()
+
+/** How long one read of a file by a sweep or a watcher batch may take, and one listing of a project, before it counts as
+ *  failed. Each holds the project's lock or its build queue while it waits (graphLock below), so one that never comes
+ *  back (a share that stopped answering) would hold every later build and batch of the project. The abandoned read is
+ *  left to finish on its own: its result is dropped. The listing's git calls have their own 60 s limit
+ *  (codeIngest.ts LIST_TIMEOUT_MS); this one covers the whole listing, the nested repositories and file checks too. */
+const READ_TIMEOUT_MS = 30_000
+const LISTING_TIMEOUT_MS = 5 * 60_000
+let readTimeoutMs = READ_TIMEOUT_MS
+let listingTimeoutMs = LISTING_TIMEOUT_MS
+/** `work`, or a rejection (code ETIMEDOUT) once `ms` have passed without it settling. */
+function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`${what} took longer than ${ms} ms`), { code: 'ETIMEDOUT' })), ms)
+  })
+  return Promise.race([work, late]).finally(() => clearTimeout(timer))
+}
+const readBounded = (readFile: (file: string) => Promise<string>, file: string): Promise<string> =>
+  bounded(readFile(file), readTimeoutMs, `reading ${file}`)
+/** Whether a failed read says the file is not there (deleted, or a folder on its path is), not that it could not be read
+ *  just now. */
+const isGone = (e: unknown): boolean => {
+  const code = (e as { code?: unknown } | null)?.code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
 
 /**
  * One project's full builds and watcher batches never run over each other (Codex and Opus reviews of 06419179).
@@ -119,7 +153,10 @@ const builds = new Map<string, BuildRec>()
  *
  * The price: a watcher batch that comes while a build reads waits for that build's next boundary (at most 16 files;
  * it goes through while the build waits out that boundary's pause), and one that comes while a build is listing goes
- * ahead at once. Builds asked for back to back each sweep in full, one after the other: only one aside copy at once.
+ * ahead at once. A batch holds the lock through its own pauses (sweepPause, capped), so a build waits those out. Every
+ * read under the lock, and the listing, is bounded (READ_TIMEOUT_MS, LISTING_TIMEOUT_MS): one that never comes back
+ * holds the other side for that long, not for good. Builds asked for while one runs join one build (pendingBuilds),
+ * which lists after the one running: only one aside copy at once, and one listing however many were asked for.
  */
 const buildQueue = new Map<string, Promise<void>>()
 const graphLock = new Map<string, Promise<void>>()
@@ -152,16 +189,29 @@ function stateFor(key?: string): GraphState {
   }
   return s
 }
-/** States to WRITE an edit into: the live graph, and the graph a full build is filling aside for that key. */
+/** States to WRITE an edit into: the live graph, and the graph a full build of that key is filling when that is another
+ *  one: the one it fills aside, or a first build's that initCodeGraph took out of `graphs` (a brain import), which the
+ *  build still publishes. */
 function writeStates(key: string): GraphState[] {
   const out = [stateFor(key)]
   const b = builds.get(key)
-  if (b?.aside) out.push(b.target)
+  if (b && b.target !== out[0]) out.push(b.target)
   return out
 }
 /** An edit of `file` was just written: the build of `key` under way leaves the file as the edit left it. */
 function markEdited(key: string, file: string): void {
-  builds.get(key)?.edited.add(file)
+  const b = builds.get(key)
+  if (!b) return
+  b.edited.add(file)
+  b.retry.delete(file)
+}
+/** A watcher batch could not read `file` and removed it: the build of `key` under way reads it itself (it is no longer
+ *  left as an earlier edit left it), and once more before it publishes. */
+function markFailed(key: string, file: string): void {
+  const b = builds.get(key)
+  if (!b) return
+  b.edited.delete(file)
+  b.retry.add(file)
 }
 /** States to READ for a query: ALL_REPOS → every graph; else the one (active/explicit). */
 function readStates(key?: string): GraphState[] {
@@ -226,7 +276,15 @@ function removeFile(st: GraphState, file: string): void {
   st.fileImports.delete(file)
 }
 
-/** Load persisted graphs from `d`: the default `code-graph.json` plus every `code-graph-<key>.json`. */
+/**
+ * Load persisted graphs from `d`: the default `code-graph.json` plus every `code-graph-<key>.json`.
+ *
+ * It replaces `graphs` at once and takes no lock (graphLock): it runs at start-up and after a brain import (index.ts),
+ * both synchronous callers, and a lock per project would make it wait for every build under way, which can be held for
+ * minutes by sweepPause. Nothing is lost to it meanwhile: a watcher batch picks the graphs it writes into after its
+ * reads (reindexPathsImpl), so it writes into the loaded ones, and a build under way publishes the graph it fills
+ * (runBuild), the disk as read after the archive was made, over the loaded one.
+ */
 export function initCodeGraph(d: string): void {
   dir = d
   graphs.clear()
@@ -418,17 +476,26 @@ export async function reindexRepoGraph(root: string, pause?: () => Promise<unkno
  *
  *  Wipe guard: if discovery yields NO files but this repo already has a non-empty graph, the old
  *  graph is preserved — a transient git-off-PATH / non-git cwd can no longer erase a good index. */
-export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<CodeGraphStats> {
+export function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<CodeGraphStats> {
+  // The project asked for last is the one the queries that name none answer from (code-graph:search, the MCP code
+  // tools), whichever of the builds asked for finishes last.
+  activeKey = projectKey
+  const waiting = pendingBuilds.get(projectKey)
+  if (waiting) {
+    waiting.deps = deps
+    return waiting.result
+  }
   // Name the work, so a stall during a repo sweep is reported as `code-graph:sweep` rather than as an
   // anonymous `sync-work` the user has to guess at. (Guessing is precisely what this cost us.)
   sweeping.set(projectKey, (sweeping.get(projectKey) ?? 0) + 1)
-  try {
-    return await buildCodeGraphImpl(deps, projectKey)
-  } finally {
+  const req = { deps } as PendingBuild
+  if (buildQueue.has(projectKey)) pendingBuilds.set(projectKey, req)
+  req.result = buildCodeGraphImpl(req, projectKey).finally(() => {
     const left = (sweeping.get(projectKey) as number) - 1
     if (left > 0) sweeping.set(projectKey, left)
     else sweeping.delete(projectKey)
-  }
+  })
+  return req.result
 }
 
 /**
@@ -441,31 +508,33 @@ export function graphSweeping(projectKey: string): boolean {
   return sweeping.has(projectKey)
 }
 
-async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Promise<CodeGraphStats> {
+async function buildCodeGraphImpl(req: PendingBuild, projectKey: string): Promise<CodeGraphStats> {
   const done = await acquire(buildQueue, projectKey) // the builds asked for before this one finish first
+  // Started: a request from now on waits for a build of its own, which lists after this one. A build that started at
+  // once was never the waiting one, and one asked for after it may be by now.
+  if (pendingBuilds.get(projectKey) === req) pendingBuilds.delete(projectKey)
   try {
-    return await runBuild(deps, projectKey)
+    return await runBuild(req.deps, projectKey)
   } finally {
     done()
   }
 }
 
 async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGraphStats> {
-  activeKey = projectKey
   const hold = { release: await acquire(graphLock, projectKey) }
   // A rebuild fills a new graph aside and swaps it in once it is whole, so a reader (the MCP code tools) keeps the
   // last complete graph meanwhile instead of a part of one; a held sweep (sweepPause) can take minutes under steady
   // typing. A first build has nothing to keep, so it fills the live graph and answers grow file by file.
   const st = stateFor(projectKey)
   const aside = st.symbolsById.size > 0 || st.fileImports.size > 0
-  const rec: BuildRec = { target: aside ? newState() : st, aside, edited: new Set() }
+  const rec: BuildRec = { target: aside ? newState() : st, aside, edited: new Set(), retry: new Set() }
   if (!aside) clearState(st)
   builds.set(projectKey, rec)
   try {
     hold.release() // a watcher batch may go through while the project is listed
     let files: string[] | null = null
     try {
-      files = await deps.listFiles()
+      files = await bounded(deps.listFiles(), listingTimeoutMs, 'listing the project')
     } catch {
       /* keep the graph as it is */
     }
@@ -481,7 +550,10 @@ async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGr
       }
       hold.release = await acquire(graphLock, projectKey)
     }, deps.readFile)
-    if (aside) graphs.set(projectKey, rec.target)
+    await settleEdits(rec, files, deps.readFile)
+    // Published whether or not it was filled aside: a first build's graph is the live one, unless a brain import
+    // (initCodeGraph) replaced `graphs` while it ran, and this build read the disk after that archive was made.
+    graphs.set(projectKey, rec.target)
     rebuildEdges(projectKey)
   } finally {
     builds.delete(projectKey)
@@ -489,6 +561,49 @@ async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGr
   }
   await persistCodeGraph(projectKey)
   return statsOf(rec.target)
+}
+
+/**
+ * The files a watcher batch touched while a build ran, settled against the disk before it publishes (under graphLock,
+ * so no batch holds a read meanwhile):
+ *
+ * - A file a batch wrote that the listing does not hold. The listing may be older than the batch's read (a file made
+ *   since) or newer (deleted since: the batch read it while the build listed, then it went). A read says which: one
+ *   that finds it gone takes it out; one that fails otherwise (busy, slow) leaves what the batch wrote. Its delete
+ *   event still comes, and its batch takes it out of the live graph as any batch does.
+ * - A file a batch could not read, and removed (BuildRec.retry): read once more, so a failure that passed is not
+ *   published. Still unreadable, it stays out, as a batch with no build under way leaves it.
+ */
+async function settleEdits(rec: BuildRec, files: string[], readFile: (file: string) => Promise<string>): Promise<void> {
+  const listed = new Set(files)
+  for (const file of [...rec.edited]) {
+    if (listed.has(file)) continue
+    try {
+      await readBounded(readFile, file)
+    } catch (e) {
+      if (isGone(e)) removeFile(rec.target, file)
+    }
+  }
+  const cap = maxGraphFileChars()
+  for (const file of [...rec.retry]) {
+    let ex: FileExtract | null = null
+    try {
+      const content = await readBounded(readFile, file)
+      if (content.length > cap) sweepCounters.skippedLarge++
+      else {
+        const got = (await extractFileTS(file, content)) ?? extractFile(file, content)
+        if (got) ex = withRefs(got, content)
+      }
+    } catch {
+      /* still unreadable: it stays out */
+    }
+    // An edit of the file made while this read and parsed (indexFileContent) is newer, and was written already. A file
+    // still unreadable needs no removal: one on this list is not in rec.target, as the batch that failed removed it
+    // from every graph it writes, and fillGraph takes a file off the list when it indexes it.
+    if (!ex || rec.edited.has(file)) continue
+    removeFile(rec.target, file)
+    indexExtract(rec.target, ex, '')
+  }
 }
 
 /** One sweep's reads and parses into its graph, calling `boundary` every YIELD_EVERY files (the build gives the main
@@ -509,7 +624,7 @@ async function fillGraph(rec: BuildRec, files: string[], boundary: () => Promise
     if (!isIndexableCodeFile(file) || !languageForFile(file) || rec.edited.has(file)) continue
     let content: string
     try {
-      content = await readFile(file)
+      content = await readBounded(readFile, file)
     } catch {
       continue
     }
@@ -525,6 +640,7 @@ async function fillGraph(rec: BuildRec, files: string[], boundary: () => Promise
     if (rec.edited.has(file)) continue
     removeFile(st, file)
     if (ex) indexExtract(st, ex, content)
+    rec.retry.delete(file) // read here after a batch could not: settleEdits need not read it again
   }
 }
 
@@ -560,7 +676,9 @@ async function reindexPathsImpl(
     // Read and parse every path first, then apply them all in one synchronous step with the edges, so a reader sees
     // the graph from before the pass or after it, never a file removed while its replacement is still being read.
     // Refs are filled in at once (withRefs), so the file contents are not held until then.
-    const changes: { file: string; ex: FileExtract | null; failed: boolean }[] = []
+    // `failed`: 'gone' when the read says the file is not there (it is left removed, as an edit leaves it), 'retry'
+    // when it could not be read just now (busy, slow, outside the folder).
+    const changes: { file: string; ex: FileExtract | null; failed: false | 'gone' | 'retry' }[] = []
     let sinceYield = 0
     for (const file of files) {
       if (++sinceYield >= YIELD_EVERY) {
@@ -574,13 +692,13 @@ async function reindexPathsImpl(
       }
       // A path that is not code, or no longer reads (deleted or renamed away), is removed: that alone handles a delete.
       let ex: FileExtract | null = null
-      let failed = false
+      let failed: false | 'gone' | 'retry' = false
       if (isIndexableCodeFile(file) && languageForFile(file)) {
         let content: string | null = null
         try {
-          content = await readFile(file)
-        } catch {
-          failed = true // gone / unreadable — leave it removed
+          content = await readBounded(readFile, file)
+        } catch (e) {
+          failed = isGone(e) ? 'gone' : 'retry' // gone / unreadable — leave it removed
         }
         if (content !== null) {
           const got = (await extractFileTS(file, content)) ?? extractFile(file, content)
@@ -589,18 +707,22 @@ async function reindexPathsImpl(
       }
       changes.push({ file, ex, failed })
     }
-    // Into the live graph and the graph a build under way is filling aside. A file this batch read is marked edited,
-    // so that build keeps it as it is here. A file whose read failed is removed but not marked: a build that has not
-    // reached it yet reads it itself, so a failure that passes (EBUSY or EPERM while an editor saves it on Windows)
-    // does not outlast that build, and a file that is gone is found gone by its read. One the build read before is
-    // gone until it is saved again, as it was before builds kept edits.
+    // Into the live graph and the graph a build under way is filling aside. A file this batch read, or found gone, is
+    // marked edited, so that build keeps it as it is here. A file it could not read just now is removed, and its mark
+    // (from an earlier batch) cleared: the build reads it itself if it has not reached it yet, and once more before it
+    // publishes (settleEdits), so a failure that passes (EBUSY or EPERM while an editor saves it on Windows) does not
+    // outlast that build.
+    // The states are picked here, after the reads, and not before them: initCodeGraph (a brain import) replaces
+    // `graphs` without the lock, so a pick from before a read could be a graph no longer in `graphs`, and this batch's
+    // files would be lost.
     const states = writeStates(key)
     for (const { file, ex, failed } of changes) {
       for (const t of states) {
         removeFile(t, file)
         if (ex) indexExtract(t, ex, '')
       }
-      if (!failed) markEdited(key, file)
+      if (failed === 'retry') markFailed(key, file)
+      else markEdited(key, file)
       if (ex) n += ex.symbols.length
     }
     rebuildEdges(key)
@@ -944,7 +1066,7 @@ export function activeProjectKey(): string {
 
 /** Whether a full build of `projectKey` still has its record (tests: none is left behind), and its locks are free. */
 export function _codeGraphBuildsForTests(projectKey: string): number {
-  return [builds, buildQueue, graphLock].filter((m) => m.has(projectKey)).length
+  return [builds, buildQueue, graphLock, pendingBuilds].filter((m) => m.has(projectKey)).length
 }
 
 /** The import specifiers the live graph of `projectKey` holds for `file` (tests). */
@@ -952,11 +1074,20 @@ export function _codeGraphImportsForTests(projectKey: string, file: string): str
   return stateFor(projectKey).fileImports.get(file)
 }
 
+/** Shortens the read and listing time limits (tests); no argument puts them back. */
+export function _setCodeGraphTimeoutsForTests(t: { readMs?: number; listingMs?: number } = {}): void {
+  readTimeoutMs = t.readMs ?? READ_TIMEOUT_MS
+  listingTimeoutMs = t.listingMs ?? LISTING_TIMEOUT_MS
+}
+
 export function _resetCodeGraphForTests(): void {
   dir = null
   graphs.clear()
   sweeping.clear()
   builds.clear()
+  pendingBuilds.clear()
+  readTimeoutMs = READ_TIMEOUT_MS
+  listingTimeoutMs = LISTING_TIMEOUT_MS
   buildQueue.clear()
   graphLock.clear()
   persisting.clear()
