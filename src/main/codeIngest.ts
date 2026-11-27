@@ -18,6 +18,7 @@ import { isIndexableCodeFile } from './codeFileFilter'
 import { safeGitAsync } from './gitCommand'
 import { inSkippedPath, listRepo } from './repoFileList'
 import { CASE_FOLDING_PLATFORMS } from './watchGuard'
+import { confinedReader } from './world/folderSafety'
 import { walkFolder } from './world/folderWalk'
 import { readRootIgnore } from './world/rootIgnore'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
@@ -173,7 +174,11 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 // submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo; one git
 // refuses is walked as a plain folder, and a nested worktree of the repository itself is left out). Absolute paths.
 // Returns [] if not a git repo / git missing.
-export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
+// `confined` (a Lumopolis clone, someone else's content): every path discovery opens itself (a `.gitmodules`, a
+// nested repository's `.git`, a worktree's `.git` pointer) is opened through its real path, and only if that is
+// inside the clone, so a committed link out of it never makes a folder outside a repository to list. The paths it
+// lists may still be links: the reader a sweep is handed (confinedReader) refuses those.
+export async function discoverRepoFiles(repoRoot: string, opts: { confined?: boolean } = {}): Promise<string[]> {
   if (!repoRoot) return []
   // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
   // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
@@ -185,10 +190,14 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
       (out) => out,
       () => null
     )
-  const statOf = (p: string): Promise<Stats | null> => fsp.stat(p).then((st) => st, () => null)
+  const stat = opts.confined ? confinedReader(repoRoot, (p) => fsp.stat(p)) : (p: string) => fsp.stat(p)
+  // listRepo reads a `.git` file only once the stat above has found it a file, so a confined read refuses only a path
+  // swapped for a link between the two: it is kept for that.
+  const read = opts.confined ? confinedReader(repoRoot, (p) => fsp.readFile(p, 'utf8')) : (p: string) => fsp.readFile(p, 'utf8')
+  const statOf = (p: string): Promise<Stats | null> => stat(p).then((st) => st, () => null)
   const exists = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null)
   const isFile = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null && st.isFile())
-  const readText = (p: string): Promise<string | null> => fsp.readFile(p, 'utf8').then((t) => t, () => null)
+  const readText = (p: string): Promise<string | null> => read(p).then((t) => t, () => null)
   const listed = await listRepo(repoRoot, { git, exists, isFile, readText, walk: walkNested })
   if (listed === null) return []
   listingNotes.set(notesKey(repoRoot), { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
@@ -239,13 +248,17 @@ export interface CodeIngestMemory {
 
 export async function runCodeIngest(
   memory: CodeIngestMemory,
-  opts: { repoRoot: string; chunkOptions?: CodeChunkOptions; maxChunks?: number },
+  opts: { repoRoot: string; chunkOptions?: CodeChunkOptions; maxChunks?: number; confined?: boolean },
 ): Promise<CodeIngestStats> {
+  // `confined`: a Lumopolis clone. Its listing and its reads stay inside it (discoverRepoFiles, confinedReader), as
+  // the code graph's sweeps of it do (index.ts graphSourceFor).
+  const read = (fp: string): Promise<string> => fsp.readFile(fp, 'utf8')
+  const confined = opts.confined === true
   return ingestCode({
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
-    listFiles: () => discoverRepoFiles(opts.repoRoot),
-    readFile: (fp) => fsp.readFile(fp, 'utf8'),
+    listFiles: () => discoverRepoFiles(opts.repoRoot, { confined }),
+    readFile: confined ? confinedReader(opts.repoRoot, read) : read,
     hasHash: memory.hasHash,
     hasHashes: memory.hasHashes,
     prunePath: memory.prunePath,

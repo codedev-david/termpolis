@@ -462,10 +462,16 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => { setImme
 const YIELD_EVERY = 16
 
 /** Re-index a repo's code graph from disk — used by the file-watch freshness path (codeWatch). `pause` is the
- *  sweep's own (CodeGraphDeps.pause): a whole-repo re-sweep stands aside exactly as the first index does. */
-export async function reindexRepoGraph(root: string, pause?: () => Promise<unknown>): Promise<CodeGraphStats> {
+ *  sweep's own (CodeGraphDeps.pause): a whole-repo re-sweep stands aside exactly as the first index does. `source`
+ *  is the listing and the reader to sweep with (index.ts graphSourceFor, confined for a clone); without one, git's
+ *  listing of `root` and a plain read. */
+export async function reindexRepoGraph(
+  root: string,
+  pause?: () => Promise<unknown>,
+  source: Pick<CodeGraphDeps, 'listFiles' | 'readFile'> = { listFiles: () => discoverRepoFiles(root), readFile: (f) => fs.promises.readFile(f, 'utf8') },
+): Promise<CodeGraphStats> {
   return buildCodeGraph(
-    { listFiles: () => discoverRepoFiles(root), readFile: (f) => fs.promises.readFile(f, 'utf8'), ...(pause ? { pause } : {}) },
+    { listFiles: source.listFiles, readFile: source.readFile, ...(pause ? { pause } : {}) },
     graphKeyForRoot(root),
   )
 }
@@ -679,6 +685,7 @@ async function reindexPathsImpl(
     // `failed`: 'gone' when the read says the file is not there (it is left removed, as an edit leaves it), 'retry'
     // when it could not be read just now (busy, slow, outside the folder).
     const changes: { file: string; ex: FileExtract | null; failed: false | 'gone' | 'retry' }[] = []
+    const cap = maxGraphFileChars()
     let sinceYield = 0
     for (const file of files) {
       if (++sinceYield >= YIELD_EVERY) {
@@ -699,6 +706,11 @@ async function reindexPathsImpl(
           content = await readBounded(readFile, file)
         } catch (e) {
           failed = isGone(e) ? 'gone' : 'retry' // gone / unreadable — leave it removed
+        }
+        // Past the cap it is left out, as a full sweep leaves it out (fillGraph): read, so not a failure.
+        if (content !== null && content.length > cap) {
+          sweepCounters.skippedLarge++
+          content = null
         }
         if (content !== null) {
           const got = (await extractFileTS(file, content)) ?? extractFile(file, content)
@@ -743,17 +755,20 @@ export async function reindexWatchedChange(
   files: string[],
   readFile: (file: string) => Promise<string>,
   pause?: () => Promise<unknown>,
+  listFiles: () => Promise<string[]> = () => discoverRepoFiles(root),
 ): Promise<void> {
+  // A full re-sweep reads with the reader the batch is handed, and lists with `listFiles` (both confined for a clone).
+  const source = { listFiles, readFile }
   try {
     if (files.length === 0) {
-      await reindexRepoGraph(root, pause)
+      await reindexRepoGraph(root, pause, source)
       return
     }
     const abs = files.map((f) => path.join(root, f)) // graph file keys are absolute (discoverRepoFiles)
     await reindexPaths(abs, readFile, graphKeyForRoot(root), pause)
   } catch {
     try {
-      await reindexRepoGraph(root, pause)
+      await reindexRepoGraph(root, pause, source)
     } catch {
       /* keep the last good graph */
     }

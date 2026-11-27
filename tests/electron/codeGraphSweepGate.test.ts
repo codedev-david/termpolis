@@ -193,6 +193,6 @@ describe('HP-3: index.ts waits on the governor before a code ingest and hands it
   it("the file watcher's re-index of a change (reindexWatchedChange) is handed sweepPause too", () => {
     const calls = index.match(/reindexWatchedChange\([^\n]*/g) ?? []
     expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/, \(\) => sweepPause\(\)\)$/)
+    expect(calls[0]).toMatch(/, \(\) => sweepPause\(\), src\.listFiles\)$/)
   })
 })
