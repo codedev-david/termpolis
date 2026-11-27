@@ -1302,7 +1302,7 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
  * come here unwritten (ptyHost.ts).
  */
 function handleTerminalWrite(id: string, data: string, key: string | undefined, written = false): void {
-  noteTyping() // background work (conversation ingest, the indexer) stands aside for 500 ms after this
+  noteTyping() // background work (conversation ingest, the indexer, code-graph sweeps) stands aside for 500 ms after this
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile. The model
   // picker's own writes carry the key of its hold (§7.5). xterm's answers to a query (the cursor
@@ -2753,8 +2753,8 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   } catch (e: any) { return err(e.message) }
 })
 
-/** Indexes `root` into the code graph (async reads, paused while the app sheds load). A cloned repository is
- *  someone else's content: a committed symlink never leads a read out of the clone. */
+/** Indexes `root` into the code graph (async reads, held by sweepPause while the app sheds load or someone types).
+ *  A cloned repository is someone else's content: a committed symlink never leads a read out of the clone. */
 function buildGraphFor(root: string) {
   const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
   return buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => sweepPause() }, graphKeyForRoot(root))
@@ -2962,7 +2962,7 @@ function watchRepoForGraphAndWorld(repoRoot: string): boolean {
     ...fsBackedWatchDeps(
       fsWatch,
       (root, files) => {
-        const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
+        const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'), () => sweepPause())
         void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
         return reindexed
       },

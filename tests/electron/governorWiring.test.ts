@@ -61,15 +61,17 @@ describe('src/main/index.ts footprint', () => {
       for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
         if (ts.isCallExpression(p) && p.expression.getText() === 'ipcMain.handle' && ts.isStringLiteral(p.arguments[0])) return p.arguments[0].text
         if (ts.isFunctionDeclaration(p) && p.name?.text === 'buildGraphFor') return 'code-graph:build'
+        if (ts.isFunctionDeclaration(p) && p.name?.text === 'watchRepoForGraphAndWorld') return 'file-watch'
       }
       return null
     }
     // A code-graph sweep's own pause is sweepPause (./sweepPause), which waits for the governor and for typing quiet:
     // so whenNotShed is called directly only before memory:ingest-code's sweep and by memory:reflect-session, and each
-    // sweep (memory:ingest-code's, and buildGraphFor's for code-graph:build) is handed sweepPause.
+    // sweep (memory:ingest-code's, buildGraphFor's for code-graph:build, and the file watcher's re-index of a change
+    // in watchRepoForGraphAndWorld) is handed sweepPause.
     expect(callsTo(text, 'whenNotShed').map(channelOf).sort()).toEqual(['memory:ingest-code', 'memory:reflect-session'])
     expect(importsFrom(text, './sweepPause')).toHaveLength(1)
-    expect(callsTo(text, 'sweepPause').map(channelOf).sort()).toEqual(['code-graph:build', 'memory:ingest-code'])
+    expect(callsTo(text, 'sweepPause').map(channelOf).sort()).toEqual(['code-graph:build', 'file-watch', 'memory:ingest-code'])
   })
 
   it('registers the other lanes’ pausables once, right after the governor is installed (shedRegistrations.ts)', () => {

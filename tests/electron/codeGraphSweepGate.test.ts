@@ -4,14 +4,18 @@
 // nor did the sweep ask the loop governor whether the main thread was already starved.
 //
 // What is counted here (never timed): how many files were parsed, how many were left out for size, and how many
-// times the sweep asked the governor at a boundary. And, statically, that the IPC handlers in index.ts wait on the
-// governor before they start and hand it to the sweep.
+// times the sweep asked its pause at a boundary. And, statically, that memory:ingest-code waits on the governor before
+// it starts, and that every sweep index.ts starts (buildCodeGraph, and the watcher's reindexWatchedChange) is handed
+// sweepPause, which waits for the governor and then for typing quiet.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import {
-  buildCodeGraph, codeGraphSweepCounters, maxGraphFileChars, MAX_GRAPH_FILE_CHARS, _resetCodeGraphForTests,
+  buildCodeGraph, codeGraphSweepCounters, maxGraphFileChars, MAX_GRAPH_FILE_CHARS, reindexPaths, reindexWatchedChange,
+  _resetCodeGraphForTests,
 } from '../../src/main/codeGraph'
+import { tmpdir } from 'os'
+import { execFileSync } from 'child_process'
 
 const SRC = 'export function alpha() { return beta() }\nexport function beta() { return 1 }\n'
 const BIG = SRC + '// ' + 'x'.repeat(MAX_GRAPH_FILE_CHARS) + '\n'
@@ -82,6 +86,51 @@ describe('HP-3: the sweep asks the loop governor at its boundaries', () => {
   })
 })
 
+describe("the watcher's re-index asks the same pause (reindexPaths, reindexWatchedChange)", () => {
+  it('reindexPaths of 40 changed files asks at every yield boundary: twice, and waits while told to', async () => {
+    const asked: number[] = []
+    let read = 0
+    const n = await reindexPaths(files(40), async () => { read++; return SRC }, 'rp-pause', async () => { asked.push(read) })
+    expect(asked).toEqual([15, 31])
+    expect(n).toBeGreaterThan(0)
+    expect(codeGraphSweepCounters()).toMatchObject({ pauses: 2 })
+  })
+
+  it('fails open: a pause that throws does not stop the re-index', async () => {
+    let read = 0
+    await reindexPaths(files(20), async () => { read++; return SRC }, 'rp-throws', async () => { throw new Error('governor gone') })
+    expect(read).toBe(20)
+  })
+
+  it('control: with no pause given nothing is asked', async () => {
+    await reindexPaths(files(40), async () => SRC, 'rp-none')
+    expect(codeGraphSweepCounters()).toMatchObject({ pauses: 0 })
+  })
+
+  it('reindexWatchedChange hands its pause to the incremental pass', async () => {
+    let asked = 0
+    const root = '/repo'
+    const rel = Array.from({ length: 40 }, (_, i) => `src/w${i}.ts`)
+    await reindexWatchedChange(root, rel, async () => SRC, async () => { asked++ })
+    expect(asked).toBe(2)
+  })
+
+  it('reindexWatchedChange hands its pause to the full re-sweep of an empty change set (reindexRepoGraph)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cg-watch-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      mkdirSync(join(root, 'src'))
+      for (let i = 0; i < 40; i++) writeFileSync(join(root, 'src', `r${i}.ts`), SRC)
+      let asked = 0
+      await reindexWatchedChange(root, [], async () => '', async () => { asked++ })
+      expect(codeGraphSweepCounters().parsed).toBe(40)
+      expect(asked).toBe(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('HP-3: index.ts waits on the governor before a code ingest and hands it (with the typing gate) to every sweep', () => {
   const index = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'index.ts'), 'utf8')
   const handler = (name: string): string => {
@@ -104,5 +153,11 @@ describe('HP-3: index.ts waits on the governor before a code ingest and hands it
     expect(calls.length).toBeGreaterThanOrEqual(2)
     expect(calls.filter((c) => !c.includes('pause: () => sweepPause()'))).toEqual([])
     expect(index).toMatch(/import \{ sweepPause \} from '\.\/sweepPause'/)
+  })
+
+  it("the file watcher's re-index of a change (reindexWatchedChange) is handed sweepPause too", () => {
+    const calls = index.match(/reindexWatchedChange\([^\n]*/g) ?? []
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatch(/, \(\) => sweepPause\(\)\)$/)
   })
 })

@@ -99,6 +99,9 @@ let dir: string | null = null
 const graphs = new Map<string, GraphState>()
 /** Full builds under way, by project key (buildCodeGraph), with how many: two may overlap. */
 const sweeping = new Map<string, number>()
+/** The graphs full builds are filling aside, by project key, until each is swapped in (buildCodeGraphImpl). An
+ *  edit indexed meanwhile (reindexPaths, indexFileContent) goes into these too, or the swap would undo it. */
+const buildingAside = new Map<string, Set<GraphState>>()
 let activeKey = ''
 
 /** The repo key for a root path (stable, full-path derived). Empty string = the default graph. */
@@ -114,6 +117,11 @@ function stateFor(key?: string): GraphState {
     graphs.set(k, s)
   }
   return s
+}
+/** States to WRITE an edit into: the live graph, and every graph a full build is filling aside for that key. */
+function writeStates(key?: string): GraphState[] {
+  const k = key ?? activeKey
+  return [stateFor(k), ...(buildingAside.get(k) ?? [])]
 }
 /** States to READ for a query: ALL_REPOS → every graph; else the one (active/explicit). */
 function readStates(key?: string): GraphState[] {
@@ -276,10 +284,13 @@ function indexExtract(st: GraphState, ex: FileExtract, content: string): number 
 /** Index (or re-index) one file's content via the heuristic extractor, pruning its prior symbols.
  *  Synchronous — used by the incremental single-file path and tests. Does NOT rebuild edges. */
 export function indexFileContent(file: string, content: string, projectKey?: string): number {
-  const st = stateFor(projectKey)
+  const [st, ...aside] = writeStates(projectKey)
+  for (const t of aside) removeFile(t, file)
   removeFile(st, file)
   const ex = extractFile(file, content)
-  return ex ? indexExtract(st, ex, content) : 0
+  if (!ex) return 0
+  for (const t of aside) indexExtract(t, ex, content)
+  return indexExtract(st, ex, content)
 }
 
 /** Incremental single-file re-index: index + rebuild edges + persist (one repo). */
@@ -294,8 +305,9 @@ export async function reindexFile(file: string, content: string, projectKey?: st
 export interface CodeGraphDeps {
   listFiles: () => Promise<string[]>
   readFile: (file: string) => Promise<string>
-  /** Asked at each yield boundary of a sweep (HP-3): the loop governor's whenNotShed, which holds the sweep while
-   *  the main thread is starved (capped, fails open). A throw is ignored: the sweep goes on. */
+  /** Asked at each yield boundary of a sweep (HP-3). main hands it sweepPause (sweepPause.ts): the loop governor's
+   *  whenNotShed, which holds the sweep while the main thread is starved, then the typing gate, which holds it while
+   *  someone types (each capped, fails open). A throw is ignored: the sweep goes on. */
   pause?: () => Promise<unknown>
 }
 
@@ -340,10 +352,11 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => { setImme
  *  reads as a freeze; high enough that the yield overhead is noise. */
 const YIELD_EVERY = 16
 
-/** Re-index a repo's code graph from disk — used by the file-watch freshness path (codeWatch). */
-export async function reindexRepoGraph(root: string): Promise<CodeGraphStats> {
+/** Re-index a repo's code graph from disk — used by the file-watch freshness path (codeWatch). `pause` is the
+ *  sweep's own (CodeGraphDeps.pause): a whole-repo re-sweep stands aside exactly as the first index does. */
+export async function reindexRepoGraph(root: string, pause?: () => Promise<unknown>): Promise<CodeGraphStats> {
   return buildCodeGraph(
-    { listFiles: () => discoverRepoFiles(root), readFile: (f) => fs.promises.readFile(f, 'utf8') },
+    { listFiles: () => discoverRepoFiles(root), readFile: (f) => fs.promises.readFile(f, 'utf8'), ...(pause ? { pause } : {}) },
     graphKeyForRoot(root),
   )
 }
@@ -368,9 +381,10 @@ export async function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Prom
 }
 
 /**
- * Whether a full build of `projectKey` is under way. A sweep clears the graph and refills it file by file, so
- * until it ends the graph holds only the files read so far: a reader that needs the whole project (the world's
- * first map) must not take it for the project.
+ * Whether a full build of `projectKey` is under way. A rebuild fills a new graph aside and swaps it in at the end,
+ * so until then the graph is the last build's, which may be stale; a first build (no graph yet) fills the live
+ * graph file by file, so it holds only the files read so far. Either way a reader that needs the whole project as
+ * it is now (the world's first map) must not take it for the project.
  */
 export function graphSweeping(projectKey: string): boolean {
   return sweeping.has(projectKey)
@@ -388,7 +402,35 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
   if (files.length === 0 && st.symbolsById.size > 0) {
     return statsOf(st) // preserve the last good graph — don't wipe on empty discovery
   }
-  clearState(st)
+  // A rebuild fills a new graph aside and swaps it in once it is whole, so a reader (the MCP code tools) keeps the
+  // last complete graph meanwhile instead of a partial one; a held sweep (sweepPause) can take minutes under steady
+  // typing. A first build has nothing to keep, so it fills the live graph and answers grow file by file.
+  const aside = st.symbolsById.size > 0 || st.fileImports.size > 0
+  const target = aside ? newState() : st
+  if (aside) {
+    const set = buildingAside.get(projectKey) ?? new Set<GraphState>()
+    set.add(target)
+    buildingAside.set(projectKey, set)
+  } else {
+    clearState(st)
+  }
+  try {
+    await fillGraph(target, files, deps)
+  } finally {
+    if (aside) {
+      const set = buildingAside.get(projectKey)
+      set?.delete(target)
+      if (set && set.size === 0) buildingAside.delete(projectKey)
+    }
+  }
+  if (aside) graphs.set(projectKey, target)
+  rebuildEdges(projectKey)
+  await persistCodeGraph(projectKey)
+  return statsOf(target)
+}
+
+/** One sweep's reads and parses into `st`, yielding (and asking deps.pause) every YIELD_EVERY files. */
+async function fillGraph(st: GraphState, files: string[], deps: CodeGraphDeps): Promise<void> {
   const cap = maxGraphFileChars()
   let sinceYield = 0
   for (const file of files) {
@@ -420,9 +462,6 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
     const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
     if (ex) indexExtract(st, ex, content)
   }
-  rebuildEdges(projectKey)
-  await persistCodeGraph(projectKey)
-  return statsOf(st)
 }
 
 /** Incremental re-index of just the changed paths of one repo — the file-watch fast path. For each
@@ -436,24 +475,33 @@ export async function reindexPaths(
   files: string[],
   readFile: (file: string) => Promise<string>,
   projectKey?: string,
+  pause?: () => Promise<unknown>,
 ): Promise<number> {
-  return reindexPathsImpl(files, readFile, projectKey)
+  return reindexPathsImpl(files, readFile, projectKey, pause)
 }
 
 async function reindexPathsImpl(
   files: string[],
   readFile: (file: string) => Promise<string>,
   projectKey?: string,
+  pause?: () => Promise<unknown>,
 ): Promise<number> {
   const key = projectKey ?? activeKey
-  const st = stateFor(key)
   let n = 0
   let sinceYield = 0
   for (const file of files) {
     if (++sinceYield >= YIELD_EVERY) {
       sinceYield = 0
       await yieldToEventLoop() // same starvation trap as buildCodeGraph — see yieldToEventLoop
+      // And the same pause (CodeGraphDeps.pause): a branch switch can hand this hundreds of files.
+      if (pause) {
+        sweepCounters.pauses++
+        try { await pause() } catch { /* fail open: the pass goes on */ }
+      }
     }
+    // Read the write states at each file: a full build may have started, or ended, during the last await.
+    const [st, ...aside] = writeStates(key)
+    for (const t of aside) removeFile(t, file)
     removeFile(st, file) // prune old symbols first — this alone handles a delete/rename
     if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
     let content: string
@@ -463,7 +511,12 @@ async function reindexPathsImpl(
       continue // gone / unreadable — leave it removed
     }
     const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
-    if (ex) n += indexExtract(st, ex, content)
+    if (ex) {
+      const [live, ...asideNow] = writeStates(key) // again: the reads above awaited
+      for (const t of asideNow) { removeFile(t, file); indexExtract(t, ex, content) }
+      removeFile(live, file)
+      n += indexExtract(live, ex, content)
+    }
   }
   rebuildEdges(key)
   await persistCodeGraph(key)
@@ -473,22 +526,24 @@ async function reindexPathsImpl(
 /** The file-watch reindex action: incrementally re-index the paths that changed under `root` (given
  *  relative to root, the way fs.watch reports them), falling back to a full repo re-sweep when the
  *  change set is empty or the incremental pass throws — so a watch event never leaves the graph
- *  stale. `readFile` is injected (index.ts wires real fs; tests inject their own). */
+ *  stale. `readFile` is injected (index.ts wires real fs; tests inject their own). `pause` is asked at every
+ *  yield boundary of either pass (CodeGraphDeps.pause; index.ts hands it sweepPause). */
 export async function reindexWatchedChange(
   root: string,
   files: string[],
   readFile: (file: string) => Promise<string>,
+  pause?: () => Promise<unknown>,
 ): Promise<void> {
   try {
     if (files.length === 0) {
-      await reindexRepoGraph(root)
+      await reindexRepoGraph(root, pause)
       return
     }
     const abs = files.map((f) => path.join(root, f)) // graph file keys are absolute (discoverRepoFiles)
-    await reindexPaths(abs, readFile, graphKeyForRoot(root))
+    await reindexPaths(abs, readFile, graphKeyForRoot(root), pause)
   } catch {
     try {
-      await reindexRepoGraph(root)
+      await reindexRepoGraph(root, pause)
     } catch {
       /* keep the last good graph */
     }
@@ -784,6 +839,7 @@ export function _resetCodeGraphForTests(): void {
   dir = null
   graphs.clear()
   sweeping.clear()
+  buildingAside.clear()
   activeKey = ''
   sweepCounters.parsed = sweepCounters.skippedLarge = sweepCounters.pauses = 0
 }

@@ -6,6 +6,8 @@ import { sweepPause } from '../../src/main/sweepPause'
 import { noteTyping, resetTypingQuiet, typingGateStats, QUIET_MS, QUIET_MAX_WAIT_MS } from '../../src/main/typingQuiet'
 import { shedRegistry } from '../../src/main/loopGovernor'
 import { buildCodeGraph, codeGraphSweepCounters, _resetCodeGraphForTests } from '../../src/main/codeGraph'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 
 const SRC = 'export function alpha() { return beta() }\nexport function beta() { return 1 }\n'
 const files = (n: number): string[] => Array.from({ length: n }, (_, i) => `/repo/src/f${i}.ts`)
@@ -108,5 +110,14 @@ describe('a code-graph sweep given sweepPause stands aside for typing', () => {
     const stats = await run
     expect(stats.files).toBe(40)
     expect(codeGraphSweepCounters()).toMatchObject({ parsed: 40, pauses: 2 })
+  })
+})
+
+describe('the conversation ingest waits on the same pause, in the same order', () => {
+  it("ingestRuntime's quiet is sweepPause (the governor, then the typing gate), not its own pair of waits", () => {
+    const text = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'ingestRuntime.ts'), 'utf8')
+    expect(text).toMatch(/quiet: \(\) => sweepPause\(\),/)
+    expect(text).toMatch(/import \{ sweepPause \} from '\.\/sweepPause'/)
+    expect(text).not.toMatch(/whenTypingQuiet|whenNotShed\(/)
   })
 })

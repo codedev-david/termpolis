@@ -1177,7 +1177,9 @@ describe('memory:ingest-code', () => {
     expect(scoped).toBe(true)
 
     onChange('/repos/x', ['a.ts', 'b.ts'])
-    expect(cg.reindexWatchedChange).toHaveBeenCalledWith('/repos/x', ['a.ts', 'b.ts'], expect.any(Function))
+    expect(cg.reindexWatchedChange).toHaveBeenCalledWith('/repos/x', ['a.ts', 'b.ts'], expect.any(Function), expect.any(Function))
+    // Its pause is sweepPause (the governor, then the typing gate), as for every sweep: it resolves with nothing here.
+    await expect((cg.reindexWatchedChange.mock.calls[0][3] as () => Promise<unknown>)()).resolves.toBeUndefined()
     const readFile = cg.reindexWatchedChange.mock.calls[0][2] as (f: string) => Promise<string>
     await expect(readFile('a.ts')).resolves.toBe('{}')
     // Async read, not readFileSync — the watch path starves the loop exactly like the full sweep.

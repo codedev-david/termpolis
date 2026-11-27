@@ -1,10 +1,10 @@
 // typingQuiet.ts
 //
-// "Nothing starts within 500 ms of a keystroke." Background work (conversation ingest, the indexer's passes)
-// shares one thread with the keyboard. It cannot be moved off that thread in this release, so it is told to
-// stand aside: noteTyping() stores the time of the last keystroke (the whole of its cost on the typing path:
-// one assignment, no timer, no promise), and background work calls whenTypingQuiet() before it starts and
-// between its slices.
+// "Nothing starts within 500 ms of a keystroke." Background work (conversation ingest, the indexer's passes, and
+// the code-graph sweeps through sweepPause.ts) shares one thread with the keyboard. It cannot be moved off that
+// thread in this release, so it is told to stand aside: noteTyping() stores the time of the last keystroke (the
+// whole of its cost on the typing path: one assignment, no timer, no promise), and background work calls
+// whenTypingQuiet() before it starts and between its slices.
 //
 // The wait is capped (2 s by default): a line that never goes quiet must not starve the work for good, so
 // after the cap the work goes ahead, one short slice at a time.
