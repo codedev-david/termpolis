@@ -27,6 +27,14 @@
 // and the keys older spellings of the same folder were given (projectKeyAliases), so notes written from Git Bash,
 // Cygwin, with doubled separators, under the short spelling a search was made with, or on Linux before WP5 kept the case,
 // keep matching, and new writes get the canonical key.
+//
+// Ruling (Codex r4 M1, kept as it is): on Linux and macOS a `\` is a character of a folder name, not a separator, yet
+// every `\` is read as `/` here, so the folders `group\repo` and `group/repo` share one key. It predates Lumopolis, and
+// the key is the memory store's too: telling the two apart would re-key every note stored under such a path, which
+// needs an alias migration of its own, for folder names no git host or shell makes by default. What the shared key
+// must not do is share one folder's results with the other: the code graph's builds join only a request naming the same
+// root (codeGraph.ts CodeGraphDeps.root), so each folder is listed and read for itself, and the last one built is the
+// graph the key answers with.
 
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'

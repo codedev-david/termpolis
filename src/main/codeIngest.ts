@@ -18,7 +18,7 @@ import { isIndexableCodeFile } from './codeFileFilter'
 import { safeGitAsync } from './gitCommand'
 import { inSkippedPath, listRepo } from './repoFileList'
 import { CASE_FOLDING_PLATFORMS } from './watchGuard'
-import { confinedReader } from './world/folderSafety'
+import { confinedReader, confinedTextReader, isInside } from './world/folderSafety'
 import { walkFolder } from './world/folderWalk'
 import { readRootIgnore } from './world/rootIgnore'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
@@ -174,12 +174,19 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 // submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo; one git
 // refuses is walked as a plain folder, and a nested worktree of the repository itself is left out). Absolute paths.
 // Returns [] if not a git repo / git missing.
-// `confined` (a Lumopolis clone, someone else's content): every path discovery opens itself (a `.gitmodules`, a
-// nested repository's `.git`, a worktree's `.git` pointer) is opened through its real path, and only if that is
-// inside the clone, so a committed link out of it never makes a folder outside a repository to list. The paths it
-// lists may still be links: the reader a sweep is handed (confinedReader) refuses those.
-export async function discoverRepoFiles(repoRoot: string, opts: { confined?: boolean } = {}): Promise<string[]> {
+// `confineTo` (the clone folder of a Lumopolis clone, someone else's content: folderSafety.ts cloneConfinement): a root
+// whose real path is not inside it lists nothing, and every path discovery opens itself (a `.gitmodules`, a nested
+// repository's `.git`, a worktree's `.git` pointer, a walked nested repository's .gitignore) is opened through its real
+// path, and only if that is inside it, so a committed link out of it never makes a folder outside a repository to list,
+// nor feeds a listing rules from a file elsewhere. The paths it lists may still be links: the reader a sweep is handed
+// (confinedTextReader) refuses those.
+export async function discoverRepoFiles(repoRoot: string, opts: { confineTo?: string | null } = {}): Promise<string[]> {
   if (!repoRoot) return []
+  // Started now: notes of a listing started earlier and coming back later (one a sweep gave up waiting for) never land
+  // over these (Codex r4 M2).
+  const generation = ++listingsStarted
+  const within = opts.confineTo ?? null
+  if (within !== null && !(await insideReal(within, repoRoot))) return []
   // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
   // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
   // code re-index (a watcher event), and only fell back to the host when that failed. safeGitAsync also resolves the
@@ -190,23 +197,35 @@ export async function discoverRepoFiles(repoRoot: string, opts: { confined?: boo
       (out) => out,
       () => null
     )
-  const stat = opts.confined ? confinedReader(repoRoot, (p) => fsp.stat(p)) : (p: string) => fsp.stat(p)
+  const stat = within !== null ? confinedReader(within, (p) => fsp.stat(p)) : (p: string) => fsp.stat(p)
   // listRepo reads a `.git` file only once the stat above has found it a file, so a confined read refuses only a path
   // swapped for a link between the two: it is kept for that.
-  const read = opts.confined ? confinedReader(repoRoot, (p) => fsp.readFile(p, 'utf8')) : (p: string) => fsp.readFile(p, 'utf8')
+  const read = within !== null ? confinedTextReader(within) : (p: string) => fsp.readFile(p, 'utf8')
   const statOf = (p: string): Promise<Stats | null> => stat(p).then((st) => st, () => null)
   const exists = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null)
   const isFile = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null && st.isFile())
   const readText = (p: string): Promise<string | null> => read(p).then((t) => t, () => null)
-  const listed = await listRepo(repoRoot, { git, exists, isFile, readText, walk: walkNested })
+  const walk = (dir: string, cap: number): ReturnType<typeof walkNested> => walkNested(dir, cap, read)
+  const listed = await listRepo(repoRoot, { git, exists, isFile, readText, walk })
   if (listed === null) return []
-  listingNotes.set(notesKey(repoRoot), { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
+  const key = notesKey(repoRoot)
+  if ((notesGeneration.get(key) ?? 0) < generation) {
+    notesGeneration.set(key, generation)
+    listingNotes.set(key, { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
+  }
   return listed.files.map((rel) => join(repoRoot, rel))
 }
 
-/** A nested repository git refuses, walked as a plain folder: what git would list (no `.git` file), minus its own .gitignore. */
-async function walkNested(dir: string, cap: number): Promise<{ files: string[]; unreadable: string[]; capped: boolean }> {
-  const ignored = await readRootIgnore(dir)
+/** Whether `p`'s real path is inside `folder`'s; false when either cannot be resolved. */
+async function insideReal(folder: string, p: string): Promise<boolean> {
+  const [f, r] = await Promise.all([fsp.realpath(folder).catch(() => null), fsp.realpath(p).catch(() => null)])
+  return f !== null && r !== null && isInside(f, r)
+}
+
+/** A nested repository git refuses, walked as a plain folder: what git would list (no `.git` file), minus its own
+ *  .gitignore, read with `read` (confined for a clone). */
+async function walkNested(dir: string, cap: number, read: (p: string) => Promise<string>): Promise<{ files: string[]; unreadable: string[]; capped: boolean }> {
+  const ignored = await readRootIgnore(dir, undefined, read)
   return walkFolder(dir, { keep: (rel) => !inSkippedPath(rel) && !/(^|\/)\.git$/.test(rel), cap, ...(ignored ? { ignored } : {}) })
 }
 
@@ -222,6 +241,9 @@ export interface RepoListingNotes {
 }
 
 const listingNotes = new Map<string, RepoListingNotes>()
+/** The listing each root's notes came from, by the order the listings started in (discoverRepoFiles). */
+const notesGeneration = new Map<string, number>()
+let listingsStarted = 0
 /** The root as a key: `/` separated, no trailing separator, folded to lower case only where the file system folds case. */
 const notesKey = (root: string): string => {
   const key = root.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -248,17 +270,21 @@ export interface CodeIngestMemory {
 
 export async function runCodeIngest(
   memory: CodeIngestMemory,
-  opts: { repoRoot: string; chunkOptions?: CodeChunkOptions; maxChunks?: number; confined?: boolean },
+  opts: {
+    repoRoot: string
+    chunkOptions?: CodeChunkOptions
+    maxChunks?: number
+    /** The listing and the reader (index.ts graphSourceFor: confined for a Lumopolis clone, as the code graph's sweeps of
+     *  it are); without one, git's listing of repoRoot and a plain read. */
+    source?: { listFiles: () => Promise<string[]>; readFile: (file: string) => Promise<string> }
+  },
 ): Promise<CodeIngestStats> {
-  // `confined`: a Lumopolis clone. Its listing and its reads stay inside it (discoverRepoFiles, confinedReader), as
-  // the code graph's sweeps of it do (index.ts graphSourceFor).
-  const read = (fp: string): Promise<string> => fsp.readFile(fp, 'utf8')
-  const confined = opts.confined === true
+  const source = opts.source ?? { listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (fp: string) => fsp.readFile(fp, 'utf8') }
   return ingestCode({
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
-    listFiles: () => discoverRepoFiles(opts.repoRoot, { confined }),
-    readFile: confined ? confinedReader(opts.repoRoot, read) : read,
+    listFiles: source.listFiles,
+    readFile: source.readFile,
     hasHash: memory.hasHash,
     hasHashes: memory.hasHashes,
     prunePath: memory.prunePath,

@@ -329,14 +329,15 @@ import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { sweepPause } from './sweepPause' // a code-graph sweep waits for the governor and for typing quiet
-import { runCodeIngest, discoverRepoFiles, repoListingNotes } from './codeIngest'
+import { runCodeIngest, repoListingNotes } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, graphSweeping, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { shownError } from './world/windowError'
 import { noFilesMessage } from '../shared/world/types'
-import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
+import { isFolderEmpty } from './world/folderSafety'
+import { sweepSourceFor, type SweepSource } from './codeGraphSource'
 import { registerWorldIpc } from './world/ipc'
 import { registerWorldExportIpc } from './world/exportIpc'
 import { resolveExportAssets } from './world/export'
@@ -2717,6 +2718,9 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     // hasHashES, not hasHash: the sync per-chunk predicate cannot be answered by an out-of-process
     // store, and an async one would report every chunk as already-indexed (a Promise is truthy) —
     // the repo would appear to index and nothing would be written.
+    // One source for the code memory's ingest and the code graph's sweep: both confined alike to a clone, however
+    // its folder is spelled (codeGraphSource.ts).
+    const source = graphSourceFor(opts.repoRoot)
     const stats = await runCodeIngest(
       {
         hasHashes: memoryKnownHashes,
@@ -2725,7 +2729,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
         // dropped: ingestCode re-asks membership right after this, and it must see the post-prune store.
         prunePath: async (filePath) => { await memoryPruneCodePath(filePath) },
       },
-      { repoRoot: opts.repoRoot, confined: isCloneRoot(worldUserData, opts.repoRoot) },
+      { repoRoot: opts.repoRoot, source },
     )
     // Also (re)build the native STRUCTURAL code graph over the same repo — best-effort, so a
     // graph hiccup never fails the semantic ingest that already succeeded.
@@ -2736,7 +2740,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // only a microtask — Node drains those to completion WITHOUT running the event loop. That made
       // the whole repo sweep one unbroken 2.8s block: no PTY, no IPC, "(Not Responding)". A real
       // async read hits the threadpool and gives the main thread back between files.
-      codeGraph = await buildCodeGraph({ ...graphSourceFor(opts.repoRoot), pause: () => sweepPause() }, graphKeyForRoot(opts.repoRoot))
+      codeGraph = await buildCodeGraph({ ...source, pause: () => sweepPause() }, graphKeyForRoot(opts.repoRoot))
       // Keep the graph FRESH: watch the repo and, on source-file changes (debounced), incrementally
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
@@ -2755,11 +2759,9 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
 
 /** The listing and the reader of every code-graph sweep of `root`: memory:ingest-code's, buildGraphFor's and the file
  *  watcher's re-index (with its full re-sweep fallback). A cloned repository is someone else's content: both are
- *  confined to it, so a committed symlink never leads discovery or a read out of the clone. */
-function graphSourceFor(root: string): { listFiles: () => Promise<string[]>; readFile: (f: string) => Promise<string> } {
-  const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
-  const confined = isCloneRoot(worldUserData, root)
-  return { listFiles: () => discoverRepoFiles(root, { confined }), readFile: confined ? confinedReader(root, read) : read }
+ *  confined to the clone's folder, so a committed symlink never leads discovery or a read out of it (codeGraphSource.ts). */
+function graphSourceFor(root: string): SweepSource {
+  return sweepSourceFor(root, worldUserData)
 }
 
 /** Indexes `root` into the code graph (async reads, held by sweepPause while the app sheds load or someone types). */

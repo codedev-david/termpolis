@@ -27,7 +27,7 @@ import type { StageCache, StageFile } from './stageCache'
 import { RUNS_WAIT_MS, type TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
-import { confinedReader, isCloneRoot } from './folderSafety'
+import { cloneReader, isCloneRoot } from './folderSafety'
 import {
   CANCELLED_MESSAGE,
   CLONE_TIMEOUT_MS,
@@ -852,9 +852,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     return runs
   }
 
-  /** A cloned repository is someone else's content: its reads never follow a link out of the clone. */
-  const confinedTo = (root: string, read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
-    const inside = confinedReader(root, read)
+  /** A cloned repository is someone else's content: its reads never follow a link out of the clone. Confined to the
+   *  clone's own folder (folderSafety.ts cloneConfinement), so a root that is a folder in it, or a link in it to a folder
+   *  elsewhere, reads nothing outside the clone either. */
+  const confinedTo = (st: HostState, root: string, read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
+    const inside = cloneReader(st.userDataPath, root, read)
     return (p) => inside(p).catch(() => null)
   }
 
@@ -999,8 +1001,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, head: WorldHead, llm: LabelDeps['llm'], stopped?: () => boolean): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const cloned = isCloneRoot(st.userDataPath, root)
-    const rf = cloned ? confinedTo(root, readFile) : readFile
-    const rs = cloned ? confinedTo(root, readSource) : readSource
+    const rf = cloned ? confinedTo(st, root, readFile) : readFile
+    const rs = cloned ? confinedTo(st, root, readSource) : readSource
     const label: LabelDeps = {
       llm,
       ...(stopped ? { stopped } : {}),
@@ -1264,7 +1266,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     // map before they finish (drawFirst).
     snapshotFromFiles: async (root: unknown, opts?: { projectKey?: unknown; head?: unknown }) => {
       if (!isStr(root) || root === '') throw new Error('worldHost: root required')
-      const read = isCloneRoot(st.userDataPath, root) ? confinedTo(root, readSource) : readSource
+      const read = isCloneRoot(st.userDataPath, root) ? confinedTo(st, root, readSource) : readSource
       const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
       const scans = new Map<string, StageFile | null>()

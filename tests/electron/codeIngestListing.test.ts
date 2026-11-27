@@ -10,6 +10,20 @@ vi.mock('../../src/main/gitCommand', () => ({
   safeGitAsync: vi.fn(async (args: string[]) => (answers.fn as (a: string[]) => string)(args))
 }))
 
+// confinedTextReader, as it is, with what each reader it makes reads recorded: a confined discovery reads its text
+// files (a .git pointer, a nested repository's .gitignore, a .gitmodules) through it.
+const textReads = vi.hoisted(() => ({ list: [] as Array<{ folder: string; file: string }> }))
+vi.mock('../../src/main/world/folderSafety', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/world/folderSafety')>()
+  return {
+    ...real,
+    confinedTextReader: (folder: string, ...rest: unknown[]) => {
+      const read = (real.confinedTextReader as (...a: unknown[]) => (p: string) => Promise<string>)(folder, ...rest)
+      return (file: string) => { textReads.list.push({ folder, file }); return read(file) }
+    },
+  }
+})
+
 import { discoverRepoFiles, repoListingNotes } from '../../src/main/codeIngest'
 import { MAP_FILE_CAP } from '../../src/main/repoFileList'
 
@@ -100,5 +114,95 @@ describe('discoverRepoFiles (git mocked)', () => {
     }
     expect(rel(await discoverRepoFiles(root))).toEqual(['a.ts', 'plain/p.ts', 'refused/.gitignore', 'refused/src/r.ts'])
     expect(repoListingNotes(root)?.nested).toEqual(['plain', 'refused'])
+  })
+
+  it('confined, a walked nested repository whose .gitignore is a link out of the folder takes no rules from it (Codex r4 M4)', async (ctx) => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-out-'))
+    try {
+      fs.writeFileSync(path.join(outside, 'rules'), 'hidden.ts\n')
+      fs.mkdirSync(path.join(root, 'refused'))
+      fs.writeFileSync(path.join(root, 'refused', '.git'), 'gitdir: elsewhere\n')
+      fs.writeFileSync(path.join(root, 'refused', 'hidden.ts'), 'x')
+      fs.writeFileSync(path.join(root, 'refused', 'r.ts'), 'x')
+      try {
+        fs.symlinkSync(path.join(outside, 'rules'), path.join(root, 'refused', '.gitignore'), 'file')
+      } catch {
+        ctx.skip() // Windows without developer mode or admin cannot make file links
+      }
+      answers.fn = (args) => {
+        const at = args[args.indexOf('-C') + 1]
+        if (args.includes('--git-common-dir')) return `${at}/.git\n`
+        if (at.endsWith('refused')) throw Object.assign(new Error('fatal: detected dubious ownership'), { code: 128 })
+        return 'H a.ts\0? refused/\0'
+      }
+      // Unconfined, the linked file's rules apply: hidden.ts is left out. (The walk lists no link: the .gitignore is not.)
+      expect(rel(await discoverRepoFiles(root))).toEqual(['a.ts', 'refused/r.ts'])
+      // Confined to the folder, the link is not followed: no rules, so hidden.ts is listed.
+      expect(rel(await discoverRepoFiles(root, { confineTo: root }))).toEqual(['a.ts', 'refused/hidden.ts', 'refused/r.ts'])
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("confined, discovery reads its text files with the confined text reader of the folder (Codex r4 M3)", async () => {
+    fs.mkdirSync(path.join(root, 'refused'))
+    fs.writeFileSync(path.join(root, 'refused', '.git'), 'gitdir: elsewhere\n')
+    fs.writeFileSync(path.join(root, 'refused', '.gitignore'), 'hidden.ts\n')
+    fs.writeFileSync(path.join(root, 'refused', 'hidden.ts'), 'x')
+    answers.fn = (args) => {
+      const at = args[args.indexOf('-C') + 1]
+      if (args.includes('--git-common-dir')) return `${at}/.git\n`
+      if (at.endsWith('refused')) throw Object.assign(new Error('fatal: detected dubious ownership'), { code: 128 })
+      return 'H a.ts\0? refused/\0'
+    }
+    textReads.list = []
+    expect(rel(await discoverRepoFiles(root, { confineTo: root }))).not.toContain('refused/hidden.ts')
+    const read = textReads.list.map((r) => [r.folder, path.relative(root, r.file).split(path.sep).join('/')])
+    expect(read).toContainEqual([root, 'refused/.git'])
+    expect(read).toContainEqual([root, 'refused/.gitignore'])
+    // Unconfined: no confined reader at all.
+    textReads.list = []
+    await discoverRepoFiles(root)
+    expect(textReads.list).toEqual([])
+  })
+
+  it('confined, a root whose real path is outside the folder lists nothing (Opus R3-n2)', async () => {
+    answers.fn = () => 'H a.ts\0'
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-other-'))
+    try {
+      expect(rel(await discoverRepoFiles(root, { confineTo: root }))).toEqual(['a.ts'])
+      expect(await discoverRepoFiles(root, { confineTo: other })).toEqual([])
+      expect(await discoverRepoFiles(path.join(root, 'missing'), { confineTo: root })).toEqual([])
+      expect(await discoverRepoFiles(root, { confineTo: path.join(other, 'missing') })).toEqual([])
+      expect(await discoverRepoFiles('', { confineTo: root })).toEqual([])
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the notes of the listing started last, when one started before it comes back after it (Codex r4 M2)', async () => {
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    let reached!: () => void
+    const atOld = new Promise<void>((r) => { reached = r })
+    let phase: 'old' | 'new' = 'old'
+    answers.fn = ((): string | Promise<string> => {
+      if (phase === 'new') return 'H a.ts\0H new�.ts\0'
+      reached()
+      return held.then(() => 'H a.ts\0H old�.ts\0')
+    }) as unknown as (a: string[]) => string
+    const late = discoverRepoFiles(root)
+    await atOld
+    phase = 'new'
+    await discoverRepoFiles(root)
+    expect(repoListingNotes(root)?.unreadable).toEqual(['new�.ts'])
+    release()
+    await late
+    // The late one's files still go to the sweep that asked for them; its notes do not replace the newer ones.
+    expect(repoListingNotes(root)?.unreadable).toEqual(['new�.ts'])
+    // A listing started after both lands as any does.
+    answers.fn = () => 'H a.ts\0H last�.ts\0'
+    await discoverRepoFiles(root)
+    expect(repoListingNotes(root)?.unreadable).toEqual(['last�.ts'])
   })
 })

@@ -1,12 +1,13 @@
 // A Lumopolis clone (a folder under <userData>/world/repos) is someone else's content: a symlink committed to it
 // must never lead the code graph, or the code memory, to a file outside the clone (Opus R2-I1 on b8ecec16). Every
 // sweep index.ts starts over a project (memory:ingest-code, code-graph:build's buildGraphFor, and the file watcher's
-// re-index, with its full re-sweep fallback) takes its listing and its reader from one place, graphSourceFor, which
-// confines both for a clone. Counted here on a real git clone with a committed link out of it, and on index.ts's text.
+// re-index, with its full re-sweep fallback) takes its listing and its reader from one place, graphSourceFor
+// (codeGraphSource.ts sweepSourceFor), which confines both to the clone's folder, however the root is spelled (a link to
+// the clone, a link inside it: Opus R3-m3, R3-n2). Counted here on a real git clone with a committed link out of it, and
+// on index.ts's text.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
-import * as fsp from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -14,7 +15,8 @@ import {
   reindexWatchedChange, _resetCodeGraphForTests,
 } from '../../src/main/codeGraph'
 import { discoverRepoFiles, runCodeIngest } from '../../src/main/codeIngest'
-import { confinedReader, isCloneRoot } from '../../src/main/world/folderSafety'
+import { sweepSourceFor } from '../../src/main/codeGraphSource'
+import { isCloneRoot } from '../../src/main/world/folderSafety'
 
 let base = ''
 let userData = ''
@@ -25,10 +27,15 @@ const git = (...args: string[]): void => {
   execFileSync('git', ['-C', root, '-c', 'core.symlinks=true', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { stdio: 'ignore' })
 }
 /** What index.ts's graphSourceFor hands a sweep of `r`: the listing and the reader, both confined for a clone. */
-const sourceFor = (r: string) => {
-  const confined = isCloneRoot(userData, r)
-  const read = (f: string): Promise<string> => fsp.readFile(f, 'utf8')
-  return { listFiles: () => discoverRepoFiles(r, { confined }), readFile: confined ? confinedReader(r, read) : read }
+const sourceFor = (r: string) => sweepSourceFor(r, userData)
+/** A folder link (a junction on Windows, which needs no rights), or false when this machine cannot make one. */
+const dirLink = (target: string, at: string): boolean => {
+  try {
+    symlinkSync(target, at, 'junction')
+    return true
+  } catch {
+    return false
+  }
 }
 
 beforeEach(() => {
@@ -59,7 +66,7 @@ describe('a clone with a committed link out of it', () => {
   it('is a clone, and git lists the link as one of its files', async (ctx) => {
     if (!linked) ctx.skip()
     expect(isCloneRoot(userData, root)).toBe(true)
-    const listed = await discoverRepoFiles(root, { confined: true })
+    const listed = await discoverRepoFiles(root, { confineTo: root })
     expect(listed.map((f) => f.replace(/\\/g, '/'))).toEqual(expect.arrayContaining([expect.stringMatching(/src\/leak\.ts$/), expect.stringMatching(/src\/in\.ts$/)]))
   })
 
@@ -102,7 +109,7 @@ describe('a clone with a committed link out of it', () => {
   it("the code memory's ingest of it leaves the linked file out", async (ctx) => {
     if (!linked) ctx.skip()
     const written: string[] = []
-    await runCodeIngest({ hasHashes: async () => [], write: async (c) => { written.push(c.content) } }, { repoRoot: root, confined: true })
+    await runCodeIngest({ hasHashes: async () => [], write: async (c) => { written.push(c.content) } }, { repoRoot: root, source: sourceFor(root) })
     expect(written.some((c) => c.includes('insideFn'))).toBe(true)
     expect(written.some((c) => c.includes('outsideFn'))).toBe(false)
   })
@@ -127,12 +134,70 @@ describe('a clone with a committed link out of it', () => {
     // Unconfined, the link makes lib a repository of its own, listed by its git (the outside one's).
     expect(norm(await discoverRepoFiles(root)).some((f) => f.endsWith('lib/v.ts'))).toBe(true)
     // Confined, its `.git` is outside the clone, so it is not one: nothing is listed through it.
-    expect(norm(await discoverRepoFiles(root, { confined: true })).some((f) => f.includes('lib/'))).toBe(false)
+    expect(norm(await discoverRepoFiles(root, { confineTo: root })).some((f) => f.includes('lib/'))).toBe(false)
+    expect(norm(await sourceFor(root).listFiles()).some((f) => f.includes('lib/'))).toBe(false)
     // And the code memory's ingest of a clone lists it the same way.
     const written: string[] = []
-    await runCodeIngest({ hasHashes: async () => [], write: async (c) => { written.push(c.content) } }, { repoRoot: root, confined: true })
+    await runCodeIngest({ hasHashes: async () => [], write: async (c) => { written.push(c.content) } }, { repoRoot: root, source: sourceFor(root) })
     expect(written.some((c) => c.includes('insideFn'))).toBe(true)
     expect(written.some((c) => c.includes('libFn'))).toBe(false)
+  })
+})
+
+describe('another spelling of a clone (Opus R3-m3, R3-n2; Codex r4 M1)', () => {
+  it('a link to the clone is swept confined to it, as the clone is', async (ctx) => {
+    if (!linked) ctx.skip()
+    const alias = join(base, 'alias')
+    if (!dirLink(root, alias)) ctx.skip()
+    expect(isCloneRoot(userData, alias)).toBe(false) // the spelling alone does not say so
+    await buildCodeGraph(sourceFor(alias), graphKeyForRoot(alias))
+    expect(codeSymbols('insideFn', 10, graphKeyForRoot(alias))).toHaveLength(1)
+    expect(codeSymbols('outsideFn', 10, graphKeyForRoot(alias))).toHaveLength(0)
+    await expect(sourceFor(alias).readFile(join(alias, 'src', 'leak.ts'))).rejects.toThrow('outside the folder')
+    // The code memory's ingest through the link the same.
+    const written: string[] = []
+    await runCodeIngest({ hasHashes: async () => [], write: async (c) => { written.push(c.content) } }, { repoRoot: alias, source: sourceFor(alias) })
+    expect(written.some((c) => c.includes('insideFn'))).toBe(true)
+    expect(written.some((c) => c.includes('outsideFn'))).toBe(false)
+  })
+
+  it('a clone reached through a link to the data folder is one too', async (ctx) => {
+    if (!linked) ctx.skip()
+    const linkedData = join(base, 'dataLink')
+    if (!dirLink(userData, linkedData)) ctx.skip()
+    // The data folder named through the link, the root through its real path (git's toplevel, links resolved).
+    await expect(sweepSourceFor(root, linkedData).readFile(join(root, 'src', 'leak.ts'))).rejects.toThrow('outside the folder')
+    await expect(sweepSourceFor(root, linkedData).readFile(join(root, 'src', 'in.ts'))).resolves.toContain('insideFn')
+  })
+
+  it('a root that is a link inside a clone to a folder outside it lists and reads nothing there', async (ctx) => {
+    const away = join(base, 'away')
+    mkdirSync(away)
+    writeFileSync(join(away, 'away.ts'), 'export function awayFn() { return 1 }\n')
+    execFileSync('git', ['-C', away, 'init', '-q'], { stdio: 'ignore' })
+    const sub = join(root, 'sub')
+    if (!dirLink(away, sub)) ctx.skip()
+    expect(isCloneRoot(userData, sub)).toBe(true)
+    const src = sourceFor(sub)
+    expect(await src.listFiles()).toEqual([])
+    await expect(src.readFile(join(sub, 'away.ts'))).rejects.toThrow('outside the folder')
+    await buildCodeGraph(src, graphKeyForRoot(sub))
+    expect(codeSymbols('awayFn', 10, graphKeyForRoot(sub))).toHaveLength(0)
+  })
+
+  it('a folder that is no clone is swept as it is: listed by git, read plainly', async (ctx) => {
+    const plain = join(base, 'plain')
+    mkdirSync(plain)
+    writeFileSync(join(plain, 'p.ts'), 'export function plainFn() { return 1 }\n')
+    execFileSync('git', ['-C', plain, 'init', '-q'], { stdio: 'ignore' })
+    const src = sourceFor(plain)
+    expect(src.root).toBe(plain)
+    expect((await src.listFiles()).map((f) => f.replace(/\\/g, '/'))).toEqual([expect.stringMatching(/plain\/p\.ts$/)])
+    await expect(src.readFile(join(plain, 'p.ts'))).resolves.toContain('plainFn')
+    // A link out of a folder that is no clone is the user's own: read through.
+    if (!linked) ctx.skip()
+    symlinkSync(join(base, 'outside', 'out.ts'), join(plain, 'mine.ts'), 'file')
+    await expect(src.readFile(join(plain, 'mine.ts'))).resolves.toContain('outsideFn')
   })
 })
 
@@ -142,7 +207,7 @@ describe('the batch path has the size cap a full sweep has', () => {
     // clone is read, so the clone's own worktree is known as one and its files are not listed a second time.
     git('worktree', 'add', '-q', join(root, 'wt'))
     const norm = (l: string[]): string[] => l.map((f) => f.replace(/\\/g, '/'))
-    const listed = norm(await discoverRepoFiles(root, { confined: true }))
+    const listed = norm(await discoverRepoFiles(root, { confineTo: root }))
     expect(listed.filter((f) => f.endsWith('/src/in.ts'))).toHaveLength(1)
     expect(listed.some((f) => f.includes('/wt/'))).toBe(false)
   })
@@ -210,24 +275,27 @@ describe('the batch path has the size cap a full sweep has', () => {
 describe("index.ts takes every project sweep's listing and reader from graphSourceFor", () => {
   const index = readFileSync(join(__dirname, '../../src/main/index.ts'), 'utf8')
 
-  it('graphSourceFor confines both the listing and the reader for a clone', () => {
+  it('graphSourceFor is sweepSourceFor with the app data folder, which confines both the listing and the reader for a clone', () => {
     const at = index.indexOf('function graphSourceFor(')
     expect(at).toBeGreaterThan(-1)
     const body = index.slice(at, index.indexOf('\n}\n', at))
-    expect(body).toMatch(/const confined = isCloneRoot\(worldUserData, root\)/)
-    expect(body).toMatch(/discoverRepoFiles\(root, \{ confined \}\)/)
-    expect(body).toMatch(/confined \? confinedReader\(root, read\) : read/)
+    expect(body).toMatch(/return sweepSourceFor\(root, worldUserData\)/)
   })
 
   it('memory:ingest-code, buildGraphFor and the watcher use it, and nothing else lists or reads a project for the graph', () => {
     const builds = index.match(/buildCodeGraph\(\{[^}]*\}/g) ?? []
     expect(builds.length).toBeGreaterThanOrEqual(2)
-    expect(builds.filter((c) => !/\.\.\.graphSourceFor\(\w+(\.repoRoot)?\)/.test(c))).toEqual([])
+    expect(builds.filter((c) => !/\.\.\.(graphSourceFor\(\w+\)|source),/.test(c))).toEqual([])
     const watch = index.match(/reindexWatchedChange\([^\n]*/g) ?? []
     expect(watch).toHaveLength(1)
     expect(watch[0]).toMatch(/src\.readFile, \(\) => sweepPause\(\), src\.listFiles\)$/)
     expect(index).toMatch(/const src = graphSourceFor\(root\)/)
-    // The code memory's ingest is confined the same way.
-    expect(index).toMatch(/runCodeIngest\([\s\S]*?\{ repoRoot: opts\.repoRoot, confined: isCloneRoot\(worldUserData, opts\.repoRoot\) \}/)
+    // The code memory's ingest takes the same source as the graph's sweep after it.
+    const at = index.indexOf("ipcMain.handle('memory:ingest-code'")
+    const ingest = index.slice(at, index.indexOf('\n})\n', at))
+    expect(ingest).toMatch(/const source = graphSourceFor\(opts\.repoRoot\)\n\s*const stats = await runCodeIngest\([\s\S]*?\{ repoRoot: opts\.repoRoot, source \}/)
+    expect(ingest).toMatch(/buildCodeGraph\(\{ \.\.\.source, pause/)
+    // Nothing in index.ts lists a project but through it.
+    expect(index).not.toMatch(/discoverRepoFiles\(/)
   })
 })

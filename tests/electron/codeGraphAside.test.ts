@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSy
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  activeProjectKey, buildCodeGraph, codeCallers, codeGraphStats, codeGraphSweepCounters, codeSymbols, fileSymbols,
+  activeProjectKey, buildCodeGraph, codeCallers, graphKeyForRoot, reindexRepoGraph, codeGraphStats, codeGraphSweepCounters, codeSymbols, fileSymbols,
   graphSweeping, indexFileContent, initCodeGraph, persistCodeGraph, reindexPaths, _codeGraphBuildsForTests,
   _codeGraphImportsForTests, _resetCodeGraphForTests, _setCodeGraphTimeoutsForTests,
 } from '../../src/main/codeGraph'
@@ -899,7 +899,7 @@ describe('a read or a listing that never comes back counts as failed after its t
     expect(codeGraphStats(KEY).files).toBe(5)
   })
 
-  it("a build's read: the file is left out, and a batch asked for meanwhile goes through", async () => {
+  it("a build's read: the file keeps the last graph's version, and a batch asked for meanwhile goes through", async () => {
     const list = files(40)
     await build(list, 'v1')
     _setCodeGraphTimeoutsForTests({ readMs: 50 })
@@ -908,8 +908,10 @@ describe('a read or a listing that never comes back counts as failed after its t
     const pass = reindexPaths(['/repo/src/extra.ts'], async () => 'export function extraFn() { return 1 }\n', KEY)
     await Promise.all([pass, rb])
     expect(codeSymbols('extraFn', 10, KEY)).toHaveLength(1)
-    expect(codeSymbols('f3_', 10, KEY)).toHaveLength(0)
-    expect(codeGraphStats(KEY).files).toBe(40)
+    // Read once more before the build publishes, and still not back: not published as gone (Opus R3-m1).
+    expect(codeSymbols('f3_v1', 10, KEY)).toHaveLength(1)
+    expect(codeSymbols('f3_v2', 10, KEY)).toHaveLength(0)
+    expect(codeGraphStats(KEY).files).toBe(41)
   })
 
   it('Opus P8: a listing keeps the graph as it was, and the build asked for after it runs', async () => {
@@ -932,5 +934,243 @@ describe('a read or a listing that never comes back counts as failed after its t
     const timers = set.mock.calls.flatMap((c, i) => (c[1] === 60_000 ? [set.mock.results[i].value] : []))
     expect(timers).toHaveLength(2)
     for (const t of timers) expect(cleared.mock.calls.map((c) => c[0])).toContain(t)
+  })
+})
+
+describe('a request naming another root does not join the build waiting for its project (Codex r4 M1)', () => {
+  it('two spellings of one folder each list, and a request of the same root still joins', async () => {
+    const list = files(20)
+    await build(list, 'v1')
+    const held = heldPause()
+    const ra = build(list, 'v2', held.pause)
+    await held.reached
+    const listed: string[] = []
+    const ask = (root: string, tag: string) =>
+      buildCodeGraph({ root, listFiles: async () => { listed.push(tag); return list }, readFile: async (f) => src(f, tag) }, KEY)
+    const rb = ask('/repo', 'v3')
+    const rc = ask('/REPO', 'v4')
+    expect(rc).not.toBe(rb)
+    const rd = ask('/REPO', 'v5')
+    expect(rd).toBe(rc)
+    held.release()
+    await Promise.all([ra, rb, rc, rd])
+    expect(listed).toEqual(['v3', 'v5'])
+    expect(codeSymbols('_v5', 100, KEY)).toHaveLength(20)
+    expect(graphSweeping(KEY)).toBe(false)
+  })
+
+  it('a request naming no root joins one naming none, and not one naming a root', async () => {
+    const list = files(20)
+    await build(list, 'v1')
+    const held = heldPause()
+    const ra = build(list, 'v2', held.pause)
+    await held.reached
+    const rb = build(list, 'v3')
+    expect(build(list, 'v4')).toBe(rb)
+    const rc = buildCodeGraph({ root: '/repo', listFiles: async () => list, readFile: async (f) => src(f, 'v5') }, KEY)
+    expect(rc).not.toBe(rb)
+    held.release()
+    await Promise.all([ra, rb, rc])
+    expect(codeSymbols('_v5', 100, KEY)).toHaveLength(20)
+  })
+
+  it("the watcher's full re-sweep of a root names it, and joins a build waiting for that root", async () => {
+    const root = '/repo'
+    const key = graphKeyForRoot(root)
+    const list = files(20)
+    const listed: string[] = []
+    const source = (tag: string) => ({ listFiles: async () => { listed.push(tag); return list }, readFile: async (f: string) => src(f, tag) })
+    await buildCodeGraph({ root, ...source('v1') }, key)
+    const held = heldPause()
+    const ra = buildCodeGraph({ root, ...source('v2'), pause: held.pause }, key)
+    await held.reached
+    const rb = buildCodeGraph({ root, ...source('v3') }, key)
+    const rc = reindexRepoGraph(root, undefined, source('v4'))
+    held.release()
+    await Promise.all([ra, rb, rc])
+    // One build for both, with the request made last: v3's listing never ran.
+    expect(listed).toEqual(['v1', 'v2', 'v4'])
+    expect(codeSymbols('_v4', 100, key)).toHaveLength(20)
+  })
+})
+
+describe('a listing that fails or comes back empty still settles what a batch did meanwhile (Codex r4 LOW)', () => {
+  let d = ''
+  const B = '/repo/src/b.ts'
+  const saved = (): string => readFileSync(join(d, `code-graph-${KEY}.json`), 'utf8')
+  beforeEach(() => { d = mkdtempSync(join(tmpdir(), 'cg-guard-')); initCodeGraph(d) })
+  afterEach(() => { _resetCodeGraphForTests(); rmSync(d, { recursive: true, force: true }) })
+
+  for (const [how, answer] of [['comes back empty', [] as string[]], ['fails', null]] as const) {
+    it(`the listing ${how}: a file the batch read, and that is gone since, leaves the graph and the saved file`, async () => {
+      const list = files(5)
+      await build(list, 'v1')
+      let gone = false
+      const listing = gate<string[] | null>()
+      const listFiles = async (): Promise<string[]> => { const v = await listing.wait(); if (v === null) throw new Error('git gone'); return v }
+      const rb = buildCodeGraph({ listFiles, readFile: async (f) => { if (f === B && gone) throw enoent(); return src(f, 'v2') } }, KEY)
+      await listing.started
+      await reindexPaths([B], async () => src(B, 'v9'), KEY)
+      expect(codeSymbols('b_v9', 10, KEY)).toHaveLength(1)
+      expect(saved()).toContain('b_v9')
+      gone = true
+      listing.open(answer)
+      await rb
+      expect(codeSymbols('b_', 10, KEY)).toHaveLength(0)
+      expect(codeSymbols('_v1', 10, KEY)).toHaveLength(5)
+      expect(saved()).not.toContain('b_v9')
+    })
+  }
+
+  it('one a batch could not read, readable now, goes into the graph and the saved file', async () => {
+    const list = files(5)
+    await build(list, 'v1')
+    const listing = gate<string[]>()
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => src(f, 'v2') }, KEY)
+    await listing.started
+    await reindexPaths([B], async () => { throw busy() }, KEY)
+    expect(codeSymbols('b_', 10, KEY)).toHaveLength(0)
+    listing.open([])
+    await rb
+    expect(codeSymbols('b_v2', 10, KEY)).toHaveLength(1)
+    expect(saved()).toContain('b_v2')
+  })
+
+  it('one the batch read that is there still is kept; with nothing to settle, the graph is not written again', async () => {
+    const list = files(5)
+    await build(list, 'v1')
+    const listing = gate<string[]>()
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => src(f, 'v2') }, KEY)
+    await listing.started
+    await reindexPaths([B], async () => src(B, 'v9'), KEY)
+    const write = vi.spyOn(fs.promises, 'writeFile')
+    listing.open([])
+    await rb
+    expect(codeSymbols('b_v9', 10, KEY)).toHaveLength(1)
+    expect(write).not.toHaveBeenCalled()
+    await buildCodeGraph({ listFiles: async () => [], readFile: async () => '' }, KEY)
+    expect(write).not.toHaveBeenCalled()
+  })
+})
+
+describe("a build's own read that fails, but does not say the file is gone, is read once more (Opus R3-m1)", () => {
+  const F = '/repo/src/f3.ts'
+  const failing = (version: string, second: () => Promise<string>) => {
+    let n = 0
+    return async (f: string): Promise<string> => {
+      if (f !== F) return src(f, version)
+      if (++n === 1) throw busy()
+      return second()
+    }
+  }
+
+  it('read the second time: the new version is published', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    await buildCodeGraph({ listFiles: async () => list, readFile: failing('v2', async () => src(F, 'v2')) }, KEY)
+    expect(codeSymbols('f3_v2', 10, KEY)).toHaveLength(1)
+    expect(codeSymbols('f3_v1', 10, KEY)).toHaveLength(0)
+    expect(codeGraphStats(KEY).files).toBe(40)
+  })
+
+  it('unreadable the second time too: the last graph keeps its version of it, so the build does not publish 39 of 40', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const stats = await buildCodeGraph({ listFiles: async () => list, readFile: failing('v2', async () => { throw busy() }) }, KEY)
+    expect(codeSymbols('f3_v1', 10, KEY)).toHaveLength(1)
+    expect(codeSymbols('f3_v2', 10, KEY)).toHaveLength(0)
+    expect(codeSymbols('_v2', 100, KEY)).toHaveLength(39)
+    expect(stats.files).toBe(40)
+  })
+
+  it("kept from the last graph, the file's imports come with its symbols", async () => {
+    const list = files(40)
+    const withImport = (f: string, v: string): string => `import { y } from './y'\n${src(f, v)}`
+    await buildCodeGraph({ listFiles: async () => list, readFile: async (f) => (f === F ? withImport(f, 'v1') : src(f, 'v1')) }, KEY)
+    expect(_codeGraphImportsForTests(KEY, F)).toBeDefined()
+    await buildCodeGraph({ listFiles: async () => list, readFile: failing('v2', async () => { throw busy() }) }, KEY)
+    expect(codeSymbols('f3_v1', 10, KEY)).toHaveLength(1)
+    expect(_codeGraphImportsForTests(KEY, F)).toBeDefined()
+  })
+
+  it('gone the second time: it stays out', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    await buildCodeGraph({ listFiles: async () => list, readFile: failing('v2', async () => { throw enoent() }) }, KEY)
+    expect(codeSymbols('f3_', 10, KEY)).toHaveLength(0)
+    expect(codeGraphStats(KEY).files).toBe(39)
+  })
+
+  it('a read that finds it gone the first time is not read again', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const reads: string[] = []
+    await buildCodeGraph({ listFiles: async () => list, readFile: async (f) => { reads.push(f); if (f === F) throw enoent(); return src(f, 'v2') } }, KEY)
+    expect(reads.filter((f) => f === F)).toHaveLength(1)
+    expect(codeSymbols('f3_', 10, KEY)).toHaveLength(0)
+  })
+
+  it('a first build has no last graph to keep it from: still unreadable, it stays out', async () => {
+    const list = files(40)
+    const stats = await buildCodeGraph({ listFiles: async () => list, readFile: failing('v1', async () => { throw busy() }) }, KEY)
+    expect(codeSymbols('f3_', 10, KEY)).toHaveLength(0)
+    expect(stats.files).toBe(39)
+  })
+})
+
+describe('the reads a build settles before it publishes run a few at a time, all within one time limit (Opus R3-m2)', () => {
+  afterEach(() => { _setCodeGraphTimeoutsForTests() })
+
+  it('thirty that hang hold the project for one limit, not thirty, and keep what the last graph held', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const hang = new Set(list.slice(0, 30))
+    const readMs = 200
+    _setCodeGraphTimeoutsForTests({ readMs })
+    const first = new Set<string>()
+    let again = 0
+    const t0 = Date.now()
+    await buildCodeGraph({
+      listFiles: async () => list,
+      readFile: (f) => {
+        if (!hang.has(f)) return Promise.resolve(src(f, 'v2'))
+        if (!first.has(f)) {
+          first.add(f)
+          return Promise.reject(busy())
+        }
+        again++
+        return new Promise<never>(() => { /* never settles */ })
+      },
+    }, KEY)
+    const took = Date.now() - t0
+    // Eight out at once; the other 22 find the time spent and are not read at all.
+    expect(again).toBe(8)
+    expect(took).toBeLessThan(10 * readMs)
+    expect(took).toBeGreaterThanOrEqual(readMs - 20)
+    expect(codeSymbols('_v1', 100, KEY)).toHaveLength(30)
+    expect(codeSymbols('_v2', 100, KEY)).toHaveLength(10)
+  })
+
+  it('a batch file not in the listing is checked within the same limit', async () => {
+    const list = files(5)
+    await build(list, 'v1')
+    _setCodeGraphTimeoutsForTests({ readMs: 100 })
+    const extra = Array.from({ length: 20 }, (_, i) => `/repo/src/extra${i}.ts`)
+    const listing = gate<string[]>()
+    let checks = 0
+    const t0 = Date.now()
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: (f) => {
+      if (!f.includes('extra')) return Promise.resolve(src(f, 'v2'))
+      checks++
+      return new Promise<never>(() => { /* never settles */ })
+    } }, KEY)
+    await listing.started
+    await reindexPaths(extra, async (f) => src(f, 'v9'), KEY)
+    listing.open(list)
+    await rb
+    expect(checks).toBe(8)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    // Not found gone: kept as the batch wrote them.
+    expect(codeSymbols('_v9', 100, KEY)).toHaveLength(20)
   })
 })

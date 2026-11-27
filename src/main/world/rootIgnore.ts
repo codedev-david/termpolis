@@ -84,8 +84,14 @@ export async function foldsCaseAt(root: string, fileId: FileIdOf = realFileId): 
   return other !== null && other.dev === own.dev && other.ino === own.ino
 }
 
-/** The matcher for `root`'s own .gitignore; undefined when it has none, or it cannot be read. */
-export async function readRootIgnore(root: string, fileId?: FileIdOf): Promise<IgnoreMatcher | undefined> {
-  const text = await readFile(join(root, '.gitignore'), 'utf8').catch(() => null)
+/** The matcher for `root`'s own .gitignore; undefined when it has none, or it cannot be read. `read` reads it: a confined
+ *  discovery hands its confined reader (codeIngest.ts discoverRepoFiles), so a .gitignore that is a link out of a clone
+ *  is not read (Codex r4 M4). */
+export async function readRootIgnore(
+  root: string,
+  fileId?: FileIdOf,
+  read: (p: string) => Promise<string> = (p) => readFile(p, 'utf8'),
+): Promise<IgnoreMatcher | undefined> {
+  const text = await read(join(root, '.gitignore')).catch(() => null)
   return text === null ? undefined : parseRootIgnore(text, { foldCase: await foldsCaseAt(root, fileId) })
 }

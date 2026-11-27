@@ -1,11 +1,14 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { foldsCase } from '../../src/main/projectKey'
 import {
   FORBIDDEN_FOLDER,
+  cloneConfinement,
+  cloneReader,
   confinedReader,
+  confinedTextReader,
   folderKey,
   forbiddenFolder,
   forbiddenFolderReal,
@@ -13,7 +16,10 @@ import {
   isFolderEmpty,
   isInside,
   isProjectFolder,
+  realConfinedFs,
+  type ConfinedFs,
   type DirLike,
+  type FileIdent,
   type NamedDirLike
 } from '../../src/main/world/folderSafety'
 
@@ -158,6 +164,173 @@ describe('confinedReader', () => {
       linked = false // Windows without developer mode cannot make file links; the injected test covers it
     }
     if (linked) await expect(r(join(root, 'link.ts'))).rejects.toThrow('outside the folder')
+  })
+})
+
+describe('confinedReader, once the read is done (Codex r4 M3, Opus R3-n1)', () => {
+  it('refuses what it read when the real path of the file changed meanwhile (a folder on its path swapped for a link)', async () => {
+    const root = join(dir, 'repo')
+    const file = join(root, 'a.ts')
+    let swapped = false
+    const real = async (p: string): Promise<string> => (p === file && swapped ? join(dir, 'elsewhere', 'a.ts') : p)
+    const read = vi.fn(async () => { swapped = true; return 'A' })
+    await expect(confinedReader(root, read, real)(file)).rejects.toThrow('the file moved while it was read')
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('confinedTextReader', () => {
+  const root = (): string => join(dir, 'repo')
+  /** A file system where every path is its own real path and every file the same id, unless a test says otherwise. */
+  const fakeFs = (over: Partial<ConfinedFs> = {}, handle: { text?: string; id?: FileIdent; close?: () => Promise<void> } = {}) => {
+    const close = vi.fn(handle.close ?? (async () => undefined))
+    const fs: ConfinedFs = {
+      real: vi.fn(async (p: string) => p),
+      open: vi.fn(async () => ({ stat: async () => handle.id ?? { dev: 1n, ino: 7n }, readText: async () => handle.text ?? 'TEXT', close })),
+      lstat: vi.fn(async () => ({ dev: 1n, ino: 7n })),
+      ...over,
+    }
+    return { fs, close }
+  }
+
+  it('reads a file inside the folder through the handle it opened, closes it, and resolves the folder once', async () => {
+    const { fs, close } = fakeFs()
+    const r = confinedTextReader(root(), fs)
+    expect(await r(join(root(), 'a.ts'))).toBe('TEXT')
+    expect(await r(join(root(), 'b.ts'))).toBe('TEXT')
+    expect(close).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(fs.real).mock.calls.filter(([p]) => p === root())).toHaveLength(1)
+    expect(fs.lstat).toHaveBeenCalledWith(join(root(), 'a.ts'))
+  })
+
+  it('takes ids given as numbers as it takes bigints', async () => {
+    const { fs } = fakeFs({ lstat: async () => ({ dev: 1, ino: 7 }) })
+    expect(await confinedTextReader(root(), fs)(join(root(), 'a.ts'))).toBe('TEXT')
+  })
+
+  it('refuses a file whose real path is outside the folder before it opens it', async () => {
+    const { fs } = fakeFs({ real: async (p) => (p.endsWith('link.ts') ? join(dir, 'elsewhere', 'x') : p) })
+    await expect(confinedTextReader(root(), fs)(join(root(), 'link.ts'))).rejects.toThrow('outside the folder')
+    expect(fs.open).not.toHaveBeenCalled()
+  })
+
+  it('refuses one whose real path left the folder once it was opened, and closes it', async () => {
+    let calls = 0
+    const { fs, close } = fakeFs({ real: async (p) => (p.endsWith('a.ts') && ++calls > 1 ? join(dir, 'elsewhere', 'a.ts') : p) })
+    await expect(confinedTextReader(root(), fs)(join(root(), 'a.ts'))).rejects.toThrow('outside the folder')
+    expect(fs.open).toHaveBeenCalledTimes(1)
+    expect(fs.lstat).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses one when the file at its real path is not the one it holds open: another file id, or another device', async () => {
+    for (const id of [{ dev: 1n, ino: 8n }, { dev: 2n, ino: 7n }]) {
+      const read = vi.fn(async () => 'TEXT')
+      const close = vi.fn(async () => undefined)
+      const fs: ConfinedFs = {
+        real: async (p) => p,
+        open: async () => ({ stat: async () => id, readText: read, close }),
+        lstat: async () => ({ dev: 1n, ino: 7n }),
+      }
+      await expect(confinedTextReader(root(), fs)(join(root(), 'a.ts'))).rejects.toThrow('the file moved while it was opened')
+      expect(read).not.toHaveBeenCalled()
+      expect(close).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('a close that fails does not fail the read', async () => {
+    const { fs, close } = fakeFs({}, { close: async () => { throw new Error('EIO') } })
+    expect(await confinedTextReader(root(), fs)(join(root(), 'a.ts'))).toBe('TEXT')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('with the real file system: reads a file, rejects a missing one, refuses a real link out of the folder', async () => {
+    await mkdir(join(root(), 'src'), { recursive: true })
+    await writeFile(join(root(), 'src', 'a.ts'), 'A text')
+    await writeFile(join(dir, 'outside.ts'), 'O')
+    const r = confinedTextReader(root())
+    expect(await r(join(root(), 'src', 'a.ts'))).toBe('A text')
+    await expect(r(join(root(), 'missing.ts'))).rejects.toThrow()
+    let linked = true
+    try {
+      await symlink(join(dir, 'outside.ts'), join(root(), 'link.ts'), 'file')
+    } catch {
+      linked = false // Windows without developer mode cannot make file links; the injected tests cover it
+    }
+    if (linked) await expect(r(join(root(), 'link.ts'))).rejects.toThrow('outside the folder')
+  })
+
+  it("the real file system's id of a path is the path's own: a link at its end is not followed", async () => {
+    await mkdir(join(dir, 'target'), { recursive: true })
+    await symlink(join(dir, 'target'), join(dir, 'link'), 'junction')
+    const [own, target] = await Promise.all([realConfinedFs.lstat(join(dir, 'link')), realConfinedFs.lstat(join(dir, 'target'))])
+    expect(own.ino === target.ino && own.dev === target.dev).toBe(false)
+  })
+})
+
+describe('cloneConfinement (Opus R3-m3, R3-n2)', () => {
+  const data = (): string => join(dir, 'data')
+  const repos = (): string => join(data(), 'world', 'repos')
+  const never = async (): Promise<string> => { throw new Error('real path not asked for') }
+
+  it('a clone, or a folder in one, by its spelling: the clone folder, without asking for a real path', async () => {
+    expect(await cloneConfinement(data(), join(repos(), 'c'), { real: never })).toBe(join(repos(), 'c'))
+    expect(await cloneConfinement(data(), join(repos(), 'c', 'src', 'deep'), { real: never })).toBe(join(repos(), 'c'))
+  })
+
+  it.runIf(process.platform === 'win32')('a Git Bash spelling of a clone on Windows', async () => {
+    const posix = `/${repos()[0].toLowerCase()}${repos().slice(2).replace(/\\/g, '/')}/c/src`
+    expect(await cloneConfinement(data(), posix, { platform: 'win32', real: never })).toBe(join(repos(), 'c'))
+  })
+
+  it('a link to a clone, or into one: by the real paths, the clone folder', async () => {
+    const real = async (p: string): Promise<string> => (p === join(dir, 'alias') ? join(repos(), 'c', 'src') : p)
+    expect(await cloneConfinement(data(), join(dir, 'alias'), { real })).toBe(join(repos(), 'c'))
+    // A data folder reached through a link: its real path holds the clone.
+    const linkedData = join(dir, 'linkedData')
+    const viaData = async (p: string): Promise<string> => (p === join(linkedData, 'world', 'repos') ? repos() : p)
+    expect(await cloneConfinement(linkedData, join(repos(), 'c'), { real: viaData })).toBe(join(repos(), 'c'))
+  })
+
+  it('no clone: the repos folder itself, a folder outside it, or a real path that cannot be had', async () => {
+    const real = async (p: string): Promise<string> => p
+    expect(await cloneConfinement(data(), repos(), { real })).toBeNull()
+    expect(await cloneConfinement(data(), join(dir, 'project'), { real })).toBeNull()
+    expect(await cloneConfinement(data(), join(dir, 'alias'), { real: never })).toBeNull()
+    expect(await cloneConfinement(data(), join(dir, 'alias'), { real: async (p) => (p === repos() ? p : Promise.reject(new Error('ENOENT'))) })).toBeNull()
+    // A path the shell spelling cannot read is judged as written.
+    expect(await cloneConfinement(data(), '', { real: never })).toBeNull()
+  })
+
+  it('with the real file system: a junction or symlink to a clone is confined to the clone', async () => {
+    await mkdir(join(repos(), 'c', 'src'), { recursive: true })
+    let linked = true
+    try {
+      await symlink(join(repos(), 'c'), join(dir, 'alias'), 'junction')
+    } catch {
+      linked = false
+    }
+    if (!linked) return
+    const got = await cloneConfinement(data(), join(dir, 'alias', 'src'))
+    expect(got && folderKey(got)).toBe(folderKey(await realpath(join(repos(), 'c'))))
+    expect(await cloneConfinement(data(), join(dir, 'missing'))).toBeNull()
+  })
+})
+
+describe('cloneReader', () => {
+  it('confines the reads of a clone to it, and reads a folder that is no clone plainly', async () => {
+    const data = join(dir, 'data')
+    const clone = join(data, 'world', 'repos', 'c')
+    await mkdir(clone, { recursive: true })
+    await writeFile(join(clone, 'a.ts'), 'A')
+    await writeFile(join(dir, 'outside.ts'), 'O')
+    const read = vi.fn(async (p: string) => `read:${p}`)
+    const inClone = cloneReader(data, clone, read)
+    expect(await inClone(join(clone, 'a.ts'))).toMatch(/a\.ts$/)
+    await expect(inClone(join(dir, 'outside.ts'))).rejects.toThrow('outside the folder')
+    const plain = cloneReader(data, join(dir, 'project'), read)
+    expect(await plain(join(dir, 'outside.ts'))).toBe(`read:${join(dir, 'outside.ts')}`)
+    expect(await plain(join(dir, 'missing.ts'))).toBe(`read:${join(dir, 'missing.ts')}`)
   })
 })
 

@@ -1125,8 +1125,12 @@ describe('memory:ingest-code', () => {
   it('ingests the repo AND rebuilds the structural code graph for that repo key', async () => {
     const r = await invoke('memory:ingest-code', { repoRoot: '/repos/termpolis' })
     expect(r.data).toEqual({ filesIndexed: 2, codeGraph: { symbols: 12, edges: 5 } })
-    expect(mneme.runCodeIngest).toHaveBeenCalledWith(expect.anything(), { repoRoot: '/repos/termpolis', confined: false })
+    expect(mneme.runCodeIngest).toHaveBeenCalledWith(expect.anything(), { repoRoot: '/repos/termpolis', source: expect.objectContaining({ root: '/repos/termpolis' }) })
     expect(cg.buildCodeGraph).toHaveBeenCalledWith(expect.anything(), 'key:/repos/termpolis')
+    // One source for both: the ingest lists and reads the project as the graph's sweep does (codeGraphSource.ts).
+    const source = mneme.runCodeIngest.mock.calls[0][1].source
+    const graphDeps = cg.buildCodeGraph.mock.calls[0][0]
+    expect([graphDeps.root, graphDeps.listFiles, graphDeps.readFile]).toEqual([source.root, source.listFiles, source.readFile])
     // …and keeps the graph fresh by watching the repo
     expect(mneme.ensureRepoWatch).toHaveBeenCalledWith('/repos/termpolis', expect.anything())
     // …including inside the nested repositories the last listing mapped, read fresh each time it is asked.
@@ -1153,8 +1157,8 @@ describe('memory:ingest-code', () => {
     const graphDeps = cg.buildCodeGraph.mock.calls[0][0]
     // sweepPause (the governor, then the typing gate), not whenNotShed alone: it resolves with nothing, at once here.
     await expect(graphDeps.pause()).resolves.toBeUndefined()
-    expect(graphDeps.listFiles()).toEqual(['a.ts'])
-    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/x', { confined: false })
+    await expect(graphDeps.listFiles()).resolves.toEqual(['a.ts'])
+    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/x', { confineTo: null })
     await expect(graphDeps.readFile('a.ts')).resolves.toBe('{}')
     // It must be a REAL async read. The sweep awaits this once per file, and an `await` on the
     // already-resolved promise that an async-wrapped readFileSync returns yields only a microtask —
@@ -1229,8 +1233,8 @@ describe('code-graph:build', () => {
   it('indexes the repo\'s discovered files, read off disk', async () => {
     await invoke('code-graph:build', { repoRoot: '/repos/y' })
     const deps = cg.buildCodeGraph.mock.calls[0][0]
-    expect(deps.listFiles()).toEqual(['a.ts'])
-    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y', { confined: false })
+    await expect(deps.listFiles()).resolves.toEqual(['a.ts'])
+    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y', { confineTo: null })
     await expect(deps.readFile('a.ts')).resolves.toBe('{}')
     expect(fsMock.promises.readFile).toHaveBeenCalledWith('a.ts', 'utf8')
     expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
@@ -4276,7 +4280,7 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(key).toBe('key:/repos/y')
     await expect(deps.pause()).resolves.toBeUndefined() // sweepPause: the governor, then the typing gate
     await deps.listFiles()
-    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y', { confined: false })
+    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y', { confineTo: null })
     await expect(deps.readFile('a.ts')).resolves.toBe('{}')
     // A second first-world compile while that index runs starts no second one.
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })

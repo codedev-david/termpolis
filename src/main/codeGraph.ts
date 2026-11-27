@@ -110,7 +110,8 @@ const builds = new Map<string, BuildRec>()
 /** A full build asked for while another of the project runs, by project key: it waits for that one. A later request of
  *  the project joins it: one listing serves every request made before it starts, and the last request's deps are the
  *  ones it runs with. Once it starts, a new request waits for a new build, which lists after it. A build asked for
- *  while none runs starts at once and is never joined. */
+ *  while none runs starts at once and is never joined. A request naming another root (CodeGraphDeps.root) does not
+ *  join: it waits for a build of its own, and becomes the one later requests of its root join. */
 interface PendingBuild { deps: CodeGraphDeps; result: Promise<CodeGraphStats> }
 const pendingBuilds = new Map<string, PendingBuild>()
 
@@ -412,6 +413,11 @@ export async function reindexFile(file: string, content: string, projectKey?: st
 }
 
 export interface CodeGraphDeps {
+  /** The folder listFiles lists, as the request spelled it. Builds of one project key asked for while one runs are one
+   *  build only when they name the same root (or none): two spellings of one folder, or two folders whose keys match
+   *  (projectKey.ts: on Linux and macOS `group\repo` is a folder name and keys as `group/repo`), each list for
+   *  themselves (Codex r4 M1). */
+  root?: string
   listFiles: () => Promise<string[]>
   readFile: (file: string) => Promise<string>
   /** Asked at each yield boundary of a sweep (HP-3). main hands it sweepPause (sweepPause.ts): the loop governor's
@@ -471,7 +477,7 @@ export async function reindexRepoGraph(
   source: Pick<CodeGraphDeps, 'listFiles' | 'readFile'> = { listFiles: () => discoverRepoFiles(root), readFile: (f) => fs.promises.readFile(f, 'utf8') },
 ): Promise<CodeGraphStats> {
   return buildCodeGraph(
-    { listFiles: source.listFiles, readFile: source.readFile, ...(pause ? { pause } : {}) },
+    { root, listFiles: source.listFiles, readFile: source.readFile, ...(pause ? { pause } : {}) },
     graphKeyForRoot(root),
   )
 }
@@ -487,7 +493,7 @@ export function buildCodeGraph(deps: CodeGraphDeps, projectKey = ''): Promise<Co
   // tools), whichever of the builds asked for finishes last.
   activeKey = projectKey
   const waiting = pendingBuilds.get(projectKey)
-  if (waiting) {
+  if (waiting && waiting.deps.root === deps.root) {
     waiting.deps = deps
     return waiting.result
   }
@@ -536,6 +542,7 @@ async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGr
   const rec: BuildRec = { target: aside ? newState() : st, aside, edited: new Set(), retry: new Set() }
   if (!aside) clearState(st)
   builds.set(projectKey, rec)
+  let out: GraphState
   try {
     hold.release() // a watcher batch may go through while the project is listed
     let files: string[] | null = null
@@ -545,71 +552,120 @@ async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGr
       /* keep the graph as it is */
     }
     hold.release = await acquire(graphLock, projectKey)
-    // A failed or empty listing keeps the last good graph: a transient git-off-PATH must not wipe a good index.
-    if (files === null || (files.length === 0 && aside)) return statsOf(stateFor(projectKey))
-    await fillGraph(rec, files, async () => {
-      hold.release()
-      await yieldToEventLoop()
-      if (deps.pause) {
-        sweepCounters.pauses++
-        try { await deps.pause() } catch { /* fail open: the sweep goes on */ }
-      }
-      hold.release = await acquire(graphLock, projectKey)
-    }, deps.readFile)
-    await settleEdits(rec, files, deps.readFile)
-    // Published whether or not it was filled aside: a first build's graph is the live one, unless a brain import
-    // (initCodeGraph) replaced `graphs` while it ran, and this build read the disk after that archive was made.
-    graphs.set(projectKey, rec.target)
+    // A failed or empty listing keeps the last good graph: a transient git-off-PATH must not wipe a good index. What a
+    // watcher batch did while it listed is still settled against the disk, in the live graph the batch wrote into too:
+    // a file it read and that is gone since (the project's last file, deleted) leaves it (Codex r4 LOW).
+    if (files === null || (files.length === 0 && aside)) {
+      out = stateFor(projectKey)
+      if (!(await settleEdits(rec, projectKey, out, files ?? [], deps.readFile))) return statsOf(out)
+    } else {
+      await fillGraph(rec, files, async () => {
+        hold.release()
+        await yieldToEventLoop()
+        if (deps.pause) {
+          sweepCounters.pauses++
+          try { await deps.pause() } catch { /* fail open: the sweep goes on */ }
+        }
+        hold.release = await acquire(graphLock, projectKey)
+      }, deps.readFile)
+      await settleEdits(rec, projectKey, rec.target, files, deps.readFile)
+      // Published whether or not it was filled aside: a first build's graph is the live one, unless a brain import
+      // (initCodeGraph) replaced `graphs` while it ran, and this build read the disk after that archive was made.
+      graphs.set(projectKey, rec.target)
+      out = rec.target
+    }
     rebuildEdges(projectKey)
   } finally {
     builds.delete(projectKey)
     hold.release()
   }
   await persistCodeGraph(projectKey)
-  return statsOf(rec.target)
+  return statsOf(out)
 }
+
+/** How many reads settleEdits keeps out at once. */
+const SETTLE_READS_AT_ONCE = 8
 
 /**
  * The files a watcher batch touched while a build ran, settled against the disk before it publishes (under graphLock,
- * so no batch holds a read meanwhile):
+ * so no batch holds a read meanwhile), into `target` (the graph the build publishes, or the live one when its listing
+ * failed or came back empty and the build keeps the graph as it was):
  *
  * - A file a batch wrote that the listing does not hold. The listing may be older than the batch's read (a file made
  *   since) or newer (deleted since: the batch read it while the build listed, then it went). A read says which: one
  *   that finds it gone takes it out; one that fails otherwise (busy, slow) leaves what the batch wrote. Its delete
  *   event still comes, and its batch takes it out of the live graph as any batch does.
- * - A file a batch could not read, and removed (BuildRec.retry): read once more, so a failure that passed is not
- *   published. Still unreadable, it stays out, as a batch with no build under way leaves it.
+ * - A file a batch could not read, and removed, or the build's own read could not get (BuildRec.retry): read once more,
+ *   so a failure that passed is not published. Still unreadable (not gone), it keeps what the live graph holds of it:
+ *   the last good graph's version for one the build could not read (Opus R3-m1), nothing for one a batch removed.
+ *
+ * The reads run SETTLE_READS_AT_ONCE at a time, and all of them within one read's time limit (readTimeoutMs): one not
+ * back by then counts as failed, as a read past its own limit does. So N files that hang hold the project for one
+ * limit, not N (Opus R3-m2). True when it changed `target`.
  */
-async function settleEdits(rec: BuildRec, files: string[], readFile: (file: string) => Promise<string>): Promise<void> {
+async function settleEdits(rec: BuildRec, key: string, target: GraphState, files: string[], readFile: (file: string) => Promise<string>): Promise<boolean> {
   const listed = new Set(files)
-  for (const file of [...rec.edited]) {
-    if (listed.has(file)) continue
-    try {
-      await readBounded(readFile, file)
-    } catch (e) {
-      if (isGone(e)) removeFile(rec.target, file)
-    }
+  const deadline = Date.now() + readTimeoutMs
+  const read = (file: string): Promise<string> => {
+    const left = deadline - Date.now()
+    if (left <= 0) return Promise.reject(Object.assign(new Error(`settling ${file}: out of time`), { code: 'ETIMEDOUT' }))
+    return bounded(readFile(file), left, `reading ${file}`)
   }
-  const cap = maxGraphFileChars()
-  for (const file of [...rec.retry]) {
-    let ex: FileExtract | null = null
+  let changed = false
+  await eachAtOnce([...rec.edited].filter((file) => !listed.has(file)), async (file) => {
     try {
-      const content = await readBounded(readFile, file)
+      await read(file)
+    } catch (e) {
+      if (isGone(e)) {
+        removeFile(target, file)
+        changed = true
+      }
+    }
+  })
+  const cap = maxGraphFileChars()
+  await eachAtOnce([...rec.retry], async (file) => {
+    // `ex`: what to index. `unread`: no read got it (a read that found it gone, or it past the cap, or nothing in it to
+    // index, did: it stays out).
+    let ex: FileExtract | null = null
+    let unread = false
+    try {
+      const content = await read(file)
       if (content.length > cap) sweepCounters.skippedLarge++
       else {
         const got = (await extractFileTS(file, content)) ?? extractFile(file, content)
         if (got) ex = withRefs(got, content)
       }
-    } catch {
-      /* still unreadable: it stays out */
+    } catch (e) {
+      unread = !isGone(e)
     }
     // An edit of the file made while this read and parsed (indexFileContent) is newer, and was written already. A file
-    // still unreadable needs no removal: one on this list is not in rec.target, as the batch that failed removed it
-    // from every graph it writes, and fillGraph takes a file off the list when it indexes it.
-    if (!ex || rec.edited.has(file)) continue
-    removeFile(rec.target, file)
-    indexExtract(rec.target, ex, '')
+    // on this list is not in `target`: the batch that failed removed it from every graph it writes, a build's read that
+    // failed did not index it, and fillGraph takes a file off the list when it indexes it.
+    if (rec.edited.has(file)) return
+    if (ex) indexExtract(target, ex, '')
+    else if (!unread || !copyFile(stateFor(key), target, file)) return
+    changed = true
+  })
+  return changed
+}
+
+/** Runs `work` over `items`, SETTLE_READS_AT_ONCE at a time. */
+async function eachAtOnce(items: string[], work: (item: string) => Promise<void>): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) await work(items[next++])
   }
+  await Promise.all(Array.from({ length: Math.min(SETTLE_READS_AT_ONCE, items.length) }, worker))
+}
+
+/** `file`'s symbols and imports as `from` holds them, put into `to` (which holds none of it); false when `from` holds
+ *  none of it (as when it is `to`: a file settled into the live graph, after a failed listing, is not in it). */
+function copyFile(from: GraphState, to: GraphState, file: string): boolean {
+  const ids = from.idsByFile.get(file) ?? []
+  for (const id of ids) addSymbolRec(to, from.symbolsById.get(id) as SymbolRec)
+  const imports = from.fileImports.get(file)
+  if (imports) to.fileImports.set(file, imports)
+  return ids.length > 0 || imports !== undefined
 }
 
 /** One sweep's reads and parses into its graph, calling `boundary` every YIELD_EVERY files (the build gives the main
@@ -631,7 +687,10 @@ async function fillGraph(rec: BuildRec, files: string[], boundary: () => Promise
     let content: string
     try {
       content = await readBounded(readFile, file)
-    } catch {
+    } catch (e) {
+      // Listed and gone since: it stays out. Could not be read just now (slow, busy): read once more before the build
+      // publishes, and the last graph's version kept if that fails too (settleEdits; Opus R3-m1).
+      if (!isGone(e)) rec.retry.add(file)
       continue
     }
     if (content.length > cap) {

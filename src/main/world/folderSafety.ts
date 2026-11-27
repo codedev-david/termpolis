@@ -8,6 +8,7 @@
 import * as fsp from 'node:fs/promises'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { foldsCase } from '../../shared/caseFolding'
+import { normalizeShellPath } from '../../shared/cwdPath'
 
 /** Whether this platform's file systems ignore case (WP5 X03: the one rule project keys, the code index and the watchers use).
  *  The `isWindows` options below name this: true folds case. */
@@ -126,7 +127,10 @@ export async function isProjectFolder(
 /**
  * Wraps a file reader so it only reads files whose real path (symlinks resolved) stays inside `root`'s
  * real path; anything else rejects, which every caller already treats as an unreadable file. The file
- * is read through its resolved path.
+ * is read through its resolved path, and its real path is taken again once the read is done: a folder on
+ * the path swapped for a link out of `root` between the check and the read (Codex r4 M3, Opus R3-n1) moves
+ * the file, and the read is refused. What is left is a swap there and back while the read runs; a text
+ * read closes that too (confinedTextReader).
  */
 export function confinedReader<T>(root: string, read: (p: string) => Promise<T>, real: (p: string) => Promise<string> = (p) => fsp.realpath(p)): (p: string) => Promise<T> {
   let rootReal: Promise<string> | undefined
@@ -134,6 +138,98 @@ export function confinedReader<T>(root: string, read: (p: string) => Promise<T>,
     rootReal ??= real(root)
     const [r, f] = await Promise.all([rootReal, real(p)])
     if (!isInside(r, f)) throw new Error('outside the folder')
-    return read(f)
+    const out = await read(f)
+    if ((await real(p)) !== f) throw new Error('the file moved while it was read')
+    return out
   }
+}
+
+/** A device and file id, as a stat with `bigint: true` gives them. */
+export interface FileIdent { dev: bigint | number; ino: bigint | number }
+/** The open file confinedTextReader reads from. */
+export interface ConfinedHandle { stat(): Promise<FileIdent>; readText(): Promise<string>; close(): Promise<void> }
+/** The file system confinedTextReader uses (tests inject one). */
+export interface ConfinedFs {
+  real(p: string): Promise<string>
+  open(p: string): Promise<ConfinedHandle>
+  /** The path's own id: a link at the end of it is not followed. */
+  lstat(p: string): Promise<FileIdent>
+}
+/** The file system confinedTextReader reads with unless handed another (exported for its tests). */
+export const realConfinedFs: ConfinedFs = {
+  real: (p) => fsp.realpath(p),
+  open: async (p) => {
+    // Read-only, and never waiting for a writer: a FIFO opens at once (POSIX; Windows has no such flag) and its read fails.
+    const h = await fsp.open(p, fsp.constants.O_RDONLY | (fsp.constants.O_NONBLOCK ?? 0))
+    return { stat: () => h.stat({ bigint: true }), readText: () => h.readFile('utf8'), close: () => h.close() }
+  },
+  lstat: (p) => fsp.lstat(p, { bigint: true }),
+}
+
+/**
+ * A text reader confined as confinedReader is, that reads the file it checked (Codex r4 M3, Opus R3-n1): it opens the
+ * file first, then takes the real path of the name it opened and checks that, and reads only if the file at that real
+ * path is the one it holds open (same device and file id; lstat, so a last part swapped for a link is not followed).
+ * A folder swapped for a link out of `root` before the open moves the real path out, or, swapped back since, leaves
+ * a different file at it; one swapped after the open does not change the file held. A real path outside `root` is
+ * refused before the open too, so a committed link to something outside is never opened.
+ *
+ * Residual (no portable way to ask an open file its own path): a swap out before the open, back before the real path
+ * is taken, and out again before the id is compared, three swaps inside one read, each landing in a window of
+ * microseconds. A file system with no file ids (FAT: every id 0) leaves the id check blind, and one swap there and back
+ * around the open goes through. A hard link has one id wherever it is: git never makes one.
+ */
+export function confinedTextReader(root: string, fs: ConfinedFs = realConfinedFs): (p: string) => Promise<string> {
+  let rootReal: Promise<string> | undefined
+  return async (p) => {
+    rootReal ??= fs.real(root)
+    const r = await rootReal
+    if (!isInside(r, await fs.real(p))) throw new Error('outside the folder')
+    const h = await fs.open(p)
+    try {
+      const [f, held] = await Promise.all([fs.real(p), h.stat()])
+      if (!isInside(r, f)) throw new Error('outside the folder')
+      const named = await fs.lstat(f)
+      if (BigInt(named.dev) !== BigInt(held.dev) || BigInt(named.ino) !== BigInt(held.ino)) throw new Error('the file moved while it was opened')
+      return await h.readText()
+    } finally {
+      await h.close().catch(() => undefined)
+    }
+  }
+}
+
+/**
+ * The folder a sweep of `root` is confined to (Opus R3-m3, R3-n2): the Lumopolis clone `root` is, or is inside, as
+ * `<userData>/world/repos/<name>`, or null when it is no clone. Judged on the spelling first (a Git Bash `/c/...` read
+ * as its drive path), then on the real paths of both, so a junction or symlink to a clone, or a clone reached through
+ * a linked userData (git's toplevel has its links resolved), is a clone too. It is the clone's own folder, not
+ * `root`: a root that is a link inside a clone (`repos/c/sub -> /elsewhere`) is confined to the clone, and reads
+ * nothing elsewhere. Never rejects.
+ */
+export async function cloneConfinement(
+  userData: string,
+  root: string,
+  opts: { isWindows?: boolean; platform?: NodeJS.Platform; real?: (p: string) => Promise<string> } = {}
+): Promise<string | null> {
+  const real = opts.real ?? ((p: string) => fsp.realpath(p))
+  const repos = join(userData, 'world', 'repos')
+  const spelled = normalizeShellPath(root, { platform: opts.platform ?? process.platform }) ?? root
+  const lexical = cloneTop(repos, spelled, opts.isWindows)
+  if (lexical) return lexical
+  const [realRepos, realRoot] = await Promise.all([real(repos).catch(() => null), real(spelled).catch(() => null)])
+  return realRepos && realRoot ? cloneTop(realRepos, realRoot, opts.isWindows) : null
+}
+/** `<repos>/<name>` for a path at or under a clone folder of `repos`, or null. */
+function cloneTop(repos: string, p: string, isWindows?: boolean): string | null {
+  if (!isInside(repos, p, isWindows) || folderKey(repos, isWindows) === folderKey(p, isWindows)) return null
+  const base = resolve(repos)
+  // Inside repos and not repos itself: what follows it names one folder at least.
+  return join(base, resolve(p).slice(base.length).split(/[\\/]/).find((part) => part !== '') as string)
+}
+
+/** `read`, confined (confinedReader) to the clone `root` is, or is in (cloneConfinement), and plain when it is in none.
+ *  Which, is found once, on the first read. */
+export function cloneReader<T>(userData: string, root: string, read: (p: string) => Promise<T>): (p: string) => Promise<T> {
+  let reader: Promise<(p: string) => Promise<T>> | undefined
+  return async (p) => (await (reader ??= cloneConfinement(userData, root).then((w) => (w === null ? read : confinedReader(w, read)))))(p)
 }
