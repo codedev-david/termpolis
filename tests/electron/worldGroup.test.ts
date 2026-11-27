@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_DISTRICTS,
   FAMILY_FOLDER_MAX,
   MERGE_DENSITY,
+  PART_LINK_FLOOR,
   PART_MIN,
   groupProject,
   isIgnored,
@@ -1152,6 +1153,152 @@ describe('groupProject', () => {
       expect(home(g, 'src/a/m07aOne.ts').members).toContain('src/a/p07Alpha.ts')
     })
 
+    it('exports the density floor', () => {
+      expect(PART_LINK_FLOOR).toBe(3)
+    })
+
+    for (const [size, to] of [
+      [9, 'wave'],
+      [10, 'part']
+    ] as const) {
+      it(`passes over a link it would dissolve for one that keeps its part only at a third of its density or more (${size} files)`, () => {
+        // The part, imported twice (2 over 6), would dissolve (3 of 10). A wave building of `size` files (five wave
+        // files), imported once, stays a part: at 9 files it is exactly a third as dense (1 over 9), so the part is passed
+        // over; at 10 it is less, and the part takes the mixed building by density.
+        const keeper = [...bare('src/a', 'qa', size - 5), ...inA('waveAlpha', 'waveBeta', 'waveDelta', 'waveEcho', 'waveGamma')]
+        const m = mixed(part[0], keeper[0])
+        m['src/a/pathGamma.ts'].push('./codeBeta')
+        const g = capOnce(snap({ ...clique(part), ...clique(keeper), ...m }), 3)
+        const small = inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')
+        expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...(to === 'wave' ? keeper : part), ...small]))
+      })
+    }
+
+    it('passes over a link it would dissolve for one that keeps its part, never for a denser process building', () => {
+      // The zork worker, a process building of one file, is the mixed building's densest link (2 over 1); the part
+      // (1 over 6) would dissolve, and the wave building (1 over 7) stays a part.
+      const m = mixed()
+      m['src/a/pathGamma.ts'].push('./zork')
+      m['src/a/ruleDelta.ts'].push('./zork')
+      const s = snap({ ...clique(part), ...clique(wave), ...m, 'src/a/zork.ts': [], 'src/solo/x.ts': [] })
+      const bounds = [B('worker', 'zork', 'consume', 'src/solo/x.ts')]
+      const all = groupProject(s, bounds).buildings.length
+      const g = groupProject(s, bounds, { maxBuildings: all - 1 })
+      checkInvariants(g, s.files)
+      expect(home(g, 'src/a/zork.ts').members).toEqual(['src/a/zork.ts'])
+      expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...wave, ...inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')]))
+    })
+
+    const pad = (k: number): string => String(k).padStart(2, '0')
+    // Two upper-case-led letters after a word: kelpAa, kelpAb..., one name family.
+    const fam = (word: string, n: number): string[] =>
+      Array.from({ length: n }, (_, i) => `src/a/${word}${String.fromCharCode(65 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}`)
+    // 59 parts of nine files (three p<k> files and six of their own names) and 59 modules of seven, each importing its own
+    // part `w` times and, from its next files, the first file of each of `families`: merged into its own part, a module
+    // would dissolve it (3 of 16), and a big family would stay a part taking it in.
+    const modules = (families: string[][], w: number): Record<string, string[]> => {
+      const imports: Record<string, string[]> = Object.assign({}, ...families.map((f) => clique(f)))
+      for (let k = 0; k < 59; k++) {
+        const own = [...['Alpha', 'Beta', 'Gamma'].map((x) => `src/a/p${pad(k)}${x}`), ...'abcdef'.split('').map((c) => `src/a/u${pad(k)}${c}One`)]
+        Object.assign(imports, clique(own))
+        const mod = 'abcdefg'.split('').map((c) => `src/a/m${pad(k)}${c}One`)
+        const also: Record<string, string[]> = { [mod[0]]: [`./p${pad(k)}Alpha`, ...'abcde'.split('').map((c) => `./u${pad(k)}${c}One`)].slice(0, w) }
+        families.forEach((f, j) => (also[mod[j + 1]] = [rel(mod[j + 1], f[0])]))
+        Object.assign(imports, clique(mod, also))
+      }
+      return imports
+    }
+    const sizes = (g: Grouping): number[] => g.buildings.map((b) => b.members.length).sort((x, y) => y - x)
+
+    for (const [n, w] of [
+      [30, 2],
+      [60, 2],
+      [60, 6]
+    ] as const) {
+      it(`keeps a big name family from drawing in every module whose own part it would dissolve (review repro, ${n} files, ${w} imports home)`, () => {
+        // One import into the family (1 over n) is far less than a third as dense as the module's own part (w over 9), so
+        // each module goes home, as on main: the family stays n files, not 3n.
+        const s = snap(modules([fam('kelp', n)], w))
+        expect(groupProject(s, [], { maxBuildings: 200 }).buildings).toHaveLength(119)
+        const g = groupProject(s, [], { maxBuildings: 60 })
+        checkInvariants(g, s.files)
+        expect(sizes(g).slice(0, 2)).toEqual([n, 16])
+        expect(home(g, 'src/a/kelpAa.ts').members).toEqual(files(fam('kelp', n)))
+        expect(home(g, 'src/a/m07aOne.ts').members).toContain('src/a/p07Alpha.ts')
+      })
+    }
+
+    it('keeps a building whose part dissolved from drawing in every module that also links a family that stays a part (review repro)', () => {
+      // Two families of 30 (kelp and reef); each module imports its own part three times and each family once. The first
+      // module dissolves kelp's part, as on main (46 files), and the rest, their reef link too weak to pass over their own
+      // part, go home: 46, 30 and 16s, as on main, not 95 and 86.
+      const s = snap(modules([fam('kelp', 30), fam('reef', 30)], 3))
+      expect(groupProject(s, [], { maxBuildings: 200 }).buildings).toHaveLength(120)
+      const g = groupProject(s, [], { maxBuildings: 60 })
+      checkInvariants(g, s.files)
+      expect(sizes(g).slice(0, 3)).toEqual([46, 30, 16])
+      expect(home(g, 'src/a/reefAa.ts').members).toEqual(files(fam('reef', 30)))
+      expect(home(g, 'src/a/m07aOne.ts').members).toContain('src/a/p07Alpha.ts')
+    })
+
+    // Codex's shapes, in a pkg folder at the root: four core files every other file of a group imports, and that import them.
+    const mesh = (m: Record<string, string[]>, group: string[]): void => {
+      for (const x of group) m[`pkg/${x}.ts`] = []
+      const core = group.slice(0, 4)
+      for (const x of group)
+        for (const c of core) {
+          if (x === c) continue
+          m[`pkg/${x}.ts`].push(`./${c}`)
+          if (!core.includes(x)) m[`pkg/${c}.ts`].push(`./${x}`)
+        }
+    }
+    const family = (word: string, n: number): string[] => Array.from({ length: n }, (_, j) => `${word}File${j}`)
+    /** 13 modules of seven files, each with its own domain of twelve (a part, four of them domain files) and links to a
+     *  shared hub; `extra` buildings of eight fill the cap. */
+    const snowball = (hub: string[], toDomain: number, toHub: number, adapter: boolean, extra: number): GraphSnapshot => {
+      const m: Record<string, string[]> = {}
+      mesh(m, hub)
+      for (let i = 0; i < 13; i++) {
+        const domain = [...family(`domain${i}`, 4), ...Array.from({ length: 8 }, (_, j) => `detail${i}x${j}File`)]
+        const leaf = Array.from({ length: 7 }, (_, j) => `feature${i}x${j}File`)
+        mesh(m, domain)
+        mesh(m, leaf)
+        for (let j = 0; j < toDomain; j++) m[`pkg/${leaf[j]}.ts`].push(`./${domain[j]}`)
+        for (let j = 0; j < toHub; j++) m[`pkg/${leaf[j]}.ts`].push(`./${hub[j]}`)
+        if (adapter) {
+          const alt = family(`adapter${i}`, 30)
+          mesh(m, alt)
+          m[`pkg/${leaf[0]}.ts`].push(`./${alt[0]}`)
+        }
+      }
+      for (let i = 0; i < extra; i++) mesh(m, family(`extra${i}`, 8))
+      return snap(m)
+    }
+
+    it('keeps a shared building with no part from drawing in every module that also links a far weaker part (Codex repro)', () => {
+      // Each module imports its own domain five times (5 over 12), a shared 16-file service with no part four times (4 over
+      // 16) and its own 30-file adapter, a part that would stay one, once (1 over 30): too weak to pass over the domain, so
+      // the modules weigh their links by density and go home, as on main, not 91 of them to the service.
+      const s = snowball(Array.from({ length: 16 }, (_, j) => `service${j}File`), 5, 4, true, 33)
+      expect(groupProject(s, [], { maxBuildings: 200 }).buildings).toHaveLength(77)
+      const g = groupProject(s, [], { maxBuildings: 60 })
+      checkInvariants(g, s.files)
+      expect(sizes(g)[0]).toBe(30)
+      expect(home(g, 'pkg/service0File.ts').members).toHaveLength(16)
+      expect(home(g, 'pkg/feature3x0File.ts').members).toContain('pkg/domain3File0.ts')
+    })
+
+    it('keeps a big name family from snowballing every module with one weak link to it (Codex repro)', () => {
+      // Each module imports its own domain twice (2 over 12) and a shared 42-file platform family once (1 over 42): the
+      // platform stays 42 files, as on main, not 126.
+      const s = snowball(family('platform', 42), 2, 1, false, 46)
+      expect(groupProject(s, [], { maxBuildings: 200 }).buildings).toHaveLength(73)
+      const g = groupProject(s, [], { maxBuildings: 60 })
+      checkInvariants(g, s.files)
+      expect(sizes(g)[0]).toBe(42)
+      expect(home(g, 'pkg/platformFile0.ts').members).toHaveLength(42)
+    })
+
     it('keeps the same name word in two folders two groups', () => {
       // Two dock files here and two in a sub-folder too big to be one group (17 files): two groups of two, tied, so no
       // part. No link keeps its part, so the denser part takes the mixed building by density.
@@ -1165,11 +1312,12 @@ describe('groupProject', () => {
     })
 
     it('takes a sub-folder of exactly FAMILY_FOLDER_MAX files as one group', () => {
-      // Sixteen files with no name stem in one sub-folder: one group, a part that stays one (16 of 20), so the denser part,
-      // which would dissolve, is passed over.
+      // Sixteen files with no name stem in one sub-folder: one group, a part that stays one (16 of 20), imported twice (2
+      // over 16, three quarters as dense as the part's 1 over 6), so the part, which would dissolve, is passed over. Were
+      // the sub-folder no group, it would have no part to keep, and the denser part would take the mixed building.
       const bay16 = bare('src/a/bay', 'ba', FAMILY_FOLDER_MAX)
       const m = mixed(part[0], bay16[0])
-      m['src/a/pathGamma.ts'].push('./codeBeta')
+      m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', bay16[1]))
       const g = capOnce(snap({ ...clique(part), ...clique(bay16), ...m }), 3)
       expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...bay16, ...inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')]))
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
@@ -1205,6 +1353,58 @@ describe('groupProject', () => {
       // With no part, the front door names it.
       const four = inA('guardTwo', 'hostThree', 'watchOne', 'zoneFour')
       expect(home(groupProject(snap({ ...clique(four), ...user }), []), 'src/a/guardTwo.ts').name).toBe('watchOne')
+    })
+
+    it('names a part from its own files only, so an import from another district into one of them renames nothing (Codex repro)', () => {
+      const m: Record<string, string[]> = {
+        ...clique(inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardOne', 'hostTwo', 'watchThree')),
+        'src/b/clientA.ts': ['../a/watchThree'],
+        'src/b/clientB.ts': ['../a/watchThree'],
+        'src/b/clientC.ts': []
+      }
+      const before = home(groupProject(snap(m), []), 'src/a/codeGamma.ts')
+      const after = home(groupProject(snap({ ...m, 'src/b/clientC.ts': ['../a/codeBeta'] }), []), 'src/a/codeGamma.ts')
+      expect(after.members).toEqual(before.members)
+      expect(after.id).toBe(before.id)
+      expect([before.name, after.name]).toEqual(['codeAlpha', 'codeAlpha'])
+    })
+
+    it('names a part the same after a case-only rename of one of its files (Codex repro)', () => {
+      for (const beta of ['codeBeta', 'CodeBeta']) {
+        const m = { ...clique(inA('codeAlpha', beta, 'codeGamma', 'guardOne', 'hostTwo', 'watchThree')), 'src/b/clientA.ts': ['../a/watchThree'] }
+        expect(home(groupProject(snap(m), []), 'src/a/codeGamma.ts').name).toBe('codeAlpha')
+      }
+      // On an exact tie in any case, the exact path decides.
+      const tie = clique(inA('codeAlpha', 'CodeAlpha', 'codeGamma', 'guardOne', 'hostTwo', 'watchThree'))
+      expect(home(groupProject(snap(tie), []), 'src/a/codeGamma.ts').name).toBe('CodeAlpha')
+    })
+
+    it('names a part the same when an unlinked file joins its folder (Codex repro)', () => {
+      // Six code files and ten detail files in a sub-folder of sixteen, one group; an outside client imports detail0File.
+      // A seventeenth file makes the folder too big to be one group, so the code files are the part; their first file
+      // leads the folder too, so the name holds.
+      const group = [...Array.from({ length: 6 }, (_, j) => `src/a/sub/codeFile${j}`), ...Array.from({ length: 10 }, (_, j) => `src/a/sub/detail${j}File`)]
+      const m = { ...clique(group), 'src/b/client.ts': ['../a/sub/detail0File'] }
+      const before = home(groupProject(snap(m), []), 'src/a/sub/codeFile0.ts')
+      const after = home(groupProject(snap({ ...m, 'src/a/sub/unlinked.ts': [] }), []), 'src/a/sub/codeFile0.ts')
+      expect(after.members).toEqual(before.members)
+      expect(after.id).toBe(before.id)
+      expect([before.name, after.name]).toEqual(['codeFile0', 'codeFile0'])
+    })
+
+    it('names a part of test files only after the non-test front door (review repro)', () => {
+      const tests = inA('mnemeAlpha.test', 'mnemeBeta.test', 'mnemeGamma.test')
+      const g = groupProject(snap(clique([...tests, ...inA('guardTwo', 'hostThree', 'watchOne')])), [])
+      expect(home(g, 'src/a/mnemeAlpha.test.ts').name).toBe('guardTwo')
+      // A part with a non-test file is named after it, before its tests.
+      const mixedTests = inA('mnemeAlpha.test', 'mnemeBeta.test', 'mnemeGamma', 'guardTwo', 'hostThree', 'watchOne')
+      expect(home(groupProject(snap(clique(mixedTests)), []), 'src/a/guardTwo.ts').name).toBe('mnemeGamma')
+      // With nothing but tests, a test names it.
+      expect(home(groupProject(snap(clique(tests)), []), 'src/a/mnemeBeta.test.ts').name).toBe('mnemeAlpha.test')
+      // Still a test of its part, though the front door is another test that a file elsewhere imports.
+      const allTests = [...tests, ...inA('yakTwo.test', 'zonkOne.test')]
+      const s = snap({ ...clique(allTests), 'src/b/client.ts': ['../a/zonkOne.test'] })
+      expect(home(groupProject(s, []), 'src/a/zonkOne.test.ts').name).toBe('mnemeAlpha.test')
     })
 
     it('goes to the densest link when no link keeps its part', () => {

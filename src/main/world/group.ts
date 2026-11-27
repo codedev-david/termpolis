@@ -19,17 +19,23 @@
 //    or channel service; with no link, its nearest plain building in path order. Those fixed
 //    buildings go last. One departure (PENDING SIGN-OFF): each linked neighbour is (A) a
 //    recognisable part (PART_MIN) that stays one taking the building in, (B) no part, or (C) a part
-//    the merge would dissolve. While some link is A, the C links are passed over; A and B links
-//    compete on density, then path order. With no A link, every link competes as in the plan, so a
-//    building with no part never draws in a module whose own part it would dissolve. Growth in one
-//    district, which only moves the point where merging stops, then does not cost another district
-//    a part that another target could spare.
+//    the merge would dissolve. When the densest link is C and some A link is at least a third as
+//    dense (PART_LINK_FLOOR, the 3x floor), the C links are passed over, and A and B links compete on
+//    density, then path order; otherwise every link competes as in the plan. So a building that
+//    would dissolve its densest neighbour's part goes to a part that stays one only when that part
+//    is a near rival, and a building with no part or a big part draws in such a module only through
+//    a link at least a third as dense as the module's densest: a weak link into a big family or a
+//    big hub never outweighs a much denser one home. Growth in one district, which only moves the point
+//    where merging stops, then does not cost another district a part that a near rival could spare.
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    non-test member reaching most of the building, then most imported from outside it, skipping
 //    names that would pass for the district or a main/renderer/preload entry. A part (PART_MIN) is
-//    named after the first member of its own group in that order instead, so a part that took in a
-//    busier helper keeps its own name (PENDING SIGN-OFF: the plan names every building by its paths
-//    and has no rule for which member).
+//    named after a member of its own group instead, so a part that took in a busier helper keeps its
+//    own name: the first non-test one reaching most of the building, then in path order with case
+//    ignored, then by exact path. That reads only the building's own files, so an import from
+//    outside or a case-only rename moves no part's name. A part of nothing but tests in a building
+//    with a non-test file takes the front door's name (PENDING SIGN-OFF: the plan names every
+//    building by its paths and has no rule for which member).
 // 6. Ids are slugs of member paths (a name with no letter or digit a slug keeps, such as an emoji or
 //    a non-Latin script, is 'u' plus a short hash of the name, never 'root', which is the repository
 //    root's alone). A base no other building shares is used as is; colliding bases get '--' plus the
@@ -111,10 +117,16 @@ export const COHESIVE_WEIGHT = 2
  *  word, as the name families of step 3 are) has at least this many files, makes up at least a third of the building
  *  and outnumbers every other group there: the code graph's code*.ts among its watchers. Over the building cap the
  *  smallest building still goes first. Its links are parts that stay parts taking it in (A), links with no part (B),
- *  and parts it would dissolve (C). While some link is A, the C links are passed over, and A and B compete on density,
- *  then path order; with no A link, every link competes on density, as in the plan. PENDING SIGN-OFF: the plan's step 4
- *  (world-view-1 Task 4) sends it to the densest neighbour, whatever that dissolves. */
+ *  and parts it would dissolve (C). When its densest link is C and an A link is at least 1 / PART_LINK_FLOOR as dense,
+ *  the C links are passed over, and A and B compete on density, then path order; otherwise every link competes on
+ *  density, as in the plan. PENDING SIGN-OFF: the plan's step 4 (world-view-1 Task 4) sends it to the densest neighbour,
+ *  whatever that dissolves. */
 export const PART_MIN = 3
+/** The 3x floor (PENDING SIGN-OFF, with PART_MIN): a link that keeps its part passes over the links that would dissolve
+ *  theirs only while it is at least a third as dense as the densest link. Without it, one stray import into a big family
+ *  or into a hub beside one drew in every module whose own, far denser part it would dissolve (to about 3x the family:
+ *  groupcap review round 2). */
+export const PART_LINK_FLOOR = 3
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
@@ -915,8 +927,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // killed since the counts keep only the top two: a group of b's that ties t's part is now a rival in the tie test.
   // Round 2's survivors lean on (a) and (b) too: which of two equal counts mergedTop or offer puts first never matters,
   // since by (a) no count grows in a merge, so a tie at the top stays a tie (no part, whatever the key) and a tie
-  // below it keeps the same count; and capTarget's first loop may skip fixed buildings or not, since by (b) they have
-  // no part while a plain building looks at them.
+  // below it keeps the same count; and capTarget's loop over the links may skip fixed buildings or not, since by (b)
+  // they have no part while a plain building looks at them (round 3 too).
   const pTop = new Int32Array(nb)
   const pSecond = new Int32Array(nb)
   const pTopKey = new Array<string>(nb).fill('')
@@ -995,33 +1007,46 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     while (x >= 0 && fixed(x)) x = dir[x]
     return x
   }
+  /** The densest link not skipped (weight over the neighbour's size), ties in path order; -1 if none. */
+  const densest = (near: ReadonlyMap<number, number>, skip: (o: number) => boolean): number => {
+    let t = -1
+    near.forEach((w, o) => {
+      if (skip(o)) return
+      const d = t < 0 ? 1 : w * bSize[t] - (near.get(t) as number) * bSize[o]
+      if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
+    })
+    return t
+  }
   // The links of the building being placed that would dissolve their part (stamped with the pass), for capTarget.
   const cut = new Int32Array(nb)
   let pass = 0
   /** Where b goes: the densest link (weight over the neighbour's size, so a hub that imports everything never wins by
-   *  bulk), ties in path order, as the plan's step 4 has it; except that while some link is a part that stays one taking
-   *  b in (keepsPart), a link that is a part b would dissolve is passed over. A link with no part is weighed by density
-   *  like any other. A fixed building never takes in a plain one by a link: its name says what runs or answers there, and
-   *  unrelated helpers would blur that. PENDING SIGN-OFF (step 4 of the header).
+   *  bulk), ties in path order, as the plan's step 4 has it; except that when that link is a part b would dissolve and
+   *  some link is a part that stays one taking b in (keepsPart) and at least 1 / PART_LINK_FLOOR as dense, every link
+   *  that would dissolve its part is passed over. A link with no part is weighed by density like any other. A fixed
+   *  building never takes in a plain one by a link: its name says what runs or answers there, and unrelated helpers would
+   *  blur that. PENDING SIGN-OFF (step 4 of the header).
    *  Two limits: a building with no link keeps the plan's path-order fallback, which can land it in a part and dilute
    *  it, or dissolve it. And passing over a link changes where one building goes, so the sizes, and with them which
    *  building is smallest next and where later merges go, can differ from the plan's; never the policy (smallest first,
    *  fixed buildings last, one building kept per district) or the point where merging stops (the cap). */
   const capTarget = (b: number): number => {
     const near = bAdj.of(b)
-    pass++
-    let spare = false
-    near.forEach((_w, o) => {
-      if (fixed(o) || partOf(o) === '') return
-      if (keepsPart(b, o)) spare = true
-      else cut[o] = pass
-    })
-    let t = -1
-    near.forEach((w, o) => {
-      if (fixed(o) || (spare && cut[o] === pass)) return
-      const d = t < 0 ? 1 : w * bSize[t] - (near.get(t) as number) * bSize[o]
-      if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
-    })
+    const t = densest(near, fixed)
+    if (t >= 0 && partOf(t) !== '' && !keepsPart(b, t)) {
+      // The densest link would dissolve its part: pass it over, and every other such link, for a link that stays a part,
+      // but only one at least 1 / PART_LINK_FLOOR as dense. (When the densest link stays a part or has none, passing
+      // over the others could not change the pick, so this test only saves the loop.)
+      pass++
+      let spare = false
+      const wt = near.get(t) as number
+      near.forEach((w, o) => {
+        if (fixed(o) || partOf(o) === '') return
+        if (!keepsPart(b, o)) cut[o] = pass
+        else if (w * bSize[t] * PART_LINK_FLOOR >= wt * bSize[o]) spare = true
+      })
+      if (spare) return densest(near, (o) => fixed(o) || cut[o] === pass)
+    }
     if (t >= 0) return t
     // Nearest in path order, skipping fixed buildings while a plain one is left.
     const at = files[bMin[b]]
@@ -1147,6 +1172,15 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
     const rank = (x: number, y: number): number =>
       plain[y] - plain[x] || reach[y] - reach[x] || outside[y] - outside[x] || importers[y].length - importers[x].length || x - y
+    // Whether x leads y in naming a part: by the building's own files alone (not a test, then reach in the building), then
+    // path order with case ignored, then the exact path, so an import from outside or a case-only rename moves no name.
+    const leads = (x: number, y: number): boolean => {
+      if (plain[x] !== plain[y]) return plain[x] > plain[y]
+      if (reach[x] !== reach[y]) return reach[x] > reach[y]
+      const a = files[x].toLowerCase()
+      const c = files[y].toLowerCase()
+      return a !== c ? a < c : files[x] < files[y]
+    }
     const fits = (i: number): boolean => {
       const k = memberKey(files[i])
       return k !== dName && !ENTRY_PROCESSES.has(k)
@@ -1155,8 +1189,11 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     const pick = own.find(fits)
     // A part is named from its own group: the first of its members in the same order (PENDING SIGN-OFF, see step 5).
     const part = partOf(b)
-    const inPart = part === '' ? undefined : own.find((i) => partKey(i) === part && fits(i))
-    named = inPart ?? pick ?? -1
+    let inPart = -1
+    if (part !== '') for (const i of own) if (partKey(i) === part && fits(i) && (inPart < 0 || leads(i, inPart))) inPart = i
+    // A part of nothing but tests in a building with a non-test file takes the front door's name, as the rest of step 5.
+    // (A member of the part fits, so the front door is defined whenever inPart is.)
+    named = inPart >= 0 && (plain[inPart] === 1 || plain[pick as number] === 0) ? inPart : (pick ?? -1)
     return pick === undefined ? -1 : pick
   }
   // The member frontDoor last chose to name its building by.
