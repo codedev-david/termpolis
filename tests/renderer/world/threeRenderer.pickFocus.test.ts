@@ -8,9 +8,10 @@ import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/s
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { focusOpacity } from '../../../src/renderer/src/world/engine/interaction'
 import { LABEL_MIN_OPACITY } from '../../../src/renderer/src/world/engine/viewMath'
+import { LOOK_CODE } from '../../../src/renderer/src/world/engine/holoShaders'
 import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import {
-  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, makeHost, orb, resizeHost, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxBatches, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, makeHost, orb, resizeHost, sceneOf, smallCity, smallText,
   withHarness, withData, worldOf,
 } from './threeHarness'
 
@@ -119,12 +120,39 @@ describe('threeRenderer pick', () => {
     r.dispose()
   })
 
+  it('picking a floor still returns its building id through the instanced pool', () => {
+    const r = drawn()
+    look(r, [-6, 14, 12], [-6, 5, 0])
+    expect(r.drawnCounts().tier).toBe('floors')
+    const floors = floorsOf(worldOf(sceneOf()), 'a')
+    expect(floors).toHaveLength(3)
+    // The floors draw through the solid look's slab pool, not as their own meshes: each one is an instance there.
+    const pool = boxBatches(sceneOf()).find((im) => (im.material as THREE.ShaderMaterial).customProgramCacheKey() === 'lw-slab-box' &&
+      im.geometry.attributes.aLook.getX(0) === LOOK_CODE.solid) as THREE.InstancedMesh
+    expect(pool).toBeDefined()
+    const at = new THREE.Matrix4()
+    const spots = Array.from({ length: pool.count }, (_, k) => { pool.getMatrixAt(k, at); return new THREE.Vector3().setFromMatrixPosition(at) })
+    for (const fl of floors) {
+      expect(fl.visible).toBe(false)
+      const p = fl.getWorldPosition(new THREE.Vector3())
+      expect(spots.some((s) => s.distanceTo(p) < 1e-6)).toBe(true)
+      expect(pickAt(r, p)).toEqual({ kind: 'node', id: 'a' })
+    }
+    r.dispose()
+  })
+
   it('a planned part on no district stays drawn and pickable from far away: a linked build world (round 3 A)', () => {
-    // Drawn: its group is shown and a mesh in it (its block, or its floors nearer in) is too.
+    // Drawn: its group is shown and a mesh in it (its block, or its floors nearer in) is an instance of a slab pool.
     const shown = (world: THREE.Object3D, id: string): boolean => {
       const g = floorsOf(world, id)[0].parent!.parent!
+      const at = new THREE.Matrix4()
+      const spots = boxBatches(sceneOf()).flatMap((im) => Array.from({ length: im.count }, (_, k) => { im.getMatrixAt(k, at); return new THREE.Vector3().setFromMatrixPosition(at) }))
       let drawnMesh = false
-      g.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh) drawnMesh = true })
+      g.traverse((o) => {
+        if (!(o as THREE.Mesh).isMesh) return
+        const p = o.getWorldPosition(new THREE.Vector3())
+        if (spots.some((s) => s.distanceTo(p) < 1e-6)) drawnMesh = true
+      })
       return g.visible && drawnMesh
     }
     const planned = (id: string, pos: V): ReturnType<typeof bldg> => bldg(id, pos, { floors: 2, height: 6, look: 'wire' })

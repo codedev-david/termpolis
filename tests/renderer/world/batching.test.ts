@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
+import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, slabKey, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
 
 describe('partDrawn', () => {
   it('draws floors from the floors tier in, and one block further out', () => {
@@ -162,6 +162,13 @@ describe('batch keys', () => {
     expect(fillKey(fill)).not.toBe(fillKey({ ...fill, lineOpacity: 0.12 }))
     expect(packetKey('a', 1, true)).not.toBe(packetKey('b', 1, true))
     expect(packetKey('a', 1, true)).toBe('packet|a|1|true')
+  })
+  it('each Look keys its own slab pool, apart from every packet pool', () => {
+    const looks = ['solid', 'wire', 'amber', 'fog', 'fading'] as const
+    const keys = looks.map(slabKey)
+    expect(new Set(keys).size).toBe(looks.length)
+    expect(keys).toEqual(['slab|solid', 'slab|wire', 'slab|amber', 'slab|fog', 'slab|fading'])
+    for (const k of keys) expect(k.startsWith('packet|')).toBe(false)
   })
 })
 

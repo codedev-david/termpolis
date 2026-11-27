@@ -6,6 +6,8 @@ import { createThreeRenderer } from '../../../src/renderer/src/world/engine/thre
 import { TIER_LOOK } from '../../../src/renderer/src/world/engine/tierBudget'
 import { THEMES, type ThemeName } from '../../../src/renderer/src/world/engine/themes'
 import { heatMix, type SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
+import { memberGain, plateColor } from '../../../src/renderer/src/world/engine/holoPalette'
+import { LOOK_CODE } from '../../../src/renderer/src/world/engine/holoShaders'
 import {
   atRatio, batchedBoxes, bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, floorsOf, gpu, orb,
   packetBatches, sceneOf, smallCity, smallText, withHarness, withData, worldOf,
@@ -20,10 +22,10 @@ vi.mock('three/examples/jsm/postprocessing/OutputPass.js', async () => ({ Output
 const h = withHarness()
 
 /** The palette threeRenderer's EXTRAS lists per theme (prototype values), checked against the materials. */
-const PALETTE: Record<ThemeName, { fill: number; fillOpacity: number; fillGlow: number; platformOpacity: number; ghost: number; seal: number; amber: number; grid: number; gridOpacity: number; bloom: number; fogTint: number }> = {
-  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: 0x4ade80, amber: 0xffae42, grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
-  blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, platformOpacity: 0.45, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.75, fogTint: 0xe0f2fe },
-  glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, platformOpacity: 0.8, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.5, fogTint: 0xf1f5f9 },
+const PALETTE: Record<ThemeName, { fill: number; fillOpacity: number; fillGlow: number; ghost: number; seal: number; amber: number; grid: number; gridOpacity: number; bloom: number; fogTint: number }> = {
+  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, ghost: 0x93c5fd, seal: 0x4ade80, amber: 0xffae42, grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 0.6, fogTint: 0xcbd5e1 },
+  blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.43, fogTint: 0xe0f2fe },
+  glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.29, fogTint: 0xf1f5f9 },
 }
 
 /** One building of every look, a hot one, a changed one, and a fogged external. */
@@ -50,7 +52,7 @@ const seamOf = (root: THREE.Object3D, id: string): THREE.LineBasicMaterial =>
 
 describe('threeRenderer themes', () => {
   for (const name of ['holotable', 'blueprint', 'glass'] as const) {
-    it(`${name}: the palette reaches the fills, platforms, outlines, rings, grid, fog and bloom`, () => {
+    it(`${name}: the palette reaches the fills, plates, outlines, rings, grid, fog and bloom`, () => {
       const p = PALETTE[name]
       const th = THEMES[name]
       const r = createThreeRenderer(h.host, DEFAULT_OPTS)
@@ -85,9 +87,15 @@ describe('threeRenderer themes', () => {
       const ring = world.getObjectsByProperty('type', 'Mesh')
         .find((m) => (m as THREE.Mesh).geometry instanceof THREE.TorusGeometry && (m as THREE.Mesh).geometry.parameters.radius === 1.1) as THREE.Mesh
       expect((ring.material as THREE.MeshBasicMaterial).color.getHex()).toBe(p.seal)
-      const plat = world.getObjectsByProperty('type', 'Mesh').find((m) => (m as THREE.Mesh).geometry instanceof THREE.CylinderGeometry && (m as THREE.Mesh).geometry.parameters.radiusTop === 40) as THREE.Mesh
-      expect((plat.material as THREE.MeshStandardMaterial).opacity).toBeCloseTo(p.platformOpacity)
-      expect((plat.material as THREE.MeshStandardMaterial).color.getHex()).toBe(new THREE.Color(th.district).getHex())
+      // The district's hex plate (one instance of the plates' quad), its radius 40, in its hue's plate colour.
+      const plate = world.children.find((c) => Array.isArray(c.userData.plateIds)) as THREE.InstancedMesh
+      expect(plate.userData.plateIds).toEqual(['d'])
+      const pm = new THREE.Matrix4()
+      plate.getMatrixAt(0, pm)
+      expect(new THREE.Vector3().setFromMatrixScale(pm).x).toBeCloseTo(40)
+      const pc = new THREE.Color()
+      plate.getColorAt(0, pc)
+      expect(pc.getHex()).toBe(new THREE.Color(plateColor(120)).multiplyScalar(memberGain(1)).getHex())
       // the dashed line in the ghost colour; the fogged external in the fog tint
       const dashed = world.getObjectsByProperty('type', 'Line').find((l) => (l as THREE.Line).material instanceof THREE.LineDashedMaterial) as THREE.Line
       expect((dashed.material as THREE.LineDashedMaterial).color.getHex()).toBe(p.ghost)
@@ -178,11 +186,11 @@ describe('threeRenderer level of detail', () => {
     atRatio(r, h.frames, 0.2)
     expect(r.drawnCounts().tier).toBe('floors')
     expect(batchedBoxes(scene)).toBe(6)
-    // An open building draws its own floors (they move): out of the batches
+    // An open building's floors stay in their look's pool: they move, and each move refills it
     r.setExploded('a')
     h.frames.step()
-    expect(batchedBoxes(scene)).toBe(3)
-    for (const fl of floorsOf(world, 'a')) expect(fl.visible).toBe(true)
+    expect(batchedBoxes(scene)).toBe(6)
+    for (const fl of floorsOf(world, 'a')) expect(fl.visible).toBe(false)
     for (const b of boxBatches(scene)) expect((b as THREE.InstancedMesh).count).toBeLessThanOrEqual((b as THREE.InstancedMesh).instanceMatrix.count)
     r.dispose()
   })
@@ -208,22 +216,16 @@ describe('threeRenderer level of detail', () => {
     const world = worldOf(sceneOf())
     const slabs = world.children.filter((c) => Array.isArray(c.userData.slabIds)) as THREE.InstancedMesh[]
     expect(slabs.map((s) => s.userData.slabIds)).toEqual([['f'], ['g'], ['s']])
-    const fogSlab = slabs[0].material as THREE.MeshStandardMaterial
-    expect(fogSlab.opacity).toBeCloseTo(PALETTE.holotable.fillOpacity * 0.6)
-    expect((slabs[1].material as THREE.MeshStandardMaterial).depthWrite).toBe(false)
-    expect(fogSlab.customProgramCacheKey()).toBe('lw-slab')
-    // Every slab's fill steps back in depth, so its outline and seams (on its faces) never z-fight with it (T12).
+    // Each slab is a hologram slab of its look (the shader thins fog's fill and pulses fading's), writing no depth, so
+    // its outline and seams on its faces never z-fight with it; the lines keep their true depth.
+    expect(slabs.map((s) => s.geometry.attributes.aLook.getX(0))).toEqual([LOOK_CODE.fog, LOOK_CODE.fading, LOOK_CODE.solid])
     for (const s of slabs) {
-      const sm = s.material as THREE.MeshStandardMaterial
-      expect([sm.polygonOffset, sm.polygonOffsetFactor, sm.polygonOffsetUnits]).toEqual([true, 1, 1])
+      const sm = s.material as THREE.ShaderMaterial
+      expect([sm.customProgramCacheKey(), sm.depthWrite, sm.uniforms.uEdges.value]).toEqual(['lw-slab-hex', false, 0])
     }
     for (const l of world.children.filter((c) => c instanceof THREE.LineSegments) as THREE.LineSegments[]) {
-      expect((l.material as THREE.LineBasicMaterial).polygonOffset).toBe(false) // the lines keep their true depth
+      expect((l.material as THREE.LineBasicMaterial).polygonOffset).toBe(false)
     }
-    const sh = { uniforms: {}, vertexShader: '', fragmentShader: '#include <common>\n#include <color_fragment>\n#include <emissivemap_fragment>' }
-    fogSlab.onBeforeCompile(sh as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer)
-    expect(sh.fragmentShader).not.toContain('#include <color_fragment>')
-    expect(sh.fragmentShader).toContain('totalEmissiveRadiance *= vColor')
     // the outlines: one per look, and the ghost shell round the changed district
     const lines = world.children.filter((c) => c instanceof THREE.LineSegments && c.visible && !c.parent!.userData.nodeId) as THREE.LineSegments[]
     const shell = lines.find((l) => !(l.material as THREE.LineBasicMaterial).vertexColors)!

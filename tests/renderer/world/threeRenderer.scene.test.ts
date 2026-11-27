@@ -5,13 +5,13 @@ import * as THREE from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
-import { batchCapacity } from '../../../src/renderer/src/world/engine/batching'
+import { batchCapacity, PLATFORM_ORDER } from '../../../src/renderer/src/world/engine/batching'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { DISC_MIN_RADIUS, DISC_SCALE, holoMarks, layoutExtent, TRACK_SEGMENTS } from '../../../src/renderer/src/world/engine/holoMarks'
-import { PALETTES } from '../../../src/renderer/src/world/engine/holoPalette'
-import { DISC_GAIN, DISC_Y, GRADE_FRAG, linearRgb, PLATE_FOOT, TRACK_Y } from '../../../src/renderer/src/world/engine/holoShaders'
+import { memberGain, PALETTES, plateColor } from '../../../src/renderer/src/world/engine/holoPalette'
+import { DISC_GAIN, DISC_Y, GRADE_FRAG, linearRgb, LOOK_CODE, PLATE_FOCUS, PLATE_FOOT, PLATE_FRAG, SLAB_FRAG, SLAB_GAIN, SLAB_STATE, SLAB_VERT, TRACK_Y } from '../../../src/renderer/src/world/engine/holoShaders'
 import { THEMES } from '../../../src/renderer/src/world/engine/themes'
-import { bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, stageOf, stagePart, type Frames } from './threeHarness'
+import { atRatio, bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, stageOf, stagePart, withData, type Frames } from './threeHarness'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
@@ -53,6 +53,7 @@ describe('threeRenderer scene build', () => {
     expect(gl.pixelRatios).toEqual([1])
     expect(gl.sizes[0]).toEqual([800, 600])
     expect(gl.toneMapping).toBe(THREE.ACESFilmicToneMapping)
+    expect(gl.toneMappingExposure).toBe(0.95) // look spec §3.3: the white-out budget
     expect(gl.info.autoReset).toBe(false)
     expect(gl.transparentSort).toBeTypeOf('function')
     expect(host.contains(r.canvas)).toBe(true)
@@ -62,7 +63,7 @@ describe('threeRenderer scene build', () => {
     expect(composer.passes).toHaveLength(4)
     expect(composer.passes[3]).toBeInstanceOf(ShaderPass) // the grade, last: on the finished picture, as the spike's
     const bloom = gpu.bloomPasses[0]
-    expect([bloom.resolution.x, bloom.resolution.y, bloom.strength, bloom.radius, bloom.threshold]).toEqual([800, 600, 1, 0.55, 0.12])
+    expect([bloom.resolution.x, bloom.resolution.y, bloom.strength, bloom.radius, bloom.threshold]).toEqual([800, 600, 0.6, 0.5, 0.3])
     const scene = sceneOf()
     expect(scene.children.some((c) => c instanceof THREE.AmbientLight)).toBe(true)
     const sun = scene.children.find((c) => c instanceof THREE.DirectionalLight) as THREE.DirectionalLight
@@ -216,7 +217,7 @@ describe('threeRenderer scene build', () => {
     r.dispose()
   })
 
-  it("a box batch's material draws its outline in the shader: three's own chunks are found and replaced", () => {
+  it("a box batch draws through the hologram slab shader, its outline in the shader from each instance's edge colour", () => {
     const r = createThreeRenderer(host, DEFAULT_OPTS)
     boxCanvas(r.canvas, 800, 600)
     r.draw(smallCity(), smallText(), false)
@@ -225,18 +226,13 @@ describe('threeRenderer scene build', () => {
     const batches = boxBatches(sceneOf())
     expect(batches.length).toBeGreaterThan(0)
     for (const im of batches) {
-      const m = im.material as THREE.MeshStandardMaterial
-      expect(m.customProgramCacheKey()).toBe('lw-box-batch')
-      const sh = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader }
-      m.onBeforeCompile(sh as unknown as THREE.WebGLProgramParametersWithUniforms, rendererOf() as unknown as THREE.WebGLRenderer)
-      expect(typeof sh.uniforms.lineOpacity.value).toBe('number')
-      expect(sh.vertexShader).toContain('attribute vec3 lineColor;')
-      expect(sh.vertexShader).toContain('vLineColor = lineColor;')
-      expect(sh.fragmentShader).toContain('uniform float lineOpacity;')
-      expect(sh.fragmentShader).not.toContain('#include <color_fragment>')
-      expect(sh.fragmentShader).toContain('totalEmissiveRadiance *= vColor;') // the glow tinted per instance, after three's emissive map
-      expect(sh.fragmentShader).toContain('outgoingLight = mix( outgoingLight, vLineColor, edge );')
-      expect(sh.fragmentShader.split('#include <opaque_fragment>')).toHaveLength(2) // kept once, after the outline
+      const m = im.material as THREE.ShaderMaterial
+      expect([m.customProgramCacheKey(), m.vertexShader, m.fragmentShader]).toEqual(['lw-slab-box', SLAB_VERT, SLAB_FRAG])
+      expect(SLAB_VERT).toContain('attribute vec3 lineColor;')
+      expect(SLAB_VERT).toContain('vLine = lineColor;')
+      expect(im.geometry.attributes.lineColor.itemSize).toBe(3)
+      // Additive light, writing no depth: a floor behind another shows through it.
+      expect([m.blending, m.depthWrite]).toEqual([THREE.AdditiveBlending, false])
     }
     r.dispose()
   })
@@ -469,6 +465,205 @@ describe('threeRenderer Holotable stage', () => {
       ['[world] a shader program did not link:', 'ERROR: 0:12: undeclared identifier'],
       ['[world] a shader program did not link:', null],
     ])
+    r.dispose()
+  })
+})
+
+describe('threeRenderer hologram slabs and plates', () => {
+  const LOOKS = ['solid', 'wire', 'amber', 'fog', 'fading'] as const
+  /** One district, a building of each look in it, and a second solid one. */
+  const looks = (): SceneModel => ({
+    districts: [district('d', [0, 0, 0], 40, { hue: 200, members: 6 })],
+    buildings: [
+      ...LOOKS.map((look, i) => bldg(look, [i * 10 - 20, 0, 0], { look, floors: 2, height: 6 })),
+      bldg('solid2', [0, 0, 12], { floors: 3, height: 9 }),
+    ],
+    conduits: [],
+    orbs: [],
+  })
+  const slabMat = (im: THREE.InstancedMesh): THREE.ShaderMaterial => im.material as THREE.ShaderMaterial
+  const lookOf = (im: THREE.InstancedMesh): number => im.geometry.attributes.aLook.getX(0)
+  const holdBuildings = (r: ReturnType<typeof createThreeRenderer>): void => {
+    r.setFocus({ ids: new Set(LOOKS), edgeIds: new Set() }) // holds the buildings tier
+    frames.run(2)
+  }
+
+  it('each Look maps to its own instance pool and draw call', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(looks(), emptyText(), false)
+    holdBuildings(r)
+    const pools = boxBatches(sceneOf())
+    expect(pools).toHaveLength(LOOKS.length)
+    expect(pools.map(lookOf).sort()).toEqual(LOOKS.map((l) => LOOK_CODE[l]).sort())
+    for (const im of pools) {
+      const m = slabMat(im)
+      expect(m).toBeInstanceOf(THREE.ShaderMaterial)
+      expect([m.fragmentShader, m.customProgramCacheKey(), m.uniforms.uEdges.value]).toEqual([SLAB_FRAG, 'lw-slab-box', 1])
+      // Every instance in a pool is of its look.
+      for (let k = 0; k < im.count; k++) expect(im.geometry.attributes.aLook.getX(k)).toBe(lookOf(im))
+    }
+    // The two solid buildings share one pool (one draw call); the wire and the fading one, whose looks move, are batched too.
+    const solid = pools.find((im) => lookOf(im) === LOOK_CODE.solid) as THREE.InstancedMesh
+    expect(solid.count).toBe(2)
+    for (const id of LOOKS) for (const p of withData(worldOf(sceneOf()), 'nodeId').filter((m) => m.userData.nodeId === id)) expect(p.visible).toBe(false)
+    // The pools share one look: the tier's gain reaches them all, and a tier change moves it.
+    for (const im of pools) expect(slabMat(im).uniforms.uGain.value).toBe(SLAB_GAIN.bloomed)
+    r.setTier('flat')
+    for (const im of pools) expect(slabMat(im).uniforms.uGain.value).toBe(SLAB_GAIN.flat)
+    r.dispose()
+  })
+
+  it('a slab carries its state, its stack, its heat and its edge colour per instance', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    const m = looks()
+    m.buildings[0].heat = 1
+    r.draw(m, emptyText(), false)
+    atRatio(r, frames, 0.2) // the floors tier: a floor per instance
+    const solid = (): THREE.InstancedMesh => boxBatches(sceneOf()).find((im) => lookOf(im) === LOOK_CODE.solid) as THREE.InstancedMesh
+    const column = (name: string): number[] => Array.from({ length: solid().count }, (_, k) => solid().geometry.attributes[name].getX(k))
+    expect(solid().count).toBe(5) // 2 + 3 floors
+    // The floors above each floor along its tower: 1, 0 for the two-floor one; 2, 1, 0 for the three.
+    expect(column('aStack').sort()).toEqual([0, 0, 1, 1, 2])
+    expect(column('aState').every((s) => s === SLAB_STATE.rest)).toBe(true)
+    expect(column('aHeat').filter((v) => v > 0)).toHaveLength(2) // the hot building's two floors
+    // The amber look's edges are amber.
+    const amber = boxBatches(sceneOf()).find((im) => lookOf(im) === LOOK_CODE.amber) as THREE.InstancedMesh
+    const lc = amber.geometry.attributes.lineColor
+    const want = new THREE.Color(PALETTES.holotable.attention)
+    expect([lc.getX(0), lc.getY(0), lc.getZ(0)].map((v) => +v.toFixed(4))).toEqual([want.r, want.g, want.b].map((v) => +Math.fround(v).toFixed(4)))
+    // Selected, hovered, related (in the focus), dimmed (out of it).
+    r.setFocus({ ids: new Set(['solid', 'solid2']), edgeIds: new Set() })
+    r.setSelected('solid')
+    frames.step()
+    expect(column('aState').sort()).toEqual([SLAB_STATE.related, SLAB_STATE.related, SLAB_STATE.related, SLAB_STATE.selected, SLAB_STATE.selected])
+    r.setHovered('solid2')
+    frames.step()
+    expect(column('aState').sort()).toEqual([SLAB_STATE.hovered, SLAB_STATE.hovered, SLAB_STATE.hovered, SLAB_STATE.selected, SLAB_STATE.selected])
+    const wire = boxBatches(sceneOf()).find((im) => lookOf(im) === LOOK_CODE.wire) as THREE.InstancedMesh
+    expect(wire.geometry.attributes.aState.getX(0)).toBe(SLAB_STATE.dimmed)
+    // The selection alone moving (the focus as it was) moves the states too.
+    r.setHovered(null)
+    frames.step()
+    r.setSelected('solid2')
+    frames.step()
+    expect(column('aState').sort()).toEqual([SLAB_STATE.related, SLAB_STATE.related, SLAB_STATE.selected, SLAB_STATE.selected, SLAB_STATE.selected])
+    r.dispose()
+  })
+
+  it('the scan lines move with time at High and Low, stand still at Flat and under reduced motion; the wire and the fading pulse', () => {
+    const run = (opts: typeof DEFAULT_OPTS): THREE.ShaderMaterial => {
+      const r = createThreeRenderer(host, opts)
+      boxCanvas(r.canvas, 800, 600)
+      r.draw(looks(), emptyText(), false)
+      holdBuildings(r)
+      frames.run(3, 200)
+      // At Flat there is no render pass: its scene is the renderer's last render (sceneOf would find the earlier run's pass).
+      const gl = rendererOf()
+      const m = slabMat(boxBatches(opts.quality === 'flat' ? gl.renders[gl.renders.length - 1].scene as THREE.Scene : sceneOf())[0])
+      r.dispose()
+      return m
+    }
+    const high = run(DEFAULT_OPTS)
+    expect(high.uniforms.uTime.value).toBeGreaterThan(0)
+    expect(high.uniforms.uWire.value).toBeGreaterThan(0.1)
+    expect(high.uniforms.uWire.value).toBeLessThanOrEqual(1)
+    expect(high.uniforms.uFade.value).toBeGreaterThan(0)
+    expect(high.uniforms.uFade.value).toBeLessThanOrEqual(1)
+    expect(run({ ...DEFAULT_OPTS, quality: 'flat' }).uniforms.uTime.value).toBe(0)
+    const still = run({ ...DEFAULT_OPTS, reducedMotion: true })
+    expect(still.uniforms.uTime.value).toBe(0)
+    expect(still.uniforms.uFade.value).toBeCloseTo(0.3 / 0.45, 6) // the fading look's rest (FADE_MID) over its peak
+  })
+
+  it('hex plates replace the platforms: one instanced plate per district, six sides each, its lamp kept', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    frames.step()
+    const world = worldOf(sceneOf())
+    const plates = meshesWith(world, 'plateIds') as THREE.InstancedMesh[]
+    expect(plates).toHaveLength(1)
+    const p = plates[0]
+    expect(p.userData.plateIds).toEqual(['d1', 'd2'])
+    expect(p.count).toBe(2)
+    expect([(p.material as THREE.ShaderMaterial).fragmentShader, p.renderOrder]).toEqual([PLATE_FRAG, PLATFORM_ORDER])
+    // No platform cylinder is left, and no rim of one.
+    const cylinders: THREE.Object3D[] = []
+    world.traverse((o) => { if ((o as THREE.Mesh).geometry instanceof THREE.CylinderGeometry && !(o instanceof THREE.InstancedMesh)) cylinders.push(o) })
+    expect(cylinders).toHaveLength(0)
+    expect(r.motionState().platformSides).toEqual({ d1: 6, d2: 6 })
+    expect(r.motionState().platformLights).toBe(2)
+    // Coloured as the stage's plate marks are: the district's plate colour by its member gain.
+    const c = new THREE.Color()
+    p.getColorAt(0, c)
+    const want = new THREE.Color(plateColor(200)).multiplyScalar(memberGain(1))
+    expect(c.g).toBeCloseTo(want.g, 5)
+    r.dispose()
+  })
+
+  it('a plate lights with its selected building, eases there by time, and carries the slab signals at the districts tier', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    const city = smallCity()
+    city.buildings[2].look = 'fog'
+    city.buildings[0].outline = true
+    r.draw(city, smallText(), false)
+    frames.step()
+    const p = meshesWith(worldOf(sceneOf()), 'plateIds')[0] as THREE.InstancedMesh
+    const at = p.geometry.attributes
+    const pm = p.material as THREE.ShaderMaterial
+    expect([at.aLook.getX(1), at.aOutline.getX(0), at.aOutline.getX(1)]).toEqual([LOOK_CODE.fog, 1, 0])
+    r.setFocus({ ids: new Set(['a', 'b']), edgeIds: new Set() }) // the selection's focus: d2's part is out of it
+    r.setSelected('a')
+    frames.step(16)
+    const early = at.aFocus.getX(0)
+    expect(early).toBeGreaterThan(0)
+    expect(early).toBeLessThan(PLATE_FOCUS.selected)
+    expect(at.aWave.getX(0)).toBeGreaterThan(0) // a newly selected plate's wave
+    frames.run(120)
+    expect(at.aFocus.getX(0)).toBeCloseTo(PLATE_FOCUS.selected, 5)
+    expect(at.aFocus.getX(1)).toBeCloseTo(PLATE_FOCUS.dimmed, 5) // in no focus of the selection
+    // A hovered part lights its plate, out of the focus or not; let go, the plate dims again.
+    r.setHovered('c')
+    frames.run(120)
+    expect(at.aFocus.getX(1)).toBeCloseTo(PLATE_FOCUS.lit, 5)
+    r.setHovered(null)
+    frames.run(120)
+    expect(at.aFocus.getX(1)).toBeCloseTo(PLATE_FOCUS.dimmed, 5)
+    r.setFocus(null)
+    r.setSelected(null)
+    frames.run(120)
+    expect(at.aFocus.getX(0)).toBeCloseTo(PLATE_FOCUS.rest, 5)
+    // The signals show on the plate only from far away.
+    atRatio(r, frames, 0.2)
+    expect(pm.uniforms.uFar.value).toBe(0)
+    atRatio(r, frames, 3)
+    expect(r.drawnCounts().tier).toBe('districts')
+    expect(pm.uniforms.uFar.value).toBe(1)
+    // The districts' slabs draw through the slab shader too, without box edges (theirs are lines).
+    const slabs = worldOf(sceneOf()).children.filter((c) => Array.isArray(c.userData.slabIds)) as THREE.InstancedMesh[]
+    for (const s of slabs) {
+      expect((s.material as THREE.ShaderMaterial).customProgramCacheKey()).toBe('lw-slab-hex')
+      expect((s.material as THREE.ShaderMaterial).uniforms.uEdges.value).toBe(0)
+    }
+    r.dispose()
+  })
+
+  it('a change rising in a district sends a wave across its plate; an empty city builds no plate', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    frames.step()
+    const p = meshesWith(worldOf(sceneOf()), 'plateIds')[0] as THREE.InstancedMesh
+    r.animateChanges({ rise: ['c'], pulse: [] })
+    frames.step()
+    expect(p.geometry.attributes.aWave.getX(1)).toBeGreaterThan(0)
+    expect(p.geometry.attributes.aWave.getX(0)).toBe(0)
+    r.draw({ districts: [], buildings: [], conduits: [], orbs: [] }, emptyText(), false)
+    frames.step()
+    expect(meshesWith(worldOf(sceneOf()), 'plateIds')).toHaveLength(0)
     r.dispose()
   })
 })

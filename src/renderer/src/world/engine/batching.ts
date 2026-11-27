@@ -10,6 +10,7 @@
  * one InstancedMesh per look, which draws each box with its outline (the outline drawn on the
  * box's own faces, so a box and its edges keep the order they had as separate objects).
  */
+import type { Look } from './sceneModel'
 import type { ZoomTier } from './viewMath'
 
 export type PartKind = 'floor' | 'block'
@@ -184,6 +185,13 @@ export interface FillLook { color: number; metalness: number; roughness: number;
 export function fillKey(l: FillLook): string {
   return `fill|${l.color}|${l.metalness}|${l.roughness}|${l.opacity}|${l.lineOpacity}|${l.depthWrite}|${l.fog}`
 }
+
+/**
+ * The hologram slab batch a floor or block joins (look spec §3.2): one per Look, so each look is one draw call. Its
+ * state, heat, stack and glow go per instance, and the look's own motion (the wire's pulse, the fading pulse) is a
+ * uniform of its shader, so a part whose look moves still shares its batch.
+ */
+export const slabKey = (look: Look): string => `slab|${look}`
 
 /** The batch a conduit's moving packet joins: one per shape (`geometry`) and opacity; the colour goes per instance. */
 export function packetKey(geometry: string, opacity: number, fog: boolean): string {

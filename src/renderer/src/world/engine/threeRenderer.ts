@@ -12,7 +12,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
+import { BACKDROP_ORDER, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, poolChanges, slabKey, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
 import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSignals'
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
@@ -23,11 +23,12 @@ import { WINDOW_FRAMES, WINDOW_MS } from './qualityGovernor'
 import { timedUpdate } from './timedDamping'
 import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
-import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
+import { HEAT_COLOR, heatMix, type Look, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import { DEFAULT_THEME, normalizeTheme, THEMES, type Theme, type ThemeName } from './themes'
-import { hexNumber, labelHalo, PALETTES } from './holoPalette'
+import { hexNumber, labelHalo, memberGain, PALETTES, plateColor } from './holoPalette'
 import { stageMarks } from './holoMarks'
-import { GRADE_FRAG, GRADE_VERT, gradeUniforms, MOTION_HZ } from './holoShaders'
+import { GRADE_FRAG, GRADE_VERT, gradeUniforms, LOOK_CODE, MOTION_HZ, plateFocusTarget, slabState } from './holoShaders'
+import { addSlabAttributes, createPlates, createSlabLook, pulseOf, slabsWritten, writeSlab, type Plates } from './holoSlab'
 import { createHoloStage } from './holoStage'
 import { screenRect } from './screenRect'
 
@@ -225,13 +226,13 @@ export interface ThreeRenderer {
 
 // Rendering constants per theme that the plain theme data does not carry (prototype values).
 interface Extras {
-  fill: number; fillOpacity: number; fillGlow: number; platformOpacity: number; ghost: number
+  fill: number; fillOpacity: number; fillGlow: number; ghost: number
   seal: number; amber: number; grid: number; gridOpacity: number; bloom: number; fogTint: number
 }
 const EXTRAS: Record<ThemeName, Extras> = {
-  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: hexNumber(PALETTES.holotable.seal), amber: hexNumber(PALETTES.holotable.attention), grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
-  blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, platformOpacity: 0.45, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.75, fogTint: 0xe0f2fe },
-  glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, platformOpacity: 0.8, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.5, fogTint: 0xf1f5f9 },
+  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, ghost: 0x93c5fd, seal: hexNumber(PALETTES.holotable.seal), amber: hexNumber(PALETTES.holotable.attention), grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 0.6, fogTint: 0xcbd5e1 },
+  blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.43, fogTint: 0xe0f2fe },
+  glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.29, fogTint: 0xf1f5f9 },
 }
 
 const STYLE_ID = 'lumopolis-world-style'
@@ -257,9 +258,9 @@ const FLOOR_W = 5
 export const BUFFER_SETTLE_MS = 150
 /** A changed part's outline shell is this much larger than the building. */
 const OUTLINE_SCALE = 1.08
-/** A removed part's opacity pulse: between 0.15 and 0.45. */
 /** No table yet: the stage marks of a renderer with no world drawn (the dust and the tier's share; no disc is built). */
 const NO_TABLE: Pick<SceneModel, 'districts' | 'orbs'> = { districts: [], orbs: [] }
+/** A removed part's opacity pulse: between 0.15 and 0.45. */
 const FADE_MID = 0.3
 const FADE_AMP = 0.15
 const ORB_R = 2.2
@@ -360,6 +361,11 @@ const MAX_LINE_SCALE = 1.5
 /** The faintest a line gets in a very busy city, and the least of the theme's glow it keeps. */
 const MIN_TUBE_OPACITY = 0.07
 const MIN_BLOOM = 0.5
+/** The bloom's radius and threshold (look spec §3.3): only the hologram's brightest lines and roofs bloom, tightly. */
+const BLOOM_RADIUS = 0.5
+const BLOOM_THRESHOLD = 0.3
+/** The tone mapping's exposure, under 1 so the additive slabs of a busy, selected tower stay off white (look spec §3.3). */
+const EXPOSURE = 0.95
 /** The most line labels a hovered building shows at once, and a selection; none overlaps another. */
 const HOVER_EDGE_LABELS = 6
 const FOCUS_EDGE_LABELS = 10
@@ -395,6 +401,8 @@ interface NodeRec {
 interface Packet { s: THREE.Mesh; t: number; sp: number }
 /** A part of a building that may be drawn in a batch: a floor's box and seams, or its block's box and outline. */
 interface BatchPart { mesh: THREE.Mesh; line: THREE.LineSegments; node: NodeRec; kind: PartKind; depth: number }
+/** What a floor or block carries for the slab shader (buildBuilding): its district's hue, heat, look, resting glow and the floors above it. */
+interface SlabData { hue: THREE.Color; heat: number; name: Look; look: number; glow: number; stack: number }
 /** A line's course for one set of end heights: on the roofs, or on the district slabs (the districts tier). */
 interface EdgeShape { curve: THREE.QuadraticBezierCurve3; path: THREE.Vector3[]; geo: THREE.BufferGeometry; pickGeo: THREE.BufferGeometry; label: THREE.Vector3 }
 interface EdgeRec {
@@ -410,10 +418,6 @@ interface EdgeRec {
 
 const hex = (c: number | string): string => '#' + new THREE.Color(c).getHexString()
 const posKey = (p: Vec3): string => `${p[0]},${p[1]},${p[2]}`
-/** A batch's per-instance colour lights the emissive (the glow) instead of tinting the fill (three.js's instanceColor goes to vColor). */
-const EMISSIVE_TINT = '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n\ttotalEmissiveRadiance *= vColor;\n#endif'
-/** The batched outline's band on each face, in pixels from its edge: full colour at 0, none from EDGE_BAND[1]. */
-const EDGE_BAND: readonly [number, number] = [0, 1]
 /** How near its rest a moving floor must come before its batch stops being refilled every frame. */
 const EASED = 1e-3
 /**
@@ -592,6 +596,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   renderer.setPixelRatio(shown.ratio)
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = EXPOSURE
   renderer.domElement.style.display = 'block'
   renderer.domElement.style.background = 'var(--world-bg)' // the theme's background until the first frame paints
   renderer.info.autoReset = false // a frame's draw calls add up across the composer's passes; reset once a frame
@@ -801,12 +806,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** The grade (the vignette, and grain at High): the last pass, on the finished picture, as the spike draws it. */
   let grade: ShaderPass | null = null
   /** The bloom's strength for the city drawn (a busy city glows less): kept, so a composer built later has it. */
-  let bloomStrength = 1.0
+  let bloomStrength = EXTRAS[DEFAULT_THEME].bloom
   const buildComposer = (): void => {
     composer = new EffectComposer(renderer)
     renderPass = new RenderPass(scene, camera)
     composer.addPass(renderPass)
-    const b = new UnrealBloomPass(new THREE.Vector2(width, height), bloomStrength, 0.55, 0.12)
+    const b = new UnrealBloomPass(new THREE.Vector2(width, height), bloomStrength, BLOOM_RADIUS, BLOOM_THRESHOLD)
     // At Low the bloom takes half the buffer's size (a quarter of its pixels, as tierBudget's targetsPixels counts
     // them): the composer gives each pass the buffer's size, when it is added and on every resize.
     const fullSize = b.setSize.bind(b)
@@ -1027,6 +1032,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let slabMeshes: THREE.InstancedMesh[] = []
   let slabLines: THREE.LineSegments[] = []
   let slabLooks: SlabSignals[] = []
+  /** The hologram slab look every floor, block and district slab draws with (look spec §3.2): one set of uniforms. */
+  const hologram = createSlabLook(look, HEAT_COLOR)
+  /** The districts' hex plates (one instanced quad), and the specs they were built from; none for a world with no district. */
+  let plates: Plates | null = null
+  let plateSpecs: Array<{ id: string; pos: Vec3; radius: number; color: string; gain: number }> = []
   /** Each building's district, and each district's slab height (conduit ends at the districts tier). */
   let districtOf = new Map<string, string>()
   let slabHeight = new Map<string, number>()
@@ -1087,6 +1097,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const e of edges.values()) for (const g of [e.tall.geo, e.tall.pickGeo, e.low.geo, e.low.pickGeo]) g.dispose()
     for (const im of slabMeshes) im.dispose()
     slabMeshes = []
+    plates?.mesh.dispose() // its geometry and material go with the world below
+    plates = null
+    plateSpecs = []
     slabLines = []
     slabLooks = []
     farPickables = []
@@ -1124,17 +1137,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     g.position.set(d.pos[0], d.pos[1], d.pos[2])
     world.add(g)
     const col = hueColor(d.hue)
-    const pg = new THREE.CylinderGeometry(d.radius, d.radius * 1.05, 1.2, 6)
-    const plat = new THREE.Mesh(pg, new THREE.MeshStandardMaterial({
-      color: new THREE.Color(theme.district), metalness: 0.7, roughness: 0.35, transparent: true, opacity: extras.platformOpacity,
-    }))
-    plat.position.y = -0.6
-    plat.renderOrder = PLATFORM_ORDER // under its buildings, dimmed ones too
-    g.add(plat)
-    platformSides.set(d.id, pg.parameters.radialSegments)
-    const rim = new THREE.LineSegments(new THREE.EdgesGeometry(pg), new THREE.LineBasicMaterial({ color: col }))
-    rim.position.y = -0.6
-    g.add(rim)
+    // Its hex plate (look spec §3.2): drawn with the others in one instanced quad (draw), coloured as the stage's plate
+    // marks are, its district's hue lit by the share of the members it shows.
+    plateSpecs.push({ id: d.id, pos: d.pos, radius: d.radius, color: plateColor(d.hue), gain: memberGain(d.members) })
+    platformSides.set(d.id, 6)
     // Light pooling: the district's lamp, as in the prototype, reaching the whole of a big platform.
     const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
@@ -1202,6 +1208,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const heat = heatMix(b.heat)
     const glowColor = col.clone().lerp(new THREE.Color(HEAT_COLOR), heat.toward) // heat 0: the district colour itself
     const captions = text.floors[b.id] ?? []
+    // What the slab shader reads of this building per instance (fillBoxes): its district's hue, its heat, its look's
+    // code and its resting glow, over which a change's pulse brightens it.
+    const slabOf = { hue: col, heat: Math.min(1, Math.max(0, b.heat)), name: b.look, look: LOOK_CODE[b.look], glow: ghost ? 0.05 : extras.fillGlow * heat.glow }
     for (let k = 0; k < b.floors; k++) {
       const geo = new THREE.BoxGeometry(FLOOR_W, fh * 0.85, FLOOR_W)
       const mat = trackBase(new THREE.MeshStandardMaterial({
@@ -1212,6 +1221,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const mesh = new THREE.Mesh(geo, mat)
       mesh.userData.nodeId = b.id
       mesh.userData.size = [FLOOR_W, fh * 0.85, FLOOR_W]
+      mesh.userData.slab = { ...slabOf, stack: b.floors - 1 - k } // the floors above it dim its fill (stackFill)
       pickables.push(mesh)
       const fl = new THREE.Group()
       fl.add(mesh)
@@ -1284,6 +1294,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     block.scale.set(FLOOR_W, Math.max(0.01, b.height - fh * 0.15), FLOOR_W)
     block.position.y = b.height / 2
     block.userData.size = [1, 1, 1]
+    block.userData.slab = { ...slabOf, stack: 0 }
     block.visible = false
     const outline = new THREE.LineSegments(UNIT_EDGES, n.mats[1])
     outline.scale.copy(block.scale)
@@ -1519,12 +1530,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     scene.add(grid)
 
     for (const d of model.districts) buildDistrict(d, text)
+    if (plateSpecs.length > 0) {
+      plates = createPlates(plateSpecs, look, { heat: HEAT_COLOR, ghost: hex(extras.ghost), fogTint: hex(extras.fogTint) })
+      world.add(plates.mesh)
+    }
     // Again, now the district names are in the page: the fit keeps their measured widths clear.
     fitOverview(model)
     for (const b of model.buildings) buildBuilding(b, hueColor(hueAt(model, b.pos)), text)
     for (const o of model.orbs) buildOrb(o, text)
     districtOf = districtsOf(model.buildings, model.districts)
     buildSlabs(slabsFor(model.districts, model.buildings), model, districtOf)
+    // What each plate shows of its district from far away (applyTier's uFar): the slab signals.
+    plates?.setSignals(new Map(slabLooks.map((sg) => [sg.id, { heat: sg.heat, look: LOOK_CODE[slabLook(sg)], outline: sg.outline }])))
     const heightAt = new Map<string, number>()
     const idAt = new Map<string, string>()
     for (const b of model.buildings) { heightAt.set(posKey(b.pos), b.height); idAt.set(posKey(b.pos), b.id) }
@@ -1583,21 +1600,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       byLook.set(k, [...(byLook.get(k) ?? []), i])
     })
     const rim = UNIT_HEX_EDGES.attributes.position as THREE.BufferAttribute
-    const heatColor = new THREE.Color(HEAT_COLOR)
     for (const [look, idx] of byLook) {
       const fading = look === 'fading'
-      const m = trackBase(new THREE.MeshStandardMaterial({
-        color: extras.fill, emissive: 0xffffff, emissiveIntensity: 1, metalness: 0.5, roughness: 0.3, transparent: true,
-        opacity: look === 'fog' ? extras.fillOpacity * 0.6 : extras.fillOpacity, depthWrite: writesDepth(true, 1, fading),
-        // The outline and the seams lie on the slab's own faces: its fill steps back in depth so they win the depth
-        // test instead of flickering through it (a polygon offset moves faces only, never lines).
-        polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-      }))
-      m.onBeforeCompile = (sh) => {
-        sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', '').replace('#include <emissivemap_fragment>', EMISSIVE_TINT)
-      }
-      m.customProgramCacheKey = () => 'lw-slab'
-      const im = new THREE.InstancedMesh(UNIT_HEX, m, idx.length)
+      // The hologram slab (look spec §3.2), its edges the outline and seam lines below; it writes no depth.
+      const sg = addSlabAttributes(UNIT_HEX.clone(), idx.length, false)
+      const im = new THREE.InstancedMesh(sg, hologram.material(false), idx.length)
       im.userData.slabIds = idx.map((i) => slabs[i].id)
       // The outline, and a seam round the slab at every floor (slabSeams): six segments each.
       const seams = idx.map((i) => slabSeams(slabs[i].height))
@@ -1610,9 +1617,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         bm.compose(bv.set(sl.x, sl.y, sl.z), bq, bsc.set(sl.radius, sl.height, sl.radius))
         im.setMatrixAt(j, bm)
         const col = hueColor(hue.get(sl.id) as number) // a slab is a district's (slabsFor): it has a hue
-        // The glow a building of this district would have at the slab's heat (buildBuilding's).
-        const heat = heatMix(slabLooks[i].heat)
-        im.setColorAt(j, bc.copy(col).lerp(heatColor, heat.toward).multiplyScalar(extras.fillGlow * heat.glow))
+        // Its district's hue, warmed by its hottest building's heat in the shader, in its look.
+        im.setColorAt(j, col)
+        writeSlab(sg, j, { state: 0, heat: slabLooks[i].heat, stack: 0, look: LOOK_CODE[look] })
         // A fogged district's outline washes toward the fog tint, as a fogged building's does.
         const line = look === 'fog' ? col.clone().lerp(new THREE.Color(extras.fogTint), 0.4) : col
         const put = (x: number, y: number, z: number): void => {
@@ -1634,8 +1641,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
           }
         }
       })
+      slabsWritten(sg)
       im.computeBoundingSphere()
-      // On the platforms (drawn before it) and under the lines (LINE_ORDER, after it).
+      // On the plates (drawn before it) and under the lines (LINE_ORDER, after it).
       im.renderOrder = LINE_ORDER / 2
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
@@ -1643,7 +1651,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const lm = trackBase(new THREE.LineBasicMaterial({ vertexColors: true, transparent: fading, depthWrite: !fading }))
       const lines = new THREE.LineSegments(g, lm)
       lines.renderOrder = LINE_ORDER / 2
-      if (fading) fadeMats.push(m, lm) // pulses out with the buildings it stands for
+      if (fading) fadeMats.push(lm) // pulses out with the buildings it stands for (the slab with the look's uFade)
       slabMeshes.push(im)
       slabLines.push(lines)
     }
@@ -1695,6 +1703,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       n.group.visible = ownTier(n.id, tier, districtOf) !== 'districts'
     }
     for (const o of [...slabMeshes, ...slabLines]) o.visible = far
+    plates?.setFar(far)
     for (const e of edges.values()) {
       const sh = far ? e.low : e.tall
       e.curve = sh.curve
@@ -1739,7 +1748,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         m.opacity = f ? (on ? Math.min(1, base * 1.9) : base * 0.06) : base
       }
     }
-    regroup = true // the opacities the batches are keyed by
+    regroup = true // the slab states the batches carry
+    aimPlates()
+  }
+
+  /** Where each plate's focus goes (plateFocusTarget): lit when a part on it is in focus or hovered, selected with its part. */
+  function aimPlates(): void {
+    if (!plates) return
+    const on = (id: string | null): string | undefined => (id === null ? undefined : districtOf.get(id) ?? id)
+    const lit = new Set<string | undefined>([on(hoveredId)])
+    for (const id of focus?.ids ?? []) lit.add(on(id))
+    const sel = on(selectedId)
+    plates.setTargets((id) => plateFocusTarget(focus !== null, lit.has(id), sel === id))
   }
 
   function placeRing(): void {
@@ -2874,53 +2894,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const p of ps) p.mesh.visible = p.line.visible = p.kind === 'floor'
   }
 
-  /**
-   * A box batch's material: the source fill's look, with the per-instance colour lighting the
-   * emissive (the glow) instead of tinting the fill, and the outline drawn where a face meets its
-   * box's edge, in the instance's `lineColor`. Each face draws half a pixel of it, so where two faces
-   * meet the line is about one pixel wide, as a GL line is (and as bright: a wider band blooms).
-   */
-  function boxMaterial(src: THREE.MeshStandardMaterial, lineOpacity: number): THREE.MeshStandardMaterial {
-    const m = new THREE.MeshStandardMaterial({
-      color: src.color, emissive: 0xffffff, emissiveIntensity: 1, metalness: src.metalness, roughness: src.roughness,
-      transparent: src.transparent, opacity: src.opacity, depthWrite: src.depthWrite, fog: src.fog,
-      // A box that writes no depth (dimmed or fading) shows its far edges through itself, as its own
-      // outline (a GL line on every edge) does: its back faces draw, but only their edges.
-      side: src.depthWrite ? THREE.FrontSide : THREE.DoubleSide,
-    })
-    m.onBeforeCompile = (sh) => {
-      sh.uniforms.lineOpacity = { value: lineOpacity }
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec3 lineColor;\nvarying vec3 vLineColor;\nvarying vec3 vBoxPos;\nvarying vec3 vBoxNormal;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLineColor = lineColor;\nvBoxPos = position;\nvBoxNormal = normal;')
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float lineOpacity;\nvarying vec3 vLineColor;\nvarying vec3 vBoxPos;\nvarying vec3 vBoxNormal;')
-        .replace('#include <color_fragment>', '')
-        .replace('#include <emissivemap_fragment>', EMISSIVE_TINT)
-        .replace('#include <opaque_fragment>', [
-          'vec3 boxAxis = abs( vBoxNormal );',
-          'vec3 boxPx = ( 0.5 - abs( vBoxPos ) ) / max( fwidth( vBoxPos ), vec3( 1e-6 ) );',
-          'float edgePx = 1e6;',
-          'if ( boxAxis.x < 0.5 ) edgePx = min( edgePx, boxPx.x );',
-          'if ( boxAxis.y < 0.5 ) edgePx = min( edgePx, boxPx.y );',
-          'if ( boxAxis.z < 0.5 ) edgePx = min( edgePx, boxPx.z );',
-          `float edge = 1.0 - smoothstep( ${EDGE_BAND[0].toFixed(2)}, ${EDGE_BAND[1].toFixed(2)}, edgePx );`,
-          'outgoingLight = mix( outgoingLight, vLineColor, edge );',
-          'diffuseColor.a = mix( gl_FrontFacing ? diffuseColor.a : 0.0, lineOpacity, edge );',
-          '#include <opaque_fragment>',
-        ].join('\n'))
-    }
-    m.customProgramCacheKey = () => 'lw-box-batch'
-    return m
-  }
-
-  function instanced(key: string, geo: () => THREE.BufferGeometry, make: () => THREE.Material, n: number, rank: number): THREE.InstancedMesh {
+  function instanced(key: string, geo: (cap: number) => THREE.BufferGeometry, make: () => THREE.Material, n: number, rank: number): THREE.InstancedMesh {
     let im = instPool.get(key)
     const have = im ? im.instanceMatrix.count : 0
     const cap = batchCapacity(n, have)
     if (!im || cap !== have) {
       if (im) dropBatch(im)
-      const g = geo()
+      const g = geo(cap)
       im = new THREE.InstancedMesh(g, make(), cap)
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       im.frustumCulled = false // its instances move: it is never culled as a whole
@@ -2929,7 +2909,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // and transparentOrder draws them by rank instead.
       im.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity)
       im.setColorAt(0, bc)
-      if (g !== UNIT_BOX && !shared.has(g)) g.setAttribute('lineColor', new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage))
       instPool.set(key, im)
       batchLayer.add(im)
     }
@@ -2962,17 +2941,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (filled || !reduced) movePackets()
   }
 
-  /** Which batch each drawn part and packet goes in, and which parts draw themselves (not batchable). */
+  /**
+   * Which batch each drawn part and packet goes in. Every drawn floor and block is a hologram slab in its look's pool
+   * (slabKey), an open building's and a pulsing (wire, fading) one's too: the look's motion is in the shared uniforms
+   * (drawFrame) and the floors' moves refill their pool, so one draw call draws a look.
+   */
   function regroupBatches(): void {
-    const moving = new Set<THREE.Material>([...ghostMats, ...fadeMats])
     const boxes: Array<{ key: string; depth: number; part: BatchPart }> = []
     for (const p of parts) {
-      if (!partDrawn(p.kind, ownTier(p.node.id, tier, districtOf), p.node.exploded)) { p.mesh.visible = p.line.visible = false; continue }
-      const f = p.mesh.material as THREE.MeshStandardMaterial
-      const l = p.line.material as THREE.LineBasicMaterial
-      if (!batchable(p.node.exploded, moving.has(f) || moving.has(l))) { p.mesh.visible = p.line.visible = true; continue }
       p.mesh.visible = p.line.visible = false
-      boxes.push({ key: fillKey({ color: f.color.getHex(), metalness: f.metalness, roughness: f.roughness, opacity: f.opacity, lineOpacity: l.opacity, depthWrite: f.depthWrite, fog: f.fog }), depth: 0, part: p })
+      if (!partDrawn(p.kind, ownTier(p.node.id, tier, districtOf), p.node.exploded)) continue
+      boxes.push({ key: slabKey((p.mesh.userData.slab as SlabData).name), depth: 0, part: p })
     }
     const packets: Array<{ key: string; depth: number; obj: THREE.Mesh }> = []
     for (const e of edges.values()) {
@@ -2989,9 +2968,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       instPool.delete(k)
     }
     boxBatches = [...boxGroups].map(([key, idx]) => {
-      const src = boxes[idx[0]].part
-      const f0 = src.mesh.material as THREE.MeshStandardMaterial
-      const im = instanced(key, () => UNIT_BOX.clone(), () => boxMaterial(f0, (src.line.material as THREE.Material).opacity), idx.length, batchRank('fill', f0.opacity))
+      const im = instanced(key, (cap) => addSlabAttributes(UNIT_BOX.clone(), cap, true), () => hologram.material(true), idx.length, batchRank('fill', 1))
       return { im, parts: idx.map((i) => boxes[i].part) }
     })
     packetBatches = [...packetGroups].map(([key, idx]) => {
@@ -3013,18 +2990,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const b of boxBatches) {
       for (const p of b.parts) p.depth = bv.setFromMatrixPosition(p.mesh.matrixWorld).distanceToSquared(camera.position)
       b.parts.sort((x, y) => y.depth - x.depth)
-      const lc = b.im.geometry.attributes.lineColor as THREE.InstancedBufferAttribute
+      const g = b.im.geometry
       b.parts.forEach((p, k) => {
         const [w, h, d] = p.mesh.userData.size as number[]
         b.im.setMatrixAt(k, bm.multiplyMatrices(p.mesh.matrixWorld, bs.makeScale(w, h, d)))
-        const f = p.mesh.material as THREE.MeshStandardMaterial
-        b.im.setColorAt(k, bc.copy(f.emissive).multiplyScalar(f.emissiveIntensity))
-        const c = (p.line.material as THREE.LineBasicMaterial).color
-        lc.setXYZ(k, c.r, c.g, c.b)
+        const sl = p.mesh.userData.slab as SlabData
+        // Its district's hue, brighter while a change pulses its glow (changeAnimation lights the emissive).
+        b.im.setColorAt(k, bc.copy(sl.hue).multiplyScalar(pulseOf((p.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity, sl.glow)))
+        const id = p.node.id
+        const state = slabState(focus !== null, id === selectedId, id === hoveredId, focus?.ids.has(id) === true)
+        writeSlab(g, k, { state, heat: sl.heat, stack: sl.stack, look: sl.look, line: (p.line.material as THREE.LineBasicMaterial).color })
       })
       b.im.instanceMatrix.needsUpdate = true
       ;(b.im.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true
-      lc.needsUpdate = true
+      slabsWritten(g)
     }
   }
 
@@ -3232,6 +3211,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // A part the proposal takes away pulses between FADE_MIN and FADE_MAX at 0.5 Hz; reduced motion holds it at the middle.
     const fade = reduced ? FADE_MID : FADE_MID + FADE_AMP * Math.sin(t * Math.PI)
     for (const m of fadeMats) m.opacity = fade * m.userData.f
+    // The slabs' and the plates' share of it: the wireframe's pulse and the fading look's (its peak 1), and the scan
+    // lines' time where the tier's move (look spec §5), held at 0 at Flat and under reduced motion.
+    const fadeShare = fade / (FADE_MID + FADE_AMP)
+    hologram.tick(TIER_LOOK[look].scanLinesMoving ? t : 0, gp, fadeShare)
+    if (plates) {
+      plates.pulse(gp, fadeShare)
+      if (plates.tick(dt, reduced)) moving = true
+    }
     if (selRing && selRing.visible) selRing.rotation.z += mdt * 0.5
     if (pulseAnim) {
       const pa = pulseAnim
@@ -3390,7 +3377,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       retier()
       wake()
     },
-    setSelected(id) { selectedId = id; placeRing(); retier(); wake() },
+    setSelected(id) { selectedId = id; placeRing(); retier(); refill = true; aimPlates(); wake() },
     setExploded(id) {
       // Only a building opens: an orb (external) has no floors, so it never thickens the fog.
       const n = id === null ? undefined : nodes.get(id)
@@ -3421,7 +3408,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     stopFlight: () => { if (!disposed) rig.stop() },
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
-    setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? []; wake() },
+    setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? []; refill = true; aimPlates(); wake() },
     visibleIds,
     isShown: (id) => { const n = nodes.get(id); return n !== undefined && (n.group.visible || districtOf.has(id)) },
     screenPoint,
@@ -3500,6 +3487,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       for (const id of pulse) mats.push(...(nodes.get(id)?.mats ?? []))
       changes.start(groups, mats, performance.now())
+      plates?.wave(rise.map((id) => districtOf.get(id) ?? id))
       refill = true
       wake()
     },
@@ -3523,6 +3511,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setTier(t) {
       if (disposed || t === look) return
       look = t
+      hologram.setTier(t)
+      plates?.setTier(t)
       if (TIER_LOOK[t].composer && !composer) buildComposer()
       else if (!TIER_LOOK[t].composer && composer) freeComposer()
       fitStage()

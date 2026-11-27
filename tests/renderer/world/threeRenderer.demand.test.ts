@@ -7,7 +7,9 @@ import { BUFFER_SETTLE_MS, createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sa
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
-import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, smallCity, smallText, withHarness, type Frames } from './threeHarness'
+import { bldg, boxCanvas, DEFAULT_OPTS, district, gpu, makeHost, rendererOf, resizeHost, sceneOf, smallCity, smallText, withHarness, type Frames } from './threeHarness'
+import * as THREE from 'three'
+import { PLATE_FOCUS } from '../../../src/renderer/src/world/engine/holoShaders'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
@@ -79,6 +81,18 @@ describe('threeRenderer frames on demand', () => {
     const m = frames(calm)
     h.frames.run(100)
     expect(frames(calm)).toBe(m)
+    calm.dispose()
+  })
+
+  it('a plate easing to its focus keeps the loop drawing until it arrives, then it sleeps', () => {
+    const calm = idle({ quality: 'flat', reducedMotion: false }, still())
+    void calm.overview(true)
+    settle(h.frames)
+    calm.setFocus({ ids: new Set(['p']), edgeIds: new Set() })
+    expect(settle(h.frames)).toBeLessThan(2000)
+    let plate: THREE.InstancedMesh | undefined
+    sceneOf().traverse((o) => { if (o.userData.plateIds) plate = o as THREE.InstancedMesh })
+    expect(plate?.geometry.attributes.aFocus.getX(0)).toBe(PLATE_FOCUS.lit) // arrived, not left part of the way
     calm.dispose()
   })
 

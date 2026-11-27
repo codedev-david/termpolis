@@ -5,7 +5,9 @@
 // GLSL 1 throughout (texture2D, gl_FragColor, attribute, varying) and no #version: three.js writes the version line
 // and, on WebGL 2, maps those words to GLSL 3; r160 still falls back to WebGL 1. holoShaders.test.ts pins both.
 import { gradeOf, type StageMark } from './holoMarks'
+import type { Look } from './sceneModel'
 import { TIER_LOOK, type TierName } from './tierBudget'
+import { easeShare } from './viewMath'
 
 /** The define every Holotable shader carries, which the bundle check (plan Task 16) looks for in the built viewers. */
 export const HOLO_SLAB = 'HOLO_SLAB'
@@ -211,4 +213,276 @@ export function shaftParts(r: number, count: number): Array<{ radius: number; he
 /** One beam per plate, from the disc up to the plate's underside, inside its rim. `radii[i]` is plate `to[i]`'s radius. */
 export function beamParts(to: ReadonlyArray<readonly [number, number]>, radii: readonly number[]): Array<{ x: number; z: number; radius: number; y0: number; y1: number }> {
   return to.map(([x, z], i) => ({ x, z, radius: radii[i] * BEAM_SHARE, y0: DISC_Y, y1: PLATE_FOOT }))
+}
+
+// ---------------- the hologram slab and the district plate (look spec §3.2, §3.3) ----------------
+
+/** A dimmed slab's light, as a share of its lit light (look spec §3.2). */
+export const SLAB_DIM = 0.14
+/** How fast a slab's fill falls with the floors above it along a view ray (look spec §3.3's white-out budget). */
+export const STACK_FALL = 0.12
+/** The states a slab's `aState` takes: each inside its band, away from the band edges the shader tests. */
+export const SLAB_STATE = { selected: 1.5, hovered: 1, related: 0.5, rest: 0, dimmed: -1 } as const
+/** A slab's gain where bloom adds its glow (High and Low), and at Flat, where nothing does (look spec §3.3). */
+export const SLAB_GAIN = { bloomed: 0.8, flat: 1.3 } as const
+/** Each look's `aLook` code: by it the shader draws a wire with no fill, a fog veil or a fading pulse. */
+export const LOOK_CODE: Record<Look, number> = { solid: 0, wire: 1, amber: 2, fog: 3, fading: 4 }
+/** The slab's fill at rest (its fresnel, scan lines, sweep and roof are scaled by it). */
+export const SLAB_FILL = 0.3
+
+/**
+ * A slab's state (the spike's encoding, look spec §3.2): selected 1.5, hovered 1, related 0.5 (in the focus of what is
+ * hovered or selected), dimmed -1 (outside a focus), and 0 with no focus. Selection wins over hover, hover over related.
+ */
+export function slabState(focus: boolean, selected: boolean, hovered: boolean, related: boolean): number {
+  if (selected) return SLAB_STATE.selected
+  if (hovered) return SLAB_STATE.hovered
+  if (!focus) return SLAB_STATE.rest
+  return related ? SLAB_STATE.related : SLAB_STATE.dimmed
+}
+
+/** What the slab shader makes of a state: `1 + 0.8 hover + 0.35 related + 0.9 selected`, times SLAB_DIM when dimmed. */
+export function slabGain(state: number): number {
+  const selected = state >= 1.5 ? 1 : 0
+  const hover = state >= 0.75 ? 1 - selected : 0
+  const related = state >= 0.25 && state < 0.75 ? 1 : 0
+  return (1 + 0.8 * hover + 0.35 * related + 0.9 * selected) * (state <= -0.5 ? SLAB_DIM : 1)
+}
+
+/** A slab's fill with `stack` floors above it: `1 / (1 + 0.12 * stack)`, so a tall tower's fill never sums to white. */
+export const stackFill = (stack: number): number => 1 / (1 + STACK_FALL * stack)
+
+/** The slab's gain at `tier`: higher at Flat, where no bloom adds its glow. */
+export const slabTierGain = (tier: TierName): number => (TIER_LOOK[tier].bloom ? SLAB_GAIN.bloomed : SLAB_GAIN.flat)
+
+const LOOK_TEST = 'float lookIs(float l, float c) { return step(c - 0.5, l) * (1.0 - step(c + 0.5, l)); }\n'
+
+export const SLAB_VERT = `${HEAD}attribute float aState;
+attribute float aHeat;
+attribute float aStack;
+attribute float aLook;
+attribute vec3 lineColor;
+varying vec3 vBox;
+varying vec3 vBoxN;
+varying vec3 vN;
+varying vec3 vView;
+varying float vY;
+varying vec3 vFill;
+varying vec3 vLine;
+varying float vState;
+varying float vHeat;
+varying float vStack;
+varying float vLook;
+void main() {
+  mat4 inst = mat4(1.0);
+  #ifdef USE_INSTANCING
+  inst = instanceMatrix;
+  #endif
+  vec4 wp = modelMatrix * inst * vec4(position, 1.0);
+  vBox = position;
+  vBoxN = normal;
+  vN = normalize(mat3(modelMatrix * inst) * normal);
+  vView = cameraPosition - wp.xyz;
+  vY = wp.y;
+  vFill = vec3(1.0);
+  #ifdef USE_INSTANCING_COLOR
+  vFill = instanceColor;
+  #endif
+  vLine = lineColor;
+  vState = aState;
+  vHeat = aHeat;
+  vStack = aStack;
+  vLook = aLook;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`
+
+/**
+ * The hologram slab: a fresnel fill, edges from fwidth (on a unit box: uEdges), scan lines sin(worldY * 6.5 - t * 2.2),
+ * a slow sweep band and a brighter roof, lit by its state and its look, clamped to HOLO_MAX. No per-slab flicker (§7).
+ */
+export const SLAB_FRAG = `${HEAD}uniform float uTime;
+uniform float uGain;
+uniform float uFill;
+uniform float uWire;
+uniform float uFade;
+uniform float uEdges;
+uniform vec3 uHeatColor;
+varying vec3 vBox;
+varying vec3 vBoxN;
+varying vec3 vN;
+varying vec3 vView;
+varying float vY;
+varying vec3 vFill;
+varying vec3 vLine;
+varying float vState;
+varying float vHeat;
+varying float vStack;
+varying float vLook;
+${LOOK_TEST}void main() {
+  float sel = step(1.5, vState);
+  float hov = step(0.75, vState) * (1.0 - sel);
+  float rel = step(0.25, vState) * (1.0 - step(0.75, vState));
+  float gain = (1.0 + 0.8 * hov + 0.35 * rel + 0.9 * sel) * mix(1.0, ${glf(SLAB_DIM)}, 1.0 - step(-0.5, vState));
+  float wire = lookIs(vLook, ${glf(LOOK_CODE.wire)});
+  float fog = lookIs(vLook, ${glf(LOOK_CODE.fog)});
+  float fading = lookIs(vLook, ${glf(LOOK_CODE.fading)});
+  float edge = 0.0;
+  if (uEdges > 0.5) {
+    vec3 axis = abs(vBoxN);
+    vec3 px = (0.5 - abs(vBox)) / max(fwidth(vBox), vec3(1e-6));
+    float e = 1e6;
+    if (axis.x < 0.5) e = min(e, px.x);
+    if (axis.y < 0.5) e = min(e, px.y);
+    if (axis.z < 0.5) e = min(e, px.z);
+    edge = 1.0 - smoothstep(0.0, 1.0, e);
+  }
+  float fres = pow(1.0 - abs(dot(normalize(vN), normalize(vView))), 2.0);
+  float scan = 0.5 + 0.5 * sin(vY * 6.5 - uTime * 2.2);
+  float band = exp(-pow(vY - mod(uTime * 4.0, 80.0) + 10.0, 2.0) * 0.08);
+  float roof = step(0.5, vBoxN.y);
+  float fill = (0.25 + 0.45 * fres + 0.1 * scan + 0.2 * band + 0.3 * roof) * uFill / (1.0 + ${glf(STACK_FALL)} * vStack);
+  fill *= (1.0 - wire) * mix(1.0, 0.6, fog);
+  vec3 col = mix(vFill, uHeatColor, vHeat * 0.5) * fill + vLine * edge * mix(1.0, uWire, wire);
+  col *= mix(1.0, uFade, fading);
+  gl_FragColor = vec4(min(col * gain * uGain, vec3(HOLO_MAX)), 1.0);
+${TAIL}}
+`
+
+/** The district plate's focus at rest, lit (its building hovered or in focus), selected, and dimmed (look spec §3.2). */
+export const PLATE_FOCUS = { rest: 0, lit: 0.5, selected: 0.7, dimmed: -0.5 } as const
+/** The plate focus's ease: 0.15 of the way a frame at 60 fps (the spike's step), as a rate in time. */
+export const PLATE_EASE_RATE = -60 * Math.log(1 - 0.15)
+/** The plate's gain where bloom adds its glow, and at Flat. */
+export const PLATE_GAIN = { bloomed: 0.7, flat: 0.9 } as const
+/** How far a plate's quad reaches past its hexagon's corners (radius 1): its halo fades out from the corners to here. */
+export const PLATE_REACH = 1.4
+/** How long a change animation's wave takes to cross its plate, in seconds (once per rise). */
+export const PLATE_WAVE_S = 1.6
+
+/** Where a district plate's focus goes: selected 0.7, lit 0.5, dimmed -0.5 outside a focus, and 0 with none. */
+export function plateFocusTarget(focus: boolean, lit: boolean, selected: boolean): number {
+  if (selected) return PLATE_FOCUS.selected
+  if (!focus) return PLATE_FOCUS.rest
+  return lit ? PLATE_FOCUS.lit : PLATE_FOCUS.dimmed
+}
+
+/** One step of a plate's focus toward `to` over `dt` seconds: by time (easeShare), the same at any frame rate. */
+export const easePlate = (from: number, to: number, dt: number): number => from + (to - from) * easeShare(PLATE_EASE_RATE, dt)
+
+/** The plate's gain at `tier`. */
+export const plateTierGain = (tier: TierName): number => (TIER_LOOK[tier].bloom ? PLATE_GAIN.bloomed : PLATE_GAIN.flat)
+
+export const PLATE_VERT = `${HEAD}attribute float aFocus;
+attribute float aWave;
+attribute float aHeat;
+attribute float aLook;
+attribute float aOutline;
+varying vec2 vP;
+varying vec2 vW;
+varying float vR;
+varying vec3 vColor;
+varying float vFocus;
+varying float vWave;
+varying float vHeat;
+varying float vLook;
+varying float vOutline;
+void main() {
+  mat4 inst = mat4(1.0);
+  #ifdef USE_INSTANCING
+  inst = instanceMatrix;
+  #endif
+  vec4 wp = modelMatrix * inst * vec4(position, 1.0);
+  vP = position.xz;
+  vW = wp.xz;
+  vR = length(inst[0].xyz);
+  vColor = vec3(1.0);
+  #ifdef USE_INSTANCING_COLOR
+  vColor = instanceColor;
+  #endif
+  vFocus = aFocus;
+  vWave = aWave;
+  vHeat = aHeat;
+  vLook = aLook;
+  vOutline = aOutline;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`
+
+/**
+ * The district plate: a hexagon's distance field on one quad (its corners at ±z, where CylinderGeometry lays a
+ * hexagon's), drawn as a rim, an inner rim, a 5-unit grid, a halo and a faint wall band, with a wave out from the centre
+ * while aWave runs from 0 to 1 (only on a change animation or a focused district). At the districts tier (uFar) it
+ * carries the slab signals: its hottest building's heat on the rim, the proposed-colour outline, the fog veil, the fading pulse.
+ */
+export const PLATE_FRAG = `${HEAD}uniform float uGain;
+uniform float uFar;
+uniform float uWire;
+uniform float uFade;
+uniform vec3 uHeatColor;
+uniform vec3 uGhost;
+uniform vec3 uFogTint;
+varying vec2 vP;
+varying vec2 vW;
+varying float vR;
+varying vec3 vColor;
+varying float vFocus;
+varying float vWave;
+varying float vHeat;
+varying float vLook;
+varying float vOutline;
+${LOOK_TEST}float hexSd(vec2 p) {
+  p = abs(p);
+  return max(p.x, dot(p, vec2(0.5, 0.8660254))) - 0.8660254;
+}
+void main() {
+  float d = hexSd(vP) * vR;
+  float aa = max(fwidth(d), 1e-4);
+  float rim = 1.0 - smoothstep(0.0, aa * 1.5, abs(d));
+  float inner = 1.0 - smoothstep(0.0, aa * 1.5, abs(d + 1.2));
+  vec2 g = abs(fract(vW / 5.0 - 0.5) - 0.5) / max(fwidth(vW / 5.0), vec2(1e-4));
+  float inside = 1.0 - step(0.0, d);
+  float grid = (1.0 - min(min(g.x, g.y), 1.0)) * inside;
+  float wall = smoothstep(-3.0, 0.0, d) * inside;
+  float halo = exp(-max(d, 0.0) * 0.6) * (1.0 - inside) * (1.0 - smoothstep(1.0, ${glf(PLATE_REACH)}, length(vP)));
+  float r = length(vP) * vR;
+  float wave = vWave > 0.0 ? exp(-pow(r - vWave * vR, 2.0) * 0.5) * (1.0 - vWave) * inside : 0.0;
+  float far = step(0.5, uFar);
+  float fog = lookIs(vLook, ${glf(LOOK_CODE.fog)}) * far;
+  float fading = lookIs(vLook, ${glf(LOOK_CODE.fading)}) * far;
+  vec3 base = mix(vColor, uFogTint, fog * 0.4);
+  vec3 rimCol = mix(base, uHeatColor, vHeat * far);
+  float outline = (1.0 - smoothstep(0.0, aa * 1.5, abs(d - 1.0))) * vOutline * far;
+  float lit = (1.0 + 0.8 * max(vFocus, 0.0)) * mix(1.0, 0.25, clamp(-vFocus * 2.0, 0.0, 1.0));
+  vec3 col = rimCol * rim * 0.9 + base * (inner * 0.4 + grid * 0.12 * (1.0 - fog) + wall * 0.12 + halo * 0.25 + wave * 0.5);
+  col = col * lit + uGhost * outline * uWire;
+  col *= mix(1.0, uFade, fading);
+  if (d > 8.0) discard;
+  gl_FragColor = vec4(min(col * uGain, vec3(HOLO_MAX)), 1.0);
+${TAIL}}
+`
+
+export interface SlabUniforms {
+  uTime: Uniform<number>; uGain: Uniform<number>; uFill: Uniform<number>; uWire: Uniform<number>; uFade: Uniform<number>
+  uEdges: Uniform<number>; uHeatColor: Uniform<number[]>
+}
+export interface PlateUniforms {
+  uGain: Uniform<number>; uFar: Uniform<number>; uWire: Uniform<number>; uFade: Uniform<number>
+  uHeatColor: Uniform<number[]>; uGhost: Uniform<number[]>; uFogTint: Uniform<number[]>
+}
+
+/** The slab's uniforms at `tier`, its heat colour `heat` (`#rrggbb`); `edges` draws a unit box's edges (a hexagon's are lines). */
+export function slabUniforms(tier: TierName, heat: string, edges: boolean): SlabUniforms {
+  return {
+    uTime: { value: 0 }, uGain: { value: slabTierGain(tier) }, uFill: { value: SLAB_FILL }, uWire: { value: 1 }, uFade: { value: 1 },
+    uEdges: { value: edges ? 1 : 0 }, uHeatColor: { value: linearRgb(heat) },
+  }
+}
+
+/** The plate's uniforms at `tier`, with the heat colour, the proposed outline's and the fog tint (`#rrggbb` each). */
+export function plateUniforms(tier: TierName, colors: { heat: string; ghost: string; fogTint: string }): PlateUniforms {
+  return {
+    uGain: { value: plateTierGain(tier) }, uFar: { value: 0 }, uWire: { value: 1 }, uFade: { value: 1 },
+    uHeatColor: { value: linearRgb(colors.heat) }, uGhost: { value: linearRgb(colors.ghost) }, uFogTint: { value: linearRgb(colors.fogTint) },
+  }
 }
