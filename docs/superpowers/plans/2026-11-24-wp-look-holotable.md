@@ -636,6 +636,8 @@ test('the legend explains the selection mark', ...)
 
 e2e: select the busiest building of the Termpolis repo in each palette. The white fraction stays under 0.5% (Review Focus 3).
 
+**Required acceptance (look spec §7, moved here from Task 10 by the coordinator's ruling of 2026-11-26).** The selection mark is 3:1 or better against the brightest lit holo slab, in every palette, and not only against the background. The D1 colour cannot do this alone: `#eafaff` against the brightest slab is about 1.7:1. So the mark needs a separator, for example a dark stroke in the theme background colour around the ring and column, and the measured colour pair is the mark's real outer colour against that slab. `contrast.test.ts` holds this as an `it.fails` (`the selection mark is 3:1 or more against the brightest lit slab`). Task 14 is not done until that test is a plain `it` that passes, and it reads the mark's colour off the renderer rather than off the palette token.
+
 - [ ] **Step 2–4:** Run them and see them fail, implement it, run `COV`, `TSC`, `E2E e2e/world-visual.spec.ts e2e/world-engine.spec.ts`, then `SOAK` on three OSes.
 - [ ] **Step 5: Commit** with the message `lumopolis: Holotable orbs and a selection mark that keeps the close-up readable`
 
@@ -667,6 +669,8 @@ test('the focus ring is visible on every toolbar control', ...)
 ```
 
 e2e: no two labels overlap, all labels are readable, and the counts are unchanged at every viewport in `world-responsive`.
+
+**Required acceptance (look spec §7, moved here from Task 10 by the coordinator's ruling of 2026-11-26).** The focus ring is 3:1 or better against the brightest lit holo slab, in every palette, and not only against the background. `attention` amber against the brightest slab is about 1.03:1, so the 2px amber ring needs a separator, for example a 1px outline in the theme background colour, wherever it can be drawn over the map (the canvas, the 2D map, the card over the scene). `contrast.test.ts` holds this as an `it.fails` (`the focus ring is 3:1 or more against the brightest lit slab`). Task 15 is not done until that test is a plain `it` that passes, and it reads the ring's real outer colour off the rendered style rather than off the palette token.
 
 - [ ] **Step 2–4:** Run them and see them fail, implement it, run `COV`, `TSC`, `E2E e2e/world-visual.spec.ts e2e/world-ask.spec.ts e2e/world-responsive.spec.ts`, then `SOAK` on three OSes.
 - [ ] **Step 5: Commit** with the message `lumopolis: Holotable labels, floor tags, card, legend and toolbar`

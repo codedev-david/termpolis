@@ -88,6 +88,19 @@ describe('palette contrast (look spec §7)', () => {
       expect(ratio(p.attention, p.background)).toBeGreaterThanOrEqual(3)
       expect(ratio(p.select, p.background)).toBeGreaterThanOrEqual(3)
     })
+
+    // KNOWN GAP, look spec §7: "the focus ring and the selection mark are 3:1 or better against both", that is against
+    // the background AND against the brightest lit slab. No colour token can meet the slab half alone (#eafaff on the
+    // brightest slab is about 1.7:1, attention amber about 1.03:1), so each mark needs a separator stroke. The coordinator
+    // moved that work to plan Tasks 14 (selection mark) and 15 (focus ring) as a required acceptance item. These stay
+    // `it.fails` until then, so the gap shows in every run. If one starts to pass, `it.fails` turns red: make it a plain
+    // `it` that reads the mark's real outer colour off the renderer instead of the palette token.
+    it.fails('the selection mark is 3:1 or more against the brightest lit slab (look spec §7; plan Task 14)', () => {
+      expect(ratio(p.select, brightestSlab(p.holo))).toBeGreaterThanOrEqual(3)
+    })
+    it.fails('the focus ring is 3:1 or more against the brightest lit slab (look spec §7; plan Task 15)', () => {
+      expect(ratio(p.attention, brightestSlab(p.holo))).toBeGreaterThanOrEqual(3)
+    })
   })
 
   it('the brightest slab is a plate colour, brighter than holo', () => {
