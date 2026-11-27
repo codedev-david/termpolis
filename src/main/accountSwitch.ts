@@ -337,14 +337,21 @@ function shellSince(io: SwitchIO, id: string, l: Look, at: number, commands: rea
  *  than the wipe: the agent it starts runs, and on a loaded machine one slower to draw its box was read as exited, by the switch and
  *  by the limit look (#106). It runs where a launch line of more than the agent's name (a prompt can show that, a folder's) is echoed
  *  whole after the prompt, or where an input box is drawn after it: nothing was drawn before the prompt for a repaint to draw again.
- *  The shell back after an exit is a prompt reported after the echo. */
+ *  The box needs something drawn under its row (an agent's closing rule, its footer): a prompt of the person's own can look like
+ *  one (powerlevel10k's ruler over its ❯, starship's ❯) and has nothing under it, and read as a box with the line lost, the switch
+ *  would type into the shell (holdb-review M1). The shell back after an exit is a prompt reported after the echo. No report in
+ *  `since`: no. */
 export function ranAtFirstPrompt(since: string, commands: readonly string[], size: ScreenSize | null): boolean {
   const reports = [...since.matchAll(PROMPT_REPORT)]
+  if (reports.length === 0) return false
   const last = reports[reports.length - 1].index
   if (plain(since.slice(0, last)).trim() !== '') return false
   const tail = since.slice(last)
   const after = bare(plain(tail))
-  return commands.some((c) => c.trim().split(/\s+/).length > 1 && after.includes(bare(c))) || inputBoxRow(drawn(tail, size).lines) >= 0
+  if (commands.some((c) => c.trim().split(/\s+/).length > 1 && after.includes(bare(c)))) return true
+  const rows = drawn(tail, size).lines
+  const box = inputBoxRow(rows)
+  return box >= 0 && rows.slice(box + 1).some((row) => row.trim() !== '')
 }
 
 /** Claude Code waiting out its limit, the user's choice on its menu, on its status line over the
