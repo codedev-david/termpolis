@@ -25,7 +25,7 @@ import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
-import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS } from './bufferFit'
+import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS, RESIZE_MEASURE } from './bufferFit'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
 export interface SceneText {
@@ -2569,18 +2569,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * A resize's own cost, the longest kept (resizeWorstMs) and the one after it (resizeNextMs): the work the observer's call does before the next frame can
    * be drawn (the canvas stretched, the labels, the city's fit and the camera's framing; the buffer is fitted later, by
    * fitBufferFor's timer, and is not counted). Only once the view has drawn: the
-   * observer's first call, on open, is the first frame's to time.
+   * observer's first call, on open, is the first frame's to time. Inside a frame-time window each one is named on the
+   * page's timeline too (RESIZE_MEASURE), for a trace to time on the thread's clock.
    */
   const resize = (): void => {
     const timed = presented > 0
     const t0 = performance.now()
     resizeNow(timed)
     if (!timed) return
-    const ms = performance.now() - t0
+    const end = performance.now()
+    const ms = end - t0
     if (ms > resizeWorstMs) {
       resizeNextMs = resizeWorstMs
       resizeWorstMs = ms
     } else resizeNextMs = Math.max(resizeNextMs, ms)
+    if (bench) nameSpan(RESIZE_MEASURE, t0, end)
   }
   /**
    * The drawing buffer for a new size: at once before the view has drawn, or from or to an empty view (a pane hidden or
@@ -2593,12 +2596,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (settleTimer !== null) clearTimeout(settleTimer)
     settleTimer = null
   }
-  /** The settled fit, named for the page's timeline (BUFFER_FIT_MEASURE): a page without User Timing goes without. */
-  const measureFit = (start: number): void => {
+  /** A span of the renderer's work, named for the page's timeline (BUFFER_FIT_MEASURE, RESIZE_MEASURE): a page without User Timing goes without. */
+  const nameSpan = (name: string, start: number, end: number): void => {
     try {
-      performance.measure(BUFFER_FIT_MEASURE, { start, end: performance.now() })
+      performance.measure(name, { start, end })
     } catch {
-      // no User Timing here: the fit is not named
+      // no User Timing here: the span is not named
     }
   }
   /**
@@ -2630,7 +2633,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) {
         const start = performance.now()
         fitBuffer()
-        measureFit(start)
+        nameSpan(BUFFER_FIT_MEASURE, start, performance.now())
         // Drawn in software, the first frame into the new buffer would wait for the GPU process to make it, with the
         // frames it still has to draw, inside the page's own frame (150 to 190 ms on the Linux runners, right after the
         // fit's task): it waits for this fence instead, held back as any frame is while the GPU is busy (animate).

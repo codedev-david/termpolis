@@ -3,7 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
-import { BUFFER_FIT_MEASURE } from '../../../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../../../src/renderer/src/world/engine/bufferFit'
 import { BUFFER_SETTLE_MS, createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
@@ -1429,6 +1429,40 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
       v.resized()
       expect(() => vi.advanceTimersByTime(BUFFER_SETTLE_MS)).not.toThrow()
       expect(v.fits()).toBe(fits + 1) // fitted all the same
+    } finally {
+      measure.mockRestore()
+      v.done()
+    }
+  })
+
+  it("inside a frame-time window each resize is named on the page's timeline (RESIZE_MEASURE), from its start to its end; outside one, or without User Timing, none is", () => {
+    const v = drawnView()
+    const measure = vi.spyOn(performance, 'measure')
+    const resizes = (): Array<{ start: number; end: number }> => measure.mock.calls.filter((c) => c[0] === RESIZE_MEASURE).map((c) => c[1] as { start: number; end: number })
+    try {
+      resizeHost(h.host, 700, 600)
+      v.resized()
+      expect(resizes()).toEqual([]) // no window: a session's resizes leave nothing on the timeline
+      v.r.perfBegin()
+      resizeHost(h.host, 680, 600)
+      const t0 = h.frames.now
+      v.resized()
+      expect(resizes()).toHaveLength(1)
+      expect(resizes()[0].start).toBeGreaterThanOrEqual(t0)
+      expect(resizes()[0].end).toBeGreaterThanOrEqual(resizes()[0].start)
+      expect(resizes()[0].end - resizes()[0].start).toBe(perf(v.r).resizeWorstMs) // the span the resize was timed over
+      resizeHost(h.host, 660, 600)
+      v.resized()
+      expect(resizes()).toHaveLength(2) // each one
+      v.r.perfEnd()
+      resizeHost(h.host, 640, 600)
+      v.resized()
+      expect(resizes()).toHaveLength(2) // the window over: none again
+      v.r.perfBegin()
+      measure.mockImplementation(() => { throw new TypeError('no User Timing') })
+      resizeHost(h.host, 620, 600)
+      expect(() => v.resized()).not.toThrow()
+      expect(perf(v.r).resizeWorstMs).toBeGreaterThanOrEqual(0) // timed all the same
     } finally {
       measure.mockRestore()
       v.done()

@@ -37,7 +37,7 @@ import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
-import { BUFFER_FIT_MEASURE } from '../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../src/renderer/src/world/engine/bufferFit'
 import { CORNER_MAX_LEVELS, cornerPatches, drawnBackground, levelsApart, MAX_WHITE_FRACTION, MIN_LIT_FRACTION, pngMetrics } from './worldPixels'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -771,6 +771,71 @@ const LEGEND_ASIDE_PX = 600
 /** How long after the divider's mouse-up the page's work is still the drag's (a debounce, a timer, an idle callback it left). */
 const DRAG_AFTER_MS = 1500
 
+/** A Chromium trace event, as Tracing.dataCollected hands it over (times in microseconds). */
+type TraceEvent = { name: string; ph: string; ts: number; dur?: number; tdur?: number; pid: number; tid: number; cat: string; id?: string; id2?: { local?: string; global?: string }; args?: { name?: string } }
+/** What the drag check traces: each task and JS call with its thread time, the page's measures, and the waits on the GPU process. */
+const DRAG_TRACE = ['toplevel', 'devtools.timeline', 'blink.user_timing', 'gpu', 'ipc']
+/** A span of the page's work, on the wall (`wall`) and its own (`own`, of which `waited` on another process): `matched` when the trace held the span. */
+type OwnTime = { wall: number; own: number; waited: number; matched: boolean }
+
+/**
+ * The page's own time in each named resize and each long task of a trace (look plan A2.1 note (10), PENDING SIGN-OFF):
+ * the thread time of the work that holds it, the innermost JS call around a resize or the task around a long task, plus
+ * the waits inside it on the GPU process or another process (a `gpu` or `ipc` event's wall beyond its thread time), at
+ * most its time on the wall. CPU the runner took from the page is not the page's; a wait on the GPU is. The page's clock
+ * is put on the trace's by the resizes the page named (RESIZE_MEASURE), which the trace holds too; a span the trace did
+ * not hold is timed on the wall.
+ */
+function ownTimes(events: TraceEvent[], named: Array<{ start: number; ms: number }>, longTasks: Array<{ start: number; ms: number }>): { traced: number; spread: number; thread: string; resizes: OwnTime[]; tasks: OwnTime[] } {
+  const key = (e: { pid: number; tid: number }): string => `${e.pid}:${e.tid}`
+  const asyncId = (e: TraceEvent): string => e.id ?? e.id2?.local ?? e.id2?.global ?? ''
+  const timing = events.filter((e) => e.name === RESIZE_MEASURE && e.cat.includes('blink.user_timing'))
+  const ends = timing.filter((e) => e.ph === 'e').sort((p, q) => p.ts - q.ts)
+  const taken = new Set<TraceEvent>()
+  // Each resize the trace named, from its start to its end: a begin with its end, or one complete event.
+  const spans = timing.filter((e) => e.ph === 'b' || (e.ph === 'X' && typeof e.dur === 'number')).sort((p, q) => p.ts - q.ts).flatMap((b) => {
+    if (b.ph === 'X') return [{ key: key(b), s: b.ts, e: b.ts + (b.dur as number) }]
+    const end = ends.find((x) => !taken.has(x) && asyncId(x) === asyncId(b) && x.ts >= b.ts)
+    if (!end) return []
+    taken.add(end)
+    return [{ key: key(b), s: b.ts, e: end.ts }]
+  })
+  const main = spans[0]?.key ?? ''
+  const names = new Map(events.filter((e) => e.ph === 'M' && e.name === 'thread_name').map((e) => [key(e), e.args?.name ?? ''] as const))
+  const page = [...named].sort((p, q) => p.start - q.start)
+  // The clocks are put together only when the trace holds every resize the page named, one for one.
+  const n = spans.length === page.length ? page.length : 0
+  const offs = Array.from({ length: n }, (_, i) => spans[i].s / 1000 - page[i].start).sort((p, q) => p - q)
+  const off = n ? offs[Math.floor(n / 2)] : NaN
+  const spread = n ? offs[n - 1] - offs[0] : NaN
+  const onMain = events.filter((e) => e.ph === 'X' && typeof e.dur === 'number' && key(e) === main)
+  const end = (e: TraceEvent): number => e.ts + (e.dur as number)
+  const SLACK = 50 // microseconds: the trace's clock and the page's round apart
+  // The waits on another process inside [s, e]: the outermost gpu or ipc events there, each one's wall beyond its thread time.
+  const waits = (s: number, e: number): number => {
+    const inside = onMain.filter((x) => /(^|,)(gpu|ipc)(,|$)/.test(x.cat) && x.ts >= s - SLACK && end(x) <= e + SLACK)
+    return inside.filter((x) => !inside.some((y) => y !== x && y.ts <= x.ts && end(y) >= end(x) && (y.dur as number) > (x.dur as number)))
+      .reduce((t, x) => t + (x.dur as number) - Math.min(x.dur as number, x.tdur ?? 0), 0)
+  }
+  const resizes = page.map((m, i): OwnTime => {
+    const span = n ? spans[i] : undefined
+    const around = span ? onMain.filter((x) => typeof x.tdur === 'number' && x.ts <= span.s + SLACK && end(x) >= span.e - SLACK).sort((p, q) => (p.dur as number) - (q.dur as number))[0] : undefined
+    if (!span || !around) return { wall: m.ms, own: m.ms, waited: 0, matched: false }
+    const waited = waits(span.s, span.e) / 1000
+    return { wall: m.ms, own: Math.min(m.ms, (around.tdur as number) / 1000 + waited), waited, matched: true }
+  })
+  const overlap = (x: TraceEvent, s: number, e: number): number => Math.max(0, Math.min(e, end(x)) - Math.max(s, x.ts))
+  const tasks = longTasks.map((t): OwnTime => {
+    const s = (t.start + off) * 1000
+    const e = s + t.ms * 1000
+    const run = n ? onMain.filter((x) => /RunTask/.test(x.name) && typeof x.tdur === 'number' && overlap(x, s, e) > 0.5 * t.ms * 1000).sort((p, q) => overlap(q, s, e) - overlap(p, s, e) || (q.dur as number) - (p.dur as number))[0] : undefined
+    if (!run) return { wall: t.ms, own: t.ms, waited: 0, matched: false }
+    const waited = waits(run.ts, end(run)) / 1000
+    return { wall: t.ms, own: Math.min(t.ms, (run.tdur as number) / 1000 + waited), waited, matched: true }
+  })
+  return { traced: spans.length, spread, thread: names.get(main) ?? main, resizes, tasks }
+}
+
 /**
  * What of the city lies under the opened legend's panel: the building names on show whose boxes meet it, and the
  * buildings a click would pick at a grid of points over it (every 8 px), whatever is drawn over them. Round 3 saw the
@@ -1425,6 +1490,12 @@ test.describe.serial('Lumopolis at every screen size', () => {
     })
     // The tasks are timed only where the page can time them: a page without long tasks would see none.
     expect(await page.evaluate(() => PerformanceObserver.supportedEntryTypes.includes('longtask')), 'the page times its long tasks').toBe(true)
+    // A trace of the drag, for the page's own time in each resize and each long task (ownTimes).
+    const trace = await page.context().newCDPSession(page)
+    const traced: TraceEvent[] = []
+    trace.on('Tracing.dataCollected', (e) => { traced.push(...(e.value as unknown as TraceEvent[])) })
+    const traceDone = new Promise<void>((resolve) => trace.once('Tracing.tracingComplete', () => resolve()))
+    await trace.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: DRAG_TRACE } } as never)
     const box = await page.locator('[data-testid="world-pane-divider"]').boundingBox()
     if (!box) throw new Error('the divider has no box')
     const x = box.x + box.width / 2
@@ -1439,7 +1510,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
     await page.mouse.up()
     // The page's work after the drag is the drag's too, up to DRAG_AFTER_MS after the mouse-up.
     await page.waitForTimeout(DRAG_AFTER_MS)
-    const after = await page.evaluate(([fitName, afterMs]) => {
+    await trace.send('Tracing.end')
+    await traceDone
+    await trace.detach().catch(() => {})
+    const after = await page.evaluate(([fitName, resizeName, afterMs]) => {
       const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; resizeNextMs: number; tier: string } } } }
       // The tasks the observer has not handed over yet are taken too: one that ended just now is still the drag's.
       for (const t of w.__longObs?.takeRecords() ?? []) w.__longTasks.push({ start: t.startTime, ms: t.duration })
@@ -1450,18 +1524,24 @@ test.describe.serial('Lumopolis at every screen size', () => {
       const first = w.__moves[0]
       // A task from the first move to DRAG_AFTER_MS after the mouse-up is the drag's; one that holds a fit's measure is the fit.
       const tasks = w.__longTasks.filter((x) => x.start + x.ms > first && x.start < upAt + afterMs)
-        .map((x) => ({ ms: x.ms, fit: fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1) }))
+        .map((x) => ({ start: x.start, ms: x.ms, fit: fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1) }))
+      const resizes = performance.getEntriesByName(resizeName, 'measure').map((m) => ({ start: m.startTime, ms: m.duration }))
       const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
-      return { resizeWorstMs: perf.resizeWorstMs, resizeNextMs: perf.resizeNextMs, tier: perf.tier, tasks, fitCount: fits.filter((f) => f.end > first).length, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
-    }, [BUFFER_FIT_MEASURE, DRAG_AFTER_MS] as const)
+      return { resizeWorstMs: perf.resizeWorstMs, resizeNextMs: perf.resizeNextMs, tier: perf.tier, tasks, resizes, fitCount: fits.filter((f) => f.end > first).length, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
+    }, [BUFFER_FIT_MEASURE, RESIZE_MEASURE, DRAG_AFTER_MS] as const)
+    const others = after.tasks.filter((x) => !x.fit)
+    const own = ownTimes(traced, after.resizes, others)
     const show = (xs: Array<{ ms: number }>): string => xs.map((x) => x.ms.toFixed(0)).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms (the next ${after.resizeNextMs.toFixed(1)} ms), ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), ${after.fitCount} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(after.tasks.filter((x) => !x.fit))}, the fits ${show(after.tasks.filter((x) => x.fit))}`)
+    const pairs = (xs: OwnTime[], over: number): string => xs.filter((x) => x.wall > over).map((x) => `${x.wall.toFixed(1)}/${x.own.toFixed(1)}${x.waited >= 0.05 ? ` (${x.waited.toFixed(1)} waited)` : ''}${x.matched ? '' : ' (not traced)'}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms (the next ${after.resizeNextMs.toFixed(1)} ms), ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), ${after.fitCount} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(others)}, the fits ${show(after.tasks.filter((x) => x.fit))}`)
+    console.log(`[world-responsive] divider drag on the thread's clock: ${after.resizes.length} resizes named, ${own.traced} in the trace on ${own.thread} (clocks ${own.spread.toFixed(2)} ms apart), ${own.resizes.filter((x) => x.matched).length} and ${own.tasks.filter((x) => x.matched).length} of ${others.length} long tasks timed on it; wall/own ms of the resizes over 4 ms ${pairs(own.resizes, 4)}; of the long tasks ${pairs(own.tasks, 0)}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     softly(after.resizeWorstMs, 'the drag resized the view, timed').toBeGreaterThan(0)
-    softly(after.resizeNextMs, 'each resize during the drag but the slowest takes under 16 ms of its own').toBeLessThan(16)
-    softly(after.resizeWorstMs, 'the slowest under 16 ms of its own and one clock tick of the CPU lost to the runner').toBeLessThan(32)
+    softly(own.traced, 'the trace holds each resize the page named, one for one').toBe(after.resizes.length)
+    softly(own.spread, "the trace's clock and the page's agree to a millisecond").toBeLessThan(1)
+    softly(own.resizes.filter((x) => x.own >= 16).map((x) => `${x.wall.toFixed(1)}/${x.own.toFixed(1)}`), 'each resize during the drag takes under 16 ms of its own (wall/own ms)').toEqual([])
     softly(after.fitCount, 'the buffer was fitted during or after the drag, its fit named').toBeGreaterThan(0)
-    softly(after.tasks.filter((x) => !x.fit && x.ms > 200).map((x) => Math.round(x.ms)), `no task of the page runs over 200 ms from the first move to ${DRAG_AFTER_MS} ms after the mouse-up, the fit left out`).toEqual([])
+    softly(own.tasks.filter((x) => x.own > 200).map((x) => `${x.wall.toFixed(0)}/${x.own.toFixed(0)}`), `no task of the page runs over 200 ms of its own from the first move to ${DRAG_AFTER_MS} ms after the mouse-up, the fit left out (wall/own ms)`).toEqual([])
     await glideDone('the divider dragged')
     // The size held: the buffer is fitted to the narrowed view (its shape, at whatever pixel ratio the tier draws at).
     await expect.poll(() => page.evaluate(() => {

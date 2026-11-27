@@ -14,3 +14,10 @@ export const BUFFER_SETTLE_MS = 150
  * fit), so a check of the page's own work can leave out the fit by its name and count everything else.
  */
 export const BUFFER_FIT_MEASURE = 'world-buffer-fit'
+
+/**
+ * The performance measure each resize records inside a frame-time window (perfBegin to perfEnd, the e2e harness's
+ * __worldPerf), from the resize's start to its end: a check can then find it in a trace of the page and read its own
+ * work on the thread's clock. Outside a window nothing is named, so a session's resizes leave nothing on the timeline.
+ */
+export const RESIZE_MEASURE = 'world-resize'
