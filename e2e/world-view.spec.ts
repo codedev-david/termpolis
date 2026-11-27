@@ -419,10 +419,25 @@ test.describe.serial('Lumopolis in the real app', () => {
     // And the page's side: its own 10 ms timer's lateness and its long tasks (50 ms or more of its own script or
     // layout), so a slow last leg shows whether the page's thread was busy with its own work or not run at all.
     await page.evaluate(() => {
-      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[], raf: [] as number[][], recv: [] as number[][], stop: () => {} }
+      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[], raf: [] as number[][], recv: [] as number[][], msg: [] as number[][], stop: () => {} }
       ;(window as unknown as { __pageDiag: typeof s }).__pageDiag = s
       // DIAG typeflake-trace: each terminal:data chunk with a letter, as the preload hands it to the page.
-      const offRecv = (window as unknown as { termpolis: { onTerminalData: (cb: (id: string, d: string) => void) => () => void } }).termpolis.onTerminalData((_id, d) => { if (/[a-z]/.test(d)) { s.recv.push([performance.now(), d.length]); performance.mark('tf-recv') } })
+      const offRecv = (window as unknown as { termpolis: { onTerminalData: (cb: (id: string, d: string) => void) => () => void } }).termpolis.onTerminalData((_id, d) => {
+        if (!/[a-z]/.test(d)) return
+        const ew = window as unknown as { __echo: { lineBase: number; lineKeys: string }; __echoText: () => string }
+        const line = ew.__echoText()
+        const at = line.lastIndexOf('~#~')
+        let n = 0
+        if (at >= 0) while (n < ew.__echo.lineKeys.length && line[at + 3 + n] === ew.__echo.lineKeys[n]) n++
+        // [time, chunk length, keys of the line in the buffer now, the line's first key index]
+        s.recv.push([performance.now(), d.length, n, ew.__echo.lineBase])
+        performance.mark('tf-recv')
+        // And when a task that is not a timer next runs (a posted message), to tell a deferred timer from a busy thread.
+        const ch = new MessageChannel()
+        const t0 = performance.now()
+        ch.port1.onmessage = () => { s.msg.push([t0, performance.now() - t0]); ch.port1.close() }
+        ch.port2.postMessage(0)
+      })
       // The page's frames as requestAnimationFrame runs them: how often the page gets to paint.
       let lastRaf = performance.now()
       let rafId = 0
@@ -555,9 +570,9 @@ test.describe.serial('Lumopolis in the real app', () => {
       return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out, traced, sends: s.sends.map(([t, ch, a]) => [t, ch, size(a)] as [number, string, number]), invokes: s.invokes.map(([t0, t1, ch, r]) => [t0, t1, ch, size(r)] as [number, number, string, number]) }
     }, tracePath)
     const pageDiag = await page.evaluate(() => {
-      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[]; raf: number[][]; recv: number[][]; stop: () => void } }).__pageDiag
+      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[]; raf: number[][]; recv: number[][]; msg: number[][]; stop: () => void } }).__pageDiag
       s.stop()
-      return { lag: s.lag, long: s.long, frames: s.frames, raf: s.raf, recv: s.recv }
+      return { lag: s.lag, long: s.long, frames: s.frames, raf: s.raf, recv: s.recv, msg: s.msg }
     })
     const pageIn = (t: number): boolean => r.runs.some((w) => t >= w.start && t < w.end)
     const longOf = (during: boolean): string => {
@@ -591,7 +606,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     }
     // Each key pressed after the hooks went in, in order, to the next letter main received, then to the first
     // terminal:data after that write that holds a letter, then to the page seeing its echo.
-    const stages: { during: boolean; t1: number; t2: number; t3: number; i: number; run: number; S: number; R: number; E: number }[] = []
+    const stages: { during: boolean; t1: number; t2: number; t3: number; i: number; run: number; S: number; R: number; E: number; inBuf: number; F: number; M: number }[] = []
     {
       let wi = 0
       let oi = 0
@@ -606,7 +621,7 @@ test.describe.serial('Lumopolis in the real app', () => {
         if (oi >= diag.out.length) return
         const S = diag.out[oi][0]
         const rv = pageDiag.recv.find((x) => origin + x[0] >= S - 1)
-        stages.push({ during: r.runs.some((w) => d >= w.start && d < w.end), t1: W - D, t2: S - W, t3: origin + r.echo[i] - S, i, run: r.runs.findIndex((w) => d >= w.start && d < w.end), S, R: rv ? origin + rv[0] : NaN, E: origin + r.echo[i] })
+        stages.push({ during: r.runs.some((w) => d >= w.start && d < w.end), t1: W - D, t2: S - W, t3: origin + r.echo[i] - S, i, run: r.runs.findIndex((w) => d >= w.start && d < w.end), S, R: rv ? origin + rv[0] : NaN, E: origin + r.echo[i], inBuf: rv ? (rv[3] + rv[2] > i ? 1 : 0) : -1, F: rv ? (pageDiag.raf.find((f) => f[0] >= rv[0])?.[0] ?? NaN) + origin : NaN, M: rv ? (pageDiag.msg.find((m) => m[0] >= rv[0] - 0.01)?.[1] ?? NaN) : NaN })
       })
     }
     const stageOf = (during: boolean): string => {
@@ -626,7 +641,7 @@ test.describe.serial('Lumopolis in the real app', () => {
       console.log(`[typeflake diag] other sends ${Object.entries(chans).map(([ch, [k, n]]) => `${ch} x${k} ${n}B`).join('; ')}`)
       for (const x of stages.filter((y) => y.during)) {
         const others = diag.sends.filter(([t]) => t >= x.S - 100 && t <= x.E).map(([t, ch, n]) => `${ch}@${(t - x.S).toFixed(0)}${n ? `/${n}B` : ''}`).join(',')
-        console.log(`[typeflake key] i=${x.i} run=${x.run} at=${rel(x.S)} S=${x.S.toFixed(1)} t3=${x.t3.toFixed(1)} send-to-recv=${(x.R - x.S).toFixed(1)} recv-to-seen=${(x.E - x.R).toFixed(1)}${others ? ` others=${others}` : ''}`)
+        console.log(`[typeflake key] i=${x.i} run=${x.run} at=${rel(x.S)} S=${x.S.toFixed(1)} t3=${x.t3.toFixed(1)} send-to-recv=${(x.R - x.S).toFixed(1)} recv-to-seen=${(x.E - x.R).toFixed(1)} inbuf-at-recv=${x.inBuf} recv-to-frame=${(x.F - x.R).toFixed(1)} recv-to-msg=${x.M.toFixed(1)}${others ? ` others=${others}` : ''}`)
       }
     }
     const compileMs = r.runs.reduce((a, w) => a + (w.end - w.start), 0)
