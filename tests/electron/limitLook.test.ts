@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import type { SwitchIO } from '../../src/main/accountSwitch'
-import { liveness } from '../../src/main/accountSwitch'
+import { liveness, ranAtFirstPrompt } from '../../src/main/accountSwitch'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
@@ -479,6 +479,20 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
     // The agent's name alone is no echo of a line: a prompt can show it, a folder's (a start Termpolis was not sure of).
     expect(liveness(io(BEFORE + FIRST + 'claude\r\n'), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
+  })
+
+  // A prompt drawn like an agent's box (powerlevel10k's ruler over its ❯, starship's ❯) at the first prompt, the line lost: the
+  // shell is back, as nothing is drawn under it, where an agent's box has its closing rule and footer (holdb-review M1).
+  it('reads a first prompt drawn like a box, with nothing under it, as the shell back, and an agent box under it as live', () => {
+    const rec = { at: BEFORE.length, commands: [LINE] }
+    const ruled = `${report}${E}[2J${E}[H${RULE}\r\n❯ `
+    expect(agentGone(io(BEFORE + ruled), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+    expect(liveness(io(BEFORE + ruled), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    expect(liveness(io(BEFORE + FIRST + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
+  })
+
+  it('ranAtFirstPrompt answers no for output with no prompt report in it', () => {
+    expect(ranAtFirstPrompt(`bash-5.3$ ${LINE}\r\n`, [LINE], null)).toBe(false)
   })
 
   // agy is started by its name alone, and no echo of a name can be told from a prompt that shows it: the box agy draws after that
