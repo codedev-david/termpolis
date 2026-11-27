@@ -15,15 +15,21 @@
 //    files sharing a leading name word are one), then clusters in one district merge, densest
 //    first, while their cross-edge density is above MERGE_DENSITY.
 // 4. Buildings are capped by merging the smallest into its densest neighbour (link weight over
-//    the neighbour's size) in the same district, never into a process building or channel service;
-//    with no link, its nearest plain building in path order. Those fixed buildings go last. A
-//    neighbour that stays a recognisable part (PART_MIN) after taking the building in is preferred
-//    over a denser one that would not, so growth in one district, which only moves the point where
-//    merging stops, does not cost another district a part that another target could spare
-//    (PENDING SIGN-OFF).
+//    the neighbour's size, ties in path order) in the same district, never into a process building
+//    or channel service; with no link, its nearest plain building in path order. Those fixed
+//    buildings go last. One departure (PENDING SIGN-OFF): each linked neighbour is (A) a
+//    recognisable part (PART_MIN) that stays one taking the building in, (B) no part, or (C) a part
+//    the merge would dissolve. While some link is A, the C links are passed over; A and B links
+//    compete on density, then path order. With no A link, every link competes as in the plan, so a
+//    building with no part never draws in a module whose own part it would dissolve. Growth in one
+//    district, which only moves the point where merging stops, then does not cost another district
+//    a part that another target could spare.
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    non-test member reaching most of the building, then most imported from outside it, skipping
-//    names that would pass for the district or a main/renderer/preload entry.
+//    names that would pass for the district or a main/renderer/preload entry. A part (PART_MIN) is
+//    named after the first member of its own group in that order instead, so a part that took in a
+//    busier helper keeps its own name (PENDING SIGN-OFF: the plan names every building by its paths
+//    and has no rule for which member).
 // 6. Ids are slugs of member paths (a name with no letter or digit a slug keeps, such as an emoji or
 //    a non-Latin script, is 'u' plus a short hash of the name, never 'root', which is the repository
 //    root's alone). A base no other building shares is used as is; colliding bases get '--' plus the
@@ -104,9 +110,10 @@ export const COHESIVE_WEIGHT = 2
 /** A building is a recognisable part when one group of its files (a small sub-folder, else one folder and leading name
  *  word, as the name families of step 3 are) has at least this many files, makes up at least a third of the building
  *  and outnumbers every other group there: the code graph's code*.ts among its watchers. Over the building cap the
- *  smallest building still goes first, but into the densest neighbour that stays a part after taking it in, before any
- *  denser one that would not; only with no such neighbour does it go to the densest. PENDING SIGN-OFF: the plan's
- *  step 4 (world-view-1 Task 4) sends it to the densest neighbour, whatever that dissolves. */
+ *  smallest building still goes first. Its links are parts that stay parts taking it in (A), links with no part (B),
+ *  and parts it would dissolve (C). While some link is A, the C links are passed over, and A and B compete on density,
+ *  then path order; with no A link, every link competes on density, as in the plan. PENDING SIGN-OFF: the plan's step 4
+ *  (world-view-1 Task 4) sends it to the densest neighbour, whatever that dissolves. */
 export const PART_MIN = 3
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
@@ -892,14 +899,37 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     tail.set(bDist[b], b)
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) ?? 0) + 1)
   }
-  // Per building: how many members share each part group (see PART_MIN), and its two largest groups. Those two are all
-  // a merge needs to tell whether a part survives it: counts only grow, so no group outside them and the merged-in
-  // building's own can overtake them (mergedTop). No map for a building with no grouped member, as with bStems.
+  // Per plain building: its two largest part groups (see PART_MIN), by key and count. Two facts make those two all a merge
+  // needs, and the mutation runs lean on them (groupcap report, rounds 1 and 2):
+  //   (a) No two plain buildings share a group. Step 3 starts each name family (the same folder and leading word, or a
+  //       whole small sub-folder) as one cluster and never splits one, and partKey is that same partition. So a merge
+  //       adds no count to a group: the groups of the two together are the groups of each, and their largest two are
+  //       among the four kept here.
+  //   (b) Process buildings and channel services (fixed) have no counts. They are never a link target, and they pop
+  //       last, when no plain building is left in their district, so no plain building ever merges into or past one
+  //       while its counts could be read. A plain building that falls back into a fixed one by path order loses its
+  //       counts with it; nothing reads them again.
+  // Round 1's mutants #17 (mergedTop ignores the counts the target already holds), F (mergedTop offers the target's top
+  // without guarding it) and J (no counts for process buildings) survived as equivalent only because of (a) and (b), and
+  // this code now does what they did: it is right only while (a) and (b) hold. #5 (`v1 > v2` to `>=` in keepsPart) is
+  // killed since the counts keep only the top two: a group of b's that ties t's part is now a rival in the tie test.
+  // Round 2's survivors lean on (a) and (b) too: which of two equal counts mergedTop or offer puts first never matters,
+  // since by (a) no count grows in a merge, so a tie at the top stays a tie (no part, whatever the key) and a tie
+  // below it keeps the same count; and capTarget's first loop may skip fixed buildings or not, since by (b) they have
+  // no part while a plain building looks at them.
   const pTop = new Int32Array(nb)
   const pSecond = new Int32Array(nb)
   const pTopKey = new Array<string>(nb).fill('')
   const pSecondKey = new Array<string>(nb).fill('')
-  // The largest two of the counts offered since the last reset, each key offered once: the result of mergedTop.
+  /** A file's part group: its small sub-folder (not its district's seed folder), else its folder and leading name word,
+   *  else none (''). */
+  const partKey = (i: number): string => {
+    const dir = fileDir[i]
+    if ((inDir.get(dir) as number) <= FAMILY_FOLDER_MAX && dir !== dirs[seedOf[i]]) return `${dir}\u0000/`
+    return fileStem[i] === '' ? '' : `${dir}\u0000${fileStem[i]}`
+  }
+  // The largest two of the counts offered since the last reset: the result of a count or of mergedTop. A count equal to
+  // the largest goes second, so a key offered first keeps the lead on a tie.
   let k1 = ''
   let v1 = 0
   let k2 = ''
@@ -915,48 +945,39 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       v2 = v
     }
   }
-  const bParts = bFiles.map((m, b) => {
-    let c: Map<string, number> | undefined
+  const counts = new Map<string, number>()
+  for (let b = firstPlain; b < nb; b++) {
+    const m = bFiles[b]
+    counts.clear()
     for (let j = 0; j < m.length; j++) {
-      const i = m[j]
-      const dir = fileDir[i]
-      const k =
-        (inDir.get(dir) as number) <= FAMILY_FOLDER_MAX && dir !== dirs[seedOf[i]]
-          ? `${dir}\u0000/`
-          : fileStem[i] === ''
-            ? ''
-            : `${dir}\u0000${fileStem[i]}`
-      if (k === '') continue
-      c ??= new Map<string, number>()
-      c.set(k, (c.get(k) ?? 0) + 1)
+      const k = partKey(m[j])
+      if (k !== '') counts.set(k, (counts.get(k) ?? 0) + 1)
     }
     k1 = k2 = ''
     v1 = v2 = 0
-    c?.forEach((v, k) => offer(k, v))
+    counts.forEach((v, k) => offer(k, v))
     pTopKey[b] = k1
     pTop[b] = v1
     pSecondKey[b] = k2
     pSecond[b] = v2
-    return c
-  })
-  /** The two largest groups of b and t together, left in k1/v1 and k2/v2. */
+  }
+  /** The two largest groups of plain buildings b and t together, left in k1/v1 and k2/v2: by (a), the largest two of their
+   *  own largest two. t's go first, so a group of b's that only ties t's largest leaves t's ahead, and v1 equal to v2. */
   const mergedTop = (b: number, t: number): void => {
     k1 = k2 = ''
     v1 = v2 = 0
-    const from = bParts[b]
-    const into = bParts[t]
-    from?.forEach((c, k) => offer(k, c + (into?.get(k) ?? 0)))
-    if (pTopKey[t] !== '' && !from?.has(pTopKey[t])) offer(pTopKey[t], pTop[t])
-    if (pSecondKey[t] !== '' && !from?.has(pSecondKey[t])) offer(pSecondKey[t], pSecond[t])
+    offer(pTopKey[t], pTop[t])
+    offer(pSecondKey[t], pSecond[t])
+    offer(pTopKey[b], pTop[b])
+    offer(pSecondKey[b], pSecond[b])
   }
   /** The group that makes building x a part, else ''. */
   const partOf = (x: number): string =>
     pTop[x] >= PART_MIN && pTop[x] * 3 >= bSize[x] && pTop[x] > pSecond[x] ? pTopKey[x] : ''
-  /** Whether t, taking b in, is still what it was: no part, or a part whose group still outnumbers every other of the
-   *  two together and is a third of them. Only t's part counts: b is the one being merged, whichever target it gets. */
+  /** Whether t, a part, stays one taking b in: its group still outnumbers every other of the two together and is a third
+   *  of them. Only t's part counts: b is the one being merged, whichever target it gets. */
   const keepsPart = (b: number, t: number): boolean => {
     const g = partOf(t)
-    if (g === '') return true
     mergedTop(b, t)
     return g === k1 && v1 * 3 >= bSize[b] + bSize[t] && v1 > v2
   }
@@ -974,21 +995,32 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     while (x >= 0 && fixed(x)) x = dir[x]
     return x
   }
-  /** Where b goes: a link that keeps its part (keepsPart) before one that does not, then the densest (weight over the
-   *  neighbour's size, so a hub that imports everything never wins by bulk), ties in path order. A fixed building never
-   *  takes in a plain one by a link: its name says what runs or answers there, and unrelated helpers would blur that. */
+  // The links of the building being placed that would dissolve their part (stamped with the pass), for capTarget.
+  const cut = new Int32Array(nb)
+  let pass = 0
+  /** Where b goes: the densest link (weight over the neighbour's size, so a hub that imports everything never wins by
+   *  bulk), ties in path order, as the plan's step 4 has it; except that while some link is a part that stays one taking
+   *  b in (keepsPart), a link that is a part b would dissolve is passed over. A link with no part is weighed by density
+   *  like any other. A fixed building never takes in a plain one by a link: its name says what runs or answers there, and
+   *  unrelated helpers would blur that. PENDING SIGN-OFF (step 4 of the header).
+   *  Two limits: a building with no link keeps the plan's path-order fallback, which can land it in a part and dilute
+   *  it, or dissolve it. And passing over a link changes where one building goes, so the sizes, and with them which
+   *  building is smallest next and where later merges go, can differ from the plan's; never the policy (smallest first,
+   *  fixed buildings last, one building kept per district) or the point where merging stops (the cap). */
   const capTarget = (b: number): number => {
-    let t = -1
-    let tKeeps = false
     const near = bAdj.of(b)
+    pass++
+    let spare = false
+    near.forEach((_w, o) => {
+      if (fixed(o) || partOf(o) === '') return
+      if (keepsPart(b, o)) spare = true
+      else cut[o] = pass
+    })
+    let t = -1
     near.forEach((w, o) => {
-      if (fixed(o)) return
-      const keeps = keepsPart(b, o)
-      const d = t < 0 ? 1 : keeps !== tKeeps ? (keeps ? 1 : -1) : w * bSize[t] - (near.get(t) as number) * bSize[o]
-      if (d > 0 || (d === 0 && bMin[o] < bMin[t])) {
-        t = o
-        tKeeps = keeps
-      }
+      if (fixed(o) || (spare && cut[o] === pass)) return
+      const d = t < 0 ? 1 : w * bSize[t] - (near.get(t) as number) * bSize[o]
+      if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
     })
     if (t >= 0) return t
     // Nearest in path order, skipping fixed buildings while a plain one is left.
@@ -1017,10 +1049,6 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) as number) - 1)
     live--
     mergedTop(b, t)
-    const partsInto = bParts[t]
-    const partsFrom = bParts[b]
-    if (!partsInto) bParts[t] = partsFrom
-    else partsFrom?.forEach((c, k) => partsInto.set(k, (partsInto.get(k) ?? 0) + c))
     pTopKey[t] = k1
     pTop[t] = v1
     pSecondKey[t] = k2
@@ -1119,15 +1147,29 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
     const rank = (x: number, y: number): number =>
       plain[y] - plain[x] || reach[y] - reach[x] || outside[y] - outside[x] || importers[y].length - importers[x].length || x - y
-    const pick = own.sort(rank).find((i) => {
+    const fits = (i: number): boolean => {
       const k = memberKey(files[i])
       return k !== dName && !ENTRY_PROCESSES.has(k)
-    })
+    }
+    own.sort(rank)
+    const pick = own.find(fits)
+    // A part is named from its own group: the first of its members in the same order (PENDING SIGN-OFF, see step 5).
+    const part = partOf(b)
+    const inPart = part === '' ? undefined : own.find((i) => partKey(i) === part && fits(i))
+    named = inPart ?? pick ?? -1
     return pick === undefined ? -1 : pick
   }
+  // The member frontDoor last chose to name its building by.
+  let named = -1
   // Each building's own anchor file: its entry, else its front door, else its first member. A colliding id takes its tag and
   // suffix from it (review K5), so a file that joins a building, or a sibling renamed, never moves the id or its notes.
-  const doors = liveB.map((b) => (bEntry[b] >= 0 ? -1 : frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root')))
+  const nameDoors = new Int32Array(liveB.length).fill(-1)
+  const doors = liveB.map((b, i) => {
+    if (bEntry[b] >= 0) return -1
+    const d = frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root')
+    nameDoors[i] = named
+    return d
+  })
   const anchorFile = (b: number, i: number): string =>
     bEntry[b] >= 0 ? files[bEntry[b]] : doors[i] >= 0 ? files[doors[i]] : (members.get(b) as string[])[0]
   const bIds = uniqueIds(
@@ -1144,7 +1186,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     return {
       id: bIds[i],
       districtId: dIdOf.get(bDist[b]) as string,
-      name: bEntry[b] >= 0 ? bProc[b] : (doors[i] >= 0 ? memberKey(files[doors[i]]) : '') || lastSeg(anchors[i]) || 'root',
+      name: bEntry[b] >= 0 ? bProc[b] : (nameDoors[i] >= 0 ? memberKey(files[nameDoors[i]]) : '') || lastSeg(anchors[i]) || 'root',
       members: m,
       process: bEntry[b] >= 0 ? runsIn(bProc[b]) : ENTRY_PROCESSES.has(dName) ? runsIn(dName) : '',
       boundaries: boundariesOf.get(b) as Boundary[],

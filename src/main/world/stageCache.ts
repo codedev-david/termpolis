@@ -29,9 +29,9 @@ export interface StageFile {
  * The stage cache layout and the meaning of what it holds. BUMP THIS whenever a boundary detector, the
  * import reader, the package reader, the service-name reader or the grouping rules (group.ts) change: a cache written by an
  * older version is then ignored and the next compile reads and groups every file afresh, so a detector
- * fix reaches worlds that already exist.
+ * fix reaches worlds that already exist. 10: the building cap keeps parts and names a part from its own files (groupcap).
  */
-export const STAGE_CACHE_VERSION = 9
+export const STAGE_CACHE_VERSION = 10
 
 export interface StageCache {
   /** STAGE_CACHE_VERSION of the compiler that wrote it; any other value is no cache. */
