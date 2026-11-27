@@ -27,7 +27,7 @@ import { HEAT_COLOR, heatMix, type Look, type SceneBuilding, SceneConduit, Scene
 import { DEFAULT_THEME, normalizeTheme, THEMES, type Theme, type ThemeName } from './themes'
 import { hexNumber, labelHalo, memberGain, PALETTES, plateColor } from './holoPalette'
 import { stageMarks } from './holoMarks'
-import { GRADE_FRAG, GRADE_VERT, gradeUniforms, LOOK_CODE, MOTION_HZ, plateFocusTarget, slabState } from './holoShaders'
+import { GRADE_FRAG, GRADE_VERT, gradeUniforms, HEX_SIDES, LOOK_CODE, MOTION_HZ, plateFocusTarget, slabState } from './holoShaders'
 import { addSlabAttributes, createPlates, createSlabLook, pulseOf, slabsWritten, writeSlab, type Plates } from './holoSlab'
 import { createHoloStage } from './holoStage'
 import { screenRect } from './screenRect'
@@ -921,7 +921,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1)
   const UNIT_EDGES = new THREE.EdgesGeometry(UNIT_BOX)
   // A district's slab: a hexagonal prism standing on y = 0, turned as its platform is.
-  const UNIT_HEX = new THREE.CylinderGeometry(1, 1, 1, 6).translate(0, 0.5, 0)
+  const UNIT_HEX = new THREE.CylinderGeometry(1, 1, 1, HEX_SIDES).translate(0, 0.5, 0)
   const UNIT_HEX_EDGES = new THREE.EdgesGeometry(UNIT_HEX)
   const shared = new Set<THREE.BufferGeometry>([...Object.values(GEO), UNIT_BOX, UNIT_EDGES, UNIT_HEX, UNIT_HEX_EDGES])
 
@@ -1032,8 +1032,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let slabMeshes: THREE.InstancedMesh[] = []
   let slabLines: THREE.LineSegments[] = []
   let slabLooks: SlabSignals[] = []
-  /** The hologram slab look every floor, block and district slab draws with (look spec §3.2): one set of uniforms. */
-  const hologram = createSlabLook(look, HEAT_COLOR)
+  /**
+   * The hologram slab look every floor, block and district slab draws with (look spec §3.2): one set of uniforms. Its
+   * Flat slabs blend by MAX, which WebGL 2 has and WebGL 1 (the context createWorldViewer falls back to) only with
+   * EXT_blend_minmax: without it they add, on a cut gain (slabBlend).
+   */
+  const hologram = createSlabLook(look, HEAT_COLOR, renderer.capabilities.isWebGL2 || renderer.extensions.has('EXT_blend_minmax'))
   /** The districts' hex plates (one instanced quad), and the specs they were built from; none for a world with no district. */
   let plates: Plates | null = null
   let plateSpecs: Array<{ id: string; pos: Vec3; radius: number; color: string; gain: number }> = []
@@ -1097,7 +1101,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const e of edges.values()) for (const g of [e.tall.geo, e.tall.pickGeo, e.low.geo, e.low.pickGeo]) g.dispose()
     for (const im of slabMeshes) im.dispose()
     slabMeshes = []
-    plates?.mesh.dispose() // its geometry and material go with the world below
+    plates?.dispose() // out of the world first, so the clear below frees none of it again
     plates = null
     plateSpecs = []
     slabLines = []
@@ -1140,7 +1144,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // Its hex plate (look spec §3.2): drawn with the others in one instanced quad (draw), coloured as the stage's plate
     // marks are, its district's hue lit by the share of the members it shows.
     plateSpecs.push({ id: d.id, pos: d.pos, radius: d.radius, color: plateColor(d.hue), gain: memberGain(d.members) })
-    platformSides.set(d.id, 6)
+    platformSides.set(d.id, HEX_SIDES)
     // Light pooling: the district's lamp, as in the prototype, reaching the whole of a big platform.
     const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
@@ -1633,9 +1637,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         }
         // The hexagon's corners as CylinderGeometry lays them (x = sin, z = cos of the angle).
         for (const h of seams[j]) {
-          for (let k = 0; k < 6; k++) {
+          for (let k = 0; k < HEX_SIDES; k++) {
             for (const c of [k, k + 1]) {
-              const a = (c / 6) * Math.PI * 2
+              const a = (c / HEX_SIDES) * Math.PI * 2
               put(sl.x + Math.sin(a) * sl.radius, sl.y + h, sl.z + Math.cos(a) * sl.radius)
             }
           }

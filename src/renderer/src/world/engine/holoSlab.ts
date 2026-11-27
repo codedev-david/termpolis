@@ -39,9 +39,11 @@ export interface SlabLook {
  * How a slab adds onto what is behind it at `tier`. Bloomed (High, Low), the layers sum in the linear target the
  * composer tone-maps once. At Flat each layer is tone-mapped and encoded on its own straight to the screen, where a sum
  * of encoded layers runs to white wherever floors overlap: there the slab keeps the brightest layer (look spec §3.3).
+ * `max` false: the context has no MAX blend equation (WebGL 1 without EXT_blend_minmax, where three.js would hand GL an
+ * undefined equation), so the slabs add at Flat too, on the cut gain SLAB_GAIN.flatAdded (slabTierGain).
  */
-export function slabBlend(m: THREE.Material, tier: TierName): void {
-  if (tier !== 'flat') {
+export function slabBlend(m: THREE.Material, tier: TierName, max = true): void {
+  if (tier !== 'flat' || !max) {
     m.blending = THREE.AdditiveBlending
     return
   }
@@ -51,16 +53,16 @@ export function slabBlend(m: THREE.Material, tier: TierName): void {
   m.blendDst = THREE.OneFactor
 }
 
-/** The slab look at `tier`, its heat colour `heat` (`#rrggbb`). */
-export function createSlabLook(tier: TierName, heat: string): SlabLook {
-  const u = slabUniforms(tier, heat, true)
+/** The slab look at `tier`, its heat colour `heat` (`#rrggbb`); `max`: the context blends by MAX (slabBlend). */
+export function createSlabLook(tier: TierName, heat: string, max = true): SlabLook {
+  const u = slabUniforms(tier, heat, true, max)
   const made = new Set<THREE.ShaderMaterial>()
   let now = tier
   return {
     uniforms: u,
     material: (edges) => {
       const m = holoMaterial(edges ? 'lw-slab-box' : 'lw-slab-hex', { ...u, uEdges: { value: edges ? 1 : 0 } }, SLAB_VERT, SLAB_FRAG)
-      slabBlend(m, now)
+      slabBlend(m, now, max)
       made.add(m)
       // A batch's material goes with its batch: once disposed, the look lets it go.
       m.addEventListener('dispose', () => made.delete(m))
@@ -68,8 +70,8 @@ export function createSlabLook(tier: TierName, heat: string): SlabLook {
     },
     setTier: (t) => {
       now = t
-      u.uGain.value = slabTierGain(t)
-      for (const m of made) slabBlend(m, t)
+      u.uGain.value = slabTierGain(t, max)
+      for (const m of made) slabBlend(m, t, max)
     },
     tick: (time, wire, fade) => {
       u.uTime.value = time
@@ -105,9 +107,12 @@ export function writeSlab(g: THREE.BufferGeometry, k: number, s: SlabInstance): 
   if (s.line && at.lineColor) (at.lineColor as THREE.BufferAttribute).setXYZ(k, s.line.r, s.line.g, s.line.b)
 }
 
+/** The attributes slabsWritten sends: the slab's own and the edge colour. */
+const SLAB_SENT: readonly string[] = [...SLAB_ATTRS, 'lineColor']
+
 /** Sends the slab attributes written since the last frame. */
 export function slabsWritten(g: THREE.BufferGeometry): void {
-  for (const a of [...SLAB_ATTRS, 'lineColor']) {
+  for (const a of SLAB_SENT) {
     const b = g.attributes[a] as THREE.BufferAttribute | undefined
     if (b) b.needsUpdate = true
   }
@@ -132,10 +137,14 @@ export interface Plates {
   pulse(wire: number, fade: number): void
   /** A change rose in these districts: a wave crosses each of their plates once. */
   wave(ids: Iterable<string>): void
-  /** Eases each focus by `dt` seconds and runs the waves; reduced motion snaps the focus and holds no wave. True while anything moves. */
+  /**
+   * Eases each focus by `dt` seconds and runs the waves; reduced motion snaps the focus and holds no wave. True while
+   * anything moves. A focus or wave attribute is sent only on a frame that changed one of its values.
+   */
   tick(dt: number, reduced: boolean): boolean
   focusOf(id: string): number | undefined
   waveOf(id: string): number | undefined
+  /** Frees the quad and its material, once, and takes the mesh out of the scene (whose clear then frees nothing of it). */
   dispose(): void
 }
 
@@ -203,25 +212,33 @@ export function createPlates(specs: readonly PlateSpec[], tier: TierName, colors
     },
     tick(dt, reduced) {
       let moving = false
+      let focusMoved = false
+      let waveMoved = false
       for (let i = 0; i < n; i++) {
         let v = reduced ? target[i] : easePlate(focus[i], target[i], dt)
         if (Math.abs(target[i] - v) < FOCUS_SNAP) v = target[i]
         else moving = true
-        focus[i] = v
-        attr.aFocus.setX(i, v)
+        if (v !== focus[i]) {
+          focus[i] = v
+          attr.aFocus.setX(i, v)
+          focusMoved = true
+        }
         if (waves[i] > 0) {
           const w = reduced ? 0 : waves[i] + dt / PLATE_WAVE_S
           waves[i] = w >= 1 ? 0 : w
           if (waves[i] > 0) moving = true
+          attr.aWave.setX(i, waves[i])
+          waveMoved = true
         }
-        attr.aWave.setX(i, waves[i])
       }
-      sent(attr.aFocus); sent(attr.aWave)
+      if (focusMoved) sent(attr.aFocus)
+      if (waveMoved) sent(attr.aWave)
       return moving
     },
     focusOf: (id) => { const i = index.get(id); return i === undefined ? undefined : focus[i] },
     waveOf: (id) => { const i = index.get(id); return i === undefined ? undefined : waves[i] },
     dispose() {
+      mesh.removeFromParent()
       g.dispose()
       ;(mesh.material as THREE.Material).dispose()
       mesh.dispose()

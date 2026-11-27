@@ -74,6 +74,11 @@ Picking does not change. Buildings pick through their existing per-part objects 
   - the slab fill alpha falls with the slab count along a view ray (the instance's `stack` attribute, the number of floors above it, scales the fill by `1 / (1 + 0.12 * stack)`);
   - the selection column's alpha is at most 0.35.
   The threshold is never raised to make the look fit.
+  - **Departure (Task 12), PENDING SIGN-OFF: at Flat the slabs blend by MAX, not by adding.** At Flat the slab materials use `CustomBlending` with `MaxEquation` (One, One), so where floors overlap the brightest layer wins. High and Low still add, and the plates add at every tier.
+    - The numbers: with additive blending at Flat, the overlapping floors went 1.5 to 2% white, even with the fill cut to 0.08. With MAX, the worst case over every world, theme and tier is 0.197% white.
+    - Why a gain cut was not enough: at Flat each layer is tone-mapped and encoded on its own straight to the screen. The edge lines on overlapping two-sided slabs still summed to white, and cutting the gain further made the scene too dim. MAX keeps the Termpolis overview's mean brightness over the background at about 30.
+    - The cost: at Flat, a dimmed, fogged or fading slab drawn over its brighter lit plate disappears instead of tinting it, because the brighter plate wins.
+    - WebGL 1 without `EXT_blend_minmax` has no MAX equation, so there the Flat slabs add, on a cut gain (`SLAB_GAIN.flatAdded`).
 - Bloom applies to the canvas only. CSS2D labels never bloom.
 
 ### 3.4 Scan lines and grid

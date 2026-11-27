@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   BEAM_FRAG, BEAM_K, BEAM_VERT, beamParts, beamUniforms, DISC_FRAG, DISC_GAIN, DISC_VERT, DISC_Y, discUniforms, glf, GRADE_FRAG, GRADE_VERT,
   gradeUniforms, HOLO_SLAB, linearRgb, MOTION_HZ, PLATE_FOOT, SHAFT_FRAG, SHAFT_VERT, shaftParts, shaftUniforms, STAGE_MAX, TRACK_Y,
-  easePlate, LOOK_CODE, PLATE_EASE_RATE, PLATE_FOCUS, PLATE_FRAG, PLATE_GAIN, PLATE_REACH, PLATE_VERT, plateFocusTarget, plateTierGain, plateUniforms,
+  easePlate, HEX_SIDES, LOOK_CODE, PLATE_EASE_RATE, PLATE_FOCUS, PLATE_FRAG, PLATE_GAIN, PLATE_REACH, PLATE_VERT, plateFocusTarget, plateTierGain, plateUniforms,
   SLAB_DIM, SLAB_FILL, SLAB_FRAG, SLAB_GAIN, SLAB_STATE, SLAB_VERT, slabGain, slabState, slabTierGain, slabUniforms, stackFill, STACK_FALL,
 } from '../../../src/renderer/src/world/engine/holoShaders'
+import * as holoShaders from '../../../src/renderer/src/world/engine/holoShaders'
 import { gradeOf, type StageMark } from '../../../src/renderer/src/world/engine/holoMarks'
 
 const SHADERS = { DISC_VERT, DISC_FRAG, SHAFT_VERT, SHAFT_FRAG, BEAM_VERT, BEAM_FRAG, GRADE_VERT, GRADE_FRAG, SLAB_VERT, SLAB_FRAG, PLATE_VERT, PLATE_FRAG }
@@ -13,10 +14,41 @@ const SHADERS = { DISC_VERT, DISC_FRAG, SHAFT_VERT, SHAFT_FRAG, BEAM_VERT, BEAM_
 const LIT = [DISC_FRAG, SHAFT_FRAG, BEAM_FRAG, SLAB_FRAG, PLATE_FRAG]
 const disc: Extract<StageMark, { kind: 'disc' }> = { kind: 'disc', center: [1, 2], radius: 40, color: '#3fd0ff', arcColor: '#ffae42', moving: true }
 
+/**
+ * The corners of the plate the shader draws: its hexSd's constants read from the GLSL, the zero contour's radius taken
+ * round the circle (vP.y is the world's z, where CylinderGeometry puts a corner), and each local peak a corner.
+ */
+function plateCorners(frag: string): Array<{ deg: number; r: number }> {
+  const m = /return max\(p\.x, dot\(p, vec2\(([\d.]+), ([\d.]+)\)\)\) - ([\d.]+);/.exec(frag)
+  if (!m) throw new Error('no hexSd in the plate shader')
+  const [s, c, k] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const steps = 36000
+  const radius = (i: number): number => {
+    const a = (i / steps) * Math.PI * 2
+    const x = Math.abs(Math.cos(a)); const y = Math.abs(Math.sin(a))
+    return k / Math.max(x, s * x + c * y) // hexSd(r * dir) = r * max(..) - k = 0
+  }
+  const out: Array<{ deg: number; r: number }> = []
+  for (let i = 0; i < steps; i++) {
+    const r = radius(i)
+    if (r > radius((i + steps - 1) % steps) && r >= radius((i + 1) % steps)) out.push({ deg: (i / steps) * 360, r })
+  }
+  return out.sort((a, b) => ((a.deg - 90 + 360) % 360) - ((b.deg - 90 + 360) % 360))
+}
+
 /** The uniforms a GLSL string declares, by name. */
 const declared = (src: string): string[] => Array.from(src.matchAll(/uniform\s+\w+\s+(\w+)\s*;/g), (m) => m[1]).sort()
 
 describe('holoShaders', () => {
+  it('no exported shader raises a base that can be negative to a power: each pow base is in abs, max or clamp', () => {
+    // GLSL ES leaves pow(x, y) undefined for x < 0 (NaN on some drivers, which bloom spreads); a square is written out.
+    const glsl = Object.values(holoShaders).filter((v): v is string => typeof v === 'string' && v.includes('void main'))
+    expect(glsl.length).toBe(Object.keys(SHADERS).length)
+    const pows = glsl.flatMap((src) => Array.from(src.matchAll(/\bpow\(\s*(\w*)\(?/g), (m) => m[1]))
+    expect(pows.length).toBeGreaterThan(0)
+    expect(pows.filter((f) => !['abs', 'max', 'clamp'].includes(f))).toEqual([])
+  })
+
   it('every shader carries the Holotable marker, and none names a GLSL version', () => {
     expect(HOLO_SLAB).toBe('HOLO_SLAB')
     for (const [name, src] of Object.entries(SHADERS)) {
@@ -219,6 +251,9 @@ describe('holoShaders', () => {
     expect([slabTierGain('high'), slabTierGain('low'), slabTierGain('flat')]).toEqual([SLAB_GAIN.bloomed, SLAB_GAIN.bloomed, SLAB_GAIN.flat])
     expect(SLAB_GAIN.flat).toBeGreaterThan(SLAB_GAIN.bloomed)
     expect(slabUniforms('flat', '#000000', true).uGain.value).toBe(SLAB_GAIN.flat)
+    // A context with no MAX blend: the Flat slabs add (slabBlend), on the cut gain; the bloomed tiers are as they were.
+    expect([slabTierGain('high', false), slabTierGain('flat', false)]).toEqual([SLAB_GAIN.bloomed, SLAB_GAIN.flatAdded])
+    expect(slabUniforms('flat', '#000000', true, false).uGain.value).toBe(SLAB_GAIN.flatAdded)
     const p = plateUniforms('low', { heat: '#ff8a3d', ghost: '#88a0b8', fogTint: '#203040' })
     expect([p.uFar.value, p.uWire.value, p.uFade.value, p.uGain.value]).toEqual([0, 1, 1, PLATE_GAIN.bloomed])
     expect([p.uHeatColor.value, p.uGhost.value, p.uFogTint.value]).toEqual([linearRgb('#ff8a3d'), linearRgb('#88a0b8'), linearRgb('#203040')])
@@ -231,7 +266,7 @@ describe('holoShaders', () => {
     // was 2.6% white at High; at fill 0.3 and gain 0.8 it is under 0.2% in every palette and tier. Flat keeps its
     // raised gain: there the slabs keep their brightest layer (slabBlend), so overlaps never sum to white.
     expect(SLAB_FILL).toBe(0.3)
-    expect(SLAB_GAIN).toEqual({ bloomed: 0.8, flat: 1.3 })
+    expect(SLAB_GAIN).toEqual({ bloomed: 0.8, flat: 1.3, flatAdded: 0.12 })
   })
 
   it('a plate focus eases by time, not per frame', () => {
@@ -258,6 +293,12 @@ describe('holoShaders', () => {
 
   it('the plate is a hexagon with its corners where CylinderGeometry puts them, its wave only while one runs', () => {
     expect(PLATE_FRAG).toContain('max(p.x, dot(p, vec2(0.5, 0.8660254))) - 0.8660254')
+    // The shape the shader draws, from its own constants: its corners counted round the zero contour are HEX_SIDES
+    // (the sides the renderer reports, motionState().platformSides), each at radius 1, evenly spaced, one at +z.
+    const corners = plateCorners(PLATE_FRAG)
+    expect(corners.length).toBe(HEX_SIDES)
+    for (const c of corners) expect(c.r).toBeCloseTo(1, 4)
+    corners.forEach((c, i) => expect(c.deg).toBeCloseTo((90 + (i * 360) / HEX_SIDES) % 360, 1))
     expect(PLATE_FRAG).toMatch(/vWave > 0\.0 \?/)
     expect(PLATE_FRAG).toMatch(/fract\(vW \/ 5\.0/)
     // The slab signals show on the plate only at the districts tier.

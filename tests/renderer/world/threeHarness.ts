@@ -11,12 +11,19 @@ import type * as THREE from 'three'
 import type { RendererOptions, SceneText, ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from '../../../src/renderer/src/world/engine/sceneModel'
 
-/** Counts what a real renderer would issue a draw call for: every visible mesh, line, point cloud and sprite. */
+/**
+ * Counts what a real renderer would issue a draw call for: every visible mesh, line, point cloud and
+ * sprite whose material is visible (three skips an object with `material.visible` false, as a line's
+ * fat pick tube is, and an instanced mesh with no instances), each visible material of an array once.
+ */
 export function drawables(scene: THREE.Object3D): number {
   let n = 0
   scene.traverseVisible((o) => {
-    const d = o as unknown as { isMesh?: boolean; isLine?: boolean; isPoints?: boolean; isSprite?: boolean }
-    if (d.isMesh || d.isLine || d.isPoints || d.isSprite) n++
+    const d = o as unknown as { isMesh?: boolean; isLine?: boolean; isPoints?: boolean; isSprite?: boolean; isInstancedMesh?: boolean; count?: number; material?: { visible: boolean } | Array<{ visible: boolean }> }
+    if (!(d.isMesh || d.isLine || d.isPoints || d.isSprite)) return
+    if (d.isInstancedMesh && d.count === 0) return
+    const mats = Array.isArray(d.material) ? d.material : [d.material]
+    n += mats.filter((m) => m === undefined || m.visible).length
   })
   return n
 }
@@ -53,6 +60,9 @@ export const gpu = {
    * signals (performance.now ms; null: never), the fences put in, and the ones still not deleted.
    */
   fences: { on: false, signalAfter: 0 as number | null, made: [] as FakeSync[], live: new Set<FakeSync>() },
+  /** The renderer's context: WebGL 2 (capabilities.isWebGL2), and the WebGL extensions it has (extensions.has). */
+  webgl2: true,
+  glExtensions: new Set<string>(),
   reset(): void {
     gpu.renderers.length = 0
     gpu.composers.length = 0
@@ -66,6 +76,8 @@ export const gpu = {
     gpu.contextLost = false
     gpu.allocMax = null
     gpu.fences = { on: false, signalAfter: 0, made: [], live: new Set() }
+    gpu.webgl2 = true
+    gpu.glExtensions = new Set()
   },
 }
 
@@ -95,7 +107,8 @@ const fenceCalls = (): Record<string, unknown> => ({
 export class FakeWebGLRenderer {
   readonly args: unknown[]
   readonly domElement: HTMLCanvasElement = document.createElement('canvas')
-  readonly capabilities = { isWebGL2: true, maxTextures: 16, maxSamples: 4 }
+  readonly capabilities = { isWebGL2: gpu.webgl2, maxTextures: 16, maxSamples: 4 }
+  readonly extensions = { has: (name: string): boolean => gpu.glExtensions.has(name) }
   readonly info = {
     autoReset: true,
     render: { calls: 0, triangles: 0, points: 0, lines: 0, frame: 0 },

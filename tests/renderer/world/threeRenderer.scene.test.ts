@@ -5,11 +5,11 @@ import * as THREE from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
-import { batchCapacity, PLATFORM_ORDER } from '../../../src/renderer/src/world/engine/batching'
+import { batchCapacity, LINE_ORDER, PLATFORM_ORDER } from '../../../src/renderer/src/world/engine/batching'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { DISC_MIN_RADIUS, DISC_SCALE, holoMarks, layoutExtent, TRACK_SEGMENTS } from '../../../src/renderer/src/world/engine/holoMarks'
 import { memberGain, PALETTES, plateColor } from '../../../src/renderer/src/world/engine/holoPalette'
-import { DISC_GAIN, DISC_Y, GRADE_FRAG, linearRgb, LOOK_CODE, PLATE_FOCUS, PLATE_FOOT, PLATE_FRAG, SLAB_FRAG, SLAB_GAIN, SLAB_STATE, SLAB_VERT, TRACK_Y } from '../../../src/renderer/src/world/engine/holoShaders'
+import { DISC_GAIN, DISC_Y, GRADE_FRAG, HEX_SIDES, linearRgb, LOOK_CODE, PLATE_FOCUS, PLATE_FOOT, PLATE_FRAG, SLAB_FRAG, SLAB_GAIN, SLAB_STATE, SLAB_VERT, TRACK_Y } from '../../../src/renderer/src/world/engine/holoShaders'
 import { THEMES } from '../../../src/renderer/src/world/engine/themes'
 import { atRatio, bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, stageOf, stagePart, withData, type Frames } from './threeHarness'
 
@@ -106,7 +106,7 @@ describe('threeRenderer scene build', () => {
     const counts = r.drawnCounts()
     expect(counts).toMatchObject({ buildings: 3, districts: 2, conduits: 2, processShells: 0 })
     const ms = r.motionState()
-    expect(ms.platformSides).toEqual({ d1: 6, d2: 6 })
+    expect(ms.platformSides).toEqual({ d1: HEX_SIDES, d2: HEX_SIDES })
     expect(ms.platformLights).toBe(2)
     expect(ms.orbs).toEqual(['x'])
     expect(ms.floorOrder).toEqual({ a: ['a0', 'a1', 'a2'], b: ['b0', 'b1'], c: [] })
@@ -593,7 +593,7 @@ describe('threeRenderer hologram slabs and plates', () => {
     const cylinders: THREE.Object3D[] = []
     world.traverse((o) => { if ((o as THREE.Mesh).geometry instanceof THREE.CylinderGeometry && !(o instanceof THREE.InstancedMesh)) cylinders.push(o) })
     expect(cylinders).toHaveLength(0)
-    expect(r.motionState().platformSides).toEqual({ d1: 6, d2: 6 })
+    expect(r.motionState().platformSides).toEqual({ d1: HEX_SIDES, d2: HEX_SIDES })
     expect(r.motionState().platformLights).toBe(2)
     // Coloured as the stage's plate marks are: the district's plate colour by its member gain.
     const c = new THREE.Color()
@@ -665,5 +665,159 @@ describe('threeRenderer hologram slabs and plates', () => {
     frames.step()
     expect(meshesWith(worldOf(sceneOf()), 'plateIds')).toHaveLength(0)
     r.dispose()
+  })
+})
+
+describe('threeRenderer hologram: draw calls, the blend the GPU allows, hexagons and freeing', () => {
+  /**
+   * A fixed city with lines: d1 with a planned part in it (its slab ringed), d2 all fogged, d3 wire and
+   * amber (a solid slab), and `edges` lines among the six buildings, a third of them dashed.
+   */
+  const wired = (edges: number): SceneModel => {
+    const buildings = [
+      bldg('a', [-6, 0, 0], { floors: 3, height: 9 }),
+      bldg('b', [6, 0, 4], { floors: 2, height: 6, outline: true }),
+      bldg('c', [60, 0, 0], { floors: 1, height: 4, look: 'fog' }),
+      bldg('d', [64, 0, 6], { floors: 2, height: 6, look: 'fog' }),
+      bldg('e', [0, 0, 60], { floors: 4, height: 12, look: 'wire' }),
+      bldg('f', [6, 0, 66], { floors: 2, height: 6, look: 'amber' }),
+    ]
+    const conduits = Array.from({ length: edges }, (_, i) => {
+      const f = buildings[i % 6]
+      const t = buildings[(i + 1 + (i % 5)) % 6]
+      return conduit(`e${i}`, [f.pos[0], f.height, f.pos[2]], [t.pos[0], t.height, t.pos[2]], { dashed: i % 3 === 0 })
+    })
+    const districts = [district('d1', [0, 0, 0], 20, { hue: 200 }), district('d2', [60, 0, 0], 20, { hue: 40 }), district('d3', [0, 0, 60], 20, { hue: 300 })]
+    return { districts, buildings, conduits, orbs: [] }
+  }
+  /** The scene the renderer drew last (at Flat there is no render pass to ask). */
+  const lastScene = (): THREE.Scene => { const gl = rendererOf(); return gl.renders[gl.renders.length - 1].scene as THREE.Scene }
+  /** The hologram's own meshes: the district slabs, their outlines and ring, the plates, and the building pools (the slab material on the boxes). */
+  const hologramMeshes = (scene: THREE.Scene): THREE.Object3D[] => [
+    ...worldOf(scene).children.filter((c) => Array.isArray(c.userData.slabIds) || Array.isArray(c.userData.plateIds) || ((c as THREE.LineSegments).isLineSegments === true && c.renderOrder === LINE_ORDER / 2)),
+    ...boxBatches(scene),
+  ]
+  /**
+   * The frame's draw calls (drawnCounts), and those of the same frame drawn again with the hologram's
+   * meshes hidden. The fakes count the scene's own draws only: FakeEffectComposer renders its RenderPass
+   * and nothing else, so the bloom, grade and output passes at High and Low are in neither number.
+   */
+  const drawsAt = (quality: 'high' | 'low' | 'flat', ratio: number, edges: number): { tier: string; total: number; without: number } => {
+    const r = createThreeRenderer(host, { ...DEFAULT_OPTS, quality })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(wired(edges), emptyText(), false)
+    frames.step()
+    atRatio(r, frames, ratio)
+    frames.run(3)
+    const { tier, drawCalls: total } = r.drawnCounts()
+    for (const o of hologramMeshes(lastScene())) o.visible = false
+    r.requestFrame()
+    frames.step()
+    const without = r.drawnCounts().drawCalls
+    r.dispose()
+    return { tier, total, without }
+  }
+  const TIERS = ['high', 'low', 'flat'] as const
+
+  it('the slabs and plates take at most 24, 24 and 6 draw calls at the districts tier, and a pool per look present and the plates nearer in', () => {
+    // Task 12's share of the overview budget (plan Task 13's required acceptance, coordinator ruling 2026-11-27).
+    const SHARE = { high: 24, low: 24, flat: 6 }
+    for (const q of TIERS) {
+      const far = drawsAt(q, 3, 12)
+      expect(far.tier).toBe('districts')
+      // A slab and its outline per slab look (solid: d1 and d3; fog: d2), d1's ring, the one plate mesh.
+      expect(far.total - far.without).toBe(2 * 2 + 1 + 1)
+      expect(far.total - far.without).toBeLessThanOrEqual(SHARE[q])
+      const near = drawsAt(q, 0.5, 12)
+      expect(near.tier).toBe('buildings')
+      // A pool per look present (solid, fog, wire, amber), the plate mesh: the slabs stand in for the boxes, adding none.
+      expect(near.total - near.without).toBe(4 + 1)
+    }
+  })
+
+  // KNOWN FAILURE until plan Task 13 (docs/superpowers/plans/2026-11-24-wp-look-holotable.md, Task 13,
+  // "Required acceptance (coordinator ruling 2026-11-27)"): every line is its own draw call (here 400 of
+  // them) until Task 13 merges the conduits into two light ribbons. This flips to passing when the ribbons
+  // land, and Task 13 is not done until it is a plain `it` that passes.
+  it.fails('the overview of a city of 400 lines stays within 80, 55 and 40 draw calls at High, Low and Flat', () => {
+    const BUDGET = { high: 80, low: 55, flat: 40 }
+    for (const q of TIERS) expect(drawsAt(q, 1, 400).total).toBeLessThanOrEqual(BUDGET[q])
+  })
+
+  it('the Flat slabs keep the brightest layer where the GPU has MAX blending, and add on the cut gain where it has not', () => {
+    const flatSlabs = (): THREE.ShaderMaterial[] => {
+      const r = createThreeRenderer(host, { ...DEFAULT_OPTS, quality: 'flat' })
+      boxCanvas(r.canvas, 800, 600)
+      r.draw(wired(0), emptyText(), false)
+      frames.step()
+      atRatio(r, frames, 0.5)
+      const scene = lastScene()
+      const mats = [...boxBatches(scene), ...worldOf(scene).children.filter((c) => Array.isArray(c.userData.slabIds))].map((m) => (m as THREE.Mesh).material as THREE.ShaderMaterial)
+      r.dispose()
+      expect(mats.length).toBeGreaterThan(4)
+      return mats
+    }
+    const blends = (ms: THREE.ShaderMaterial[]): unknown[] => [...new Set(ms.map((m) => `${m.blending}/${m.blendEquation}/${m.uniforms.uGain.value}`))]
+    const max = `${THREE.CustomBlending}/${THREE.MaxEquation}/${SLAB_GAIN.flat}`
+    const added = `${THREE.AdditiveBlending}/${THREE.AddEquation}/${SLAB_GAIN.flatAdded}`
+    expect(blends(flatSlabs())).toEqual([max]) // WebGL 2: MAX is core
+    gpu.webgl2 = false
+    expect(blends(flatSlabs())).toEqual([added]) // WebGL 1 without EXT_blend_minmax
+    gpu.glExtensions.add('EXT_blend_minmax')
+    expect(blends(flatSlabs())).toEqual([max])
+  })
+
+  it('a district slab and its outline are hexagons, their corners where the plate shader puts them', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(wired(0), emptyText(), false)
+    frames.step()
+    atRatio(r, frames, 3)
+    const world = worldOf(lastScene())
+    const slabs = world.children.filter((c) => Array.isArray(c.userData.slabIds)) as THREE.InstancedMesh[]
+    for (const s of slabs) expect((s.geometry as THREE.CylinderGeometry).parameters.radialSegments).toBe(HEX_SIDES)
+    const centres = new Map<string, THREE.Vector3>()
+    for (const s of slabs) {
+      (s.userData.slabIds as string[]).forEach((id, k) => {
+        const m = new THREE.Matrix4()
+        s.getMatrixAt(k, m)
+        centres.set(id, new THREE.Vector3().setFromMatrixPosition(m))
+      })
+    }
+    expect([...centres.keys()].sort()).toEqual(['d1', 'd2', 'd3'])
+    const outlines = world.children.filter((c) => (c as THREE.LineSegments).isLineSegments === true && c.renderOrder === LINE_ORDER / 2 && ((c as THREE.LineSegments).material as THREE.LineBasicMaterial).vertexColors)
+    expect(outlines).toHaveLength(2) // the solid look's and the fog look's
+    let corners = 0
+    const step = 360 / HEX_SIDES
+    for (const o of outlines) {
+      const pos = (o as THREE.LineSegments).geometry.attributes.position
+      for (let k = 0; k < pos.count; k++) {
+        // Each vertex is on a corner of its own district's hexagon: at a multiple of 360 / HEX_SIDES degrees round it.
+        const near = [...centres.values()].map((c) => ({ c, d: Math.hypot(pos.getX(k) - c.x, pos.getZ(k) - c.z) })).sort((u, v) => u.d - v.d)[0]
+        const deg = (Math.atan2(pos.getX(k) - near.c.x, pos.getZ(k) - near.c.z) * 180) / Math.PI
+        expect(Math.abs((((deg % step) + step + step / 2) % step) - step / 2)).toBeLessThan(1e-3)
+        corners++
+      }
+    }
+    expect(corners).toBeGreaterThan(3 * HEX_SIDES * 4)
+    r.dispose()
+  })
+
+  it('a redraw frees the plates once and takes them out of the world, and the renderer does not free them again', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    frames.step()
+    const p = meshesWith(worldOf(sceneOf()), 'plateIds')[0] as THREE.InstancedMesh
+    const freed = { geometry: 0, material: 0 }
+    p.geometry.addEventListener('dispose', () => { freed.geometry++ })
+    ;(p.material as THREE.Material).addEventListener('dispose', () => { freed.material++ })
+    r.draw(smallCity(), smallText(), false)
+    frames.step()
+    expect(freed).toEqual({ geometry: 1, material: 1 })
+    expect(p.parent).toBeNull()
+    expect(meshesWith(worldOf(sceneOf()), 'plateIds')[0]).not.toBe(p)
+    r.dispose()
+    expect(freed).toEqual({ geometry: 1, material: 1 })
   })
 })

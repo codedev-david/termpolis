@@ -568,7 +568,7 @@ e2e:
 
 **Acceptance:**
 - Review Focus 3 holds at this stage, before the selection column exists.
-- Draw calls on the Termpolis repo overview: High ≤ 80, Low ≤ 55, Flat ≤ 40 (`drawn().drawCalls`).
+- Draw calls: Task 12 pins only its own share, the slabs and plates at no more than 24, 24 and 6 draw calls at High, Low and Flat at the districts tier, with 2 draws reserved for Task 13's ribbons. The overview total moved to Task 13 (see Task 13's **Required acceptance (coordinator ruling 2026-11-27)**).
 
 ---
 
@@ -606,6 +606,11 @@ test('pulse runs one head per call and none idly; reduced motion shows the lit l
 
 - [ ] **Step 2–4:** Run them and see them fail, implement it, run `COV`, `TSC`, `E2E e2e/world-visual.spec.ts e2e/world-ask.spec.ts e2e/world-engine.spec.ts`, then `SOAK` on three OSes.
 - [ ] **Step 5: Commit** with the message `lumopolis: conduits draw as two merged light ribbons; dashes still mean a guess or a plan`
+
+**Required acceptance (coordinator ruling 2026-11-27):**
+- The Termpolis repo overview's total `drawn().drawCalls` is at most 80 at High, 55 at Low and 40 at Flat.
+- Why it lands here: Task 12 could not meet this total in plan order. The 385 per-edge conduit draws predate it, and this task is the one that merges them. So Task 12 pins only its own share (24, 24 and 6), with 2 ribbon draws reserved.
+- Task 13 is not done until the known-failure test, `it.fails('the overview of a city of 400 lines stays within 80, 55 and 40 draw calls at High, Low and Flat')` in `tests/renderer/world/threeRenderer.scene.test.ts`, is a plain `it` that passes.
 
 ---
 

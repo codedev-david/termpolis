@@ -223,8 +223,14 @@ export const SLAB_DIM = 0.14
 export const STACK_FALL = 0.12
 /** The states a slab's `aState` takes: each inside its band, away from the band edges the shader tests. */
 export const SLAB_STATE = { selected: 1.5, hovered: 1, related: 0.5, rest: 0, dimmed: -1 } as const
-/** A slab's gain where bloom adds its glow (High and Low), and at Flat, where nothing does (look spec §3.3). */
-export const SLAB_GAIN = { bloomed: 0.8, flat: 1.3 } as const
+/**
+ * A slab's gain where bloom adds its glow (High and Low), and at Flat, where nothing does (look spec §3.3): `flat` with
+ * the slabs blended by max (each keeps the brightest layer under it), `flatAdded` where they can only add (a WebGL 1
+ * context without EXT_blend_minmax), cut so overlapping floors still stay below white: measured in SwiftShader on
+ * WebGL 1 with the extension withheld, a Termpolis repo card at 0.6 was 4.4% white, at 0.15 0.58%, and at 0.12 0.29%
+ * (budget 0.5%), with the overview's mean over the background still 21 and more.
+ */
+export const SLAB_GAIN = { bloomed: 0.8, flat: 1.3, flatAdded: 0.12 } as const
 /** Each look's `aLook` code: by it the shader draws a wire with no fill, a fog veil or a fading pulse. */
 export const LOOK_CODE: Record<Look, number> = { solid: 0, wire: 1, amber: 2, fog: 3, fading: 4 }
 /** The slab's fill at rest (its fresnel, scan lines, sweep and roof are scaled by it). */
@@ -252,8 +258,9 @@ export function slabGain(state: number): number {
 /** A slab's fill with `stack` floors above it: `1 / (1 + 0.12 * stack)`, so a tall tower's fill never sums to white. */
 export const stackFill = (stack: number): number => 1 / (1 + STACK_FALL * stack)
 
-/** The slab's gain at `tier`: higher at Flat, where no bloom adds its glow. */
-export const slabTierGain = (tier: TierName): number => (TIER_LOOK[tier].bloom ? SLAB_GAIN.bloomed : SLAB_GAIN.flat)
+/** The slab's gain at `tier`: higher at Flat, where no bloom adds its glow, unless the slabs there can only add (`max` false). */
+export const slabTierGain = (tier: TierName, max = true): number =>
+  TIER_LOOK[tier].bloom ? SLAB_GAIN.bloomed : max ? SLAB_GAIN.flat : SLAB_GAIN.flatAdded
 
 const LOOK_TEST = 'float lookIs(float l, float c) { return step(c - 0.5, l) * (1.0 - step(c + 0.5, l)); }\n'
 
@@ -337,9 +344,12 @@ ${LOOK_TEST}void main() {
     if (axis.z < 0.5) e = min(e, px.z);
     edge = 1.0 - smoothstep(0.0, 1.0, e);
   }
-  float fres = pow(1.0 - abs(dot(normalize(vN), normalize(vView))), 2.0);
+  // Squares written out: pow's base must not be negative in GLSL ES (undefined, NaN on some drivers, which bloom spreads).
+  float rim1 = max(1.0 - abs(dot(normalize(vN), normalize(vView))), 0.0);
+  float fres = rim1 * rim1;
   float scan = 0.5 + 0.5 * sin(vY * 6.5 - uTime * 2.2);
-  float band = exp(-pow(vY - mod(uTime * 4.0, 80.0) + 10.0, 2.0) * 0.08);
+  float bandY = vY - mod(uTime * 4.0, 80.0) + 10.0;
+  float band = exp(-bandY * bandY * 0.08);
   float roof = step(0.5, vBoxN.y);
   float fill = (0.25 + 0.45 * fres + 0.1 * scan + 0.2 * band + 0.3 * roof) * uFill / (1.0 + ${glf(STACK_FALL)} * vStack);
   fill *= (1.0 - wire) * mix(1.0, 0.6, fog);
@@ -409,6 +419,12 @@ void main() {
 }
 `
 
+/** A district's sides: its plate's hexagon here, its slab's CylinderGeometry and the seams drawn on it in threeRenderer. */
+export const HEX_SIDES = 6
+/** The plate's half-angle sine and cosine (π / HEX_SIDES), to 7 places as GLSL takes them: 0.5 and 0.8660254. */
+const HEX_SIN = glf(Number(Math.sin(Math.PI / HEX_SIDES).toFixed(7)))
+const HEX_COS = glf(Number(Math.cos(Math.PI / HEX_SIDES).toFixed(7)))
+
 /**
  * The district plate: a hexagon's distance field on one quad (its corners at ±z, where CylinderGeometry lays a
  * hexagon's), drawn as a rim, an inner rim, a 5-unit grid, a halo and a faint wall band, with a wave out from the centre
@@ -433,7 +449,7 @@ varying float vLook;
 varying float vOutline;
 ${LOOK_TEST}float hexSd(vec2 p) {
   p = abs(p);
-  return max(p.x, dot(p, vec2(0.5, 0.8660254))) - 0.8660254;
+  return max(p.x, dot(p, vec2(${HEX_SIN}, ${HEX_COS}))) - ${HEX_COS};
 }
 void main() {
   float d = hexSd(vP) * vR;
@@ -446,7 +462,8 @@ void main() {
   float wall = smoothstep(-3.0, 0.0, d) * inside;
   float halo = exp(-max(d, 0.0) * 0.6) * (1.0 - inside) * (1.0 - smoothstep(1.0, ${glf(PLATE_REACH)}, length(vP)));
   float r = length(vP) * vR;
-  float wave = vWave > 0.0 ? exp(-pow(r - vWave * vR, 2.0) * 0.5) * (1.0 - vWave) * inside : 0.0;
+  float waveR = r - vWave * vR; // a square written out: pow's base must not be negative in GLSL ES
+  float wave = vWave > 0.0 ? exp(-waveR * waveR * 0.5) * (1.0 - vWave) * inside : 0.0;
   float far = step(0.5, uFar);
   float fog = lookIs(vLook, ${glf(LOOK_CODE.fog)}) * far;
   float fading = lookIs(vLook, ${glf(LOOK_CODE.fading)}) * far;
@@ -472,9 +489,9 @@ export interface PlateUniforms {
 }
 
 /** The slab's uniforms at `tier`, its heat colour `heat` (`#rrggbb`); `edges` draws a unit box's edges (a hexagon's are lines). */
-export function slabUniforms(tier: TierName, heat: string, edges: boolean): SlabUniforms {
+export function slabUniforms(tier: TierName, heat: string, edges: boolean, max = true): SlabUniforms {
   return {
-    uTime: { value: 0 }, uGain: { value: slabTierGain(tier) }, uFill: { value: SLAB_FILL }, uWire: { value: 1 }, uFade: { value: 1 },
+    uTime: { value: 0 }, uGain: { value: slabTierGain(tier, max) }, uFill: { value: SLAB_FILL }, uWire: { value: 1 }, uFade: { value: 1 },
     uEdges: { value: edges ? 1 : 0 }, uHeatColor: { value: linearRgb(heat) },
   }
 }

@@ -57,6 +57,44 @@ describe('holoSlab', () => {
     expect(mats.map((m) => m.blending)).toEqual([THREE.AdditiveBlending, THREE.CustomBlending])
   })
 
+  it('every slab material adds at High and Low and keeps the brightest layer at Flat, live on setTier; the plates add at every tier', () => {
+    const blend = (m: THREE.Material): unknown[] => [m.blending, m.blendEquation, m.blendSrc, m.blendDst]
+    const max = [THREE.CustomBlending, THREE.MaxEquation, THREE.OneFactor, THREE.OneFactor]
+    const tiers = ['high', 'low', 'flat'] as const
+    for (const first of tiers) {
+      const look = createSlabLook(first, '#ff8a3d')
+      const plates = createPlates(specs, first, COLORS)
+      const mats = [look.material(true), look.material(false), look.material(true)]
+      for (const t of [...tiers, ...tiers].reverse()) {
+        look.setTier(t)
+        plates.setTier(t)
+        mats.push(look.material(false)) // one made at this tier
+        for (const m of mats) {
+          if (t === 'flat') expect(blend(m)).toEqual(max)
+          else expect(m.blending).toBe(THREE.AdditiveBlending)
+        }
+        expect((plates.mesh.material as THREE.Material).blending).toBe(THREE.AdditiveBlending)
+      }
+      plates.dispose()
+    }
+  })
+
+  it('without a MAX blend equation (WebGL 1 with no EXT_blend_minmax) the Flat slabs add, on the cut gain', () => {
+    const look = createSlabLook('flat', '#ff8a3d', false)
+    const mats = [look.material(true), look.material(false)]
+    expect(mats.map((m) => m.blending)).toEqual([THREE.AdditiveBlending, THREE.AdditiveBlending])
+    expect(look.uniforms.uGain.value).toBe(SLAB_GAIN.flatAdded)
+    expect(SLAB_GAIN.flatAdded).toBeLessThan(SLAB_GAIN.flat)
+    look.setTier('high')
+    expect(look.uniforms.uGain.value).toBe(SLAB_GAIN.bloomed)
+    look.setTier('flat')
+    expect([...mats, look.material(true)].map((m) => m.blending)).toEqual([THREE.AdditiveBlending, THREE.AdditiveBlending, THREE.AdditiveBlending])
+    expect(look.uniforms.uGain.value).toBe(SLAB_GAIN.flatAdded)
+    // With the equation (the default) the same look at Flat is max, on the full Flat gain.
+    const withMax = createSlabLook('flat', '#ff8a3d', true)
+    expect([withMax.material(true).blending, withMax.uniforms.uGain.value]).toEqual([THREE.CustomBlending, SLAB_GAIN.flat])
+  })
+
   it('a slab instance carries its state, heat, stack, look and edge colour', () => {
     const g = addSlabAttributes(new THREE.BoxGeometry(1, 1, 1), 4, true)
     for (const a of SLAB_ATTRS) {
@@ -68,9 +106,11 @@ describe('holoSlab', () => {
     writeSlab(g, 2, { state: 1.5, heat: 0.4, stack: 3, look: 1, line: new THREE.Color(0.1, 0.2, 0.3) })
     expect(SLAB_ATTRS.map((a) => g.attributes[a].getX(2))).toEqual([1.5, Math.fround(0.4), 3, 1])
     expect([g.attributes.lineColor.getX(2), g.attributes.lineColor.getY(2), g.attributes.lineColor.getZ(2)]).toEqual([0.1, 0.2, 0.3].map(Math.fround))
-    const v0 = SLAB_ATTRS.map((a) => (g.attributes[a] as THREE.BufferAttribute).version)
+    const sent = [...SLAB_ATTRS, 'lineColor']
+    const v0 = sent.map((a) => (g.attributes[a] as THREE.BufferAttribute).version)
     slabsWritten(g)
-    expect(SLAB_ATTRS.map((a, i) => (g.attributes[a] as THREE.BufferAttribute).version - v0[i])).toEqual([1, 1, 1, 1])
+    // Each slab attribute and the edge colour go to the GPU, once a call.
+    expect(sent.map((a, i) => (g.attributes[a] as THREE.BufferAttribute).version - v0[i])).toEqual([1, 1, 1, 1, 1])
     // A hexagonal slab has no edge colour (its edges are lines): none is asked for, and one given is ignored.
     const h = addSlabAttributes(new THREE.CylinderGeometry(1, 1, 1, 6), 2, false)
     expect(h.attributes.lineColor).toBeUndefined()
@@ -147,6 +187,43 @@ describe('holoSlab', () => {
     expect(p.focusOf('b')).toBe(PLATE_FOCUS.dimmed)
     expect(p.focusOf('nowhere')).toBeUndefined()
     expect(p.waveOf('nowhere')).toBeUndefined()
+  })
+
+  it('a plate sends its focus and its wave only on a frame that changed them', () => {
+    const p = createPlates(specs, 'high', COLORS)
+    const at = p.mesh.geometry.attributes as Record<string, THREE.BufferAttribute>
+    const sent = (): number[] => [at.aFocus.version, at.aWave.version]
+    let v = sent()
+    p.tick(1 / 60, false) // every focus at its target (0), no wave: nothing to send
+    expect(sent()).toEqual(v)
+    p.setTargets((id) => (id === 'a' ? PLATE_FOCUS.lit : PLATE_FOCUS.rest))
+    p.tick(1 / 60, false)
+    expect(sent()).toEqual([v[0] + 1, v[1]]) // the focus eased; still no wave
+    for (let i = 0; i < 300; i++) p.tick(1 / 60, false)
+    v = sent()
+    p.tick(1 / 60, false) // arrived: the focus holds
+    expect(sent()).toEqual(v)
+    p.wave(['b'])
+    p.tick(PLATE_WAVE_S / 2, false)
+    expect(sent()).toEqual([v[0], v[1] + 1]) // the wave ran; no focus moved
+    p.tick(PLATE_WAVE_S, false)
+    expect([at.aWave.getX(1), at.aWave.version]).toEqual([0, v[1] + 2]) // its end is sent, as 0
+    p.tick(1 / 60, false)
+    expect(sent()).toEqual([v[0], v[1] + 2])
+  })
+
+  it('the plates free their quad and material once and leave the scene', () => {
+    const p = createPlates(specs, 'high', COLORS)
+    const parent = new THREE.Group()
+    parent.add(p.mesh)
+    const freed = { geometry: 0, material: 0, mesh: 0 }
+    p.mesh.geometry.addEventListener('dispose', () => { freed.geometry++ })
+    ;(p.mesh.material as THREE.Material).addEventListener('dispose', () => { freed.material++ })
+    p.mesh.addEventListener('dispose', () => { freed.mesh++ })
+    p.dispose()
+    expect(freed).toEqual({ geometry: 1, material: 1, mesh: 1 })
+    expect(p.mesh.parent).toBeNull()
+    expect(parent.children).toEqual([])
   })
 
   it('a wave crosses a plate once, on a change or a selection, and none runs under reduced motion', () => {
