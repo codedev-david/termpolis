@@ -39,9 +39,12 @@ export const FAKE_HELPER_PATH = resolve('tests', 'fixtures', 'gitHttps', 'fake-h
 
 /** The git config text that names the fake helper as the login helper. git runs a `!` helper through sh with the operation
  *  after it; the function reads the script into that same shell, so the script's $1 is the operation and no second shell
- *  starts (git's documented `!f() { ...; }; f` form, HOLD-B #106). */
-export function fakeHelperConfig(): string {
-  return `[credential]\n\thelper = "!f() { . '${FAKE_HELPER_PATH.replace(/\\/g, '/')}'; }; f"\n`
+ *  starts (git's documented `!f() { ...; }; f` form, HOLD-B #106). The path is quoted for sh (a ' in it ends the quote, is
+ *  written as \', and opens it again), then that is quoted for git's config, where \ and " are escaped (holdb-review M10). */
+export function fakeHelperConfig(script: string = FAKE_HELPER_PATH): string {
+  const sh = `'${script.replace(/\\/g, '/').replace(/'/g, `'\\''`)}'`
+  const value = `!f() { . ${sh}; }; f`.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `[credential]\n\thelper = "${value}"\n`
 }
 
 /** The user a token run gives git (gitLogin.ts TOKEN_USER); the server takes the reply beside it too. */
