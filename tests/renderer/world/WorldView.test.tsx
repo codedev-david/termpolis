@@ -1343,7 +1343,7 @@ describe('WorldView', () => {
     const perf = () => (window as any).__worldPerf
     const readout = () => screen.queryByTestId('world-frame-rate')
     const at = (p50: number, p95: number, frames = 120, tier = 'high') =>
-      ({ tier, auto: true, frames, p50, p95, p99: p95, worst: p95, drops: 0, firstFrameMs: 40, resizeWorstMs: 0, resizeNextMs: 0 })
+      ({ tier, auto: true, frames, p50, p95, p99: p95, worst: p95, drops: 0, firstFrameMs: 40, resizeWorstMs: 0, resizeCount: 0 })
     afterEach(() => {
       delete (window as any).termpolisTestFlags
       delete (window as any).__worldPerf

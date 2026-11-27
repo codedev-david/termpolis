@@ -331,7 +331,7 @@ describe('threeRenderer scene build', () => {
     expect(frees).toBe(first.length + second.length)
   })
 
-  it('closing the view frees the batch materials then and there', () => {
+  it('closing the view frees the batch materials then and there, each once', () => {
     const r = createThreeRenderer(host, DEFAULT_OPTS)
     boxCanvas(r.canvas, 800, 600)
     r.draw(smallCity(), smallText(), false)
@@ -340,9 +340,11 @@ describe('threeRenderer scene build', () => {
     const mats = boxBatches(sceneOf()).map((im) => im.material as THREE.Material)
     expect(mats.length).toBeGreaterThan(0)
     const freed = new Set<THREE.Material>()
-    for (const m of mats) m.addEventListener('dispose', () => freed.add(m))
+    let frees = 0
+    for (const m of mats) m.addEventListener('dispose', () => { freed.add(m); frees++ })
     r.dispose()
     expect(freed.size).toBe(mats.length)
+    expect(frees).toBe(mats.length) // a material freed twice on close shows
   })
 })
 

@@ -9,14 +9,14 @@ import {
 } from './threeHarness'
 
 // groundTurns, counted: the turn of a portrait overview is worked out once per draw, never on a resize.
-// fitView, watched: the points each fit is handed (the array is copied, its points are not).
-const turnsAsked = vi.hoisted(() => ({ n: 0, fits: [] as Array<ReadonlyArray<readonly number[]>> }))
+// fitView, watched: the points each fit is handed (copied, their points not) and the very array it is handed.
+const turnsAsked = vi.hoisted(() => ({ n: 0, fits: [] as Array<ReadonlyArray<readonly number[]>>, arrays: [] as unknown[] }))
 vi.mock('../../../src/renderer/src/world/engine/viewMath', async (orig) => {
   const real = await orig<typeof import('../../../src/renderer/src/world/engine/viewMath')>()
   return {
     ...real,
     groundTurns: (g: Parameters<typeof real.groundTurns>[0]): boolean => { turnsAsked.n++; return real.groundTurns(g) },
-    fitView: (...a: Parameters<typeof real.fitView>): ReturnType<typeof real.fitView> => { turnsAsked.fits.push(a[0].slice()); return real.fitView(...a) },
+    fitView: (...a: Parameters<typeof real.fitView>): ReturnType<typeof real.fitView> => { turnsAsked.fits.push(a[0].slice()); turnsAsked.arrays.push(a[0]); return real.fitView(...a) },
   }
 })
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
@@ -272,7 +272,7 @@ describe('threeRenderer wheel and orbit limits', () => {
     r.dispose()
   })
 
-  it('a resize fits the overview again with the same name points, filled in place: a pane drag makes none', () => {
+  it('a resize fits the overview again from the same points array, with the same name points filled in place', () => {
     let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
     vi.stubGlobal('ResizeObserver', class {
       constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
@@ -286,12 +286,16 @@ describe('threeRenderer wheel and orbit limits', () => {
     r.draw(city, emptyText(), false)
     const resize = (w: number, hgt: number): Array<ReadonlyArray<readonly number[]>> => {
       turnsAsked.fits = []
+      turnsAsked.arrays = []
       resizeHost(h.host, w, hgt)
       ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
       return turnsAsked.fits
     }
     const a = resize(900, 600)
+    const handed = turnsAsked.arrays
     const b = resize(700, 600)
+    // Every fit of both resizes is handed the draw's own points array: none of them copies it.
+    expect(new Set([...handed, ...turnsAsked.arrays]).size).toBe(1)
     // Each resize fits three times (the names' middles, then twice with their ends), the same way.
     expect(a).toHaveLength(3)
     expect(b).toHaveLength(3)

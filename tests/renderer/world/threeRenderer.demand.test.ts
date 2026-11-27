@@ -1183,7 +1183,7 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     gpu.gpuName = GEFORCE
     const r = createThreeRenderer(h.host, DEFAULT_OPTS) // the looping motions never stop: a frame every 16 ms
     boxCanvas(r.canvas, 800, 600)
-    expect(perf(r)).toEqual({ tier: 'high', frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeNextMs: 0 })
+    expect(perf(r)).toEqual({ tier: 'high', frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeCount: 0 })
     h.frames.step() // a frame before any city: no first frame yet
     expect(perf(r).firstFrameMs).toBeNull()
     r.draw(smallCity(), smallText(), false)
@@ -1217,7 +1217,7 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     r.dispose()
   })
 
-  it("a resize breaks the chain, and its own cost is kept, the longest (not the wait for the next frame)", () => {
+  it("a resize breaks the chain, and its own cost is kept, the longest (not the wait for the next frame), each one counted", () => {
     gpu.gpuName = GEFORCE
     const resized = observeResizes()
     // Each read of the host's width during a resize takes `cost` ms of the clock: the resize's own work.
@@ -1229,13 +1229,13 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     expect(timedResize(50)).toBeGreaterThan(0) // the observer's first call, as the view opens: not a resize to time
     r.draw(smallCity(), smallText(), false)
     h.frames.run(20)
-    expect(perf(r).resizeWorstMs).toBe(0)
+    expect(perf(r)).toMatchObject({ resizeWorstMs: 0, resizeCount: 0 })
     const n = perf(r).frames
     resizeHost(h.host, 640, 480)
     const took = timedResize(7)
     expect(took).toBeGreaterThan(0)
     expect(perf(r).resizeWorstMs).toBe(took)
-    expect(perf(r).resizeNextMs).toBe(0) // one resize: there is no second
+    expect(perf(r).resizeCount).toBe(1)
     h.frames.step(90) // the frame at the new size: a slow one, but not counted, and not the resize's cost
     h.frames.run(4) // and the four after it: five not counted
     expect(perf(r).resizeWorstMs).toBe(took)
@@ -1248,19 +1248,16 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     expect(short).toBeLessThan(took)
     h.frames.step(30)
     expect(perf(r).resizeWorstMs).toBe(took)
-    expect(perf(r).resizeNextMs).toBe(short) // a shorter one is the second longest
+    expect(perf(r).resizeCount).toBe(2) // a shorter one is counted, and does not move the longest
     resizeHost(h.host, 710, 500)
     const longer = timedResize(9)
     expect(longer).toBeGreaterThan(took)
-    expect(perf(r)).toMatchObject({ resizeWorstMs: longer, resizeNextMs: took }) // a longer one moves the longest down
-    resizeHost(h.host, 705, 500)
-    timedResize(0.5)
-    expect(perf(r)).toMatchObject({ resizeWorstMs: longer, resizeNextMs: took }) // the shortest moves neither
-    r.perfBegin() // a frame-time window keeps its own resizes: the longest since it began
-    expect(perf(r)).toMatchObject({ resizeWorstMs: 0, resizeNextMs: 0 })
+    expect(perf(r)).toMatchObject({ resizeWorstMs: longer, resizeCount: 3 }) // a longer one is the longest
+    r.perfBegin() // a frame-time window keeps its own resizes: the longest since it began, and how many
+    expect(perf(r)).toMatchObject({ resizeWorstMs: 0, resizeCount: 0 })
     resizeHost(h.host, 720, 500)
     const inWindow = timedResize(2)
-    expect(perf(r)).toMatchObject({ resizeWorstMs: inWindow, resizeNextMs: 0 })
+    expect(perf(r)).toMatchObject({ resizeWorstMs: inWindow, resizeCount: 1 })
     r.dispose()
   })
 
@@ -1470,10 +1467,12 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
       resizeHost(h.host, 670, 600)
       timedResize(2)
       expect(spans()).toHaveLength(2) // each one
+      expect(perf(r).resizeCount).toBe(2) // and counted: the drag check holds the names to the count
       measure.mockImplementation(() => { throw new TypeError('no User Timing') })
       resizeHost(h.host, 660, 600)
       expect(() => timedResize(9)).not.toThrow()
       expect(perf(r).resizeWorstMs).toBeGreaterThan(first.end - first.start) // timed all the same
+      expect(perf(r).resizeCount).toBe(3) // and counted: a resize left unnamed shows as one named fewer than counted
     } finally {
       measure.mockRestore()
       r.dispose()

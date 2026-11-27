@@ -402,8 +402,8 @@ export interface RendererPerf extends FrameStats {
   drops: number
   firstFrameMs: number | null
   resizeWorstMs: number
-  /** The second longest resize in the same time (0 until there are two). */
-  resizeNextMs: number
+  /** The resizes timed in the same time: each one is named on the page's timeline too, inside a frame-time window (RESIZE_MEASURE). */
+  resizeCount: number
 }
 /** The fog is put on its density once it is within this share of it (an ease never quite arrives). */
 const FOG_SETTLED = 1e-3
@@ -951,7 +951,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let firstFrameMs: number | null = null
   /** The longest a resize took, its own work (resize), since the view was built or the last perfBegin. */
   let resizeWorstMs = 0
-  let resizeNextMs = 0
+  let resizeCount = 0
   /** The first frame's time, stretched to opts.firstFrameSlowdown times itself by waiting (test only). */
   const slowFirstFrame = (ms: number, askedAt: number): number => {
     const by = opts.firstFrameSlowdown?.() ?? 1
@@ -960,7 +960,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     while (performance.now() < until) { /* the staged regression: the frame takes this long */ }
     return performance.now() - askedAt
   }
-  const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs, resizeNextMs })
+  const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs, resizeCount })
   /**
    * The frame-time window (look spec §5.1) under way: its counted frames and the time they cover. It ends after
    * WINDOW_FRAMES of them or once they cover WINDOW_MS (counted time, so an idle city's sleep never fills one), and
@@ -1435,7 +1435,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     const dir = view.dir
     // Each resize fits the overview again: its name points are the draw's own, filled in place, so a
-    // pane drag makes no garbage here (turnGround's quarter turn, written out).
+    // pane drag makes no points here (turnGround's quarter turn, written out).
     const put = (i: number, x: number, y: number, z: number): V3 => {
       const p = names[i]
       p[0] = x
@@ -2566,7 +2566,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   fitShrunk() // the buffer made at build
   /**
-   * A resize's own cost, the longest kept (resizeWorstMs) and the one after it (resizeNextMs): the work the observer's call does before the next frame can
+   * A resize's own cost, the longest kept (resizeWorstMs) and how many were timed (resizeCount): the work the observer's call does before the next frame can
    * be drawn (the canvas stretched, the labels, the city's fit and the camera's framing; the buffer is fitted later, by
    * fitBufferFor's timer, and is not counted). Only once the view has drawn: the
    * observer's first call, on open, is the first frame's to time. Inside a frame-time window each one is named on the
@@ -2578,11 +2578,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     resizeNow(timed)
     if (!timed) return
     const end = performance.now()
-    const ms = end - t0
-    if (ms > resizeWorstMs) {
-      resizeNextMs = resizeWorstMs
-      resizeWorstMs = ms
-    } else resizeNextMs = Math.max(resizeNextMs, ms)
+    resizeWorstMs = Math.max(resizeWorstMs, end - t0)
+    resizeCount++
     if (bench) nameSpan(RESIZE_MEASURE, t0, end)
   }
   /**
@@ -3052,7 +3049,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * a second drawn in software. So an outgrown batch hands its material to the bigger one (a divider drag's one 100
    * to 250 ms frame on ubuntu-24.04 was the box batch's program freed and built again there), and the material of
    * the batch last dropped of each program (programOf) is kept, so the next batch drawn with that program finds it
-   * built: a slab clicked at the overview draws the buildings' batches again (the first frame built their three
+   * built while the scene's lights and the target are as they were (programOf is the material's part of three's key
+   * only; otherwise, and after a lost context, three builds it again on its first use, a cost and never a fault): a slab clicked at the overview draws the buildings' batches again (the first frame built their three
    * programs again, 155 ms to 1.4 s on macOS, and once missed world-visual 3's 5 s). A batch's key holds its
    * opacity, which a focus fade changes every frame, so the materials are kept by program, a handful, not by key.
    * A material let go is freed once the frame is drawn (retiredMats), so a batch that took its program finds it.
@@ -3684,7 +3682,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     perfBegin: () => {
       bench = []
       resizeWorstMs = 0 // a window's resizes are its own: the longest since it began
-      resizeNextMs = 0
+      resizeCount = 0
     },
     perfEnd: () => {
       const st = frameStats(bench ?? [])

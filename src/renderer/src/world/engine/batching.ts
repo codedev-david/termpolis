@@ -228,8 +228,12 @@ export interface ProgramLook {
 }
 
 /**
- * The program a batch material is drawn with, as a key: two materials with one key share one program
- * (three.js 0.160's WebGLPrograms keys a program on these and on the scene, the same for every batch).
+ * The program a batch material is drawn with, as far as the material decides it: two batch materials with one key
+ * share one program while the rest of three.js 0.160's WebGLPrograms key is the same. That key also holds the scene's
+ * lights, fog and environment, the render target drawn to, the renderer's state, and the instancing, morph and skinning
+ * the object asks for (every batch is instanced, none morphed or skinned). It is not that key: two materials with one
+ * key here can still be drawn with two programs (another lighting, another target), and then the one kept is rebuilt
+ * when it is next used, as any material is. A wrong key costs a program built again, never a wrong draw.
  */
 export function programOf(m: ProgramLook): string {
   return [m.type, m.transparent, m.blending, m.side, m.vertexColors, m.fog === true, m.customProgramCacheKey()].join('|')
