@@ -377,12 +377,56 @@ describe('the lumopolis ready mark a terminal has printed (#29)', () => {
     expect(lumopolisReady(buffers, 't')).toBe(true)
   })
 
-  it('a mark cut between two chunks is noted at the next prompt, which prints it again', () => {
+  // A shell that then sits idle prints no next prompt to show it again (holdb-codex-review).
+  it('a mark cut between two chunks, at any point, is noted from the chunk that completes it', () => {
+    const prompt = `${E}]7;file://h/home/me${String.fromCharCode(7)}${READY}% `
+    for (let cut = 1; cut < prompt.length; cut++) {
+      const buffers: OutputBuffers = new Map()
+      appendOutput(buffers, 't', `last login\r\n${prompt.slice(0, cut)}`)
+      appendOutput(buffers, 't', prompt.slice(cut))
+      expect(lumopolisReady(buffers, 't'), `cut at ${cut}`).toBe(true)
+    }
+  })
+
+  const BEL = String.fromCharCode(7)
+  const report = (dir: string): string => `${E}]7;file://h${dir}${BEL}`
+
+  // After `exec bash` (or an ssh to a zsh of its own) the prompts report with no mark: lumopolis is gone (holdb-review M8).
+  it('is given up after three prompt reports in a row with no mark, and taken again by the next mark', () => {
     const buffers: OutputBuffers = new Map()
-    appendOutput(buffers, 't', READY.slice(0, 6))
-    appendOutput(buffers, 't', `${READY.slice(6)}% `)
-    expect(lumopolisReady(buffers, 't')).toBe(false)
-    appendOutput(buffers, 't', `ls\r\n${READY}% `)
+    appendOutput(buffers, 't', `${report('/home/me')}${READY}% exec bash\r\n`)
+    appendOutput(buffers, 't', `${report('/home/me')}$ cd x\r\n`)
+    appendOutput(buffers, 't', `${report('/home/me/x')}$ cd ..\r\n`)
     expect(lumopolisReady(buffers, 't')).toBe(true)
+    appendOutput(buffers, 't', `${report('/home/me')}$ `)
+    expect(lumopolisReady(buffers, 't')).toBe(false)
+    appendOutput(buffers, 't', `exec zsh\r\n${report('/home/me')}${READY}% `)
+    expect(lumopolisReady(buffers, 't')).toBe(true)
+  })
+
+  // A theme or a terminal script of the person's own that reports too (oh-my-zsh, vte.sh) prints a second report at each
+  // prompt, before ours or after it: a prompt that has the mark keeps the latch, however the reports fall in chunks.
+  it('is kept through prompts that print another report beside the mark, before it or after it, and cut anywhere', () => {
+    for (const prompt of [`${report('/home/me')}${report('/home/me')}${READY}% `, `${report('/home/me')}${READY}${report('/home/me')}% `]) {
+      const buffers: OutputBuffers = new Map()
+      for (let i = 0; i < 12; i++) {
+        const cut = 1 + ((i * 7) % (prompt.length - 1))
+        appendOutput(buffers, 't', `ls\r\n${prompt.slice(0, cut)}`)
+        appendOutput(buffers, 't', prompt.slice(cut))
+        expect(lumopolisReady(buffers, 't')).toBe(true)
+      }
+    }
+  })
+
+  it('counts a report cut between two chunks once, from the chunk that completes it', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', `${report('/home/me')}${READY}% `)
+    const bare = report('/home/me/project')
+    appendOutput(buffers, 't', `$ ${bare.slice(0, 9)}`)
+    appendOutput(buffers, 't', `${bare.slice(9)}$ `)
+    appendOutput(buffers, 't', `${bare}$ `)
+    expect(lumopolisReady(buffers, 't')).toBe(true)
+    appendOutput(buffers, 't', `${bare}$ `)
+    expect(lumopolisReady(buffers, 't')).toBe(false)
   })
 })

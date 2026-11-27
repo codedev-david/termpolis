@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { lumopolisOscHandler } from '../../src/renderer/src/lib/lumopolisOsc'
 import { LUMOPOLIS_MAX_PAYLOAD } from '../../src/shared/world/lumopolisCommand'
-import { LUMOPOLIS_NOTICE_EVENT } from '../../src/renderer/src/components/World/worldOpen'
+import { LUMOPOLIS_NOTICE_EVENT, LUMOPOLIS_READY_EVENT } from '../../src/renderer/src/components/World/worldOpen'
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -95,5 +95,16 @@ describe('the zsh ready mark (#29)', () => {
     expect(handler('ready')).toBe(true)
     expect(ask).not.toHaveBeenCalled()
     expect(open).not.toHaveBeenCalled()
+  })
+
+  // So the sidebar can ask again about a terminal main answered no for before its .zshrc finished (holdb-review M3).
+  it('tells the window which terminal printed it, live only: a mark in replayed history says nothing', () => {
+    const seen: unknown[] = []
+    const onReady = (e: Event): void => { seen.push((e as CustomEvent).detail) }
+    window.addEventListener(LUMOPOLIS_READY_EVENT, onReady)
+    make().handler('ready')
+    make({ terminalId: 't2', replaying: () => true }).handler('ready')
+    window.removeEventListener(LUMOPOLIS_READY_EVENT, onReady)
+    expect(seen).toEqual(['t1'])
   })
 })

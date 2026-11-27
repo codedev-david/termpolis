@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { LUMOPOLIS_HINT, LUMOPOLIS_HINT_UNTYPED, LumopolisSidebarEntry } from '../../../src/renderer/src/components/World/LumopolisSidebarEntry'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
-import { OPEN_WORLD_EVENT, WORLD_OPENED_EVENT } from '../../../src/renderer/src/components/World/worldOpen'
+import { LUMOPOLIS_READY_EVENT, OPEN_WORLD_EVENT, WORLD_OPENED_EVENT } from '../../../src/renderer/src/components/World/worldOpen'
 
 const settings = (over: Partial<{ worldOpened: boolean; worldHintDismissed: boolean }> = {}) => ({
   worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude' as const,
@@ -160,6 +160,33 @@ describe('LumopolisSidebarEntry and the active terminal (#29)', () => {
     await mount()
     await act(async () => { await Promise.resolve() })
     expect(typable).not.toHaveBeenCalled()
+  })
+
+  // A zsh whose .zshrc takes longer than main waits (a plugin manager's first run) is answered no, then prints the ready mark
+  // at its first prompt: the no is asked again then, once per mark, and only while it is a no and the hint shows (holdb-review M3).
+  it('asks again about a terminal it was told no for when that terminal prints the ready mark, and about no other', async () => {
+    const ready = (id: string): void => { window.dispatchEvent(new CustomEvent(LUMOPOLIS_READY_EVENT, { detail: id })) }
+    typable.mockResolvedValueOnce({ success: true, data: false })
+    useTerminalStore.setState({ activeTerminalId: 'zsh-slow' })
+    await mount()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT_UNTYPED)
+    await act(async () => { ready('bash-1'); ready('never-asked'); await Promise.resolve(); await Promise.resolve() })
+    expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-slow'])
+    await act(async () => { ready('zsh-slow'); await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    await act(async () => { ready('zsh-slow'); await Promise.resolve(); await Promise.resolve() })
+    expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-slow', 'zsh-slow'])
+  })
+
+  it('asks nothing on a ready mark once the hint is gone', async () => {
+    typable.mockResolvedValue({ success: true, data: false })
+    useTerminalStore.setState({ activeTerminalId: 'zsh-slow' })
+    await mount()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    fireEvent.click(screen.getByTestId('sidebar-lumopolis-hint-dismiss'))
+    await act(async () => { window.dispatchEvent(new CustomEvent(LUMOPOLIS_READY_EVENT, { detail: 'zsh-slow' })); await Promise.resolve() })
+    expect(typable).toHaveBeenCalledTimes(1)
   })
 
   it('an answer that lands after the sidebar is gone is dropped', async () => {
