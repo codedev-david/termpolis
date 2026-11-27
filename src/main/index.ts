@@ -2990,6 +2990,8 @@ function watchRepoForGraphAndWorld(repoRoot: string): boolean {
     ),
     // The nested repositories the last listing mapped: their edits refresh the map as the root's do.
     nestedKept: () => repoListingNotes(repoRoot)?.nested ?? [],
+    // Each listing replaces the notes: a re-sweep after which they are the same listed nothing (holdb-codex-review).
+    listed: () => repoListingNotes(repoRoot),
   })
 }
 // Ask: the Lumopolis agent runs read-only with the project's memory primer (headlessPrimer) and noRemember, so
