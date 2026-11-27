@@ -358,10 +358,13 @@ describe('WorldView', () => {
     bridge()
     await mount()
     const select = screen.getByRole('combobox', { name: 'Theme' }) as HTMLSelectElement
-    expect([...select.options].map((o) => o.textContent)).toEqual(['Neon', 'Blueprint', 'Glass'])
+    expect([...select.options].map((o) => o.textContent)).toEqual(['Holotable', 'Blueprint', 'Glass'])
     fireEvent.change(select, { target: { value: 'blueprint' } })
     expect(viewer().setTheme).toHaveBeenCalledWith('blueprint')
     expect(select.value).toBe('blueprint')
+    // A value the list does not hold (the select reads it as '') changes nothing.
+    fireEvent.change(select, { target: { value: 'nope' } })
+    expect(viewer().setTheme).toHaveBeenCalledTimes(1)
   })
 
   it('tours menu lists doc.tours and plays the chosen one', async () => {
@@ -1787,8 +1790,8 @@ describe('WorldView layout (visual fidelity)', () => {
     const get = deferred<Res<WorldDoc | null>>()
     bridge({ worldGet: vi.fn(() => get.promise) })
     render(<WorldView root="/repo" onClose={vi.fn()} />)
-    // Before the world loads: opaque Neon background, in the flow beside the terminals.
-    expect(dialog()).toHaveStyle({ position: 'relative', width: '480px', background: '#03050a' })
+    // Before the world loads: opaque Holotable background, in the flow beside the terminals.
+    expect(dialog()).toHaveStyle({ position: 'relative', width: '480px', background: '#010409' })
     expect(dialog().style.zIndex).toBe('')
     expect(dialog()).not.toHaveClass('animate-fadeIn')
     expect(screen.getByTestId('world-loading')).toBeInTheDocument()
@@ -3375,7 +3378,7 @@ describe('WorldView WP2: lost graphics, WebGL found later, the keyboard on the 2
     await mount()
     const v = viewer()
     // Before any frame paints, the host shows the theme's background, never a white or blank box.
-    expect(screen.getByTestId('world-canvas-host').style.background).toBe('var(--world-bg, #03050a)')
+    expect(screen.getByTestId('world-canvas-host').style.background).toBe('var(--world-bg, #010409)')
     act(() => { v.opts.onGraphics('watchdog') })
     await settle()
     expect(notice()).toHaveTextContent(GRAPHICS_WATCHDOG)

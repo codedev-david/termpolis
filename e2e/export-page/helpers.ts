@@ -387,7 +387,7 @@ export function decodePng(png: Buffer): { width: number; height: number; rgba: U
   return { width, height, rgba: out }
 }
 
-/** How much of a screenshot is not the page's background (#03050a), and how many distinct colours it holds. */
+/** How much of a screenshot is not the page's background (Holotable's #010409), and how many distinct colours it holds. */
 export function paint(png: Buffer): { lit: number; colours: number } {
   const { rgba } = decodePng(png)
   let lit = 0
@@ -397,7 +397,7 @@ export function paint(png: Buffer): { lit: number; colours: number } {
     const r = rgba[i * 4]
     const g = rgba[i * 4 + 1]
     const b = rgba[i * 4 + 2]
-    if (Math.abs(r - 3) + Math.abs(g - 5) + Math.abs(b - 10) > 24) lit++
+    if (Math.abs(r - 1) + Math.abs(g - 4) + Math.abs(b - 9) > 24) lit++
     seen.add(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3))
   }
   return { lit: lit / n, colours: seen.size }

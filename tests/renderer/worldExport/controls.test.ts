@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorldGraphics, WorldViewer } from '../../../src/renderer/src/world/engine'
 import { tourCard } from '../../../src/renderer/src/world/engine/cards'
+import { PALETTES } from '../../../src/renderer/src/world/engine/holoPalette'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import type { PageMeta } from '../../../src/shared/world/exportMeta'
 import { REMOVALS_ID } from '../../../src/shared/world/designPatch'
@@ -146,11 +147,20 @@ describe('buildPage: header and control set', () => {
     const { control, q, viewer } = setup()
     change(control('theme') as HTMLSelectElement, 'glass')
     expect(viewer.setTheme).toHaveBeenCalledWith('glass')
+    // A value the list does not hold (the select reads it as '') changes nothing, and throws nothing.
+    const thrown: unknown[] = []
+    const onError = (e: ErrorEvent): void => { thrown.push(e.error) }
+    window.addEventListener('error', onError)
+    change(control('theme') as HTMLSelectElement, 'nope')
+    window.removeEventListener('error', onError)
+    expect(thrown).toEqual([])
+    expect(viewer.setTheme).toHaveBeenCalledTimes(1)
+    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#111827')
     // The page and the view behind the canvas take the theme's background, so it shows before a frame paints (look spec 5.3).
     expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#111827')
     const css = Array.from(document.querySelectorAll('style'), (s) => s.textContent).join('')
-    expect(css).toContain('.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#03050a)')
-    expect(css).toContain('.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#03050a)}')
+    expect(css).toContain('.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409)')
+    expect(css).toContain('.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#010409)}')
     document.documentElement.style.removeProperty('--world-bg')
     change(control('labels') as HTMLSelectElement, 'tech')
     expect(viewer.setLayers).toHaveBeenCalledWith({ labels: 'tech' })
@@ -514,6 +524,20 @@ describe('buildPage: the 2D map', () => {
     expect(q('.wx-map2d').hidden).toBe(true)
     expect(viewer.setPaused).toHaveBeenLastCalledWith(false)
     expect(toggle.textContent).toBe('2D map')
+  })
+
+  it('draws the 2D map in the palette of the theme, at once when it shows and before it is next shown when it does not', () => {
+    const { control, q } = setup()
+    const map = (): string => q('.wx-map2d').innerHTML
+    control('map2d').click()
+    expect(map()).toContain(`fill="${PALETTES.holotable.holo}"`) // the page opens in Holotable
+    change(control('theme') as HTMLSelectElement, 'glass')
+    expect(map()).toContain(`fill="${PALETTES.glass.holo}"`)
+    control('map2d').click()
+    change(control('theme') as HTMLSelectElement, 'blueprint')
+    expect(map()).toContain(`fill="${PALETTES.glass.holo}"`) // hidden: not drawn again yet
+    control('map2d').click()
+    expect(map()).toContain(`fill="${PALETTES.blueprint.holo}"`)
   })
 
   it('cancels the running tour and its actions on the way to the 2D map, so no caption is written over it, and cancels nothing on the way back', () => {

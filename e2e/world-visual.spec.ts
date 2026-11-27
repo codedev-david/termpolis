@@ -59,7 +59,7 @@ const CLICK_JITTER: Array<[number, number]> = [[2, 0], [-2, 0], [0, 3], [0, -3]]
  */
 const AIM_DROP_PX = 10
 
-const THEMES = ['neon', 'blueprint', 'glass'] as const
+const THEMES = ['holotable', 'blueprint', 'glass'] as const
 const SHOTS = path.resolve('test-results/world-visual')
 
 let app: ElectronApplication
@@ -814,7 +814,7 @@ test.describe.serial('Lumopolis can be seen', () => {
       const fx = fixtures.find((f) => f.label === label)!
       await checkWorld(label, fx.dir, THEMES)
       const { ids } = await world(fx.dir)
-      await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+      await (await toolbarControl(page, 'world-theme')).selectOption('holotable')
       await closeMore(page)
 
       // A resize fits the overview again: the city stays on the canvas and out of the legend's strip.
@@ -824,7 +824,7 @@ test.describe.serial('Lumopolis can be seen', () => {
       expect(await underLegend(ids), `${label}: under the legend after a resize`).toEqual([])
       expect(await overlappingLabels(), `${label}: labels overlap after a resize`).toEqual([])
       expect(await askOutsideStage(), `${label}: the ask bar runs past the pane after a resize`).toEqual([])
-      await page.screenshot({ path: path.join(SHOTS, `${label}-neon-resized.png`) })
+      await page.screenshot({ path: path.join(SHOTS, `${label}-holotable-resized.png`) })
       await page.setViewportSize({ width: 1280, height: 800 })
       await page.waitForTimeout(1500)
       expect(await underLegend(ids), `${label}: under the legend after resizing back`).toEqual([])
@@ -833,7 +833,7 @@ test.describe.serial('Lumopolis can be seen', () => {
 
   test('3. this repository (Termpolis) keeps its labels apart and its clicks true', async () => {
     test.setTimeout(420_000)
-    await checkWorld('termpolis', path.resolve('.'), ['neon'])
+    await checkWorld('termpolis', path.resolve('.'), ['holotable'])
   })
 
   /** The world compiler's building cap (src/main/world/group.ts), read from its source: group.ts imports main-process modules. */
@@ -855,13 +855,13 @@ test.describe.serial('Lumopolis can be seen', () => {
     await settled(240_000)
     const { ids } = await world(fx.dir)
     expect(ids.length).toBeGreaterThan(1)
-    await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+    await (await toolbarControl(page, 'world-theme')).selectOption('holotable')
     await closeMore(page)
     await toOverview()
     const drawn = (): Promise<Drawn> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn())
     const far = await drawn()
     console.log(`[world-visual] huge: ${far.buildings} buildings in ${far.districts} districts (${far.slabs} slabs), ${far.drawCalls} draw calls at the overview (tier ${far.tier}, ${far.conduits} conduits)`)
-    await page.screenshot({ path: path.join(SHOTS, 'huge-neon-overview.png') })
+    await page.screenshot({ path: path.join(SHOTS, 'huge-holotable-overview.png') })
     expect(far.tier).toBe('districts')
     // 600 files group into as many buildings as the compiler allows, and from far away each district is one slab.
     expect(far.buildings).toBe(compilerBuildingCap())
@@ -878,7 +878,7 @@ test.describe.serial('Lumopolis can be seen', () => {
     const near = await drawn()
     console.log(`[world-visual] huge: ${near.drawCalls} draw calls focused on one building (tier ${near.tier})`)
     expect(near.slabs).toBe(0)
-    await page.screenshot({ path: path.join(SHOTS, 'huge-neon-focused.png') })
+    await page.screenshot({ path: path.join(SHOTS, 'huge-holotable-focused.png') })
     await toOverview()
     await expect.poll(async () => (await drawn()).tier, { timeout: 10_000 }).toBe('districts')
   })
@@ -886,7 +886,7 @@ test.describe.serial('Lumopolis can be seen', () => {
 
 /**
  * What is drawn, read off the renderer's own objects (drawn().visual), on the small app with a
- * verified store and an outside service, in the neon theme at high quality (the default), with
+ * verified store and an outside service, in the holotable theme at high quality (the default), with
  * motion on: the exploded building, the orbit and the flying keys, the ring, the bloom, the stars
  * and dust, the hexagonal platforms and their lights, the floors, the orbs, the eased flights and
  * the line labels.
@@ -937,7 +937,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     await createTerminal('Visual motion', fx.dir)
     await openPane()
     await settled(240_000)
-    await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+    await (await toolbarControl(page, 'world-theme')).selectOption('holotable')
     await closeMore(page)
     // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see pointerOnCanvas).
     await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })

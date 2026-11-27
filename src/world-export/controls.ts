@@ -3,7 +3,7 @@
 // no React. The page is read-only: there is no annotate, Build it, Re-layout, bookmark or editing control, the
 // cards are rendered with readOnly (no Confirm or Edit, evidence as plain text), and nothing is stored in the
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
-import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
+import { buildingCard, DEFAULT_LAYERS, DEFAULT_THEME, edgeCard, escapeHtml as esc, normalizeTheme, PALETTES, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
 import { tourCard, tourStopText, type TourStop } from '../renderer/src/world/engine/cards'
 import { freeArea } from '../renderer/src/world/engine/viewMath'
@@ -24,9 +24,9 @@ export function headerText(meta: PageMeta): string {
   return meta.head7 === '' ? at : `${at} · commit ${meta.head7}${meta.dirty ? ' (uncommitted changes)' : ''}`
 }
 
-/** The engine's themes, named for the picker ("neon" shows as "Neon"). The viewer starts on neon. */
+/** The engine's themes, named for the picker ("holotable" shows as "Holotable"). The viewer starts on DEFAULT_THEME. */
 const themeOptions = (): Array<[string, string]> => Object.keys(THEMES).map((t): [string, string] => [t, t.charAt(0).toUpperCase() + t.slice(1)])
-const FIRST_THEME: ThemeName = 'neon'
+const FIRST_THEME: ThemeName = DEFAULT_THEME
 /** The page's type size at scale 1 (a 1080p laptop): 1rem. A big screen scales the root (uiScale), so all of it grows. */
 const BASE_PX = 13
 /** `px` at scale 1, in rem: every length on the page but its hairline borders grows with the root. */
@@ -52,12 +52,12 @@ const LEGEND_MAX_CARGO = 10
  */
 export const PAGE_CSS = `
 html{font-size:${BASE_PX}px}
-.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#03050a);color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--world-bg,#010409);color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wx-page [hidden]{display:none!important}
 .wx-header{display:flex;flex-wrap:wrap;gap:${r(4)} ${r(16)};align-items:center;justify-content:space-between;padding:${r(6)} ${r(14)};font-size:${r(12)};color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
 .wx-header a{color:#7dd3fc}
 .wx-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;--wx-low:${r(56)};--wx-top:${r(CARD_INSET + 48)}}
-.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#03050a)}
+.wx-view{position:absolute;inset:0;z-index:0;background:var(--world-bg,#010409)}
 .wx-map2d{position:absolute;inset:0;box-sizing:border-box;overflow:auto;padding:${r(12)} ${r(16)};border-bottom:var(--wx-low) solid #0b1220;background:#0b1220}
 .wx-map2d [data-kind]{cursor:pointer}
 .wx-map2d button[data-kind]{margin:0;padding:0;border:0;border-radius:${r(2)};background:none;color:inherit;font:inherit;text-align:left}
@@ -287,15 +287,21 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   const layers = { planned: DEFAULT_LAYERS.planned, proposal: has(meta.proposalId) ? meta.proposalId : design && has(REMOVALS_ID) ? REMOVALS_ID : null }
   /** The 2D map shows `layers` as they are now; false: it is drawn again before it is shown. */
   let mapDrawn = false
+  /** The theme the views are in: the 2D map is drawn in its palette. */
+  let theme: ThemeName = FIRST_THEME
   const drawMap = (): void => {
-    map2d.innerHTML = renderFallback(doc, meta.project, layers)
+    map2d.innerHTML = renderFallback(doc, meta.project, layers, PALETTES[theme])
     mapDrawn = true
+  }
+  /** The 2D map drawn again now when it shows, else before it is next shown. */
+  const mapChanged = (): void => {
+    if (flat) drawMap()
+    else mapDrawn = false
   }
   const setPlan = (change: Partial<typeof layers>): void => {
     Object.assign(layers, change)
     viewer?.setLayers(change)
-    if (flat) drawMap()
-    else mapDrawn = false
+    mapChanged()
   }
   /** How much bigger than a laptop's the page draws, for this window (uiScale). */
   let scale = 1
@@ -490,9 +496,13 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
       // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
       tools.append(
         select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => {
+          const known = normalizeTheme(t) // a saved neon is Holotable now (D2); an unknown name changes nothing
+          if (known === null) return
+          theme = known
           // Behind the canvas the theme's background shows before a frame paints (look spec §5.3).
-          document.documentElement.style.setProperty('--world-bg', THEMES[t as ThemeName].background)
-          v.setTheme(t as ThemeName)
+          document.documentElement.style.setProperty('--world-bg', THEMES[known].background)
+          v.setTheme(known)
+          mapChanged()
         }),
         select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], DEFAULT_LAYERS.labels, (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
         checkbox('Processes', 'processes', DEFAULT_LAYERS.processes, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),

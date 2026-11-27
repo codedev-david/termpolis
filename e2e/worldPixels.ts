@@ -10,9 +10,10 @@ import { PNG } from 'pngjs'
  * channel is at least WHITE_MIN: saturated white, what a bloomed-out fog cloud or a knot of
  * lines turns into.
  *
- * Measured locally (SwiftShader, 1280x800 window), mean over background / lit / white:
+ * Measured locally (SwiftShader, 1280x800 window), mean over background / lit / white. The first column was
+ * measured under Neon (#03050a), the theme Holotable replaced; it has not been measured again under Holotable:
  *
- *   | case                         | neon                     | blueprint                | glass                    |
+ *   | case                         | neon (now holotable)     | blueprint                | glass                    |
  *   |------------------------------|--------------------------|--------------------------|--------------------------|
  *   | small, after fix round 1     | 11.6 / 8.23 % / 0.000 %  | 12.4 / 11.32 % / 0.000 % | 7.6 / 4.89 % / 0.004 %   |
  *   | big, after fix round 1       | 35.4 / 32.31 % / 0.000 % | 33.3 / 32.28 % / 0.000 % | 20.4 / 14.08 % / 0.002 % |
@@ -95,8 +96,9 @@ export function hexRgb(hex: string): [number, number, number] {
 /**
  * A theme background as the 3D map draws it: the clear colour goes through the High tier's OutputPass, so ACESFilmic tone
  * mapping (exposure 1) and the sRGB encoding apply to it as to everything else in the frame. This mirrors three 0.160's
- * `ACESFilmicToneMapping` (tonemapping_pars_fragment) and its sRGB transfer, in bytes. Neon's #03050a draws as about
- * rgb(0, 0, 1): 9 levels from the theme colour, so the corners are held to this, not to the raw colour.
+ * `ACESFilmicToneMapping` (tonemapping_pars_fragment) and its sRGB transfer, in bytes. Holotable's #010409 draws as
+ * rgb(0, 0, 0): 9 levels from the theme colour (the old Neon's #03050a drew as rgb(0, 0, 1)), so the corners are held to
+ * this, not to the raw colour.
  */
 export function drawnBackground(hex: string, exposure = 1): [number, number, number] {
   const lin = (c: number): number => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)

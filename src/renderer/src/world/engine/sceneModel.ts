@@ -19,7 +19,11 @@ export interface LayerState {
 }
 export const DEFAULT_LAYERS: LayerState = { labels: 'jobs', processes: false, allLineLabels: false, planned: true, proposal: null }
 
-export interface SceneDistrict { id: string; pos: Vec3; radius: number; hue: number; label: string }
+export interface SceneDistrict {
+  id: string; pos: Vec3; radius: number; hue: number; label: string
+  /** The buildings drawn in it: its plate's brightness falls with the count (look spec §3.1). */
+  members: number
+}
 export interface SceneBuilding {
   id: string; pos: Vec3; floors: number; height: number; look: Look; ring: boolean; processShell?: string
   /** A wireframe shell a little larger than a solid building the code changed since the last reconcile. */
@@ -177,7 +181,7 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length
     const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length
     const far = Math.max(...pts.map((p) => Math.hypot(p[0] - cx, p[2] - cz)))
-    districts.push({ id: d.id, pos: [cx, 0, cz], radius: Math.max(MIN_DISTRICT_RADIUS, far + DISTRICT_MARGIN), hue: d.hue, label: d.name })
+    districts.push({ id: d.id, pos: [cx, 0, cz], radius: Math.max(MIN_DISTRICT_RADIUS, far + DISTRICT_MARGIN), hue: d.hue, label: d.name, members: pts.length })
   }
 
   const conduits: SceneConduit[] = []

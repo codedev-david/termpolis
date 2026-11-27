@@ -97,8 +97,8 @@ describe('boot', () => {
     vi.stubGlobal('DecompressionStream', undefined) // fails after the background is set: it shows behind the message too
     await boot()
     expect(await window.__worldExport.ready).toBe('failed')
-    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#03050a')
-    expect(document.body.style.background).toBe('var(--world-bg,#03050a)')
+    expect(document.documentElement.style.getPropertyValue('--world-bg')).toBe('#010409')
+    expect(document.body.style.background).toBe('var(--world-bg,#010409)')
     document.documentElement.style.removeProperty('--world-bg')
     document.body.style.background = ''
   })

@@ -23,7 +23,8 @@ import { timedUpdate } from './timedDamping'
 import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
-import type { Theme, ThemeName } from './themes'
+import { DEFAULT_THEME, normalizeTheme, THEMES, type Theme, type ThemeName } from './themes'
+import { hexNumber, PALETTES } from './holoPalette'
 import { screenRect } from './screenRect'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
@@ -117,7 +118,8 @@ export interface ThreeRenderer {
   setPanels(els: readonly HTMLElement[]): void
   /** How many times their base size the map's labels are drawn (1, more on a big screen: uiScale). */
   setLabelScale(s: number): void
-  setTheme(name: ThemeName, theme: Theme): void
+  /** `name` may be a saved older name (`neon`); an unknown one is ignored. */
+  setTheme(name: ThemeName | 'neon', theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   /** The selected building or line (its card is open), or null. */
   setSelected(id: string | null): void
@@ -209,7 +211,7 @@ interface Extras {
   seal: number; amber: number; grid: number; gridOpacity: number; bloom: number; fogTint: number
 }
 const EXTRAS: Record<ThemeName, Extras> = {
-  neon: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: 0x4ade80, amber: 0xfbbf24, grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
+  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: hexNumber(PALETTES.holotable.seal), amber: hexNumber(PALETTES.holotable.attention), grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
   blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, platformOpacity: 0.45, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.75, fogTint: 0xe0f2fe },
   glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, platformOpacity: 0.8, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.5, fogTint: 0xf1f5f9 },
 }
@@ -895,9 +897,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const changeLayer = new THREE.Group()
   scene.add(changeLayer)
   const changes = createChangeAnimator(changeLayer, shared)
-  let themeName: ThemeName = 'neon'
-  let theme: Theme = { background: '#03050a', district: '#0a0f1c', conduit: '#60a5fa', glow: '#22d3ee', text: '#e2e8f0', fogDensity: 0.006 }
-  let extras = EXTRAS.neon
+  let theme: Theme = THEMES[DEFAULT_THEME]
+  let extras = EXTRAS[DEFAULT_THEME]
   scene.background = new THREE.Color(theme.background)
   const fog = new THREE.FogExp2(theme.background, theme.fogDensity)
   scene.fog = fog
@@ -3333,10 +3334,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       wake()
     },
     setTheme(name, th) {
-      themeName = name
+      const known = normalizeTheme(name) // a saved neon is Holotable now (D2)
+      if (known === null) return
       theme = th
       host.style.setProperty('--world-bg', th.background) // behind the canvas, painted before any frame is
-      extras = EXTRAS[themeName]
+      extras = EXTRAS[known]
       fogTarget = fogFor()
       fog.density = fogTarget
       if (lastModel && lastText) draw(lastModel, lastText, allLabels)

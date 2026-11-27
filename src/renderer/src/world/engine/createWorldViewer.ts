@@ -18,7 +18,8 @@ import { createThreeRenderer, type MotionState, type RenderFocus, type RenderPic
 import { frameStats, type FrameStats } from './frameSampler'
 import { createGovernor, type Governor } from './qualityGovernor'
 import type { TierName } from './tierBudget'
-import { THEMES, type ThemeName } from './themes'
+import { DEFAULT_THEME, normalizeTheme, THEMES, type ThemeName } from './themes'
+import { PALETTES } from './holoPalette'
 import type { ZoomTier } from './viewMath'
 
 export type SelectionKind = 'building' | 'edge' | 'district' | 'tech'
@@ -34,7 +35,8 @@ export interface WorldViewer {
    */
   load(doc: WorldDoc, opts?: WorldLoadOptions): void
   setLayers(l: Partial<LayerState>): void
-  setTheme(t: ThemeName): void
+  /** A saved older name (`neon`) loads as its new one (Holotable); an unknown name is ignored. */
+  setTheme(t: ThemeName | 'neon'): void
   /**
    * Pixels on the right the legend covers now; the overview is fitted to the rest. Ignored without WebGL.
    * `from`: the view width from which that strip is kept clear (by default three times the strip).
@@ -313,7 +315,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   let doc: WorldDoc | null = null
   let layers: LayerState = { ...DEFAULT_LAYERS }
-  let themeName: ThemeName = 'neon'
+  let themeName: ThemeName = DEFAULT_THEME
   let revealProposal: string | undefined
   /** Parts an answer fogged; cleared by reset, resetView and load. */
   const fogged = new Set<string>()
@@ -613,7 +615,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // ---------------- 2D fallback ----------------
   // renderFallback tags each item with data-kind and data-id; clicks are wired from those.
   function drawFallback(d: WorldDoc): void {
-    container.innerHTML = renderFallback(d, title, { planned: layers.planned, proposal: layers.proposal, ...(revealProposal !== undefined ? { reveal: revealProposal } : {}) })
+    container.innerHTML = renderFallback(d, title, { planned: layers.planned, proposal: layers.proposal, ...(revealProposal !== undefined ? { reveal: revealProposal } : {}) }, PALETTES[themeName])
     for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-id]'))) el.style.cursor = 'pointer'
   }
 
@@ -1114,9 +1116,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (!disposed) r3?.setLabelScale(s)
     },
     setTheme(t) {
-      if (disposed || !THEMES[t]) return
-      themeName = t
-      r3?.setTheme(t, THEMES[t]) // redraws the current scene with the new palette
+      const known = normalizeTheme(t)
+      if (disposed || known === null) return
+      themeName = known
+      if (r3) r3.setTheme(known, THEMES[known]) // redraws the current scene with the new palette
+      else if (doc) drawFallback(doc) // the 2D map takes the palette too
     },
     apply: (a) => exec(a, { reducedMotion: reduced }),
     // A newer batch of actions ends a tour still under way, as a newer tour does.

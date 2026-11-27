@@ -81,6 +81,8 @@ describe('buildSceneModel', () => {
     expect(m.orbs).toEqual([{ id: 'x1', pos: [16, 0, 14], fog: false }])
     const d1 = m.districts.find((d) => d.id === 'd1')!
     expect(d1).toMatchObject({ hue: 210, label: 'Core' })
+    expect(d1.members).toBe(4) // the buildings drawn in it: b1 to b4, b4 planned
+    expect(buildSceneModel(rich(), { ...DEFAULT_LAYERS, planned: false }).districts.find((d) => d.id === 'd1')!.members).toBe(3)
     expect(d1.radius).toBeGreaterThanOrEqual(6)
     expect(m.districts.find((d) => d.id === 'd2')).toBeUndefined()
   })

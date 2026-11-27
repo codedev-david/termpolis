@@ -150,7 +150,7 @@ export const EMBED_CHUNK = 16
 export const EXPORT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'"
 
 /** The page's own CSS: only what holds until the runtime adds its stylesheet. */
-const PAGE_CSS = 'html,body{margin:0;height:100%;background:#03050a;color:#e2e8f0}'
+const PAGE_CSS = 'html,body{margin:0;height:100%;background:#010409;color:#d6f3ff}'
 
 const SAFE_ID = /^[a-z][a-z0-9]*$/
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/

@@ -1,5 +1,7 @@
-// Lumopolis themes: plain colour data, no Three.js. The renderer (Task 12) turns these strings
-// into materials. Values follow the prototype's neon / blueprint / glass palettes.
+// Lumopolis themes: plain colour data, no Three.js. The renderer turns these strings into materials. Holotable (look
+// spec §3.1) replaced Neon (D2); Blueprint and Glass keep the prototype's palettes. Background, glow and text come
+// from the theme's palette (holoPalette.ts), so the two never disagree.
+import { PALETTES } from './holoPalette'
 
 export interface Theme {
   background: string
@@ -12,10 +14,36 @@ export interface Theme {
   fogDensity: number
 }
 
-export type ThemeName = 'neon' | 'blueprint' | 'glass'
+// The theme pickers (the toolbar's and the exported page's) show each name capitalized: "Holotable" where "Neon" was.
+export type ThemeName = 'holotable' | 'blueprint' | 'glass' // PENDING SIGN-OFF
 
+/** The theme the map opens in. */
+export const DEFAULT_THEME: ThemeName = 'holotable'
+
+const H = PALETTES.holotable
+const B = PALETTES.blueprint
+const G = PALETTES.glass
+
+/**
+ * Holotable's district colour is its background lifted 8% toward holo (#06141d), a dark navy platform just above the
+ * table, as Neon's was above its own background; its fog is Neon's 0.006, as the layout's scale did not change.
+ */
 export const THEMES: Record<ThemeName, Theme> = {
-  neon: { background: '#03050a', district: '#0a0f1c', conduit: '#60a5fa', glow: '#22d3ee', text: '#e2e8f0', fogDensity: 0.006 },
-  blueprint: { background: '#061a33', district: '#0a2647', conduit: '#bae6fd', glow: '#7dd3fc', text: '#f0f9ff', fogDensity: 0.005 },
-  glass: { background: '#111827', district: '#1f2937', conduit: '#93c5fd', glow: '#67e8f9', text: '#f8fafc', fogDensity: 0.0045 },
+  holotable: { background: H.background, district: '#06141d', conduit: H.holo, glow: H.holo, text: H.ink, fogDensity: 0.006 },
+  blueprint: { background: B.background, district: '#0a2647', conduit: '#bae6fd', glow: B.holo, text: B.ink, fogDensity: 0.005 },
+  glass: { background: G.background, district: '#1f2937', conduit: '#93c5fd', glow: G.holo, text: G.ink, fogDensity: 0.0045 },
+}
+
+/** The names a theme was saved or passed under before it was renamed: Neon became Holotable (D2). */
+const RENAMED: ReadonlyArray<readonly [string, ThemeName]> = [['neon', 'holotable']]
+
+/**
+ * A theme name as the map knows it: a current name as it is, a renamed one (`neon`) as its new name, anything else
+ * null (left alone by the caller, as an unknown theme always was).
+ */
+export function normalizeTheme(name: unknown): ThemeName | null {
+  if (typeof name !== 'string') return null
+  if (Object.keys(THEMES).includes(name)) return name as ThemeName
+  const renamed = RENAMED.find(([old]) => old === name)
+  return renamed ? renamed[1] : null
 }

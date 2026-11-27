@@ -21,7 +21,7 @@ const h = withHarness()
 
 /** The palette threeRenderer's EXTRAS lists per theme (prototype values), checked against the materials. */
 const PALETTE: Record<ThemeName, { fill: number; fillOpacity: number; fillGlow: number; platformOpacity: number; ghost: number; seal: number; amber: number; grid: number; gridOpacity: number; bloom: number; fogTint: number }> = {
-  neon: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: 0x4ade80, amber: 0xfbbf24, grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
+  holotable: { fill: 0x0b1220, fillOpacity: 0.88, fillGlow: 0.16, platformOpacity: 0.92, ghost: 0x93c5fd, seal: 0x4ade80, amber: 0xffae42, grid: 0x1e3a5f, gridOpacity: 0.35, bloom: 1.05, fogTint: 0xcbd5e1 },
   blueprint: { fill: 0x0b2a4a, fillOpacity: 0.22, fillGlow: 0.06, platformOpacity: 0.45, ghost: 0xbfdbfe, seal: 0x99f6e4, amber: 0xfde68a, grid: 0x60a5fa, gridOpacity: 0.35, bloom: 0.75, fogTint: 0xe0f2fe },
   glass: { fill: 0xcbd5e1, fillOpacity: 0.32, fillGlow: 0.28, platformOpacity: 0.8, ghost: 0xbfdbfe, seal: 0x6ee7b7, amber: 0xfcd34d, grid: 0x374151, gridOpacity: 0.4, bloom: 0.5, fogTint: 0xf1f5f9 },
 }
@@ -49,7 +49,7 @@ const seamOf = (root: THREE.Object3D, id: string): THREE.LineBasicMaterial =>
   ((floorsOf(root, id)[0].parent as THREE.Group).children[1] as THREE.LineSegments).material as THREE.LineBasicMaterial
 
 describe('threeRenderer themes', () => {
-  for (const name of ['neon', 'blueprint', 'glass'] as const) {
+  for (const name of ['holotable', 'blueprint', 'glass'] as const) {
     it(`${name}: the palette reaches the fills, platforms, outlines, rings, grid, fog and bloom`, () => {
       const p = PALETTE[name]
       const th = THEMES[name]
@@ -103,13 +103,29 @@ describe('threeRenderer themes', () => {
     })
   }
 
+  it('starts in Holotable; a saved neon is Holotable, and an unknown name changes nothing', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r.draw(looks(), emptyText(), false)
+    expect((sceneOf().background as THREE.Color).getHex()).toBe(new THREE.Color(THEMES.holotable.background).getHex())
+    expect(seamOf(worldOf(sceneOf()), 'amber').color.getHex()).toBe(PALETTE.holotable.amber)
+    r.setTheme('glass', THEMES.glass)
+    expect(seamOf(worldOf(sceneOf()), 'amber').color.getHex()).toBe(PALETTE.glass.amber)
+    r.setTheme('neon', THEMES.holotable)
+    expect(seamOf(worldOf(sceneOf()), 'amber').color.getHex()).toBe(PALETTE.holotable.amber)
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe(THEMES.holotable.background)
+    r.setTheme('nope' as never, THEMES.glass)
+    expect(h.host.style.getPropertyValue('--world-bg')).toBe(THEMES.holotable.background)
+    expect((sceneOf().background as THREE.Color).getHex()).toBe(new THREE.Color(THEMES.holotable.background).getHex())
+    r.dispose()
+  })
+
   it('a theme change on a drawn world draws it again in the new palette; a busy city glows less', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     const many: SceneModel = { ...smallCity(), conduits: Array.from({ length: 400 }, (_, i) => conduit(`m${i}`, [-6, 9, 0], [6, 6, 4 + i * 0.01])) }
     r.draw(many, smallText(), false)
-    const neonStrength = gpu.bloomPasses[0].strength
-    expect(neonStrength).toBeLessThan(PALETTE.neon.bloom)
-    expect(neonStrength).toBeCloseTo(PALETTE.neon.bloom * 0.5)
+    const holoStrength = gpu.bloomPasses[0].strength
+    expect(holoStrength).toBeLessThan(PALETTE.holotable.bloom)
+    expect(holoStrength).toBeCloseTo(PALETTE.holotable.bloom * 0.5)
     r.setTheme('glass', THEMES.glass)
     const world = worldOf(sceneOf())
     expect(fillOf(world, 'a').color.getHex()).toBe(PALETTE.glass.fill)
@@ -180,7 +196,7 @@ describe('threeRenderer level of detail', () => {
     const slabs = world.children.filter((c) => Array.isArray(c.userData.slabIds)) as THREE.InstancedMesh[]
     expect(slabs.map((s) => s.userData.slabIds)).toEqual([['f'], ['g'], ['s']])
     const fogSlab = slabs[0].material as THREE.MeshStandardMaterial
-    expect(fogSlab.opacity).toBeCloseTo(PALETTE.neon.fillOpacity * 0.6)
+    expect(fogSlab.opacity).toBeCloseTo(PALETTE.holotable.fillOpacity * 0.6)
     expect((slabs[1].material as THREE.MeshStandardMaterial).depthWrite).toBe(false)
     expect(fogSlab.customProgramCacheKey()).toBe('lw-slab')
     // Every slab's fill steps back in depth, so its outline and seams (on its faces) never z-fight with it (T12).
@@ -198,7 +214,7 @@ describe('threeRenderer level of detail', () => {
     // the outlines: one per look, and the ghost shell round the changed district
     const lines = world.children.filter((c) => c instanceof THREE.LineSegments && c.visible && !c.parent!.userData.nodeId) as THREE.LineSegments[]
     const shell = lines.find((l) => !(l.material as THREE.LineBasicMaterial).vertexColors)!
-    expect((shell.material as THREE.LineBasicMaterial).color.getHex()).toBe(PALETTE.neon.ghost)
+    expect((shell.material as THREE.LineBasicMaterial).color.getHex()).toBe(PALETTE.holotable.ghost)
     expect(lines.filter((l) => (l.material as THREE.LineBasicMaterial).vertexColors)).toHaveLength(3)
     r.dispose()
   })

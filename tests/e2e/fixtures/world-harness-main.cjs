@@ -12,7 +12,7 @@ app.whenReady().then(() => {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: '#03050a',
+    backgroundColor: '#010409',
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
   void win.loadFile(path.join(__dirname, 'world-harness.html'))

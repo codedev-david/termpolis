@@ -42,7 +42,7 @@ export function cargoLabel(key: string): string {
 
 /**
  * A colour of its own for each code-derived cargo key, told apart at a glance: every pair is far
- * apart (CIE76 colour difference of 40 or more) and each reads at 4.5:1 or better on the Neon,
+ * apart (CIE76 colour difference of 40 or more) and each reads at 4.5:1 or better on the Holotable,
  * Blueprint and Glass backgrounds (tests/electron/worldCargoTypes.test.ts checks both).
  */
 export const CARGO_COLORS: Record<string, string> = {

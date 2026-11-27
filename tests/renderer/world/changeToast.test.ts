@@ -20,14 +20,14 @@ describe('createChangeToast', () => {
   it('shows the text in a polite live region for about 3 s, styled from the theme', () => {
     const toast = createChangeToast(host)
     expect(toastEl()).toBeNull() // nothing until the first change
-    toast.show('+2 parts', THEMES.neon)
+    toast.show('+2 parts', THEMES.holotable)
     const el = toastEl() as HTMLElement
     expect(el.textContent).toBe('+2 parts')
     expect(el.getAttribute('role')).toBe('status')
     expect(el.getAttribute('aria-live')).toBe('polite')
     expect(el.hidden).toBe(false)
     expect(el.style.pointerEvents).toBe('none')
-    expect(el.style.color).toBe('rgb(226, 232, 240)') // neon text #e2e8f0
+    expect(el.style.color).toBe('rgb(214, 243, 255)') // Holotable ink #d6f3ff
     expect(TOAST_MS).toBe(3000)
     vi.advanceTimersByTime(TOAST_MS - 1)
     expect(el.hidden).toBe(false)
@@ -40,7 +40,7 @@ describe('createChangeToast', () => {
 
   it('a later show replaces the text and restarts the clock; an empty one hides it at once', () => {
     const toast = createChangeToast(host)
-    toast.show('+1 part', THEMES.neon)
+    toast.show('+1 part', THEMES.holotable)
     vi.advanceTimersByTime(2000)
     toast.show('2 changed', THEMES.glass)
     const el = toastEl() as HTMLElement
@@ -48,7 +48,7 @@ describe('createChangeToast', () => {
     expect(host.querySelectorAll('.lw-toast')).toHaveLength(1)
     vi.advanceTimersByTime(2000)
     expect(el.hidden).toBe(false) // the first timer was replaced
-    toast.show('', THEMES.neon)
+    toast.show('', THEMES.holotable)
     expect(el.hidden).toBe(true)
     expect(el.textContent).toBe('')
     vi.advanceTimersByTime(TOAST_MS)
@@ -57,17 +57,17 @@ describe('createChangeToast', () => {
 
   it('puts itself back when the container was redrawn under it (the 2D list replaces its contents)', () => {
     const toast = createChangeToast(host)
-    toast.show('+1 part', THEMES.neon)
+    toast.show('+1 part', THEMES.holotable)
     host.innerHTML = '<section class="world-fallback"></section>'
     expect(toastEl()).toBeNull()
-    toast.show('1 removed', THEMES.neon)
+    toast.show('1 removed', THEMES.holotable)
     expect(toastEl()?.textContent).toBe('1 removed')
   })
 
   it('sits above the ask bar and centred in what the legend leaves free, before and after it first shows (film bug 9)', () => {
     const toast = createChangeToast(host)
     toast.place(80, 244) // before the first show: kept for when the region is made
-    toast.show('+1 part', THEMES.neon)
+    toast.show('+1 part', THEMES.holotable)
     const el = toastEl() as HTMLElement
     expect(el.style.bottom).toBe('80px')
     expect(el.style.left).toBe('calc(50% - 122px)')
@@ -91,7 +91,7 @@ describe('createChangeToast', () => {
     const toast = createChangeToast(host)
     // A wide pane's card stops only above the ask bar: 560 tall reaches the toast's row (600 - 72 - 31 = 497).
     toast.place(72, 0, [352, 560])
-    toast.show('+1 part', THEMES.neon)
+    toast.show('+1 part', THEMES.holotable)
     const el = toastEl() as HTMLElement
     expect(el.style.bottom).toBe('72px')
     expect(el.style.left).toBe('calc(50% + 176px)')
@@ -113,14 +113,14 @@ describe('createChangeToast', () => {
     expect(el.style.maxWidth).toBe('calc(100% - 24px)')
     // The next show places it for the view as it is then (the pane grew since the last place).
     size(900, 600)
-    toast.show('+2 parts', THEMES.neon)
+    toast.show('+2 parts', THEMES.holotable)
     expect(el.style.left).toBe('calc(50% + 176px)')
   })
 
   it('dispose removes it and stops its timer', () => {
     const toast = createChangeToast(host)
     toast.dispose() // nothing shown yet: still fine
-    toast.show('+1 part', THEMES.neon)
+    toast.show('+1 part', THEMES.holotable)
     toast.dispose()
     expect(toastEl()).toBeNull()
     expect(vi.getTimerCount()).toBe(0)

@@ -9,7 +9,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../../src/renderer/src/world/engine')>()
   return {
     ...real,
-    THEMES: { ...real.THEMES, midnight: real.THEMES.neon },
+    THEMES: { ...real.THEMES, midnight: real.THEMES.holotable },
     DEFAULT_LAYERS: { labels: 'tech', processes: true, allLineLabels: true, planned: false, proposal: null },
   }
 })
@@ -24,8 +24,8 @@ describe('controls follow the engine constants', () => {
     const viewer = { on: vi.fn(() => () => undefined), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPaused: vi.fn(), resetView: vi.fn(), setLabelScale: vi.fn(), setPanels: vi.fn() }
     page.attach(viewer as unknown as WorldViewer)
     const theme = parent.querySelector('[data-control="theme"]') as HTMLSelectElement
-    expect(Array.from(theme.options, (o) => [o.value, o.textContent])).toEqual([['neon', 'Neon'], ['blueprint', 'Blueprint'], ['glass', 'Glass'], ['midnight', 'Midnight']])
-    expect(theme.value).toBe('neon')
+    expect(Array.from(theme.options, (o) => [o.value, o.textContent])).toEqual([['holotable', 'Holotable'], ['blueprint', 'Blueprint'], ['glass', 'Glass'], ['midnight', 'Midnight']])
+    expect(theme.value).toBe('holotable')
     expect((parent.querySelector('[data-control="labels"]') as HTMLSelectElement).value).toBe('tech')
     const box = (layer: string): boolean => (parent.querySelector(`[data-layer="${layer}"]`) as HTMLInputElement).checked
     expect([box('processes'), box('allLineLabels'), box('planned')]).toEqual([true, true, false])

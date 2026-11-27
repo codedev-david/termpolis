@@ -4,7 +4,7 @@
 // The page makes no request of any kind: everything it shows is in the file (the CSP also forbids it).
 import type { WorldDoc } from '../shared/world/types'
 import { buildBm25 } from '../shared/world/askIndex'
-import { createWorldViewer, hasWebGL, THEMES, validateWorld, type WorldViewer } from '../renderer/src/world/engine'
+import { createWorldViewer, DEFAULT_THEME, hasWebGL, THEMES, validateWorld, type WorldViewer } from '../renderer/src/world/engine'
 import { mountAskBox, type AskState } from './askBox'
 import { readAskIndex, readBlock, readJsonBlock } from './blocks'
 import { isMeta, type PageMeta } from '../shared/world/exportMeta'
@@ -80,8 +80,8 @@ function showMessage(text: string): 'failed' {
 async function boot(): Promise<AskState> {
   await domReady()
   // The first theme's background behind everything, before any frame paints or the world is read (look spec §5.3).
-  document.documentElement.style.setProperty('--world-bg', THEMES.neon.background)
-  document.body.style.background = 'var(--world-bg,#03050a)'
+  document.documentElement.style.setProperty('--world-bg', THEMES[DEFAULT_THEME].background)
+  document.body.style.background = 'var(--world-bg,#010409)'
   // Every block is gzip that only DecompressionStream reads: without it the data is fine but cannot be opened here.
   if (typeof DecompressionStream !== 'function') return showMessage(OLD_BROWSER)
   let viewer: WorldViewer | null = null

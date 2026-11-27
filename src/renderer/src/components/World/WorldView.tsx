@@ -34,7 +34,7 @@ import { formatTokens } from '../../../../shared/world/tokens'
 import { sameParts } from '../../../../shared/world/diff'
 import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
-import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, escapeHtml, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
+import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, escapeHtml, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech, DEFAULT_THEME, normalizeTheme, PALETTES } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldQuality, WorldViewer, WorldViewerOptions } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { TOOLBAR_FOLD_PX, WorldToolbar } from './WorldToolbar'
@@ -291,7 +291,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   legendOpenRef.current = legendOpen
   const widthRef = useRef(width)
   widthRef.current = width
-  const [theme, setThemeState] = useState<ThemeName>('neon')
+  const [theme, setThemeState] = useState<ThemeName>(DEFAULT_THEME)
   const [confirmRelayout, setConfirmRelayout] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -931,9 +931,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setLayersState((l) => ({ ...l, ...patch }))
     viewer?.setLayers(patch)
   }
-  const onTheme = (t: ThemeName): void => {
-    setThemeState(t)
-    viewer?.setTheme(t)
+  const onTheme = (t: ThemeName | 'neon'): void => {
+    const known = normalizeTheme(t) // a saved neon is Holotable now (D2); an unknown name changes nothing
+    if (known === null) return
+    setThemeState(known)
+    viewer?.setTheme(known)
   }
   const onTour = (tour: Tour): void => {
     armedRef.current = false
@@ -1126,7 +1128,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const projectName = worldTitle(entries, { root: worldRoot, designKey })
   // The lit parts drawn on the 2D map (its list and its picture), and the first lit item of the list scrolled into view.
   const fallbackRef = useRef<HTMLDivElement>(null)
-  const fallbackHtml = flat && doc ? renderFallback(doc, projectName, { planned: layers.planned, proposal }) : null
+  const fallbackHtml = flat && doc ? renderFallback(doc, projectName, { planned: layers.planned, proposal }, PALETTES[theme]) : null
   useEffect(() => {
     const on = new Set(lit2d)
     for (const el of Array.from(fallbackRef.current?.querySelectorAll('[data-id]') ?? [])) el.toggleAttribute('data-lit', on.has(el.getAttribute('data-id') as string))
@@ -1308,7 +1310,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
             // The theme's background (the renderer sets --world-bg) shows before the first frame paints (look spec §5.3).
-            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden', background: 'var(--world-bg, #03050a)' }}
+            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !shows2d ? 'visible' : 'hidden', background: 'var(--world-bg, #010409)' }}
             onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
             onWheel={cancelBookmark}
           />

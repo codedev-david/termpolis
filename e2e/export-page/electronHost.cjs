@@ -16,7 +16,7 @@ app.whenReady().then(() => {
     width: 1280,
     height: 800,
     useContentSize: true,
-    backgroundColor: '#03050a',
+    backgroundColor: '#010409',
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
   void (file ? win.loadFile(path.resolve(file)) : win.loadURL('about:blank'))

@@ -1,15 +1,33 @@
 import { describe, it, expect } from 'vitest'
-import { THEMES } from '../../../src/renderer/src/world/engine/themes'
+import { DEFAULT_THEME, normalizeTheme, THEMES } from '../../../src/renderer/src/world/engine/themes'
+import { PALETTES } from '../../../src/renderer/src/world/engine/holoPalette'
 import { renderFallback } from '../../../src/renderer/src/world/engine/fallback2d'
 import { building, edge, rich } from './helpers'
 
 describe('THEMES', () => {
   it('has three themes of plain colour data', () => {
-    expect(Object.keys(THEMES)).toEqual(['neon', 'blueprint', 'glass'])
+    expect(Object.keys(THEMES)).toEqual(['holotable', 'blueprint', 'glass'])
     for (const t of Object.values(THEMES)) {
       for (const k of ['background', 'district', 'conduit', 'glow', 'text'] as const) expect(t[k]).toMatch(/^#[0-9a-f]{6}$/)
       expect(t.fogDensity).toBeGreaterThan(0)
     }
+    expect(DEFAULT_THEME).toBe('holotable')
+    expect(THEMES.holotable).toMatchObject({ background: '#010409', conduit: '#3fd0ff', glow: '#3fd0ff', text: '#d6f3ff' })
+  })
+
+  it('agrees with PALETTES on the fields both hold: background, glow (holo) and text (ink)', () => {
+    expect(Object.keys(PALETTES)).toEqual(Object.keys(THEMES))
+    for (const name of Object.keys(THEMES) as Array<keyof typeof THEMES>) {
+      expect(THEMES[name].background).toBe(PALETTES[name].background)
+      expect(THEMES[name].glow).toBe(PALETTES[name].holo)
+      expect(THEMES[name].text).toBe(PALETTES[name].ink)
+    }
+  })
+
+  it('a saved neon theme loads as holotable', () => {
+    expect(normalizeTheme('neon')).toBe('holotable')
+    for (const name of ['holotable', 'blueprint', 'glass']) expect(normalizeTheme(name)).toBe(name)
+    for (const name of ['nope', '', 'constructor', 'toString', 'NEON', undefined, null, 3]) expect(normalizeTheme(name)).toBeNull()
   })
 })
 
@@ -111,7 +129,7 @@ describe('renderFallback', () => {
     at(renderFallback(doc, 'p'))
     expect(host.querySelector('rect[data-id="b4"]')?.getAttribute('fill')).toBe('none')
     expect(host.querySelector('rect[data-id="b4"]')?.getAttribute('stroke-dasharray')).toBe('0.6 0.4')
-    expect(host.querySelector('rect[data-id="b1"]')?.getAttribute('fill')).toBe('#0078d4')
+    expect(host.querySelector('rect[data-id="b1"]')?.getAttribute('fill')).toBe(PALETTES.holotable.holo)
     expect(host.querySelector('[data-id="pb1"]')).toBeNull()
     expect(host.querySelector('button[data-id="b4"]')?.textContent).toContain('(proposed)')
     // The planned layer off: b4 and its connection e2 are left out.
@@ -177,5 +195,29 @@ describe('renderFallback', () => {
     const doc = rich()
     doc.districts = []; doc.buildings = []; doc.externals = []; doc.edges = []
     expect(renderFallback(doc, 'p')).toContain('<svg role="img"')
+  })
+})
+
+describe('renderFallback palette', () => {
+  const paint = (html: string, sel: string, attr: string): string | null => {
+    const host = document.createElement('div')
+    host.innerHTML = html
+    return host.querySelector(sel)?.getAttribute(attr) ?? null
+  }
+
+  it('draws the map in the Holotable palette by default, and in the palette it is given', () => {
+    const doc = rich()
+    for (const [p, html] of [[PALETTES.holotable, renderFallback(doc, 'p')], ...Object.values(PALETTES).map((q) => [q, renderFallback(doc, 'p', undefined, q)] as const)] as const) {
+      expect(paint(html, 'polygon[data-id="d1"]', 'stroke')).toBe(p.holo)
+      expect(paint(html, 'polygon[data-id="d1"]', 'fill')).toBe(p.holo)
+      expect(paint(html, 'polygon[data-id="d1"]', 'fill-opacity')).toBe('0.12')
+      expect(paint(html, 'line[data-id="e1"]', 'stroke')).toBe(p.muted)
+      expect(paint(html, 'rect[data-id="b1"]', 'fill')).toBe(p.holo)
+      expect(paint(html, 'rect[data-id="b4"]', 'stroke')).toBe(p.holo)
+      expect(paint(html, `rect[data-id="${doc.externals[0].id}"]`, 'fill')).toBe(p.orb)
+    }
+    // A gap (built, no tests) is amber, as on the 3D map.
+    expect(paint(renderFallback(doc, 'p'), 'rect[data-id="b3"]', 'fill')).toBe(PALETTES.holotable.attention)
+    expect(renderFallback(doc, 'p')).not.toMatch(/#0078d4|#1e2a38|#4fc1ff|#9ca3af|#c586c0/)
   })
 })

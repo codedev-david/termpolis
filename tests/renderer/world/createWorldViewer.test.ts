@@ -12,6 +12,8 @@ import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueu
 import type { TourStop } from '../../../src/renderer/src/world/engine/cards'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { building, minimal, rich } from './helpers'
+import { PALETTES } from '../../../src/renderer/src/world/engine/holoPalette'
+import { THEMES } from '../../../src/renderer/src/world/engine/themes'
 
 const { createThreeRenderer } = vi.hoisted(() => ({ createThreeRenderer: vi.fn() }))
 vi.mock('../../../src/renderer/src/world/engine/threeRenderer', () => ({ createThreeRenderer }))
@@ -475,8 +477,31 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     viewer.setLayers({ labels: 'tech' })
     expect(host.querySelector('section.world-fallback')).not.toBe(drawn)
     expect(host.querySelector('[data-kind="building"][data-id="b1"]')).not.toBeNull()
-    for (const t of ['neon', 'blueprint', 'glass'] as const) expect(() => viewer.setTheme(t)).not.toThrow()
+    for (const t of ['holotable', 'blueprint', 'glass'] as const) expect(() => viewer.setTheme(t)).not.toThrow()
     expect(() => viewer.setTheme('nope' as never)).not.toThrow()
+  })
+
+  it('draws the 2D map in the palette of the theme; a saved neon draws it in Holotable, an unknown name leaves it', () => {
+    const { viewer, host } = setup()
+    const map = (): string => (host.querySelector('section.world-fallback') as HTMLElement).innerHTML
+    expect(map()).toContain(`fill="${PALETTES.holotable.holo}"`) // the map opens in Holotable
+    viewer.setTheme('blueprint')
+    expect(map()).toContain(`fill="${PALETTES.blueprint.holo}"`)
+    expect(map()).not.toContain(`fill="${PALETTES.holotable.holo}"`)
+    viewer.setTheme('neon')
+    expect(map()).toContain(`fill="${PALETTES.holotable.holo}"`)
+    const drawn = host.querySelector('section.world-fallback')
+    viewer.setTheme('nope' as never)
+    expect(host.querySelector('section.world-fallback')).toBe(drawn)
+    // Before a world loads there is no map to draw again; the theme still holds for the first one.
+    const early = document.createElement('div')
+    document.body.appendChild(early)
+    const v = createWorldViewer(early, { renderCard: () => undefined })
+    v.setTheme('glass')
+    expect(early.querySelector('section.world-fallback')).toBeNull()
+    v.load(rich())
+    expect((early.querySelector('section.world-fallback') as HTMLElement).innerHTML).toContain(`fill="${PALETTES.glass.holo}"`)
+    v.dispose()
   })
 
   it('load replaces the world, clears the selection and redraws', () => {
@@ -1370,6 +1395,12 @@ describe('WebGL path (stand-in renderer)', () => {
     const { r, viewer } = setup3d()
     viewer.setTheme('glass')
     expect(r.setTheme).toHaveBeenLastCalledWith('glass', expect.objectContaining({ background: expect.any(String) }))
+    expect(r.setTheme.mock.calls[0]).toEqual(['holotable', THEMES.holotable]) // the renderer starts in Holotable
+    viewer.setTheme('neon') // a saved Neon is Holotable now (D2)
+    expect(r.setTheme).toHaveBeenLastCalledWith('holotable', THEMES.holotable)
+    const themed = r.setTheme.mock.calls.length
+    viewer.setTheme('nope' as never)
+    expect(r.setTheme.mock.calls.length).toBe(themed)
     const draws = r.draw.mock.calls.length
     viewer.setLayers({ allLineLabels: true })
     expect(r.draw.mock.calls.length).toBe(draws + 1)

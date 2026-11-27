@@ -6,10 +6,13 @@
 // button's role, and Enter and Space press it; none holds another (Y1).
 // The plan shows as on the 3D map (sceneModel's buildSceneModel): planned parts with the planned layer, and the parts
 // of the chosen design (or of a drafted proposal) that are not built yet, dashed; the parts a proposal takes away fade.
+// The picture takes the theme's palette (holoPalette.ts; look spec §7): plates and parts in its holo colour, a gap
+// (built, no tests) in its amber, connections in its muted colour and the outside in its orb colour.
 import type { Building, WorldDoc } from '../../../../shared/world/types'
 import { escapeHtml as esc } from './html'
 import { edgeSummary } from '../../../../shared/world/edgeText'
 import { placeOnMap, type MapPoint as Pt } from '../../../../shared/world/mapPlacement'
+import { PALETTES, type HoloPalette } from './holoPalette'
 
 const tag = (kind: 'district' | 'building' | 'edge', id: string): string => ` data-kind="${kind}" data-id="${esc(id)}"`
 const item = (kind: 'district' | 'building' | 'edge', id: string, body: string): string => `<button type="button"${tag(kind, id)}>${body}</button>`
@@ -60,7 +63,7 @@ function withPlan(doc: WorldDoc, plan: FallbackPlan): { view: WorldDoc; removed:
 }
 
 /** The map: positions are the layout's x and z, drawn as x right and z down, placed by the shared map placement. */
-function renderMap(doc: WorldDoc, title: string, label: (id: string) => string, removed: ReadonlySet<string>): string {
+function renderMap(doc: WorldDoc, title: string, label: (id: string) => string, removed: ReadonlySet<string>, p: HoloPalette): string {
   const placement = placeOnMap(doc)
   const at = placement.at
   const hexes = doc.districts.map((d, i) => ({ d, c: placement.districts[i] }))
@@ -78,26 +81,32 @@ function renderMap(doc: WorldDoc, title: string, label: (id: string) => string, 
   maxZ += MARGIN
   const polys = hexes.map(({ d, c }) => {
     const pts = [0, 1, 2, 3, 4, 5].map((k) => `${n2(c[0] + HEX_R * Math.cos((k * Math.PI) / 3))},${n2(c[1] + HEX_R * Math.sin((k * Math.PI) / 3))}`).join(' ')
-    return `<polygon${tag('district', d.id)} points="${pts}" fill="#1e2a38" stroke="#4fc1ff" stroke-width="0.3"><title>${esc(d.name)}</title></polygon>`
+    return `<polygon${tag('district', d.id)} points="${pts}" fill="${p.holo}" fill-opacity="0.12" stroke="${p.holo}" stroke-width="0.3"><title>${esc(d.name)}</title></polygon>`
   }).join('')
   const lines = doc.edges.filter((e) => at.has(e.from) && at.has(e.to)).map((e) => {
     const a = at.get(e.from) as Pt
     const b = at.get(e.to) as Pt
-    return `<line${tag('edge', e.id)} x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" stroke="#9ca3af" stroke-width="0.5"><title>${esc(label(e.from))} to ${esc(label(e.to))}</title></line>`
+    return `<line${tag('edge', e.id)} x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" stroke="${p.muted}" stroke-width="0.5"><title>${esc(label(e.from))} to ${esc(label(e.to))}</title></line>`
   }).join('')
   const rect = (id: string, name: string, paint: string): string => {
     const p = at.get(id) as Pt
     const fade = removed.has(id) ? ' opacity="0.4"' : ''
     return `<rect${tag('building', id)} x="${n2(p[0] - SIDE / 2)}" y="${n2(p[1] - SIDE / 2)}" width="${SIDE}" height="${SIDE}" ${paint}${fade}><title>${esc(name)}</title></rect>`
   }
-  // A planned part is not built yet: an outline, dashed, as the 3D map draws it as a wireframe.
-  const partPaint = (b: Building): string => (b.status === 'proposed' ? 'fill="none" stroke="#0078d4" stroke-width="0.3" stroke-dasharray="0.6 0.4"' : 'fill="#0078d4"')
-  const rects = doc.buildings.map((b) => rect(b.id, b.name, partPaint(b))).join('') + doc.externals.map((x) => rect(x.id, x.name, 'fill="#c586c0"')).join('')
+  // A planned part is not built yet: an outline, dashed, as the 3D map draws it as a wireframe. A gap is amber.
+  const partPaint = (b: Building): string => {
+    if (b.status === 'proposed') return `fill="none" stroke="${p.holo}" stroke-width="0.3" stroke-dasharray="0.6 0.4"`
+    return `fill="${b.status === 'gap' ? p.attention : p.holo}"`
+  }
+  const rects = doc.buildings.map((b) => rect(b.id, b.name, partPaint(b))).join('') + doc.externals.map((x) => rect(x.id, x.name, `fill="${p.orb}"`)).join('')
   return `<svg role="img" aria-label="Map of ${esc(title)}" viewBox="${n2(minX)} ${n2(minZ)} ${n2(maxX - minX)} ${n2(maxZ - minZ)}" style="width:100%;max-height:60vh">${polys}${lines}${rects}</svg>`
 }
 
-/** `title` is the project's display name (never its hashed key); `plan`, what the map shows of the plan. */
-export function renderFallback(world: WorldDoc, title: string, plan: FallbackPlan = NO_PLAN): string {
+/**
+ * `title` is the project's display name (never its hashed key); `plan`, what the map shows of the plan; `palette`, the
+ * theme's colours (Holotable when none is given).
+ */
+export function renderFallback(world: WorldDoc, title: string, plan: FallbackPlan = NO_PLAN, palette: HoloPalette = PALETTES.holotable): string {
   const { view: doc, removed } = withPlan(world, plan)
   const nameOf = new Map<string, string>()
   for (const b of doc.buildings) nameOf.set(b.id, b.name)
@@ -119,6 +128,6 @@ export function renderFallback(world: WorldDoc, title: string, plan: FallbackPla
   }).join('')
   const externals = doc.externals.map((x) => `<li>${item('building', x.id, `${esc(x.name)} (${esc(x.kind)})`)}</li>`).join('')
   const edges = doc.edges.map((e) => `<li>${item('edge', e.id, `${esc(label(e.from))} to ${esc(label(e.to))}: ${esc(edgeSummary(e.label))}`)}</li>`).join('')
-  return `<section class="world-fallback"><h2>${esc(title)}</h2>${renderMap(doc, title, label, removed)}<ul class="world-fallback-list">${districts}</ul>`
+  return `<section class="world-fallback"><h2>${esc(title)}</h2>${renderMap(doc, title, label, removed, palette)}<ul class="world-fallback-list">${districts}</ul>`
     + `<h3>Outside</h3><ul>${externals}</ul><h3>Connections</h3><ul>${edges}</ul></section>`
 }

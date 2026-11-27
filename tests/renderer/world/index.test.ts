@@ -8,7 +8,7 @@ describe('engine public surface', () => {
       expect(typeof engine[name]).toBe('function')
     }
     expect(engine.validateWorld).toBe(validateWorld)
-    expect(Object.keys(engine.THEMES)).toEqual(['neon', 'blueprint', 'glass'])
+    expect(Object.keys(engine.THEMES)).toEqual(['holotable', 'blueprint', 'glass'])
     expect(engine.DEFAULT_LAYERS.labels).toBe('jobs')
   })
 })

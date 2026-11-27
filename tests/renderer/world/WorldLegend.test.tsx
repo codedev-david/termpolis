@@ -143,10 +143,10 @@ describe('worldPane', () => {
     expect(worldPaneStyle('#123456', 480)).toMatchObject({ position: 'relative', width: 480, background: '#123456' })
   })
 
-  it('opens in the Neon background, the theme the pane starts in', () => {
-    expect(WORLD_OPENING_BACKGROUND).toBe(THEMES.neon.background)
+  it('opens in the Holotable background, the theme the pane starts in', () => {
+    expect(WORLD_OPENING_BACKGROUND).toBe(THEMES.holotable.background)
     render(<WorldPaneOpening width={500} overlay={null} onClose={() => {}} />)
-    expect(screen.getByTestId('world-view-opening')).toHaveStyle({ width: '500px', background: '#03050a' })
+    expect(screen.getByTestId('world-view-opening')).toHaveStyle({ width: '500px', background: '#010409' })
     expect(screen.getByRole('status')).toHaveTextContent('Opening Lumopolis…')
   })
 })

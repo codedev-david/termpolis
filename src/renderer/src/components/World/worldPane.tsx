@@ -13,8 +13,8 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import type { CSSProperties, RefObject } from 'react'
 import { uiScale } from '../../../../shared/world/uiScale'
 
-/** The Neon theme's background (themes.ts): the pane always opens in Neon. A test keeps the two equal. */
-export const WORLD_OPENING_BACKGROUND = '#03050a'
+/** The Holotable theme's background (themes.ts): the pane always opens in Holotable. A test keeps the two equal. */
+export const WORLD_OPENING_BACKGROUND = '#010409'
 
 export const WORLD_PANE_MIN_PX = 360
 export const TERMINAL_MIN_PX = 320

@@ -317,7 +317,7 @@ export function emptyText(over: Partial<SceneText> = {}): SceneText {
 }
 
 export const district = (id: string, pos: Vec3, radius = 20, over: Partial<SceneDistrict> = {}): SceneDistrict =>
-  ({ id, pos, radius, hue: 200, label: id.toUpperCase(), ...over })
+  ({ id, pos, radius, hue: 200, label: id.toUpperCase(), members: 1, ...over })
 
 export const bldg = (id: string, pos: Vec3, over: Partial<SceneBuilding> = {}): SceneBuilding =>
   ({ id, pos, floors: 3, height: 9, look: 'solid', ring: false, outline: false, heat: 0, ...over })

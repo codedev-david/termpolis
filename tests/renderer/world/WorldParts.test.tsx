@@ -558,7 +558,7 @@ describe('EvidenceView', () => {
 
 describe('WorldToolbar Export', () => {
   const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
-    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'holotable', onTheme: vi.fn(),
     tours: [], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
     bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
   })
@@ -641,7 +641,7 @@ describe('WorldToolbar Export', () => {
 
 describe('WorldToolbar in a narrow pane', () => {
   const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
-    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [{ id: 'p1', title: 'Split the core' }], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [{ id: 'p1', title: 'Split the core' }], onProposal: vi.fn(), theme: 'holotable', onTheme: vi.fn(),
     tours: [{ id: 't1', title: 'The tour', stops: [] } as unknown as WorldToolbarProps['tours'][number]], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
     bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
   })
@@ -915,7 +915,7 @@ describe('WorldToolbar in a narrow pane', () => {
 
 describe('WorldToolbar rows', () => {
   const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
-    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'holotable', onTheme: vi.fn(),
     tours: [], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
     bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
   })
