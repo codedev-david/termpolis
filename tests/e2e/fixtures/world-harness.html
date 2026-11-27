@@ -32,6 +32,8 @@
     const motion = new URLSearchParams(location.search).get('motion') === '1'
     const viewer = createWorldViewer(view, {
       reducedMotion: !motion,
+      // Every shader program that fails to link is counted (drawn().shaderErrors) and logged as an error.
+      countShaderErrors: true,
       renderCard: (html) => {
         card.innerHTML = html === null ? '' : html
         card.hidden = html === null
@@ -60,6 +62,8 @@
         viewer.load(next.doc, opts)
       },
       drawn: () => viewer.drawn(),
+      setQuality: (q) => viewer.setQuality(q),
+      setWorking: (on) => viewer.setWorking(on),
       screenPoint: (id) => viewer.screenPoint(id),
     }
     document.body.dataset.ready = '1'

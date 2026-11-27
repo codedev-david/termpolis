@@ -10,6 +10,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
 import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSignals'
@@ -25,6 +27,8 @@ import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import { DEFAULT_THEME, normalizeTheme, THEMES, type Theme, type ThemeName } from './themes'
 import { hexNumber, labelHalo, PALETTES } from './holoPalette'
+import { gradeOf, holoMarks } from './holoMarks'
+import { BEAM_FRAG, BEAM_VERT, beamParts, beamUniforms, DISC_FRAG, DISC_VERT, DISC_Y, discGain, discUniforms, GRADE_FRAG, GRADE_VERT, gradeUniforms, MOTION_HZ, SHAFT_FRAG, SHAFT_VERT, shaftParts, shaftUniforms, TRACK_Y } from './holoShaders'
 import { screenRect } from './screenRect'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
@@ -94,6 +98,12 @@ export interface RendererOptions {
    * whichever comes first, with the time its counted frames cover. A tier change starts a new window.
    */
   onFrameWindow?: (stats: FrameStats, spanMs: number) => void
+  /**
+   * Test only (the e2e harness, through WorldView under the worldProbe test flag; never set in use): counts the shader
+   * programs that fail to link (drawnCounts().shaderErrors), each also logged as an error, so e2e can see that every
+   * Holotable shader compiles on the GPU it runs on.
+   */
+  countShaderErrors?: boolean
 }
 
 export interface ThreeRenderer {
@@ -166,7 +176,7 @@ export interface ThreeRenderer {
    * frames have been drawn since the renderer was built (nothing is drawn while nothing changes). `software`: the
    * context is drawn in software (softwareRenderer), as read when it was made or last came back.
    */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; triangles: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean; perf: RendererPerf }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; triangles: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number; software: boolean; presented: number; contextLost: boolean; perf: RendererPerf; shaderErrors: number }
   /**
    * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
    * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
@@ -201,6 +211,11 @@ export interface ThreeRenderer {
    * ratio and budget, the composer (freed at Flat), the bloom's size and the dust. The frames after it are not counted.
    */
   setTier(tier: TierName): void
+  /**
+   * The world is working (a compile or an Ask under way) or done: while it works the projector disc's sweep turns,
+   * at the tiers whose scan lines move and never under reduced motion (look spec §3.2, §7).
+   */
+  setWorking(on: boolean): void
   /** Starts a frame-time window for the e2e harness (look spec §6.1): the counted gaps from now on. */
   perfBegin(): void
   /** Ends the window perfBegin started, and gives its frame times (no frames when none was started). */
@@ -361,6 +376,8 @@ export interface MotionState {
   exploded: string | null; explodeGap: number
   flight: FlightState
   lineLabels: number
+  /** How far the disc's cyan arcs have turned (radians), how far the working sweep has (turns), and how far the dust has risen. */
+  discAngle: number; sweep: number; dustDrift: number
 }
 /**
  * dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any
@@ -491,6 +508,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // frame. Drawn in software that is the CPU's work, and with the rest of a frame it took the GPU process past
   // Chromium's GPU watchdog at 4K and 5K (two such ends leave the map in 2D for good).
   const renderer = new THREE.WebGLRenderer({ antialias: false })
+  /** The shader programs that failed to link (counted in test mode only: countShaderErrors). */
+  let shaderErrors = 0
+  if (opts.countShaderErrors) {
+    renderer.debug.checkShaderErrors = true
+    renderer.debug.onShaderError = (gl, program) => {
+      shaderErrors++
+      console.error('[world] a shader program did not link:', gl.getProgramInfoLog(program))
+    }
+  }
   /**
    * The largest drawing buffer the GPU takes, [across, down]: the smallest of its biggest render buffer, its biggest
    * texture (the glow's passes draw into textures the buffer's size) and its biggest viewport. A bigger buffer (a 4K or larger display at the screen's pixel ratio) is not drawn as asked: the browser
@@ -770,6 +796,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let renderPass: RenderPass | null = null
   let bloom: UnrealBloomPass | null = null
   let outputPass: OutputPass | null = null
+  /** The grade (the vignette, and grain at High): the last pass, on the finished picture, as the spike draws it. */
+  let grade: ShaderPass | null = null
   /** The bloom's strength for the city drawn (a busy city glows less): kept, so a composer built later has it. */
   let bloomStrength = 1.0
   const buildComposer = (): void => {
@@ -788,16 +816,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     composer.addPass(b)
     outputPass = new OutputPass()
     composer.addPass(outputPass)
+    grade = new ShaderPass({ uniforms: { ...gradeUniforms(look) }, vertexShader: GRADE_VERT, fragmentShader: GRADE_FRAG })
+    composer.addPass(grade)
   }
   /** Frees the composer, its passes and their render targets (a tier without one, or the view closing). */
   const freeComposer = (): void => {
     bloom?.dispose()
     outputPass?.dispose()
+    grade?.dispose()
     renderPass?.dispose()
     composer?.dispose()
     composer = null
     renderPass = null
     outputPass = null
+    grade = null
     bloom = null
   }
   if (TIER_LOOK[look].composer) buildComposer()
@@ -861,6 +893,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   scene.add(dust)
   /** The dust points the tier draws (the first of them). */
   let dustDrawn = 0
+  /** How far the dust has risen in all (motionState). */
+  let dustDrift = 0
   const fitDust = (): void => {
     dustDrawn = TIER_LOOK[look].dust
     dustGeo.setDrawRange(0, dustDrawn)
@@ -904,6 +938,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   scene.add(changeLayer)
   const changes = createChangeAnimator(changeLayer, shared)
   let theme: Theme = THEMES[DEFAULT_THEME]
+  /** The Holotable palette of the theme drawn: the stage's colours. */
+  let palette = PALETTES[DEFAULT_THEME]
   let extras = EXTRAS[DEFAULT_THEME]
   scene.background = new THREE.Color(theme.background)
   const fog = new THREE.FogExp2(theme.background, theme.fogDensity)
@@ -1535,6 +1571,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fog.density = fogTarget
     applyFocus()
     applyTier()
+    buildStage(model)
+    fitStage()
     wake()
   }
 
@@ -2823,6 +2861,108 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // part moves (refill); between those, a frame only moves the packets.
   const batchLayer = new THREE.Group()
   scene.add(batchLayer)
+
+  // ---------------- the Holotable stage (look spec §3.2-3.4) ----------------
+  // The projector disc under the plates, the track the orbs ride, a beam under each plate and the light shafts, built
+  // with each world from its stage marks (holoMarks) at the fullest tier: each tier draws its share (fitStage), so a
+  // tier change builds nothing. The shaders and their uniforms are holoShaders'; the stars and the dust are above.
+  // Nothing here is picked (the picks test their own lists of objects).
+  const stage = new THREE.Group()
+  stage.name = 'holo-stage'
+  scene.add(stage)
+  let discMat: THREE.ShaderMaterial | null = null
+  let beams: THREE.Mesh | null = null
+  let shafts: THREE.Mesh | null = null
+  /** The index count that draws the first shaft, then both. */
+  let shaftEnds: number[] = []
+  /** The stage's materials whose light moves (uTime). */
+  let stageTimed: THREE.ShaderMaterial[] = []
+  /** The stage's clock (it stands still at Flat and under reduced motion) and the working sweep's. */
+  let stageT = 0
+  let sweepT = 0
+  /** A compile or an Ask is under way (setWorking). */
+  let working = false
+  const stageMaterial = (uniforms: Record<string, THREE.IUniform>, vertexShader: string, fragmentShader: string): THREE.ShaderMaterial => {
+    const m = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })
+    stageTimed.push(m)
+    return m
+  }
+  const addStage = (o: THREE.Mesh | THREE.LineLoop, kind: string, at: [number, number] | null): void => {
+    o.userData.stage = kind
+    o.renderOrder = BACKDROP_ORDER // under the plates, as the grid and the stars
+    if (at) o.position.set(at[0], DISC_Y, at[1])
+    stage.add(o)
+  }
+  const freeStage = (): void => {
+    for (const o of stage.children) {
+      const m = o as THREE.Mesh
+      m.geometry.dispose()
+      ;(m.material as THREE.Material).dispose()
+    }
+    stage.clear()
+    discMat = null
+    beams = null
+    shafts = null
+    stageTimed = []
+  }
+  const buildStage = (model: SceneModel): void => {
+    freeStage()
+    let at: [number, number] = [0, 0]
+    let radius = 0
+    for (const mark of holoMarks(model, palette, 'high').stage) {
+      if (mark.kind === 'disc') {
+        at = mark.center
+        radius = mark.radius
+        // A square round the disc a little past its outer ring of dots (the shader discards past 1.12 radii).
+        discMat = stageMaterial({ ...discUniforms(mark, look) }, DISC_VERT, DISC_FRAG)
+        discMat.side = THREE.FrontSide
+        discMat.extensions.derivatives = true // fwidth, for the rings' widths (WebGL 1)
+        addStage(new THREE.Mesh(new THREE.PlaneGeometry(radius * 2.3, radius * 2.3).rotateX(-Math.PI / 2), discMat), 'disc', at)
+      } else if (mark.kind === 'track') {
+        const pts: number[] = []
+        for (let i = 0; i < mark.segments; i++) {
+          const a = (i / mark.segments) * Math.PI * 2
+          pts.push(Math.cos(a) * mark.radius, TRACK_Y, Math.sin(a) * mark.radius)
+        }
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3))
+        const mat = new THREE.LineBasicMaterial({ color: mark.color, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })
+        addStage(new THREE.LineLoop(geo, mat), 'track', null)
+      } else if (mark.kind === 'beams' && mark.to.length > 0) {
+        const parts = beamParts(mark.to, model.districts.map((d) => d.radius))
+          .map((b) => new THREE.CylinderGeometry(b.radius, b.radius, 1, 6, 1, true).scale(1, b.y1 - b.y0, 1).translate(b.x, (b.y0 + b.y1) / 2, b.z))
+        beams = new THREE.Mesh(mergeGeometries(parts), stageMaterial({ ...beamUniforms(mark.color) }, BEAM_VERT, BEAM_FRAG))
+        for (const g of parts) g.dispose()
+        addStage(beams, 'beams', null)
+      } else if (mark.kind === 'shafts') {
+        const parts = shaftParts(radius, mark.count).map((p) => {
+          const g = new THREE.CylinderGeometry(p.radius, p.radius * 1.02, p.height, 96, 1, true).translate(0, p.height / 2, 0)
+          g.setAttribute('aK', new THREE.Float32BufferAttribute(new Array<number>(g.getAttribute('position').count).fill(p.k), 1))
+          return g
+        })
+        let end = 0
+        shaftEnds = parts.map((g) => (end += (g.index as THREE.BufferAttribute).count))
+        shafts = new THREE.Mesh(mergeGeometries(parts), stageMaterial({ ...shaftUniforms(palette.holo) }, SHAFT_VERT, SHAFT_FRAG))
+        for (const g of parts) g.dispose()
+        addStage(shafts, 'shafts', at)
+      }
+    }
+  }
+  /** The tier's share of the stage: the shafts it draws, the beams, the disc's gain and the grade's vignette and grain. */
+  const fitStage = (): void => {
+    const lk = TIER_LOOK[look]
+    if (discMat) discMat.uniforms.uGain.value = discGain(look)
+    if (beams) beams.visible = lk.beams
+    if (shafts) {
+      shafts.visible = lk.shafts > 0
+      shafts.geometry.setDrawRange(0, shaftEnds[Math.max(0, lk.shafts - 1)])
+    }
+    if (grade) {
+      const g = gradeOf(look)
+      grade.uniforms.uVignette.value = g.vignette
+      grade.uniforms.uGrain.value = g.grain
+    }
+  }
   renderer.setTransparentSort(transparentOrder as unknown as (a: unknown, b: unknown) => number)
   const instPool = new Map<string, THREE.InstancedMesh>()
   const bm = new THREE.Matrix4()
@@ -3175,7 +3315,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
     // the selection ring and the dust never stop, so a city with any of them never sleeps (drawn in software, it
     // draws them at the pace loopGap sets: see animate).
-    const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustDrawn > 0 || selRing?.visible === true))
+    // The stage's arcs, shafts and beams move at the tiers whose disc moves; its sweep only while the world works.
+    const stageOn = discMat !== null && TIER_LOOK[look].discMoving
+    const sweepOn = discMat !== null && working && TIER_LOOK[look].scanLinesMoving && !reduced
+    const looping = flowing || (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustDrawn > 0 || selRing?.visible === true || stageOn || sweepOn))
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
@@ -3228,8 +3371,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (dustDrawn > 0 && !reduced) {
       const dp = dustGeo.attributes.position.array as Float32Array
       for (let i = 1; i < dustDrawn * 3; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
+      dustDrift += dt * 1.1
       dustGeo.attributes.position.needsUpdate = true
     }
+    if (stageOn) stageT += mdt
+    if (sweepOn) sweepT += dt
+    for (const m of stageTimed) m.uniforms.uTime.value = stageT
+    if (discMat) {
+      discMat.uniforms.uSweep.value = sweepT * MOTION_HZ.sweep
+      discMat.uniforms.uSweepOn.value = sweepOn ? 1 : 0
+    }
+    // The grain's pattern steps MOTION_HZ.grain times a second, never per frame, and holds still under reduced motion.
+    if (grade) grade.uniforms.uSeed.value = reduced ? 0 : Math.floor(clock.elapsedTime * MOTION_HZ.grain)
     // The slow opening turn (it loops until a hand, a key or a flight ends it), or the glide after a hand lets go (damping).
     // The turn takes the frame's time, so it keeps its speed at any frame rate (the 60 fps turn of one call before).
     // So does the glide: OrbitControls spends a share of what is left of it on each update, and that share is the time
@@ -3344,6 +3497,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (known === null) return
       const th = THEMES[known] // the named theme's colours, whatever theme object came with the name
       theme = th
+      palette = PALETTES[known]
       host.style.setProperty('--world-bg', th.background) // behind the canvas, painted before any frame is
       paintHalo(known)
       extras = EXTRAS[known]
@@ -3401,7 +3555,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       tickChanges()
       return {
         processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, triangles, frames: frameNo, software, presented, contextLost: renderer.getContext().isContextLost(),
-        perf: perfNow(),
+        perf: perfNow(), shaderErrors,
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
         slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
@@ -3440,6 +3594,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         explodeGap: top ? top.position.y - (top.userData.baseY as number) : 0,
         flight: rig.flight(),
         lineLabels,
+        discAngle: stageT * MOTION_HZ.arcA * Math.PI * 2,
+        sweep: sweepT * MOTION_HZ.sweep,
+        dustDrift,
       }
     },
     keepGhosts(ids) {
@@ -3491,8 +3648,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (TIER_LOOK[t].composer && !composer) buildComposer()
       else if (!TIER_LOOK[t].composer && composer) freeComposer()
       fitDust()
+      fitStage()
       fitBuffer() // the tier's pixel ratio and budget, and the bloom's size; the next frames are not counted
       newWindow()
+      wake()
+    },
+    setWorking(on) {
+      if (disposed || on === working) return
+      working = on
       wake()
     },
     perf: () => perfNow(),
@@ -3550,6 +3713,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
       starGeo.dispose(); starMat.dispose()
       dustGeo.dispose(); dustMat.dispose()
+      freeStage()
       fogTex.dispose()
       dotTex.dispose()
       for (const g of shared) g.dispose()

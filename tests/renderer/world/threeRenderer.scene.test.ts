@@ -6,7 +6,12 @@ import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { batchCapacity } from '../../../src/renderer/src/world/engine/batching'
-import { bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, type Frames } from './threeHarness'
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { DISC_MIN_RADIUS, DISC_SCALE, holoMarks, layoutExtent, TRACK_SEGMENTS } from '../../../src/renderer/src/world/engine/holoMarks'
+import { PALETTES } from '../../../src/renderer/src/world/engine/holoPalette'
+import { DISC_GAIN, DISC_Y, GRADE_FRAG, linearRgb, PLATE_FOOT, TRACK_Y } from '../../../src/renderer/src/world/engine/holoShaders'
+import { THEMES } from '../../../src/renderer/src/world/engine/themes'
+import { bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, stageOf, stagePart, type Frames } from './threeHarness'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
@@ -53,7 +58,9 @@ describe('threeRenderer scene build', () => {
     expect(host.contains(r.canvas)).toBe(true)
     expect(host.querySelector('.lw-labels')).not.toBeNull()
     const [composer] = gpu.composers
-    expect(composer.passes).toEqual([gpu.renderPasses[0], gpu.bloomPasses[0], gpu.outputPasses[0]])
+    expect(composer.passes.slice(0, 3)).toEqual([gpu.renderPasses[0], gpu.bloomPasses[0], gpu.outputPasses[0]])
+    expect(composer.passes).toHaveLength(4)
+    expect(composer.passes[3]).toBeInstanceOf(ShaderPass) // the grade, last: on the finished picture, as the spike's
     const bloom = gpu.bloomPasses[0]
     expect([bloom.resolution.x, bloom.resolution.y, bloom.strength, bloom.radius, bloom.threshold]).toEqual([800, 600, 1, 0.55, 0.12])
     const scene = sceneOf()
@@ -259,3 +266,209 @@ describe('threeRenderer scene build', () => {
   })
 })
 
+describe('threeRenderer Holotable stage', () => {
+  /** The disc's uniform values. */
+  const discU = (scene: THREE.Scene): Record<string, { value: unknown }> => (stagePart(scene, 'disc')!.material as THREE.ShaderMaterial).uniforms
+  /** How many shafts the shafts' mesh draws (each open cylinder of 96 sides is 576 indices), 0 when hidden. */
+  const shaftsDrawn = (scene: THREE.Scene): number => {
+    const m = stagePart(scene, 'shafts')
+    return m && m.visible ? m.geometry.drawRange.count / 576 : 0
+  }
+  /** The stage parts drawn (each one draw call). */
+  const stageDraws = (scene: THREE.Scene): string[] => stageOf(scene).children.filter((c) => c.visible).map((c) => c.userData.stage as string)
+
+  it('the disc radius follows the layout extent', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    const scene = sceneOf()
+    expect(stageOf(scene).children).toEqual([]) // no world, no table
+    const m: SceneModel = { districts: [district('a', [0, 0, 0], 20), district('b', [40, 0, 0], 10)], buildings: [], conduits: [], orbs: [] }
+    r.draw(m, emptyText(), false)
+    frames.step()
+    // The box round the plates runs -20..50 across and -20..20 down: centre (15, 0), each plate's edge 35 from it.
+    expect(layoutExtent(m)).toMatchObject({ center: [15, 0], reach: 35 })
+    const disc = stagePart(scene, 'disc')!
+    const R = 35 * DISC_SCALE
+    expect(discU(scene).uR.value).toBeCloseTo(R, 10)
+    expect(disc.position.toArray()).toEqual([15, DISC_Y, 0])
+    expect((disc.geometry as THREE.PlaneGeometry).parameters).toMatchObject({ width: R * 2.3, height: R * 2.3 })
+    expect(disc.geometry.getAttribute('position').getY(0)).toBeCloseTo(0, 10) // laid flat on the table
+    expect(disc.renderOrder).toBeLessThan(0) // drawn first, under the plates (BACKDROP_ORDER)
+    const mat = disc.material as THREE.ShaderMaterial
+    expect([mat.transparent, mat.depthWrite, mat.blending, mat.extensions.derivatives]).toEqual([true, false, THREE.AdditiveBlending, true])
+    // The marks' own disc, in the Holotable palette.
+    const mark = holoMarks(m, PALETTES.holotable).stage.find((s) => s.kind === 'disc')
+    expect(mark).toMatchObject({ radius: R, center: [15, 0] })
+    expect(discU(scene).uCyan.value).toEqual(linearRgb(PALETTES.holotable.holo))
+    expect(discU(scene).uAmber.value).toEqual(linearRgb(PALETTES.holotable.attention))
+    expect(discU(scene).uGain.value).toBe(DISC_GAIN.bloomed)
+    // A world twice as wide: a disc twice the size, and the old one freed.
+    const freed: string[] = []
+    disc.geometry.addEventListener('dispose', () => { freed.push('geo') })
+    mat.addEventListener('dispose', () => { freed.push('mat') })
+    r.draw({ ...m, districts: [district('a', [0, 0, 0], 40), district('b', [80, 0, 0], 20)] }, emptyText(), false)
+    expect(freed).toEqual(['geo', 'mat'])
+    expect(discU(scene).uR.value).toBeCloseTo(70 * DISC_SCALE, 10)
+    expect(stagePart(scene, 'disc')!.position.x).toBe(30)
+    // A world without plates still stands on the smallest table; another palette colours it.
+    r.setTheme('blueprint', THEMES.blueprint)
+    r.draw({ districts: [], buildings: [], conduits: [], orbs: [] }, emptyText(), false)
+    expect(discU(scene).uR.value).toBe(DISC_MIN_RADIUS)
+    expect(discU(scene).uCyan.value).toEqual(linearRgb(PALETTES.blueprint.holo))
+    expect(stagePart(scene, 'disc')!.position.toArray()).toEqual([0, DISC_Y, 0])
+    // Dispose frees the stage with the rest.
+    const last = stagePart(scene, 'disc')!
+    let gone = 0
+    last.geometry.addEventListener('dispose', () => { gone++ })
+    r.dispose()
+    expect(gone).toBe(1)
+  })
+
+  it('no track without orbs; the track sits at the orb ring radius', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    const scene = sceneOf()
+    r.draw({ ...smallCity(), orbs: [] }, smallText(), false)
+    expect(stagePart(scene, 'track')).toBeUndefined()
+    // smallCity's one orb stands at (30, 40): 50 from the origin the compiler rings the orbs round.
+    r.draw(smallCity(), smallText(), false)
+    const track = stagePart(scene, 'track') as unknown as THREE.LineLoop
+    expect(track).toBeInstanceOf(THREE.LineLoop)
+    const pos = track.geometry.getAttribute('position')
+    expect(pos.count).toBe(TRACK_SEGMENTS)
+    for (let i = 0; i < pos.count; i += 37) {
+      expect(Math.hypot(pos.getX(i), pos.getZ(i))).toBeCloseTo(50, 4)
+      expect(pos.getY(i)).toBeCloseTo(TRACK_Y, 6)
+    }
+    const mat = track.material as THREE.LineBasicMaterial
+    expect([mat.transparent, mat.depthWrite, mat.blending]).toEqual([true, false, THREE.AdditiveBlending])
+    expect(mat.color.getHex()).toBe(new THREE.Color(PALETTES.holotable.holo).getHex())
+    expect(track.renderOrder).toBeLessThan(0)
+    // The farthest orb sets the ring.
+    r.draw({ ...smallCity(), orbs: [orb('x', [30, 0, 40]), orb('y', [0, 0, -90])] }, smallText(), false)
+    const far = (stagePart(scene, 'track') as unknown as THREE.LineLoop).geometry.getAttribute('position')
+    expect(Math.hypot(far.getX(0), far.getZ(0))).toBeCloseTo(90, 4)
+    r.dispose()
+  })
+
+  it('one beam per district rises from the disc to the underside of its plate', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    const scene = sceneOf()
+    r.draw(smallCity(), smallText(), false)
+    const beams = stagePart(scene, 'beams')!
+    const pos = beams.geometry.getAttribute('position')
+    expect(pos.count).toBe(2 * 2 * 7) // two open hexagonal prisms (7 vertices round, top and bottom), merged into one draw
+    const ys = new Set<number>()
+    for (let i = 0; i < pos.count; i++) ys.add(Math.round(pos.getY(i) * 1e5) / 1e5)
+    expect([...ys].sort((a, b) => a - b)).toEqual([DISC_Y, PLATE_FOOT])
+    // The first prism stands on d1 at the origin inside its rim (radius 20), the second on d2 at (60, 0).
+    expect(Math.hypot(pos.getX(0), pos.getZ(0))).toBeCloseTo(20 * 0.86, 4)
+    expect(Math.hypot(pos.getX(14) - 60, pos.getZ(14))).toBeCloseTo(16 * 0.86, 4)
+    const mat = beams.material as THREE.ShaderMaterial
+    expect([mat.transparent, mat.depthWrite, mat.blending, mat.side]).toEqual([true, false, THREE.AdditiveBlending, THREE.DoubleSide])
+    // No districts, no beams.
+    r.draw({ districts: [], buildings: [], conduits: [], orbs: [orb('x', [5, 0, 5])] }, emptyText(), false)
+    expect(stagePart(scene, 'beams')).toBeUndefined()
+    r.dispose()
+  })
+
+  it('High draws 2 shafts and 1800 dust, Low 1 and 600, Flat none', () => {
+    for (const tier of ['high', 'low', 'flat'] as const) {
+      gpu.reset()
+      const r = createThreeRenderer(host, { quality: tier, reducedMotion: false })
+      r.draw(smallCity(), smallText(), false)
+      frames.step()
+      const scene = sceneOf() // the last frame's (Flat has no composer to read it from before one is drawn)
+      const want = { high: [2, 1800], low: [1, 600], flat: [0, 0] }[tier]
+      expect([shaftsDrawn(scene), r.motionState().dust], tier).toEqual(want)
+      // The disc, the track, the beams and the shafts: one draw each; Flat draws the disc and the track only.
+      expect(stageDraws(scene), tier).toEqual(tier === 'flat' ? ['disc', 'track'] : ['disc', 'track', 'beams', 'shafts'])
+      r.dispose()
+    }
+    // The shafts stand on the disc: the wide one as wide as the disc, the narrow one at 62%, their strength per vertex.
+    gpu.reset()
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    const scene = sceneOf()
+    r.draw(smallCity(), smallText(), false)
+    const shafts = stagePart(scene, 'shafts')!
+    const R = discU(scene).uR.value as number
+    expect(shafts.position.toArray()).toEqual(stagePart(scene, 'disc')!.position.toArray())
+    const pos = shafts.geometry.getAttribute('position')
+    const k = shafts.geometry.getAttribute('aK')
+    expect(k.count).toBe(pos.count)
+    expect(Math.hypot(pos.getX(0), pos.getZ(0))).toBeCloseTo(R, 4)
+    expect(pos.getY(0)).toBeCloseTo(R * 0.55, 4) // the top ring first; the shaft stands on the disc (its foot at 0)
+    expect(k.getX(0)).toBe(1)
+    expect(k.getX(pos.count - 1)).toBeCloseTo(0.6, 6)
+    expect(Math.hypot(pos.getX(pos.count - 1), pos.getZ(pos.count - 1))).toBeCloseTo(R * 0.62 * 1.02, 4) // the narrow one's foot
+    expect(pos.getY(pos.count - 1)).toBeCloseTo(0, 6)
+    const mat = shafts.material as THREE.ShaderMaterial
+    expect([mat.transparent, mat.depthWrite, mat.blending, mat.side]).toEqual([true, false, THREE.AdditiveBlending, THREE.DoubleSide])
+    // A tier change draws its share of the same shafts, and hides the beams at Flat, building nothing again.
+    const built = shafts.geometry
+    r.setTier('low')
+    expect(shaftsDrawn(scene)).toBe(1)
+    expect(discU(scene).uGain.value).toBe(DISC_GAIN.bloomed)
+    r.setTier('flat')
+    expect(stageDraws(scene)).toEqual(['disc', 'track'])
+    expect(discU(scene).uGain.value).toBe(DISC_GAIN.flat) // brighter where no bloom adds its glow
+    r.setTier('high')
+    expect(shaftsDrawn(scene)).toBe(2)
+    expect(stageDraws(scene)).toEqual(['disc', 'track', 'beams', 'shafts'])
+    expect(stagePart(scene, 'shafts')!.geometry).toBe(built)
+    r.dispose()
+  })
+
+  it('the grade pass has grain only at High', () => {
+    const gradeAt = (i: number): ShaderPass => gpu.composers[i].passes[3] as unknown as ShaderPass
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    const grade = gradeAt(0)
+    expect(grade.material.fragmentShader).toBe(GRADE_FRAG)
+    expect([grade.uniforms.uVignette.value, grade.uniforms.uGrain.value]).toEqual([0.5, 0.03])
+    r.setTier('low')
+    expect(gradeAt(0)).toBe(grade) // the same pass
+    expect([grade.uniforms.uVignette.value, grade.uniforms.uGrain.value]).toEqual([0.5, 0])
+    let freed = 0
+    grade.material.addEventListener('dispose', () => { freed++ })
+    r.setTier('flat')
+    expect(freed).toBe(1) // freed with the composer
+    r.setTier('high')
+    expect([gradeAt(1).uniforms.uVignette.value, gradeAt(1).uniforms.uGrain.value]).toEqual([0.5, 0.03])
+    r.dispose()
+    gpu.reset()
+    const low = createThreeRenderer(host, { quality: 'low', reducedMotion: false })
+    expect([gradeAt(0).uniforms.uVignette.value, gradeAt(0).uniforms.uGrain.value]).toEqual([0.5, 0])
+    low.dispose()
+  })
+
+  it('the grain changes at most 2.5 times a second, and never under reduced motion', () => {
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    r.draw(smallCity(), smallText(), false)
+    const grade = gpu.composers[0].passes[3] as unknown as ShaderPass
+    const seeds = new Set<number>()
+    for (let i = 0; i < 125; i++) { frames.step(16); seeds.add(grade.uniforms.uSeed.value as number) } // 2 s
+    expect(seeds.size).toBeGreaterThan(1)
+    expect(seeds.size).toBeLessThanOrEqual(2 * 2.5 + 1)
+    r.setReducedMotion(true)
+    frames.step(16)
+    expect(grade.uniforms.uSeed.value).toBe(0)
+    r.dispose()
+  })
+
+  it('counts the shader programs that fail to link, in test mode only', () => {
+    const plain = createThreeRenderer(host, DEFAULT_OPTS)
+    expect(rendererOf().debug.onShaderError).toBeNull() // three's own report (console.error), untouched
+    expect(plain.drawnCounts().shaderErrors).toBe(0)
+    plain.dispose()
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = createThreeRenderer(host, { ...DEFAULT_OPTS, countShaderErrors: true })
+    const { debug } = rendererOf()
+    expect(debug.checkShaderErrors).toBe(true)
+    debug.onShaderError!({ getProgramInfoLog: () => 'ERROR: 0:12: undeclared identifier' }, {}, {}, {})
+    debug.onShaderError!({ getProgramInfoLog: () => null }, {}, {}, {})
+    expect(r.drawnCounts().shaderErrors).toBe(2)
+    expect(err.mock.calls).toEqual([
+      ['[world] a shader program did not link:', 'ERROR: 0:12: undeclared identifier'],
+      ['[world] a shader program did not link:', null],
+    ])
+    r.dispose()
+  })
+})

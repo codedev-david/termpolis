@@ -20,6 +20,12 @@ export const TRACK_SEGMENTS = 256
 const VIGNETTE = 0.5
 const GRAIN = 0.03
 
+/** The grade pass's vignette and grain at `tier`: none without a composer, grain only where the tier has it. */
+export function gradeOf(tier: TierName): { vignette: number; grain: number } {
+  const look = TIER_LOOK[tier]
+  return { vignette: look.composer ? VIGNETTE : 0, grain: look.grain ? GRAIN : 0 }
+}
+
 export type DataMark =
   | { kind: 'plate'; id: string; pos: Vec3; radius: number; hue: number; color: string; gain: number; members: number }
   | {
@@ -104,7 +110,7 @@ export function holoMarks(scene: SceneModel, palette: HoloPalette, tier: TierNam
   stage.push(
     { kind: 'shafts', count: look.shafts },
     { kind: 'dust', count: look.dust, stars: true },
-    { kind: 'vignetteGrain', vignette: look.composer ? VIGNETTE : 0, grain: look.grain ? GRAIN : 0 },
+    { kind: 'vignetteGrain', ...gradeOf(tier) },
   )
   return { data, stage }
 }

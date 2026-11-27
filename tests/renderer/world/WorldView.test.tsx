@@ -31,7 +31,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4, software: h.software, ...(h.perf ? { perf: h.perf } : {}) })),
         perf: vi.fn(() => h.perf),
-        perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })), setQuality: vi.fn(),
+        perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 3, p50: 16, p95: 18, p99: 18, worst: 18 })), setQuality: vi.fn(), setWorking: vi.fn(),
         cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
         setCamera: vi.fn(async () => undefined),
       }
@@ -1209,13 +1209,16 @@ describe('WorldView', () => {
     expect(b.api.worldRelayout).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
     fireEvent.click(screen.getByTestId('world-relayout-go'))
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true) // the world at work: its disc sweeps
     expect(b.api.worldRelayout).toHaveBeenCalledWith('/repo')
     expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-laying out…')
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
     await act(async () => { run.resolve(ok(relaid)) })
     await settle()
     expect(viewer().load).toHaveBeenLastCalledWith(relaid, { animateFrom: viewer().load.mock.calls[0][0] })
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
     expect(screen.queryByTestId('world-notice')).toBeNull()
 
     b.api.worldRelayout.mockResolvedValueOnce(fail('host crashed'))
@@ -1357,11 +1360,13 @@ describe('WorldView', () => {
       bridge()
       const a = await mount()
       expect(viewer().opts).not.toHaveProperty('firstFrameSlowdown')
+      expect(viewer().opts).not.toHaveProperty('countShaderErrors')
       a.unmount()
       ;(window as any).termpolisTestFlags = { worldProbe: true }
       bridge()
       await mount()
       const slow = viewer().opts.firstFrameSlowdown as () => number
+      expect(viewer().opts.countShaderErrors).toBe(true) // e2e reads drawn().shaderErrors
       expect(slow()).toBe(1)
       ;(window as any).__worldFirstFrameSlowdown = 2
       try {
@@ -3081,6 +3086,7 @@ describe('WorldView export', () => {
     const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(first)) }))
     const m = await mountWith()
     expect(viewer().load).toHaveBeenLastCalledWith(first)
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true) // a first map: the complete world is still compiling
     expect(screen.queryByTestId('world-export')).toBeNull()
     await m.again({ exportRequest: { kind: 'world', seq: 1 } })
     expect(screen.queryByTestId('world-export-dialog')).toBeNull()
@@ -3088,6 +3094,7 @@ describe('WorldView export', () => {
     b.api.worldGet.mockResolvedValue(ok(minimal()))
     await b.updated({ root: '/repo', projectKey: 'k' })
     await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
     expect(screen.getByTestId('world-export')).toBeInTheDocument()
     expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
   })

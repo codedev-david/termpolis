@@ -141,13 +141,15 @@ const frameRateLine = (p: WorldDrawn['perf']): string =>
 /**
  * Test only, under the e2e harness's worldProbe flag: the viewer's staged first-frame slowdown
  * (window.__worldFirstFrameSlowdown, read when the first frame is drawn) and the tier an Auto map starts at
- * (window.__worldStartTier, read when the viewer is made; anything but a tier's name is ignored).
+ * (window.__worldStartTier, read when the viewer is made; anything but a tier's name is ignored), and a count of the
+ * shader programs that fail to link (drawn().shaderErrors: every Holotable shader compiles on the GPU e2e runs on).
  */
-const probeOptions = (): Pick<WorldViewerOptions, 'firstFrameSlowdown' | 'startTier'> => {
+const probeOptions = (): Pick<WorldViewerOptions, 'firstFrameSlowdown' | 'startTier' | 'countShaderErrors'> => {
   const w = window as unknown as { __worldFirstFrameSlowdown?: unknown; __worldStartTier?: unknown }
   const start = w.__worldStartTier
   return {
     firstFrameSlowdown: () => Number(w.__worldFirstFrameSlowdown) || 1,
+    countShaderErrors: true,
     ...(start === 'high' || start === 'low' || start === 'flat' ? { startTier: start } : {}),
   }
 }
@@ -392,6 +394,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // The ask box's side: its Esc handler, whether it is answering, and a world held back meanwhile.
   const askEscRef = useRef<(() => boolean) | null>(null)
   const askBusyRef = useRef(false)
+  /** The ask box is answering (askBusyRef, as state): the map shows the world at work (setWorking). */
+  const [askBusy, setAskBusy] = useState(false)
   const heldDocRef = useRef<WorldDoc | null>(null)
   /** The doc a status-only push brought (CI's late answer, WP4b fix round 1, M6): the viewer restyles it in place. */
   const statusOnlyRef = useRef<WorldDoc | null>(null)
@@ -411,6 +415,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     onEscape: (fn) => { askEscRef.current = fn },
     setBusy: (b) => {
       askBusyRef.current = b
+      setAskBusy(b) // after the pane closed React drops it
       const held = heldDocRef.current
       if (b || held === null) return
       heldDocRef.current = null
@@ -748,6 +753,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // The Quality menu's choice reaches the viewer as it is read from the settings and as it is picked.
   useEffect(() => { viewer?.setQuality(quality) }, [viewer, quality])
+
+  // The world at work, its projector disc sweeping (look spec §3.2): an Ask answering, a relayout or a repository
+  // update under way, or a first map shown while the full world compiles.
+  const working = askBusy || busy || repoBusy || doc?.provisional === true
+  useEffect(() => { viewer?.setWorking(working) }, [viewer, working])
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc

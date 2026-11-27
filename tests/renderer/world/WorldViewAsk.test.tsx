@@ -18,7 +18,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn(() => () => undefined),
-        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), requestFrame: vi.fn(), setTitle: vi.fn(), dispose: vi.fn(), setQuality: vi.fn(),
+        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), requestFrame: vi.fn(), setTitle: vi.fn(), dispose: vi.fn(), setQuality: vi.fn(), setWorking: vi.fn(),
         screenPoint: vi.fn(() => null),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 0 })),
       }
@@ -484,6 +484,24 @@ describe('an Ask made on a first map (fix round 2, R1)', () => {
     await act(async () => { reply.resolve(answered(askIdOf(b))) })
     await settle()
     playedAfterLoad(v, c)
+  })
+
+  it('the map shows the world at work while the ask box answers, and the link does nothing once the pane is closed', async () => {
+    bridge()
+    let link: WorldAskLink | undefined
+    const grab: NonNullable<WorldViewProps['askSlot']> = (_v, _d, _r, l) => { link = l; return null }
+    const view = render(<WorldView root="/repo" onClose={vi.fn()} askSlot={grab} />)
+    await settle()
+    const v = viewer()
+    expect(v.setWorking).toHaveBeenLastCalledWith(false)
+    act(() => { (link as WorldAskLink).setBusy(true) })
+    expect(v.setWorking).toHaveBeenLastCalledWith(true)
+    act(() => { (link as WorldAskLink).setBusy(false) })
+    expect(v.setWorking).toHaveBeenLastCalledWith(false)
+    const calls = v.setWorking.mock.calls.length
+    view.unmount()
+    ;(link as WorldAskLink).setBusy(true) // a late answer after the pane closed: no state set on it
+    expect(v.setWorking).toHaveBeenCalledTimes(calls)
   })
 
   it('the pane answers false to a tour waiting on a world it no longer shows: another root opened, or the pane closed (fix round 3, N4, N5)', async () => {

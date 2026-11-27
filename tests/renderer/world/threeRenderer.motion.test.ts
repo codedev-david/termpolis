@@ -7,8 +7,9 @@ import { createThreeRenderer } from '../../../src/renderer/src/world/engine/thre
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import {
   bldg, boxCanvas, cameraOf, DEFAULT_OPTS, district, emptyText, floorsOf, makeHost, orb, packetBatches, rendererOf, sceneOf,
-  smallCity, smallText, withHarness, withData, worldOf,
+  smallCity, smallText, stagePart, withHarness, withData, worldOf,
 } from './threeHarness'
+import { MOTION_HZ } from '../../../src/renderer/src/world/engine/holoShaders'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
@@ -501,6 +502,94 @@ describe('threeRenderer motion', () => {
     const world = worldOf(sceneOf())
     for (const fl of floorsOf(world, 'a')) expect(fl.visible).toBe(false) // drawn by the batch again
     expect(withData(world, 'nodeId').length).toBeGreaterThan(0)
+    r.dispose()
+  })
+})
+
+describe('threeRenderer Holotable stage motion', () => {
+  /** The disc's uniforms, as the last frame set them. */
+  const discU = (): Record<string, { value: unknown }> => (stagePart(sceneOf(), 'disc')!.material as THREE.ShaderMaterial).uniforms
+  const uTime = (kind: string): number => ((stagePart(sceneOf(), kind)!.material as THREE.ShaderMaterial).uniforms.uTime.value as number)
+
+  it('the sweep runs only while working, and never under reduced motion', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(20, 50)
+    expect(r.motionState().sweep).toBe(0)
+    expect(discU().uSweepOn.value).toBe(0)
+    // Working: the sweep turns at MOTION_HZ.sweep turns a second, and the disc shows it.
+    r.setWorking(true)
+    h.frames.run(20, 50) // a second
+    const s1 = r.motionState().sweep
+    expect(s1).toBeGreaterThan(0.9 * MOTION_HZ.sweep)
+    expect(s1).toBeLessThanOrEqual(1.05 * MOTION_HZ.sweep)
+    expect(discU().uSweepOn.value).toBe(1)
+    expect(discU().uSweep.value).toBe(s1)
+    r.setWorking(true) // no change
+    // Done: it holds where it was and the disc stops showing it.
+    r.setWorking(false)
+    h.frames.run(20, 50)
+    expect(r.motionState().sweep).toBe(s1)
+    expect(discU().uSweepOn.value).toBe(0)
+    // Working under reduced motion: nothing sweeps.
+    r.setWorking(true)
+    r.setReducedMotion(true)
+    h.frames.run(20, 50)
+    expect(r.motionState().sweep).toBe(s1)
+    expect(discU().uSweepOn.value).toBe(0)
+    // Motion back on at Low: it sweeps again; at Flat the scan lines hold still.
+    r.setReducedMotion(false)
+    r.setTier('low')
+    h.frames.run(20, 50)
+    const s2 = r.motionState().sweep
+    expect(s2).toBeGreaterThan(s1)
+    r.setTier('flat')
+    h.frames.run(20, 50)
+    expect(r.motionState().sweep).toBe(s2)
+    expect(discU().uSweepOn.value).toBe(0)
+    r.dispose()
+    r.setWorking(false) // after dispose: nothing
+  })
+
+  it('the disc arcs, the shafts, the beams and the dust move at High and Low, hold still at Flat and under reduced motion', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    expect(r.motionState()).toMatchObject({ discAngle: 0, sweep: 0, dustDrift: 0 })
+    r.draw(smallCity(), smallText(), false)
+    h.frames.run(20, 50)
+    const a1 = r.motionState()
+    expect(a1.discAngle).toBeGreaterThan(0)
+    expect(a1.discAngle).toBeCloseTo(uTime('disc') * MOTION_HZ.arcA * Math.PI * 2, 10)
+    expect(a1.dustDrift).toBeGreaterThan(0)
+    expect(uTime('shafts')).toBe(uTime('disc'))
+    expect(uTime('beams')).toBe(uTime('disc'))
+    r.setTier('low')
+    h.frames.run(20, 50)
+    const a2 = r.motionState()
+    expect(a2.discAngle).toBeGreaterThan(a1.discAngle)
+    expect(a2.dustDrift).toBeGreaterThan(a1.dustDrift)
+    r.setTier('flat')
+    h.frames.run(20, 50)
+    expect(r.motionState()).toMatchObject({ discAngle: a2.discAngle, dustDrift: a2.dustDrift })
+    r.setTier('high')
+    r.setReducedMotion(true)
+    h.frames.run(20, 50)
+    expect(r.motionState()).toMatchObject({ discAngle: a2.discAngle, dustDrift: a2.dustDrift })
+    r.dispose()
+  })
+
+  it('an idle world at Flat sleeps while working: Flat has no sweep to draw', () => {
+    const r = createThreeRenderer(h.host, { quality: 'flat', reducedMotion: false })
+    const calm: SceneModel = { districts: [district('d', [0, 0, 0], 20)], buildings: [bldg('p', [-4, 0, 0])], conduits: [], orbs: [] }
+    r.draw(calm, smallText(), false)
+    void r.overview(true) // ends the opening turn
+    r.setWorking(true)
+    let n = 0
+    while (h.frames.pending() > 0 && n < 2000) { h.frames.step(); n++ }
+    expect(h.frames.pending()).toBe(0)
+    // At Low the same world keeps drawing (the sweep, the disc's arcs and the dust).
+    r.setTier('low')
+    h.frames.run(5)
+    expect(h.frames.pending()).toBe(1)
     r.dispose()
   })
 })

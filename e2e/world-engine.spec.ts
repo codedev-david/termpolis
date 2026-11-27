@@ -90,10 +90,12 @@ test('clicking a building opens its card, Esc closes it', async () => {
 const WORLD_A = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.min.json'), 'utf8')) as unknown
 const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.grown.json'), 'utf8')) as unknown
 
-type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
+type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number; discAngle: number; sweep: number; dustDrift: number }
 interface Harness {
   load(doc: unknown, opts?: { animateFrom?: unknown }): void
-  drawn(): { changing: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }> }
+  drawn(): { changing: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }>; frames: number; presented: number; shaderErrors: number; perf: { tier: string } }
+  setQuality(q: 'high' | 'low' | 'flat' | 'auto'): void
+  setWorking(on: boolean): void
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -135,11 +137,32 @@ test('load A, then B with 2 added: after 1 s both are visible and the toast read
   }
 })
 
-/** The four motions as the last frame drew them. Only those: the rest of `visual` (which line labels show, say) is layout, not motion. */
+/**
+ * The motions as the last frame drew them: the four above, and the Holotable stage's (the disc's arcs, its working
+ * sweep, the dust). Only those: the rest of `visual` (which line labels show, say) is layout, not motion.
+ */
 const readMotion = (): Promise<Visual> => page.evaluate(() => {
-  const { ringAngle, fogDrift, wirePulse, selectionRingAngle } = (window as unknown as HarnessWindow).__worldTest.drawn().visual
-  return { ringAngle, fogDrift, wirePulse, selectionRingAngle }
+  const { ringAngle, fogDrift, wirePulse, selectionRingAngle, discAngle, sweep, dustDrift } = (window as unknown as HarnessWindow).__worldTest.drawn().visual
+  return { ringAngle, fogDrift, wirePulse, selectionRingAngle, discAngle, sweep, dustDrift }
 })
+
+/**
+ * Draws world A at High (the tier whose disc turns and whose dust drifts; software 'auto' would pick Flat) with the
+ * world at work (the disc's sweep on), once its first frame is shown, and waits for a frame of it at High.
+ */
+async function stageAtHighWorking(): Promise<void> {
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().presented), { timeout: 30_000 }).toBeGreaterThan(0)
+  const before = await page.evaluate((a) => {
+    const t = (window as unknown as HarnessWindow).__worldTest
+    t.setQuality('high')
+    t.setWorking(true)
+    t.load(a)
+    return t.drawn().frames
+  }, WORLD_A)
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().perf.tier), { timeout: 30_000 }).toBe('high')
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().frames), { timeout: 30_000 }).toBeGreaterThan(before)
+}
 
 /** Loads A with its first building guessed (so it is fog), selects the verified one, and reads the four motions 800 ms apart. */
 async function motionTwice(): Promise<[Visual, Visual]> {
@@ -172,6 +195,21 @@ test('reduced motion freezes the ring, fog drift, wireframe pulse and selection 
     const d = await readMotion()
     return { ring: d.ringAngle !== c.ringAngle, fog: d.fogDrift !== c.fogDrift }
   }, { message: 'with motion on, the ring turns and the fog drifts', timeout: 10_000 }).toEqual({ ring: true, fog: true })
+  // The Holotable stage at High with the world at work: still under reduced motion, its disc, sweep and dust frozen
+  // however long it is watched; with motion on, each moves on the next frame drawn (waited for, as above).
+  await page.goto(base)
+  await stageAtHighWorking()
+  const s1 = await readMotion()
+  await page.waitForTimeout(800)
+  const s2 = await readMotion()
+  expect({ discAngle: s2.discAngle, sweep: s2.sweep, dustDrift: s2.dustDrift }).toEqual({ discAngle: s1.discAngle, sweep: s1.sweep, dustDrift: s1.dustDrift })
+  await page.goto(base + '?motion=1')
+  await stageAtHighWorking()
+  const m = await readMotion()
+  await expect.poll(async () => {
+    const d = await readMotion()
+    return { disc: d.discAngle !== m.discAngle, sweep: d.sweep !== m.sweep, dust: d.dustDrift !== m.dustDrift }
+  }, { message: 'with motion on at High, the disc turns, the working sweep runs and the dust drifts', timeout: 10_000 }).toEqual({ disc: true, sweep: true, dust: true })
 })
 
 test('a building with live latency is drawn hot, and one without is not', async () => {
@@ -210,6 +248,27 @@ test('from far away a hot building makes its district slab hot', async () => {
   expect(far.slabLooks).toHaveLength(1)
   expect(far.slabLooks[0]).toMatchObject({ id: 'd1', hot: true, outline: false, fading: false, fog: false })
   expect(far.slabLooks[0].heat).toBeGreaterThan(0)
+})
+
+test('every Holotable shader compiles', async () => {
+  // Each tier draws its own share of the stage (the disc, the track, the beams, the shafts, the grade pass at High and
+  // Low): every program three.js links for it is checked, and one that fails is counted (countShaderErrors).
+  await page.goto(page.url().split('?')[0] + '?motion=1')
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().presented), { timeout: 30_000 }).toBeGreaterThan(0)
+  for (const tier of ['high', 'low', 'flat'] as const) {
+    const before = await page.evaluate(([a, q]) => {
+      const t = (window as unknown as HarnessWindow).__worldTest
+      t.setQuality(q)
+      t.setWorking(true)
+      t.load(a)
+      return t.drawn().frames
+    }, [WORLD_A, tier] as const)
+    await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().perf.tier), { timeout: 30_000 }).toBe(tier)
+    // A frame drawn at the tier since: its programs are compiled and linked by then.
+    await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().frames), { timeout: 30_000 }).toBeGreaterThan(before)
+    expect(await page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().shaderErrors), `shader errors at ${tier}`).toBe(0)
+  }
 })
 
 test('logs no console errors', async () => {

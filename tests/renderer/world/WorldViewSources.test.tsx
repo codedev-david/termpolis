@@ -17,7 +17,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn(() => () => undefined),
-        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), requestFrame: vi.fn(), setTitle: vi.fn(), dispose: vi.fn(), setQuality: vi.fn(),
+        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), requestFrame: vi.fn(), setTitle: vi.fn(), dispose: vi.fn(), setQuality: vi.fn(), setWorking: vi.fn(),
         screenPoint: vi.fn(() => null),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 0 })),
       }
@@ -547,7 +547,9 @@ describe('WorldView sign in needed', () => {
     const answer = hangNext(api)
     const signIn = screen.getByRole('button', { name: 'Sign in to GitHub' })
     signIn.focus()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
     fireEvent.click(signIn)
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true) // the update under way: the disc sweeps
     const notice = screen.getByTestId('world-sign-in-needed')
     expect(signIn).toBeDisabled()
     expect(within(notice).getByRole('button', { name: 'Use a token' })).toBeDisabled()
@@ -562,6 +564,7 @@ describe('WorldView sign in needed', () => {
     expect(api.worldUpdateCancel).toHaveBeenCalledTimes(1)
     await answer(fail(STOPPED))
     await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
     expect(within(notice).getByRole('alert')).toHaveTextContent(STOPPED)
     expect(within(notice).getByRole('button', { name: 'Dismiss' })).toBeEnabled()
     // The focus Stop had goes back to the first choice.

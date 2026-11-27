@@ -529,7 +529,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, perf: { tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 }, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, perf: { tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 }, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0, discAngle: 0, sweep: 0, dustDrift: 0 }, shaderErrors: 0 })
   })
 
   it('has no frame times in 2D: perfBegin does nothing, and perfEnd gives no frames', () => {
@@ -615,6 +615,7 @@ describe('2D fallback: dispose', () => {
 const MOTION = {
   ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4, bloom: true, stars: 3500, dust: 600, platformSides: { d1: 6 }, platformLights: 1,
   floorOrder: { b1: ['ui', 'logic'] }, orbs: ['x-api'], exploded: 'b1', explodeGap: 2.5, flight: { active: true, t: 0.5, eased: 0.5 }, lineLabels: 3,
+  discAngle: 0.25, sweep: 0.5, dustDrift: 7,
 }
 
 /** The stand-in renderer's frame times. */
@@ -634,9 +635,10 @@ function fakeRenderer(host: HTMLElement, start: TierName | 'auto' = 'auto') {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']), isShown: vi.fn((id: string) => id !== 'b1'),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, triangles: 900, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF, tier } })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, triangles: 900, buildings: 4, districts: 2, slabs: 0, slabLooks: [], frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF, tier }, shaderErrors: 1 })),
     perf: vi.fn(() => ({ ...RPERF, tier })),
     setTier: vi.fn((t: TierName) => { tier = t }),
+    setWorking: vi.fn(),
     perfBegin: vi.fn(), perfEnd: vi.fn(() => ({ frames: 2, p50: 16, p95: 17, p99: 17, worst: 17 })),
     motionState: vi.fn(() => ({ ...MOTION })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(), setReducedMotion: vi.fn(), requestFrame: vi.fn(), stopFlight: vi.fn(),
@@ -1335,7 +1337,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, triangles: 900, frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF, auto: true }, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, triangles: 900, frames: 7, software: true, presented: 7, contextLost: false, perf: { ...RPERF, auto: true }, shaderErrors: 1, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], shownWireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
   })
 
   it('drawn().perf is the frame times of the renderer, auto unless a quality was asked for; perfBegin/perfEnd go to the renderer', () => {
@@ -1528,6 +1530,17 @@ describe('WebGL path (stand-in renderer)', () => {
     createWorldViewer(host)
     expect((createThreeRenderer.mock.calls[0][1] as { firstFrameSlowdown?: () => number }).firstFrameSlowdown).toBe(slow)
     expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('firstFrameSlowdown')
+  })
+
+  it('asks the renderer to count failed shader programs (test only) only when told to', () => {
+    withWebGL()
+    createThreeRenderer.mockImplementation((h: HTMLElement) => fakeRenderer(h).r)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    createWorldViewer(host, { countShaderErrors: true })
+    createWorldViewer(host, { countShaderErrors: false })
+    expect(createThreeRenderer.mock.calls[0][1]).toMatchObject({ countShaderErrors: true })
+    expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('countShaderErrors')
   })
 
   it('passes the ask bar strip on to the renderer, at creation and when it changes, and not after dispose', () => {
@@ -2553,6 +2566,30 @@ describe('the quality governor in the viewer (look spec §5.1, plan Task 3)', ()
     viewer.dispose()
     viewer.setQuality('low') // after dispose: nothing
     expect(r.setTier).toHaveBeenCalledTimes(3)
+  })
+
+  it('passes working on to the renderer; nothing once it dropped to the 2D map, without WebGL, or after dispose', () => {
+    const { viewer, made, r } = mount3d({ reducedMotion: true })
+    viewer.setWorking(true)
+    viewer.setWorking(false)
+    expect(r.setWorking.mock.calls).toEqual([[true], [false]])
+    made.onContextLost()
+    made.onContextLost() // the second loss: the 2D map
+    viewer.setWorking(true)
+    expect(r.setWorking).toHaveBeenCalledTimes(2)
+    viewer.dispose()
+    viewer.setWorking(false)
+    expect(r.setWorking).toHaveBeenCalledTimes(2)
+    const after = mount3d({ reducedMotion: true })
+    after.viewer.dispose()
+    after.viewer.setWorking(true)
+    expect(after.r.setWorking).not.toHaveBeenCalled()
+    forgetWebGL()
+    getContext.mockReturnValue(null)
+    const flat = createWorldViewer(document.createElement('div'))
+    flat.setWorking(true) // nothing in 2D to sweep
+    expect(flat.drawn()).toMatchObject({ shaderErrors: 0, visual: { discAngle: 0, sweep: 0, dustDrift: 0 } })
+    flat.dispose()
   })
 
   it('a startTier starts an auto map there; a chosen quality is drawn as chosen', () => {

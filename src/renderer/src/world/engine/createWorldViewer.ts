@@ -112,6 +112,12 @@ export interface WorldViewer {
    * is drawn and kept. In 2D there is nothing to draw: the choice is only kept.
    */
   setQuality(q: WorldQuality): void
+  /**
+   * The world is working (a compile, a provisional world, or an Ask under way) or done: while it works the 3D map's
+   * projector disc sweeps (look spec §3.2), where its tier moves the scan lines and never under reduced motion.
+   * Nothing in 2D.
+   */
+  setWorking(on: boolean): void
   /** Starts a frame-time window for the e2e harness (__worldPerf.begin, look spec §6.1). Nothing in 2D. */
   perfBegin(): void
   /** Ends the window perfBegin started and gives its frame times (none in 2D, or with no window started). */
@@ -156,6 +162,7 @@ export type WorldDrawnVisual = MotionState
 const noVisual = (): WorldDrawnVisual => ({
   ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0,
   floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0,
+  discAngle: 0, sweep: 0, dustDrift: 0,
 })
 
 /** The 3D map's frame times (look spec §6.1), and whether its tier is chosen for you (the quality is 'auto'). */
@@ -186,6 +193,8 @@ export interface WorldDrawn {
   contextLost: boolean
   /** The frame times the 3D map drew at (look spec §6.1; no frames in 2D, at the 'flat' tier). */
   perf: WorldPerf
+  /** Shader programs that failed to link (counted only with countShaderErrors; 0 in 2D). */
+  shaderErrors: number
   /**
    * The 3D map is drawn in software: no GPU draws it (a virtual machine, a remote session, a blocked driver), so the
    * page is composited by the CPU too (false in 2D). A host then draws its panels over the map opaque rather than
@@ -249,6 +258,8 @@ export interface WorldViewerOptions {
   onTourStop?: (stop: TourStop | null) => void
   /** Test only: passed to the renderer (RendererOptions.firstFrameSlowdown). */
   firstFrameSlowdown?: () => number
+  /** Test only: passed to the renderer (RendererOptions.countShaderErrors). */
+  countShaderErrors?: boolean
 }
 
 /**
@@ -393,6 +404,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
         ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
         ...(opts.firstFrameSlowdown ? { firstFrameSlowdown: opts.firstFrameSlowdown } : {}),
+        ...(opts.countShaderErrors ? { countShaderErrors: true } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
       gov = createGovernor({ start: r3.perf().tier, mode: quality === 'auto' ? 'auto' : 'user' })
@@ -1134,7 +1146,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: noPerf() }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
+    drawn: () => ({ layers: { ...layers }, ...withAuto(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, buildings: 0, districts: 0, slabs: 0, slabLooks: [], perf: noPerf(), shaderErrors: 0 }), wireframes: r3 ? [...wireframes] : [], shownWireframes: shownWires(), outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()
@@ -1158,6 +1170,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (disposed || q === quality) return
       quality = q
       if (r3) r3.setTier((gov as Governor).choose(q))
+    },
+    setWorking(on) {
+      r3?.setWorking(on) // none after dispose: r3 is gone
     },
     perfBegin() {
       r3?.perfBegin()

@@ -104,6 +104,8 @@ export class FakeWebGLRenderer {
   }
   toneMapping = 0
   toneMappingExposure = 1
+  /** As three.js's: shader programs are checked as they link (its default), and a failure goes to onShaderError when one is set. */
+  readonly debug: { checkShaderErrors: boolean; onShaderError: ((gl: unknown, program: unknown, vs: unknown, fs: unknown) => void) | null } = { checkShaderErrors: true, onShaderError: null }
   readonly sizes: Array<[number, number]> = []
   readonly pixelRatios: number[] = []
   /** The drawing buffer [across, down] after each setSize or setPixelRatio (each of which sizes it, as in three.js). */
@@ -378,6 +380,11 @@ type Obj = THREE.Object3D & { isGroup?: boolean; isCSS2DObject?: boolean; isInst
 /** The `world` group: the first group the renderer adds to its scene (the change layer and batch layer come after). */
 export const worldOf = (scene: THREE.Object3D): THREE.Group => scene.children.filter((c) => (c as Obj).isGroup)[0] as THREE.Group
 export const batchLayerOf = (scene: THREE.Object3D): THREE.Group => scene.children.filter((c) => (c as Obj).isGroup)[2] as THREE.Group
+/** The Holotable stage (the disc, the track, the beams and the shafts): a group of its own, after the batch layer. */
+export const stageOf = (scene: THREE.Object3D): THREE.Group => scene.children.find((c) => c.name === 'holo-stage') as THREE.Group
+/** The stage part of `kind` ('disc', 'track', 'beams' or 'shafts'), if one is built. */
+export const stagePart = (scene: THREE.Object3D, kind: string): THREE.Mesh | undefined =>
+  stageOf(scene).children.find((c) => c.userData.stage === kind) as THREE.Mesh | undefined
 
 export function withData(root: THREE.Object3D, key: string): THREE.Mesh[] {
   const out: THREE.Mesh[] = []
