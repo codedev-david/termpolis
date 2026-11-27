@@ -1039,200 +1039,221 @@ describe('groupProject', () => {
     const clique = (paths: string[], also: Record<string, string[]> = {}): Record<string, string[]> =>
       Object.fromEntries(paths.map((p) => [`${p}.ts`, [...paths.filter((o) => o !== p).map((o) => rel(p, o)), ...(also[p] ?? [])]]))
     const inA = (...names: string[]): string[] => names.map((x) => `src/a/${x}`)
+    const files = (paths: string[]): string[] => paths.map((p) => `${p}.ts`).sort()
+    // n files in one folder with no name stem (two lower-case letters, then capitals): no part, no rival group.
+    const bare = (dir: string, prefix: string, n: number): string[] =>
+      Array.from({ length: n }, (_, i) => `${dir}/${prefix}${String.fromCharCode(65 + Math.floor(i / 26))}${String.fromCharCode(65 + (i % 26))}`)
     // The code graph's case: three code* files among other helpers, a part of its building (3 of 6).
     const part = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree', 'watchOne')
-    // A smaller building of four unrelated names, linked to the part.
-    const mixed = clique(inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta'), { 'src/a/mixAlpha': ['./codeAlpha'] })
+    // Seven plain files, no part: a less dense link for the smaller buildings below (one import over seven files).
+    const plain = bare('src/a', 'qa', 7)
+    // Four files of four names, the smallest building, importing the part's first file and the plain building's.
+    const mixed = (to = part[0], via = plain[0]): Record<string, string[]> =>
+      clique(inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta'), {
+        'src/a/mixAlpha': [rel('src/a/mixAlpha', to)],
+        'src/a/nodeBeta': [rel('src/a/nodeBeta', via)]
+      })
     // District b: buildings of five files with no name stem, so no part, and no links out.
     const other = (k: number): Record<string, string[]> => clique(['p', 'q', 'r', 's', 't'].map((x) => `src/b/${x}${k}`))
-    const inDistrict = (g: Grouping, d: string): string[][] => g.buildings.filter((b) => b.districtId === d).map((b) => b.members)
-    const files = (paths: string[]): string[] => paths.map((p) => `${p}.ts`).sort()
+    /** One merge over the cap: where the mixed building went. */
+    const capOnce = (s: GraphSnapshot, count: number): Grouping => {
+      expect(groupProject(s, []).buildings).toHaveLength(count)
+      const g = groupProject(s, [], { maxBuildings: count - 1 })
+      checkInvariants(g, s.files)
+      return g
+    }
 
     it('exports the part size', () => {
       expect(PART_MIN).toBe(3)
     })
 
-    it('growth in one district does not cost another district a part', () => {
-      const base = snap({ ...clique(part), ...mixed, ...other(1), ...other(2) })
+    it('growth in one district does not cost another district a part that another neighbour could spare', () => {
+      const base = snap({ ...clique(part), ...clique(plain), ...mixed(), ...other(1), ...other(2) })
       const grown = snap({ ...base.fileImports, ...other(3) })
-      expect(groupProject(base, []).buildings).toHaveLength(4)
-      expect(groupProject(grown, []).buildings).toHaveLength(5)
-      const before = groupProject(base, [], { maxBuildings: 4 })
-      const after = groupProject(grown, [], { maxBuildings: 4 })
+      const before = groupProject(base, [], { maxBuildings: 5 })
+      expect(before.buildings).toHaveLength(5)
+      const after = groupProject(grown, [], { maxBuildings: 5 })
       checkInvariants(after, grown.files)
-      expect(after.buildings).toHaveLength(4)
-      // The mixed building is the smallest, and smallest-first would fold it into the part's building (3 code files
-      // of 10: no longer a third). District b, which grew, pays instead.
-      expect(inDistrict(after, 'd-src-a')).toEqual(inDistrict(before, 'd-src-a'))
+      expect(after.buildings).toHaveLength(5)
+      // District b grew by a building, so district a's smallest now merges. Into its densest link it would leave the
+      // part 3 code files of 10, no longer a third; it goes to the plain building instead.
+      expect(home(before, 'src/a/codeAlpha.ts').members).toEqual(files(part))
       expect(home(after, 'src/a/codeAlpha.ts').members).toEqual(files(part))
-      expect(inDistrict(after, 'd-src-b')).toHaveLength(2)
+      expect(home(after, 'src/a/mixAlpha.ts').members).toEqual(files([...plain, ...inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')]))
     })
 
-    it('dissolves a part only when no merge that keeps them all is left', () => {
-      const s = snap({ ...clique(part), ...mixed, ...other(1), ...other(2) })
-      const three = groupProject(s, [], { maxBuildings: 3 })
-      expect(home(three, 'src/a/codeAlpha.ts').members).toEqual(files(part))
-      expect(home(three, 'src/b/p1.ts').members).toHaveLength(10)
-      const two = groupProject(s, [], { maxBuildings: 2 })
-      checkInvariants(two, s.files)
-      expect(home(two, 'src/a/codeAlpha.ts').members).toHaveLength(10)
+    it('sends the smallest building to a link that keeps its part before a denser one that does not', () => {
+      const g = capOnce(snap({ ...clique(part), ...clique(plain), ...mixed() }), 3)
+      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
 
-    it('keeps a part that is still a third of the building, and outnumbers every rival there, after the merge', () => {
-      // Three code files of five, and the four mixed ones: 3 of 9.
-      const small = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree')
-      const s = snap({ ...clique(small), ...mixed, ...other(1), ...other(2), ...other(3) })
-      const g = groupProject(s, [], { maxBuildings: 4 })
-      checkInvariants(g, s.files)
+    it('takes the denser of two links that both keep their parts', () => {
+      const eight = bare('src/a', 'ra', 8)
+      const m = mixed()
+      m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', eight[0]))
+      const g = capOnce(snap({ ...clique(part), ...clique(plain), ...clique(eight), ...m }), 4)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
+      expect(home(g, 'src/a/raAA.ts').members).toHaveLength(8)
+    })
+
+    it('goes to the densest link when no link keeps its part', () => {
+      // A second part, three tile files of seven: either merge leaves its part short of a third.
+      const tiles = inA('tileAlpha', 'tileBeta', 'tileGamma', 'jamOne', 'kelpTwo', 'lynxThree', 'mothFour')
+      const g = capOnce(snap({ ...clique(part), ...clique(tiles), ...mixed(part[0], tiles[0]) }), 3)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(10)
+      expect(home(g, 'src/a/tileAlpha.ts').members).toEqual(files(tiles))
+    })
+
+    it('still sends it into a part that stays a third of the building and ahead of every rival', () => {
+      // Three code files of six, and three mixed ones: 3 of 9.
+      const three = clique(inA('mixAlpha', 'nodeBeta', 'pathGamma'), {
+        'src/a/mixAlpha': ['./codeAlpha'],
+        'src/a/nodeBeta': [rel('src/a/nodeBeta', plain[0])]
+      })
+      const g = capOnce(snap({ ...clique(part), ...clique(plain), ...three }), 3)
       expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(9)
+      expect(home(g, 'src/a/qaAA.ts').members).toEqual(files(plain))
+    })
+
+    it('takes a group that is exactly a third of its building as a part', () => {
+      // Three code files of nine, and the four mixed ones: 3 of 13.
+      const nine = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree', 'kiteFour', 'watchOne', 'yardFive', 'zoneSix')
+      // Two imports into it, so it is the densest link (2 of 9 over 1 of 7).
+      const m = mixed(nine[0])
+      m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', nine[1]))
+      const g = capOnce(snap({ ...clique(nine), ...clique(plain), ...m }), 3)
+      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(nine))
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
 
     it('takes no group of fewer than PART_MIN files, nor one tied with a rival, as a part', () => {
       const two = inA('codeAlpha', 'codeBeta', 'guardTwo', 'hostThree', 'watchOne', 'zoneFour')
       const tied = inA('codeAlpha', 'codeBeta', 'codeGamma', 'watchOne', 'watchTwo', 'watchThree')
       for (const p of [two, tied]) {
-        const s = snap({ ...clique(p), ...mixed, ...other(1), ...other(2), ...other(3) })
-        const g = groupProject(s, [], { maxBuildings: 4 })
-        checkInvariants(g, s.files)
-        // Smallest first, as before: the mixed building joins its only link.
+        // So the densest link takes the mixed building, as before.
+        const g = capOnce(snap({ ...clique(p), ...clique(plain), ...mixed() }), 3)
         expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(10)
       }
     })
 
+    it('counts a part tied with a rival after the merge as not kept, though still a third', () => {
+      // Three code files of four, and five with three tile files: merged, 3 and 3 of 9.
+      const four = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo')
+      const tiles = clique(inA('mixDelta', 'otherOne', 'tileAlpha', 'tileBeta', 'tileGamma'), {
+        'src/a/tileAlpha': ['./codeAlpha'],
+        'src/a/mixDelta': [rel('src/a/mixDelta', plain[0])]
+      })
+      const g = capOnce(snap({ ...clique(four), ...clique(plain), ...tiles }), 3)
+      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(four))
+      expect(home(g, 'src/a/tileAlpha.ts').members).toHaveLength(12)
+    })
+
+    it('counts a part outnumbered by the merged-in group as not kept, though still a third', () => {
+      // Three code files alone, and six with four tile files: merged, the tile files lead with 4 of 9.
+      const three = inA('codeAlpha', 'codeBeta', 'codeGamma')
+      const tiles = clique(inA('alphaMix', 'betaNode', 'tileAlpha', 'tileBeta', 'tileDelta', 'tileGamma'), {
+        'src/a/tileAlpha': ['./codeAlpha'],
+        'src/a/alphaMix': [rel('src/a/alphaMix', plain[0])]
+      })
+      const g = capOnce(snap({ ...clique(three), ...clique(plain), ...tiles }), 3)
+      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(three))
+      expect(home(g, 'src/a/tileAlpha.ts').members).toHaveLength(13)
+    })
+
     it('counts a small sub-folder as one group, as name families do', () => {
       const zone = ['src/a/zone/alpha', 'src/a/zone/bravo', 'src/a/zone/charlie', ...inA('deltaOne', 'echoTwo', 'foxThree')]
-      const s = snap({ ...clique(zone), ...mixed, ...other(1), ...other(2), ...other(3) })
-      const g = groupProject(s, [], { maxBuildings: 4 })
-      checkInvariants(g, s.files)
+      const g = capOnce(snap({ ...clique(zone), ...clique(plain), ...mixed(zone[0]) }), 3)
       expect(home(g, 'src/a/zone/alpha.ts').members).toEqual(files(zone))
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(10)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
 
-    // Three tile* files of five, linked to the part: merged, 3 code and 3 tile files of 11, so both parts go.
-    const tiles = clique(inA('mixDelta', 'otherOne', 'tileAlpha', 'tileBeta', 'tileGamma'), { 'src/a/tileAlpha': ['./codeAlpha'] })
-    // District b: a part of three pole* files among five, and five mixed files linked to it: merged, 3 of 10, so that
-    // merge waits a tier up from the start.
-    const pb = clique(['poleAlpha', 'poleBeta', 'poleGamma', 'qOne', 'rTwo'].map((x) => `src/b/${x}`))
-    const five = clique(['vOne', 'wFour', 'xOne', 'yTwo', 'zThree'].map((x) => `src/b/${x}`), { 'src/b/xOne': ['./poleAlpha'] })
-
-    it('weighs a merge that dissolves two parts behind one that dissolves one', () => {
-      const s = snap({ ...clique(part), ...tiles, ...pb, ...five })
+    it('sees a tie the first merge made: the target is no part any more, so the densest link takes the next', () => {
+      // Three tile files of four, then three kite files of five join (their only link): 3 and 3 of 9, no part. Six
+      // files of six names come next, importing a tile file twice (2 over 9) and the plain building once (1 over 7).
+      const tiles = inA('tileAlpha', 'tileBeta', 'tileGamma', 'zaAA')
+      const kites = clique(inA('kiteAlpha', 'kiteBeta', 'kiteGamma', 'yaAA', 'yaAB'), { 'src/a/kiteAlpha': ['./tileAlpha'] })
+      const six = clique(inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta', 'sandEcho', 'tuneFox'), {
+        'src/a/mixAlpha': ['./tileAlpha'],
+        'src/a/nodeBeta': ['./tileAlpha'],
+        'src/a/pathGamma': [rel('src/a/pathGamma', plain[0])]
+      })
+      const s = snap({ ...clique(tiles), ...kites, ...clique(plain), ...six })
       expect(groupProject(s, []).buildings).toHaveLength(4)
-      // Smallest first, the tile building (first in path order of the three with five files) would join the part.
-      const g = groupProject(s, [], { maxBuildings: 3 })
+      const g = groupProject(s, [], { maxBuildings: 2 })
       checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
-      expect(home(g, 'src/b/xOne.ts').members).toHaveLength(10)
+      expect(home(g, 'src/a/tileAlpha.ts').members).toHaveLength(15)
+      expect(home(g, 'src/a/qaAA.ts').members).toEqual(files(plain))
     })
 
-    it('still merges a process building after any plain merge, whatever that dissolves', () => {
-      const s = snap({ ...clique(part), ...tiles, 'src/a/wk.ts': [], 'src/solo/only.ts': [], ...other(1), ...other(2) })
-      const bounds = [B('worker', 'wk', 'consume', 'src/solo/only.ts')]
-      expect(groupProject(s, bounds).buildings).toHaveLength(6)
-      const g = groupProject(s, bounds, { maxBuildings: 4 })
+    // A small sub-folder of three files, a group of three (bay), and three stemless files it alone links to.
+    const bay = ['src/a/bay/alpha', 'src/a/bay/bravo', 'src/a/bay/charlie']
+    const bayInto = (target: string): Record<string, string[]> => clique(bay, { [bay[0]]: [rel(bay[0], target)] })
+
+    it('weighs a target as the merge before left it: a part it just took in', () => {
+      // The bay files join three stemless ones (their only link): 3 of 6, a part. The mixed building comes next, two
+      // imports into it (2 over 6) and one into the plain building (1 over 7); 3 of 10 would be no part, so it goes plain.
+      const za = bare('src/a', 'za', 3)
+      const m = mixed(za[0])
+      m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', za[1]))
+      const s = snap({ ...bayInto(za[0]), ...clique(za), ...clique(plain), ...m })
+      expect(groupProject(s, []).buildings).toHaveLength(4)
+      const g = groupProject(s, [], { maxBuildings: 2 })
       checkInvariants(g, s.files)
-      expect(home(g, 'src/a/wk.ts').members).toEqual(['src/a/wk.ts'])
-      expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(11)
+      expect(home(g, 'src/a/zaAA.ts').members).toEqual(files([...bay, ...za]))
+      expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
 
-    // n files in one folder with no name stem (two lower-case letters, then capitals), and the worker `wk`, a
-    // process building of one file in district a, taken by a plain building once no plain one is left beside it.
-    const bare = (dir: string, prefix: string, n: number): string[] =>
-      Array.from({ length: n }, (_, i) => `${dir}/${prefix}${String.fromCharCode(65 + Math.floor(i / 26))}${String.fromCharCode(65 + (i % 26))}`)
-    const wk = { 'src/a/wk.ts': [], 'src/solo/only.ts': [] }
-    // District b: two buildings of seven stemless files, merged at no cost.
-    const seven = (k: number): Record<string, string[]> => clique(['p', 'q', 'r', 's', 't', 'u', 'v'].map((x) => `src/b/${x}${k}`))
-
-    it('takes a group that is exactly a third of its building as a part', () => {
-      // Three code files of nine, and the four mixed ones linked to them: 3 of 13.
-      const nine = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree', 'kiteFour', 'watchOne', 'yardFive', 'zoneSix')
-      const s = snap({ ...clique(nine), ...mixed, ...other(1), ...other(2) })
-      const g = groupProject(s, [], { maxBuildings: 3 })
+    it('weighs a target as the merge before left it: still tied, so no part', () => {
+      // Three code and three watch files, tied, no part; two stemless files join it (their only link). The mixed
+      // building, two imports into it (2 over 8) and one into the plain building (1 over 7), goes by density.
+      const tied = inA('codeAlpha', 'codeBeta', 'codeGamma', 'watchOne', 'watchTwo', 'watchThree')
+      const two = clique(bare('src/a', 'ya', 2), { 'src/a/yaAA': ['./watchOne'] })
+      const m = mixed()
+      m['src/a/pathGamma.ts'].push('./watchTwo')
+      const s = snap({ ...clique(tied), ...two, ...clique(plain), ...m })
+      expect(groupProject(s, []).buildings).toHaveLength(4)
+      const g = groupProject(s, [], { maxBuildings: 2 })
       checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(nine))
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(10)
+      expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(12)
+      expect(home(g, 'src/a/qaAA.ts').members).toEqual(files(plain))
     })
 
-    it('counts a part tied with a rival after the merge as dissolved, though still a third', () => {
-      // Three code files of four, and three tile files of five linked to them: merged, 3 and 3 of 9.
-      const four = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo')
-      const s = snap({ ...clique(four), ...tiles, ...other(1), ...other(2) })
-      const g = groupProject(s, [], { maxBuildings: 3 })
-      checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(four))
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(10)
-    })
+    for (const own of [false, true]) {
+      it(`carries the groups a building took in when it merges on, into a target ${own ? 'with' : 'without'} groups of its own`, () => {
+        // The bay files join three files (their only link), stemless or with one kelp file. That building comes next:
+        // the yard building, three yard files, is denser (1 over 3) than the plain one (1 over 7), but its part would
+        // tie with bay, 3 and 3 of 9; so it goes plain.
+        const three = own ? ['src/a/kelpOne', ...bare('src/a', 'za', 2)] : bare('src/a', 'za', 3)
+        const yard = inA('yardOne', 'yardTwo', 'yardThree')
+        const s = snap({
+          ...bayInto(three[0]),
+          ...clique(three, { [three[1]]: [rel(three[1], yard[0])], [three[2]]: [rel(three[2], plain[0])] }),
+          ...clique(yard),
+          ...clique(plain)
+        })
+        expect(groupProject(s, []).buildings).toHaveLength(4)
+        const g = groupProject(s, [], { maxBuildings: 2 })
+        checkInvariants(g, s.files)
+        expect(home(g, 'src/a/yardOne.ts').members).toEqual(files(yard))
+        expect(home(g, 'src/a/qaAA.ts').members).toEqual(files([...bay, ...three, ...plain]))
+      })
+    }
 
-    it('counts a part outnumbered by the merged-in group as dissolved, though still a third', () => {
-      // Three code files of six, and four tile files of six linked to them: merged, the tile files lead with 4 of 12.
-      const tile4 = clique(inA('mixDelta', 'otherOne', 'tileAlpha', 'tileBeta', 'tileDelta', 'tileGamma'), { 'src/a/tileAlpha': ['./codeAlpha'] })
-      const s = snap({ ...clique(part), ...tile4, ...seven(1), ...seven(2) })
-      const g = groupProject(s, [], { maxBuildings: 3 })
-      checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(14)
-    })
-
-    it('counts a group a process building shares with a plain one in both', () => {
-      // The worker codeRun reaches codeOne and codeTwo: three code files in a process building, beside a part of
-      // three code files among seven. Together, 6 of 10.
-      const seven7 = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree', 'kiteFour', 'watchOne')
-      const run = { 'src/a/codeRun.ts': ['./codeOne', './codeTwo'], 'src/a/codeOne.ts': [], 'src/a/codeTwo.ts': [] }
-      const s = snap({ ...clique(seven7), ...run, 'src/solo/only.ts': [], ...seven(1), ...seven(2) })
+    it('adds up a group a process building shares with the plain building it joins', () => {
+      // The worker codeRun reaches codeOne and codeTwo: three code files in a process building, beside the part's three
+      // code files among seven. The only way two buildings share a group: owned files are left out of the name families.
+      // The seven, the district's last plain building, joins the process building by path order, and the counts add up.
+      const seven = inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo', 'hostThree', 'kiteFour', 'watchOne')
+      const run = { 'src/a/codeRun.ts': ['./codeOne', './codeTwo'], 'src/a/codeOne.ts': ['./codeAlpha'], 'src/a/codeTwo.ts': [] }
+      const s = snap({ ...clique(seven), ...run, 'src/solo/only.ts': [] })
       const bounds = [B('worker', 'codeRun', 'consume', 'src/solo/only.ts')]
-      expect(groupProject(s, bounds).buildings).toHaveLength(5)
-      const g = groupProject(s, bounds, { maxBuildings: 4 })
+      expect(groupProject(s, bounds).buildings).toHaveLength(3)
+      const g = groupProject(s, bounds, { maxBuildings: 2 })
       checkInvariants(g, s.files)
       expect(home(g, 'src/a/codeAlpha.ts')).toMatchObject({ process: 'codeRun' })
       expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(10)
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(7)
     })
-
-    it('sees a tie a building held before a merge brought nothing of either group', () => {
-      // Three code and three tile files: no part. Two stemless files join, then three more: still no part, so free.
-      const both = clique(inA('codeAlpha', 'codeBeta', 'codeGamma', 'tileAlpha', 'tileBeta', 'tileGamma'))
-      const join = (paths: string[]): Record<string, string[]> => clique(paths, { [paths[0]]: ['./codeAlpha'] })
-      const s = snap({ ...both, ...join(bare('src/a', 'ma', 2)), ...join(bare('src/a', 'na', 3)), ...seven(1), ...seven(2) })
-      const g = groupProject(s, [], { maxBuildings: 3 })
-      checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(11)
-      expect(home(g, 'src/b/p1.ts').members).toHaveLength(7)
-    })
-
-    it('sees the tie a merge made, so a part that merge dissolved is not dissolved again', () => {
-      // Three code files of four and three tile files of five: merged (district b's pair waits as far up), 3 and 3
-      // of 9, no part left. The worker zoneRun, three zone files, then takes it for that part alone, ahead of b.
-      const four = clique(inA('codeAlpha', 'codeBeta', 'codeGamma', 'guardTwo'))
-      const run = { 'src/a/zoneRun.ts': ['./zoneOne', './zoneTwo'], 'src/a/zoneOne.ts': [], 'src/a/zoneTwo.ts': [], 'src/solo/only.ts': [] }
-      const kites = clique(['kiteAlpha', 'kiteBeta', 'kiteGamma', 'guardOne'].map((x) => `src/b/${x}`))
-      const yards = clique(['mixEcho', 'otherTwo', 'yardAlpha', 'yardBeta', 'yardGamma'].map((x) => `src/b/${x}`), {
-        'src/b/yardAlpha': ['./kiteAlpha']
-      })
-      const s = snap({ ...four, ...tiles, ...run, ...kites, ...yards })
-      const bounds = [B('worker', 'zoneRun', 'consume', 'src/solo/only.ts')]
-      expect(groupProject(s, bounds).buildings).toHaveLength(6)
-      const g = groupProject(s, bounds, { maxBuildings: 4 })
-      checkInvariants(g, s.files)
-      expect(home(g, 'src/a/codeAlpha.ts')).toMatchObject({ process: 'zoneRun' })
-      expect(home(g, 'src/a/codeAlpha.ts').members).toHaveLength(12)
-      expect(home(g, 'src/b/yardAlpha.ts').members).toHaveLength(5)
-    })
-
-    for (const named of [true, false]) {
-      it(`carries a part a merge brought in onward, into a building ${named ? 'with' : 'without'} groups of its own`, () => {
-        // Eleven tile files of sixteen join sixteen others: 11 of 32, then the worker wk: 11 of 33, still a third.
-        const tiles16 = [...bare('src/a', 'ma', 5), ...Array.from({ length: 11 }, (_, i) => `src/a/tile${String.fromCharCode(65 + i)}`)]
-        const host = named ? ['src/a/umbraOne', ...bare('src/a', 'za', 15)] : bare('src/a', 'za', 16)
-        const s = snap({ ...clique(tiles16, { 'src/a/tileA': [rel('src/a/tileA', host[0])] }), ...clique(host), ...wk, ...pb, ...five })
-        const bounds = [B('worker', 'wk', 'consume', 'src/solo/only.ts')]
-        expect(groupProject(s, bounds).buildings).toHaveLength(6)
-        const g = groupProject(s, bounds, { maxBuildings: 4 })
-        checkInvariants(g, s.files)
-        expect(home(g, 'src/a/tileA.ts')).toMatchObject({ process: 'wk' })
-        expect(home(g, 'src/a/tileA.ts').members).toHaveLength(33)
-        expect(home(g, 'src/b/xOne.ts').members).toHaveLength(5)
-      })
-    }
   })
 
   it('ignores node_modules, dist, out, build, vendor, *.min.js', () => {
