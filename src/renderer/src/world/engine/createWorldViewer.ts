@@ -835,7 +835,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return true
   }
   /** The frame times of the 2D map: no frames, at the flat tier. */
-  const noPerf = (): RendererPerf => ({ tier: 'flat', ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
+  const noPerf = (): RendererPerf => ({ tier: 'flat', ...frameStats([]), drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeNextMs: 0 })
   /** The counts with whether the tier is chosen for you added to their frame times. */
   const withAuto = <T extends { perf: RendererPerf }>(d: T): T & { perf: WorldPerf } => ({ ...d, perf: { ...d.perf, auto: quality === 'auto' } })
   function watchTick(): void {

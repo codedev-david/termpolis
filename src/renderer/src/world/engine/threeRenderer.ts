@@ -402,6 +402,8 @@ export interface RendererPerf extends FrameStats {
   drops: number
   firstFrameMs: number | null
   resizeWorstMs: number
+  /** The second longest resize in the same time (0 until there are two). */
+  resizeNextMs: number
 }
 /** The fog is put on its density once it is within this share of it (an ease never quite arrives). */
 const FOG_SETTLED = 1e-3
@@ -949,6 +951,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let firstFrameMs: number | null = null
   /** The longest a resize took, its own work (resize), since the view was built or the last perfBegin. */
   let resizeWorstMs = 0
+  let resizeNextMs = 0
   /** The first frame's time, stretched to opts.firstFrameSlowdown times itself by waiting (test only). */
   const slowFirstFrame = (ms: number, askedAt: number): number => {
     const by = opts.firstFrameSlowdown?.() ?? 1
@@ -957,7 +960,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     while (performance.now() < until) { /* the staged regression: the frame takes this long */ }
     return performance.now() - askedAt
   }
-  const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs })
+  const perfNow = (): RendererPerf => ({ tier: look, ...sampler.stats(), drops, firstFrameMs, resizeWorstMs, resizeNextMs })
   /**
    * The frame-time window (look spec §5.1) under way: its counted frames and the time they cover. It ends after
    * WINDOW_FRAMES of them or once they cover WINDOW_MS (counted time, so an idle city's sleep never fills one), and
@@ -2563,7 +2566,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   fitShrunk() // the buffer made at build
   /**
-   * A resize's own cost, the longest kept (resizeWorstMs): the work the observer's call does before the next frame can
+   * A resize's own cost, the longest kept (resizeWorstMs) and the one after it (resizeNextMs): the work the observer's call does before the next frame can
    * be drawn (the canvas stretched, the labels, the city's fit and the camera's framing; the buffer is fitted later, by
    * fitBufferFor's timer, and is not counted). Only once the view has drawn: the
    * observer's first call, on open, is the first frame's to time.
@@ -2572,7 +2575,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const timed = presented > 0
     const t0 = performance.now()
     resizeNow(timed)
-    if (timed) resizeWorstMs = Math.max(resizeWorstMs, performance.now() - t0)
+    if (!timed) return
+    const ms = performance.now() - t0
+    if (ms > resizeWorstMs) {
+      resizeNextMs = resizeWorstMs
+      resizeWorstMs = ms
+    } else resizeNextMs = Math.max(resizeNextMs, ms)
   }
   /**
    * The drawing buffer for a new size: at once before the view has drawn, or from or to an empty view (a pane hidden or
@@ -3673,6 +3681,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     perfBegin: () => {
       bench = []
       resizeWorstMs = 0 // a window's resizes are its own: the longest since it began
+      resizeNextMs = 0
     },
     perfEnd: () => {
       const st = frameStats(bench ?? [])

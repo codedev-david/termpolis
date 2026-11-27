@@ -504,14 +504,14 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, perf: { tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 }, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, triangles: 0, frames: 0, software: false, presented: 0, contextLost: false, perf: { tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeNextMs: 0 }, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], shownWireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
   })
 
   it('has no frame times in 2D: perfBegin does nothing, and perfEnd gives no frames', () => {
     const { viewer } = setup({ doc: minimal() })
     viewer.perfBegin()
     expect(viewer.perfEnd()).toEqual({ frames: 0, p50: 0, p95: 0, p99: 0, worst: 0 })
-    expect(viewer.perf()).toEqual({ tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
+    expect(viewer.perf()).toEqual({ tier: 'flat', auto: true, frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeNextMs: 0 })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -593,7 +593,7 @@ const MOTION = {
 }
 
 /** The stand-in renderer's frame times. */
-const RPERF = { tier: 'high' as TierName, frames: 9, p50: 16, p95: 20, p99: 22, worst: 30, drops: 1, firstFrameMs: 120, resizeWorstMs: 34 }
+const RPERF = { tier: 'high' as TierName, frames: 9, p50: 16, p95: 20, p99: 22, worst: 30, drops: 1, firstFrameMs: 120, resizeWorstMs: 34, resizeNextMs: 21 }
 
 /** The stand-in, drawing at `start` (what the viewer asked for; 'auto' is High, as on a GPU) until setTier changes it. */
 function fakeRenderer(host: HTMLElement, start: TierName | 'auto' = 'auto') {

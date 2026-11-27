@@ -1183,7 +1183,7 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     gpu.gpuName = GEFORCE
     const r = createThreeRenderer(h.host, DEFAULT_OPTS) // the looping motions never stop: a frame every 16 ms
     boxCanvas(r.canvas, 800, 600)
-    expect(perf(r)).toEqual({ tier: 'high', frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0 })
+    expect(perf(r)).toEqual({ tier: 'high', frames: 0, p50: 0, p95: 0, p99: 0, worst: 0, drops: 0, firstFrameMs: null, resizeWorstMs: 0, resizeNextMs: 0 })
     h.frames.step() // a frame before any city: no first frame yet
     expect(perf(r).firstFrameMs).toBeNull()
     r.draw(smallCity(), smallText(), false)
@@ -1235,6 +1235,7 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     const took = timedResize(7)
     expect(took).toBeGreaterThan(0)
     expect(perf(r).resizeWorstMs).toBe(took)
+    expect(perf(r).resizeNextMs).toBe(0) // one resize: there is no second
     h.frames.step(90) // the frame at the new size: a slow one, but not counted, and not the resize's cost
     h.frames.run(4) // and the four after it: five not counted
     expect(perf(r).resizeWorstMs).toBe(took)
@@ -1243,14 +1244,23 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     h.frames.step()
     expect(perf(r).frames).toBe(n + 1)
     resizeHost(h.host, 700, 500)
-    expect(timedResize(1)).toBeLessThan(took)
+    const short = timedResize(1)
+    expect(short).toBeLessThan(took)
     h.frames.step(30)
     expect(perf(r).resizeWorstMs).toBe(took)
+    expect(perf(r).resizeNextMs).toBe(short) // a shorter one is the second longest
+    resizeHost(h.host, 710, 500)
+    const longer = timedResize(9)
+    expect(longer).toBeGreaterThan(took)
+    expect(perf(r)).toMatchObject({ resizeWorstMs: longer, resizeNextMs: took }) // a longer one moves the longest down
+    resizeHost(h.host, 705, 500)
+    timedResize(0.5)
+    expect(perf(r)).toMatchObject({ resizeWorstMs: longer, resizeNextMs: took }) // the shortest moves neither
     r.perfBegin() // a frame-time window keeps its own resizes: the longest since it began
-    expect(perf(r).resizeWorstMs).toBe(0)
+    expect(perf(r)).toMatchObject({ resizeWorstMs: 0, resizeNextMs: 0 })
     resizeHost(h.host, 720, 500)
     const inWindow = timedResize(2)
-    expect(perf(r).resizeWorstMs).toBe(inWindow)
+    expect(perf(r)).toMatchObject({ resizeWorstMs: inWindow, resizeNextMs: 0 })
     r.dispose()
   })
 
