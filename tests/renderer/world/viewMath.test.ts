@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, CONTROLS_DAMPING_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3, SOFTWARE_MAX_PIXELS, pixelBudgetRatio } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, SOFTWARE_LOOP_MS, SOFTWARE_FRAME_DT, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_SHARE, softwareLoopGap, softwareRenderer, FLOOR_RISE_RATE, FLOOR_TURN_RATE, CONTROLS_DAMPING_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, groundTurns, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, bufferRatio, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3, SOFTWARE_MAX_PIXELS, pixelBudgetRatio } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -447,7 +447,7 @@ describe("the overview direction for the pane's shape", () => {
 
   it('keeps OVERVIEW_DIR exactly in a landscape or square view, or one with no size', () => {
     for (const aspect of [1, 1.6, 3, 0, Number.NaN, Infinity]) {
-      const o = overviewDir(aspect, wide)
+      const o = overviewDir(aspect, groundTurns(wide))
       expect(o.dir).toBe(OVERVIEW_DIR)
       expect(o).toMatchObject({ portrait: false, turned: false })
     }
@@ -461,12 +461,12 @@ describe("the overview direction for the pane's shape", () => {
     expect(elevation(PORTRAIT_DIR)).toBeGreaterThan(55)
     expect(elevation(PORTRAIT_DIR)).toBeLessThan(60)
     expect(PORTRAIT_DIR[0] / PORTRAIT_DIR[2]).toBeCloseTo(OVERVIEW_DIR[0] / OVERVIEW_DIR[2], 12)
-    const o = overviewDir(0.71, deepCity)
+    const o = overviewDir(0.71, groundTurns(deepCity))
     expect(o).toEqual({ dir: PORTRAIT_DIR, portrait: true, turned: false })
   })
 
   it('turns a city wider than deep a quarter, so its long side runs up the picture', () => {
-    const o = overviewDir(0.71, wide)
+    const o = overviewDir(0.71, groundTurns(wide))
     expect(o.portrait).toBe(true)
     expect(o.turned).toBe(true)
     expect(o.dir).toEqual([PORTRAIT_DIR[2], PORTRAIT_DIR[1], -PORTRAIT_DIR[0]])
@@ -483,24 +483,39 @@ describe("the overview direction for the pane's shape", () => {
     const flat = Math.hypot(PORTRAIT_DIR[0], PORTRAIT_DIR[2])
     const deep = [PORTRAIT_DIR[0] / flat, PORTRAIT_DIR[2] / flat]
     const city = (across: number): Array<[number, number]> => [[0, 0], [deep[1] * across, -deep[0] * across], [deep[0] * 100, deep[1] * 100]]
-    expect(overviewDir(0.7, city(100 * (TURN_RATIO - 0.01))).turned).toBe(false)
-    expect(overviewDir(0.7, city(100 * (TURN_RATIO + 0.01))).turned).toBe(true)
-    expect(overviewDir(0.7, []).turned).toBe(false)
+    expect(overviewDir(0.7, groundTurns(city(100 * (TURN_RATIO - 0.01)))).turned).toBe(false)
+    expect(overviewDir(0.7, groundTurns(city(100 * (TURN_RATIO + 0.01)))).turned).toBe(true)
+    expect(overviewDir(0.7, groundTurns([])).turned).toBe(false)
   })
 
   it('stays portrait through a small resize near square, and never flips the turn with the size', () => {
-    expect(overviewDir(1.05, wide).portrait).toBe(false)
-    expect(overviewDir(1.05, wide, true).portrait).toBe(true)
-    expect(overviewDir(PORTRAIT_HOLD, wide, true).portrait).toBe(false)
-    const turns = [0.4, 0.6, 0.8, 0.95, 0.99].map((a) => overviewDir(a, wide).turned)
+    expect(overviewDir(1.05, groundTurns(wide)).portrait).toBe(false)
+    expect(overviewDir(1.05, groundTurns(wide), true).portrait).toBe(true)
+    expect(overviewDir(PORTRAIT_HOLD, groundTurns(wide), true).portrait).toBe(false)
+    const turns = [0.4, 0.6, 0.8, 0.95, 0.99].map((a) => overviewDir(a, groundTurns(wide)).turned)
     expect(new Set(turns)).toEqual(new Set([true]))
+  })
+
+  it('works the turn out from the ground alone, and answers with one of three fixed directions, so a resize makes nothing', () => {
+    expect(groundTurns(wide)).toBe(true)
+    expect(groundTurns(deepCity)).toBe(false)
+    expect(groundTurns([])).toBe(false)
+    expect(groundTurns([[5, 5]])).toBe(false) // a single point has no extent either way
+    // The same answer is the same object: nothing is made per call, and nothing can change it.
+    expect(overviewDir(0.4, true)).toBe(overviewDir(0.9, true))
+    expect(overviewDir(0.4, false)).toBe(overviewDir(0.9, false))
+    expect(overviewDir(2, true)).toBe(overviewDir(1.5, false))
+    for (const o of [overviewDir(0.5, true), overviewDir(0.5, false), overviewDir(2, true)]) {
+      expect(Object.isFrozen(o)).toBe(true)
+      expect(Object.isFrozen(o.dir)).toBe(true)
+    }
   })
 
   it('turns a ground offset the same quarter as the direction', () => {
     expect(turnGround(0, 10, false)).toEqual([0, 10])
     // The name's offset toward the camera (+z) turns to +x, where the turned camera stands.
     expect(turnGround(0, 10, true)).toEqual([10, -0])
-    const o = overviewDir(0.7, wide)
+    const o = overviewDir(0.7, groundTurns(wide))
     const [x, z] = turnGround(0, 1, o.turned)
     expect(x * o.dir[0] + z * o.dir[2]).toBeGreaterThan(0)
   })

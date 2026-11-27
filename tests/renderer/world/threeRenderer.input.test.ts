@@ -8,6 +8,17 @@ import {
   bldg, boxCanvas, cameraOf, DEFAULT_OPTS, district, emptyText, gpu, rendererOf, resizeHost, smallCity, smallText, withHarness,
 } from './threeHarness'
 
+// groundTurns, counted: the turn of a portrait overview is worked out once per draw, never on a resize.
+// fitView, watched: the points each fit is handed (the array is copied, its points are not).
+const turnsAsked = vi.hoisted(() => ({ n: 0, fits: [] as Array<ReadonlyArray<readonly number[]>> }))
+vi.mock('../../../src/renderer/src/world/engine/viewMath', async (orig) => {
+  const real = await orig<typeof import('../../../src/renderer/src/world/engine/viewMath')>()
+  return {
+    ...real,
+    groundTurns: (g: Parameters<typeof real.groundTurns>[0]): boolean => { turnsAsked.n++; return real.groundTurns(g) },
+    fitView: (...a: Parameters<typeof real.fitView>): ReturnType<typeof real.fitView> => { turnsAsked.fits.push(a[0].slice()); return real.fitView(...a) },
+  }
+})
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
 vi.mock('three/examples/jsm/postprocessing/EffectComposer.js', async () => ({ EffectComposer: (await import('./threeHarness')).FakeEffectComposer }))
 vi.mock('three/examples/jsm/postprocessing/RenderPass.js', async () => ({ RenderPass: (await import('./threeHarness')).FakeRenderPass }))
@@ -229,6 +240,73 @@ describe('threeRenderer wheel and orbit limits', () => {
     r.draw(city, emptyText(), false)
     await r.overview(true)
     expect(distOf(r)).toBeGreaterThan(before * 1.5)
+    r.dispose()
+  })
+
+  it('a portrait resize turns the overview by the turn worked out when the world was drawn; a world drawn again works it out again', async () => {
+    let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })
+    readyCanvas(r)
+    // Wider in x than deep: a portrait overview turns it a quarter, the camera on the +x side.
+    const city: SceneModel = { districts: [district('w', [-400, 0, 0], 60), district('e', [400, 0, 0], 60)], buildings: [bldg('w1', [-400, 0, 0]), bldg('e1', [400, 0, 0])], conduits: [], orbs: [] }
+    turnsAsked.n = 0
+    r.draw(city, emptyText(), false)
+    await r.overview(true)
+    expect(turnsAsked.n).toBe(1)
+    for (const [w, hgt] of [[400, 700], [380, 700], [360, 700]]) {
+      resizeHost(h.host, w, hgt)
+      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
+    }
+    expect(turnsAsked.n).toBe(1) // three resizes, none of them walked the ground
+    await r.overview(true)
+    const { pos, target } = r.getCamera()
+    expect(pos[0] - target[0]).toBeGreaterThan(Math.abs(pos[2] - target[2])) // turned: the camera looks from +x
+    r.draw(city, emptyText(), false)
+    expect(turnsAsked.n).toBe(2)
+    r.dispose()
+  })
+
+  it('a resize fits the overview again with the same name points, filled in place: a pane drag makes none', () => {
+    let observed: ((entries?: Array<{ target: Element }>) => void) | null = null
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (entries?: Array<{ target: Element }>) => void) { observed = cb }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })
+    readyCanvas(r)
+    const city: SceneModel = { districts: [district('w', [-60, 0, 0], 30), district('e', [60, 0, 0], 30)], buildings: [bldg('w1', [-60, 0, 0]), bldg('e1', [60, 0, 0])], conduits: [], orbs: [] }
+    r.draw(city, emptyText(), false)
+    const resize = (w: number, hgt: number): Array<ReadonlyArray<readonly number[]>> => {
+      turnsAsked.fits = []
+      resizeHost(h.host, w, hgt)
+      ;(observed as unknown as (entries?: Array<{ target: Element }>) => void)([{ target: h.host }])
+      return turnsAsked.fits
+    }
+    const a = resize(900, 600)
+    const b = resize(700, 600)
+    // Each resize fits three times (the names' middles, then twice with their ends), the same way.
+    expect(a).toHaveLength(3)
+    expect(b).toHaveLength(3)
+    for (let k = 0; k < 3; k++) {
+      expect(b[k]).toHaveLength(a[k].length)
+      for (let i = 0; i < a[k].length; i++) expect(b[k][i]).toBe(a[k][i])
+    }
+    // The last fit ends with both names' middles, then each name's two ends: six points, each where the name is now.
+    const last = b[2]
+    const names = last.slice(last.length - 6)
+    expect(new Set(names).size).toBe(6)
+    expect(names[0]).toEqual([-60, -2, 34]) // the west name's middle, on the camera's (+z) side of its rim
+    const [w0, w1] = [names[2], names[3]]
+    expect((w0[0] + w1[0]) / 2).toBeCloseTo(-60, 6) // its two ends either side of it, across the picture
+    expect(w1[0] - w0[0]).toBeGreaterThan(1)
     r.dispose()
   })
 

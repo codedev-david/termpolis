@@ -636,12 +636,12 @@ const unit = (a: V3): V3 => {
  * The overview's direction (from the city toward the camera) in a landscape view: from ahead of the
  * city and a little to its right, about 35 degrees up.
  */
-export const OVERVIEW_DIR: V3 = unit([0.24, 0.72, 1])
+export const OVERVIEW_DIR: V3 = Object.freeze(unit([0.24, 0.72, 1])) as unknown as V3
 /**
  * The overview's direction in a portrait view: the same bearing, about 57 degrees up, so the city's
  * depth spreads over the picture's height instead of lying in a flat band across it.
  */
-export const PORTRAIT_DIR: V3 = unit([0.24, 1.6, 1])
+export const PORTRAIT_DIR: V3 = Object.freeze(unit([0.24, 1.6, 1])) as unknown as V3
 /** A portrait overview turns the city a quarter only when its ground is this much wider across than deep. */
 export const TURN_RATIO = 1.05
 /** A portrait overview stays portrait up to this aspect, so a small resize near square does not flip it. */
@@ -651,33 +651,51 @@ export const PORTRAIT_HOLD = 1.1
 export interface OverviewDir { dir: V3; portrait: boolean; turned: boolean }
 
 /**
- * The direction the overview looks from, for a fit area of this width-to-height and a city covering
- * the `ground` points (x, z). A landscape area (aspect 1 or more) gets OVERVIEW_DIR, untouched. A
- * portrait one (under 1; under PORTRAIT_HOLD once `wasPortrait`) looks down more steeply
- * (PORTRAIT_DIR), and turns a quarter (the camera moves 90 degrees round the city, toward +x) when the
- * city's ground is wider across the picture than deep into it by more than TURN_RATIO, so its longest
- * side runs up the screen. The turn depends only on the ground, never on the camera, so it holds
- * from frame to frame and through any resize that keeps the view portrait.
+ * Whether a portrait overview turns a city covering the `ground` points (x, z) a quarter: when its ground is wider
+ * across the picture (seen from PORTRAIT_DIR) than deep into it by more than TURN_RATIO. It depends only on the ground,
+ * never on the camera or the view's size, so the renderer works it out once per draw, not on every resize: a pane
+ * drag's resizes each walked every ground point twice for it (5 to 14 ms of a resize on a Windows runner, and the
+ * garbage of it collected there, up to 20 ms).
  */
-export function overviewDir(aspect: number, ground: ReadonlyArray<readonly [number, number]>, wasPortrait = false): OverviewDir {
-  const portrait = Number.isFinite(aspect) && aspect > 0 && aspect < (wasPortrait ? PORTRAIT_HOLD : 1)
-  if (!portrait) return { dir: OVERVIEW_DIR, portrait: false, turned: false }
+export function groundTurns(ground: ReadonlyArray<readonly [number, number]>): boolean {
   const d = PORTRAIT_DIR
   const flat = Math.hypot(d[0], d[2])
-  const extent = (ax: number, az: number): number => {
-    let lo = Infinity
-    let hi = -Infinity
-    for (const [x, z] of ground) {
-      const v = (x * ax + z * az) / flat
-      lo = Math.min(lo, v)
-      hi = Math.max(hi, v)
-    }
-    return ground.length > 0 ? hi - lo : 0
-  }
   // On the ground, `deep` runs from the camera's side of the city to the far side (up the picture),
   // `across` from left to right.
-  const turned = extent(d[2], -d[0]) > extent(d[0], d[2]) * TURN_RATIO
-  return { dir: turned ? [d[2], d[1], -d[0]] : d, portrait: true, turned }
+  let deepLo = Infinity
+  let deepHi = -Infinity
+  let acrossLo = Infinity
+  let acrossHi = -Infinity
+  for (let i = 0; i < ground.length; i++) {
+    const x = ground[i][0]
+    const z = ground[i][1]
+    const deep = (x * d[0] + z * d[2]) / flat
+    const across = (x * d[2] - z * d[0]) / flat
+    if (deep < deepLo) deepLo = deep
+    if (deep > deepHi) deepHi = deep
+    if (across < acrossLo) acrossLo = across
+    if (across > acrossHi) acrossHi = across
+  }
+  // With no ground both extents are -Infinity, and nothing turns.
+  return acrossHi - acrossLo > (deepHi - deepLo) * TURN_RATIO
+}
+
+const LANDSCAPE_VIEW: OverviewDir = Object.freeze({ dir: OVERVIEW_DIR, portrait: false, turned: false })
+const PORTRAIT_VIEW: OverviewDir = Object.freeze({ dir: PORTRAIT_DIR, portrait: true, turned: false })
+const TURNED_VIEW: OverviewDir = Object.freeze({ dir: Object.freeze([PORTRAIT_DIR[2], PORTRAIT_DIR[1], -PORTRAIT_DIR[0]]) as unknown as V3, portrait: true, turned: true })
+
+/**
+ * The direction the overview looks from, for a fit area of this width-to-height and a city whose ground `turns`
+ * (groundTurns). A landscape area (aspect 1 or more) gets OVERVIEW_DIR, untouched. A portrait one (under 1; under
+ * PORTRAIT_HOLD once `wasPortrait`) looks down more steeply (PORTRAIT_DIR), and turns a quarter (the camera moves 90
+ * degrees round the city, toward +x) when the city's ground is wider across the picture than deep into it, so its
+ * longest side runs up the screen. The turn holds from frame to frame and through any resize that keeps the view
+ * portrait. Each answer is one of three fixed (frozen) ones: a resize makes nothing.
+ */
+export function overviewDir(aspect: number, turns: boolean, wasPortrait = false): OverviewDir {
+  const portrait = Number.isFinite(aspect) && aspect > 0 && aspect < (wasPortrait ? PORTRAIT_HOLD : 1)
+  if (!portrait) return LANDSCAPE_VIEW
+  return turns ? TURNED_VIEW : PORTRAIT_VIEW
 }
 
 /** A ground offset (x, z) turned the same quarter as a turned overview (overviewDir). */

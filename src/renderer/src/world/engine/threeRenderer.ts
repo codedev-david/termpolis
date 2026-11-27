@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, MAX_FRAME_DT, edgeLabelSize, SOFTWARE_FRAME_DT, SOFTWARE_FENCE_MAX_MS, softwareLoopGap, SOFTWARE_LOOP_MS, softwareRenderer, fitDistance, fitView, fogDensity, freeArea, groundTurns, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { shrunk, TIER_LOOK, tierPixelRatio, type TierName } from './tierBudget'
 import { WINDOW_FRAMES, WINDOW_MS } from './qualityGovernor'
 import { timedUpdate } from './timedDamping'
@@ -688,6 +688,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   applyView()
   const overviewPos = new THREE.Vector3(40, 120, 165)
   const overviewTarget = new THREE.Vector3(10, 0, 4)
+  const overviewSide = new THREE.Vector3() // the overview fit's across-the-picture direction, made once
   camera.position.copy(overviewPos)
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
@@ -1381,12 +1382,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * when the view is resized.
    */
   /**
-   * The city's own points for the overview (its parts, its externals and its platforms' rims) and their ground (x, z),
-   * made once per draw: the overview is fitted again on every resize, and a city of thousands of parts made some
+   * The city's own points for the overview (its parts, its externals and its platforms' rims) and whether their ground
+   * turns a portrait overview (groundTurns), made once per draw: the overview is fitted again on every resize, and a city of thousands of parts made some
    * 50,000 of them each time, whose collection fell inside a pane drag's resizes (96 ms on a Windows runner).
    */
-  let overviewBase: { model: SceneModel; pts: V3[]; ground: ReadonlyArray<readonly [number, number]> } | null = null
-  function overviewPoints(model: SceneModel): { pts: V3[]; ground: ReadonlyArray<readonly [number, number]> } {
+  let overviewBase: { model: SceneModel; pts: V3[]; turns: boolean; names: V3[] } | null = null
+  function overviewPoints(model: SceneModel): { pts: V3[]; turns: boolean; names: V3[] } {
     if (overviewBase?.model === model) return overviewBase
     const pts: V3[] = []
     const h = FLOOR_W / 2
@@ -1401,7 +1402,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         pts.push([d.pos[0] + Math.cos(a) * d.radius, d.pos[1], d.pos[2] + Math.sin(a) * d.radius])
       }
     }
-    overviewBase = { model, pts, ground: pts.map((p) => [p[0], p[2]] as const) }
+    // Three points for each district's name (its middle and its two ends), filled in again on each fit.
+    const names = model.districts.flatMap((): V3[] => [[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    overviewBase = { model, pts, turns: groundTurns(pts.map((p) => [p[0], p[2]] as const)), names }
     return overviewBase
   }
   function fitOverview(model: SceneModel): void {
@@ -1411,13 +1414,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const pts = base.pts
     const own = pts.length
     try {
-      fitOverviewFrom(model, pts, base.ground)
+      fitOverviewFrom(model, pts, base.turns, base.names)
     } finally {
       pts.length = own
     }
   }
-  function fitOverviewFrom(model: SceneModel, pts: V3[], ground: ReadonlyArray<readonly [number, number]>): void {
-    const view = overviewDir(fitAspect(false), ground, portrait)
+  function fitOverviewFrom(model: SceneModel, pts: V3[], turns: boolean, names: V3[]): void {
+    const view = overviewDir(fitAspect(false), turns, portrait)
     portrait = view.portrait
     if (view.turned !== turned) {
       turned = view.turned
@@ -1428,13 +1431,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
     }
     const dir = view.dir
-    const nameAt = (d: SceneDistrict): [number, number] => {
-      const [ox, oz] = turnGround(0, d.radius + 4, turned)
-      return [d.pos[0] + ox, d.pos[2] + oz]
+    // Each resize fits the overview again: its name points are the draw's own, filled in place, so a
+    // pane drag makes no garbage here (turnGround's quarter turn, written out).
+    const put = (i: number, x: number, y: number, z: number): V3 => {
+      const p = names[i]
+      p[0] = x
+      p[1] = y
+      p[2] = z
+      return p
     }
-    for (const d of model.districts) {
-      const [x, z] = nameAt(d)
-      pts.push([x, d.pos[1] - 2, z]) // the district's name below its rim
+    const nameX = (d: SceneDistrict): number => d.pos[0] + (turned ? d.radius + 4 : 0)
+    const nameZ = (d: SceneDistrict): number => d.pos[2] + (turned ? 0 : d.radius + 4)
+    for (let i = 0; i < model.districts.length; i++) {
+      const d = model.districts[i]
+      pts.push(put(i * 3, nameX(d), d.pos[1] - 2, nameZ(d))) // the district's name below its rim
     }
     const placed = pts.length
     let fit = fitView(pts, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
@@ -1442,15 +1452,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // each side of its point, whatever the distance: at the fitted distance that is so many world
     // units, so the fit is done again with the name's ends in it (twice: the wider fit makes the name
     // a little wider in the world).
-    const side = new THREE.Vector3(dir[2], 0, -dir[0]).normalize()
+    const side = overviewSide.set(dir[2], 0, -dir[0]).normalize()
     for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
       const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(BASE_FOV / 2))) / height
       pts.length = placed // the last pass's name ends come off
-      for (const d of model.districts) {
+      for (let i = 0; i < model.districts.length; i++) {
+        const d = model.districts[i]
         const half = districtHalfPx(d.id) * perPx
-        const drop = districtDropPx(d.id) * perPx
-        const [x, z] = nameAt(d)
-        for (const k of [-1, 1]) pts.push([x + side.x * half * k, d.pos[1] - 2 - drop, z + side.z * half * k])
+        const y = d.pos[1] - 2 - districtDropPx(d.id) * perPx
+        const x = nameX(d)
+        const z = nameZ(d)
+        pts.push(put(i * 3 + 1, x - side.x * half, y, z - side.z * half), put(i * 3 + 2, x + side.x * half, y, z + side.z * half))
       }
       fit = fitView(pts, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
     }
