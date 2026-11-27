@@ -16,7 +16,10 @@
 //    first, while their cross-edge density is above MERGE_DENSITY.
 // 4. Buildings are capped by merging the smallest into its densest neighbour (link weight over
 //    the neighbour's size) in the same district, never into a process building or channel service;
-//    with no link, its nearest plain building in path order. Those fixed buildings go last.
+//    with no link, its nearest plain building in path order. Those fixed buildings go last, and a
+//    merge that would dissolve a recognisable part (PART_MIN) waits behind every merge that keeps
+//    them all, so growth in one district never costs another district a part while a free merge
+//    is left (PENDING SIGN-OFF).
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    non-test member reaching most of the building, then most imported from outside it, skipping
 //    names that would pass for the district or a main/renderer/preload entry.
@@ -97,6 +100,13 @@ export const FAMILY_FOLDER_MAX = 16
 export const COHESIVE_MIN = 3
 export const COHESIVE_SHARE = 0.75
 export const COHESIVE_WEIGHT = 2
+/** A building is a recognisable part when one group of its files (a small sub-folder, else one folder and leading name
+ *  word, as the name families of step 3 are) has at least this many files, makes up at least a third of the building
+ *  and outnumbers every other group there: the code graph's code*.ts among its watchers. Over the building cap, a merge
+ *  that would leave a part no longer dominating its building waits while a merge that keeps every part is left, so one
+ *  district's growth is paid for where a merge costs nothing, not by another district's part. PENDING SIGN-OFF: the
+ *  plan's step 4 (world-view-1 Task 4) merges the smallest building first, whatever it dissolves. */
+export const PART_MIN = 3
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
@@ -829,7 +839,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
   }
 
-  // 4. Cap buildings. Heap key orders (process?, size, first path); adjacency is same-district only.
+  // 4. Cap buildings. Heap key orders (fixed?, parts a merge dissolves, size, first path); adjacency is same-district only.
   const nb = bFiles.length
   const K = n + 1
   const bSize = bFiles.map((m) => m.length)
@@ -881,27 +891,99 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     tail.set(bDist[b], b)
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) ?? 0) + 1)
   }
+  // Per building: how many members share each part group (see PART_MIN), and its two largest groups. Those two are all
+  // a merge needs to tell whether a part survives it: counts only grow, so no group outside them and the merged-in
+  // building's own can overtake them (mergedTop). No map for a building with no grouped member, as with bStems.
+  const pTop = new Int32Array(nb)
+  const pSecond = new Int32Array(nb)
+  const pTopKey = new Array<string>(nb).fill('')
+  const pSecondKey = new Array<string>(nb).fill('')
+  // The largest two of the counts offered since the last reset, each key offered once: the result of mergedTop.
+  let k1 = ''
+  let v1 = 0
+  let k2 = ''
+  let v2 = 0
+  const offer = (k: string, v: number): void => {
+    if (v > v1) {
+      k2 = k1
+      v2 = v1
+      k1 = k
+      v1 = v
+    } else if (v > v2) {
+      k2 = k
+      v2 = v
+    }
+  }
+  const bParts = bFiles.map((m, b) => {
+    let c: Map<string, number> | undefined
+    for (let j = 0; j < m.length; j++) {
+      const i = m[j]
+      const dir = fileDir[i]
+      const k =
+        (inDir.get(dir) as number) <= FAMILY_FOLDER_MAX && dir !== dirs[seedOf[i]]
+          ? `${dir}\u0000/`
+          : fileStem[i] === ''
+            ? ''
+            : `${dir}\u0000${fileStem[i]}`
+      if (k === '') continue
+      c ??= new Map<string, number>()
+      c.set(k, (c.get(k) ?? 0) + 1)
+    }
+    k1 = k2 = ''
+    v1 = v2 = 0
+    c?.forEach((v, k) => offer(k, v))
+    pTopKey[b] = k1
+    pTop[b] = v1
+    pSecondKey[b] = k2
+    pSecond[b] = v2
+    return c
+  })
+  /** The two largest groups of b and t together, left in k1/v1 and k2/v2. */
+  const mergedTop = (b: number, t: number): void => {
+    k1 = k2 = ''
+    v1 = v2 = 0
+    const from = bParts[b]
+    const into = bParts[t]
+    from?.forEach((c, k) => offer(k, c + (into?.get(k) ?? 0)))
+    if (pTopKey[t] !== '' && !from?.has(pTopKey[t])) offer(pTopKey[t], pTop[t])
+    if (pSecondKey[t] !== '' && !from?.has(pSecondKey[t])) offer(pSecondKey[t], pSecond[t])
+  }
+  /** The group that makes building x a part, else ''. */
+  const partOf = (x: number): string =>
+    pTop[x] >= PART_MIN && pTop[x] * 3 >= bSize[x] && pTop[x] > pSecond[x] ? pTopKey[x] : ''
+  /** How many parts merging b into t dissolves: each of the two that was a part and no longer dominates after. */
+  const loss = (b: number, t: number): number => {
+    const gb = partOf(b)
+    const gt = partOf(t)
+    if (gb === '' && gt === '') return 0
+    mergedTop(b, t)
+    const size = bSize[b] + bSize[t]
+    const kept = (g: string): boolean => g === k1 && v1 * 3 >= size && v1 > v2
+    // A group that is both buildings' part (a process building's files beside their name family) is kept: its counts
+    // add, and it outnumbered every rival in each building and was a third of each, so it still is of the two together.
+    return (gb !== '' && !kept(gb) ? 1 : 0) + (gt !== '' && !kept(gt) ? 1 : 0)
+  }
   // Process buildings and channel services are fixed: merged last, and never a link target.
   const fixed = (b: number): boolean => bEntry[b] >= 0 || pinned.has(b)
   const cohesive = (b: number): boolean => bTop[b] >= COHESIVE_MIN && bTop[b] >= bSize[b] * COHESIVE_SHARE
-  // Weighted sizes reach COHESIVE_WEIGHT * n, so fixed buildings sit above every plain key.
-  const key = (b: number): number =>
-    (fixed(b) ? (COHESIVE_WEIGHT + 1) * K * K : 0) + bSize[b] * (cohesive(b) ? COHESIVE_WEIGHT : 1) * K + bMin[b]
-  const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
-  for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
+  // Weighted sizes reach COHESIVE_WEIGHT * n, so each tier (the parts a merge dissolves, then fixed buildings above
+  // every plain one) sits above every key of the tier before it.
+  const TIER = (COHESIVE_WEIGHT + 1) * K * K
+  const key = (b: number, lost: number): number =>
+    ((fixed(b) ? 3 : 0) + lost) * TIER + bSize[b] * (cohesive(b) ? COHESIVE_WEIGHT : 1) * K + bMin[b]
+  // Items are [key, building, stamp, the parts its merge was last found to dissolve].
+  const heap = new Heap<[number, number, number, number]>((x, y) => x[0] < y[0])
+  for (let b = 0; b < nb; b++) heap.push([key(b, 0), b, 0, 0])
   const bUf = new UnionFind(nb)
   const step = (from: number, dir: Int32Array): number => {
     let x = from
     while (x >= 0 && fixed(x)) x = dir[x]
     return x
   }
-  for (let live = nb; live > maxBuildings; ) {
-    const item = heap.pop()
-    const b = item[1]
-    if (item[2] !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
-    // The densest link (weight over the neighbour's size, so a hub that imports everything never
-    // wins by bulk), ties in path order. A fixed building never takes in a plain one by a link:
-    // its name says what runs or answers there, and unrelated helpers would blur that.
+  /** Where b goes: the densest link (weight over the neighbour's size, so a hub that imports everything never wins by
+   *  bulk), ties in path order. A fixed building never takes in a plain one by a link: its name says what runs or
+   *  answers there, and unrelated helpers would blur that. */
+  const capTarget = (b: number): number => {
     let t = -1
     const near = bAdj.of(b)
     near.forEach((w, o) => {
@@ -909,19 +991,32 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       const d = t < 0 ? 1 : w * bSize[t] - (near.get(t) as number) * bSize[o]
       if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
     })
-    if (t < 0) {
-      // Nearest in path order, skipping fixed buildings while a plain one is left.
-      const at = files[bMin[b]]
-      let p = step(prev[b], prev)
-      let q = step(next[b], next)
-      // A plain building on either side wins; only with none left does a fixed neighbour take it.
-      if (p < 0 && q < 0) {
-        p = prev[b]
-        q = next[b]
-      }
-      const lp = p < 0 ? -1 : prefixLen(at, files[bMin[p]])
-      const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
-      t = lp >= lq ? p : q
+    if (t >= 0) return t
+    // Nearest in path order, skipping fixed buildings while a plain one is left.
+    const at = files[bMin[b]]
+    let p = step(prev[b], prev)
+    let q = step(next[b], next)
+    // A plain building on either side wins; only with none left does a fixed neighbour take it.
+    if (p < 0 && q < 0) {
+      p = prev[b]
+      q = next[b]
+    }
+    const lp = p < 0 ? -1 : prefixLen(at, files[bMin[p]])
+    const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
+    return lp >= lq ? p : q
+  }
+  for (let live = nb; live > maxBuildings; ) {
+    const item = heap.pop()
+    const b = item[1]
+    if (item[2] !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
+    const t = capTarget(b)
+    // A merge that dissolves more parts than its tier allows waits, pushed again that many tiers up, behind every
+    // merge that dissolves fewer; it is weighed afresh when it comes up again, as merges since may have moved it.
+    const lost = loss(b, t)
+    if (lost > item[3]) {
+      bStamp[b]++
+      heap.push([key(b, lost), b, bStamp[b], lost])
+      continue
     }
     if (prev[b] >= 0) next[prev[b]] = next[b]
     if (next[b] >= 0) prev[next[b]] = prev[b]
@@ -930,6 +1025,15 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     bUf.attach(b, t)
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) as number) - 1)
     live--
+    mergedTop(b, t)
+    const partsInto = bParts[t]
+    const partsFrom = bParts[b]
+    if (!partsInto) bParts[t] = partsFrom
+    else partsFrom?.forEach((c, k) => partsInto.set(k, (partsInto.get(k) ?? 0) + c))
+    pTopKey[t] = k1
+    pTop[t] = v1
+    pSecondKey[t] = k2
+    pSecond[t] = v2
     bSize[t] += bSize[b]
     bMin[t] = Math.min(bMin[t], bMin[b])
     // Counts in t only grow, so its largest is the old one or a count this merge raised: no pass over all of t's
@@ -947,7 +1051,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       })
     bTop[t] = top
     bAdj.fold(b, t)
-    heap.push([key(t), t, bStamp[t]])
+    heap.push([key(t, 0), t, bStamp[t], 0])
   }
 
   // 5. Ids and names.
