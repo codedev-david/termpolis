@@ -1351,7 +1351,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // to 5.2 s on the macOS runner) and 2 s on the wall on Windows and ubuntu, 8 s on macOS; the tasks that hold all the
     // drag's fits take no more than DRAG_LIMITS.fitCpuTotal ms of thread time in all, each once (fits too short to be long
     // tasks too); and the page handles the drag's pointer moves, and its release, no more than 5 s
-    // apart on Windows, 7 s on macOS and 2 s on ubuntu. Long animation frames cannot time this (look plan Task 5 deviation, PENDING
+    // apart on Windows, 7 s on macOS and 2 s on ubuntu. The trace loses no events, and holds the page's marker once, on
+    // one thread (Round 6, PENDING SIGN-OFF). Long animation frames cannot time this (look plan Task 5 deviation, PENDING
     // SIGN-OFF): the app's pages are file:// pages, whose long animation frames name no scripts. The frame drawn right after
     // a fit once waited inside the page for the GPU process to make the new buffer; the fit now puts in a fence that frame
     // waits for. On ubuntu-24.04 a shader program freed with a batch outgrown was built again for its replacement; the
@@ -1434,8 +1435,20 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const trace = await page.context().newCDPSession(page)
     const traced: TraceEvent[] = []
     trace.on('Tracing.dataCollected', (e) => { traced.push(...(e.value as unknown as TraceEvent[])) })
-    const traceDone = new Promise<void>((resolve) => trace.once('Tracing.tracingComplete', () => resolve()))
+    // Whether the trace lost events (its buffer full): it may have dropped any task or wait, which the drag fails.
+    const traceDone = new Promise<boolean>((resolve) => trace.once('Tracing.tracingComplete', (e) => resolve(!!(e as { dataLossOccurred?: boolean }).dataLossOccurred)))
     await trace.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: DRAG_TRACE } } as never)
+    // The page's marker for this drag (look plan A2.1 note (10), Round 6, PENDING SIGN-OFF): a name of its own, its
+    // \`:from\` measure named in a task of its own once the trace runs, from an instant to the same instant, before the
+    // first move, and its \`:to\` measure from that instant to the drag's end, named last. The thread that names both is
+    // the page's (ownTimes), whatever else the trace holds (another renderer's measures, a second page), and only the
+    // work between them counts as traced.
+    const marker = `world-drag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const markFrom = await page.evaluate((m) => {
+      const t = performance.now()
+      performance.measure(`${m}:from`, { start: t, end: t })
+      return t
+    }, marker)
     const box = await page.locator('[data-testid="world-pane-divider"]').boundingBox()
     if (!box) throw new Error('the divider has no box')
     const x = box.x + box.width / 2
@@ -1450,8 +1463,9 @@ test.describe.serial('Lumopolis at every screen size', () => {
     await page.mouse.up()
     // The page's work after the drag is the drag's too, up to DRAG_AFTER_MS after the mouse-up.
     await page.waitForTimeout(DRAG_AFTER_MS)
+    await page.evaluate(([m, t]) => { performance.measure(`${m}:to`, { start: t, end: performance.now() }) }, [marker, markFrom] as const)
     await trace.send('Tracing.end')
-    await traceDone
+    const dataLoss = await traceDone
     await trace.detach().catch(() => {})
     const after = await page.evaluate(([fitName, resizeName, afterMs]) => {
       const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __benchAt: number; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; resizeCount: number; tier: string } } } }
@@ -1473,7 +1487,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // release's after the last one included (widestGap).
     const named = fitsNamed(after.fits, after.moves[0], after.upAt + DRAG_AFTER_MS)
     const gap = widestGap(after.moves, after.upAt)
-    const verdict = dragVerdict({ events: traced, resizes: after.resizes, resizeCount: after.resizeCount, tasks: after.tasks, fits: named, widestGap: gap, platform: process.platform })
+    const verdict = dragVerdict({ events: traced, resizes: after.resizes, resizeCount: after.resizeCount, tasks: after.tasks, fits: named, widestGap: gap, platform: process.platform, marker, dataLoss })
     const { own, others, fits } = verdict
     const show = (xs: Array<{ wall: number }>): string => xs.map((x) => x.wall.toFixed(0)).join(', ') || 'none'
     const pairs = (xs: OwnTime[], over: number): string => xs.filter((x) => x.wall > over).map((x) => `${x.wall.toFixed(1)}/${x.own.toFixed(1)}${x.waited >= 0.05 ? ` (${x.waited.toFixed(1)} waited)` : ''}${x.matched ? '' : ' (not traced)'}${x.by && x.own >= 4 ? ` [in ${x.by}]` : ''}`).join(', ') || 'none'
@@ -1484,6 +1498,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const be = Object.entries(own.pairs).sort((p, q) => q[1] - p[1]).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'
     // A begin or an end it leaves in doubt (an end of another name than the open begin's, one with none open, a begin never ended) is charged as a wait to the edge of the trace.
     const doubt = own.unpaired.map((u) => `${u.kind} ${u.name || '(unnamed)'} at ${u.at.toFixed(1)}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag trace: ${dataLoss ? 'events lost' : 'no events lost'}; the marker ${own.marker.held ? 'held' : 'not held'} (${own.marker.from} from, ${own.marker.to} to, on ${own.marker.threads.join(', ') || 'no thread'})`)
     console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}; unpaired: ${doubt}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     for (const c of verdict.checks) softly(c.fails, c.rule).toEqual([])
