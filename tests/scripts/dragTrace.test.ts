@@ -203,11 +203,23 @@ describe('the drag trace (dragTrace)', () => {
     const v = dragVerdict(input({ tasks: [FIT, { start: 9000, ms: 600, fit: true }] }))
     expect(v.fits[1]).toEqual({ wall: 600, own: 600, cpu: 600, waited: 0, gpu: 0, matched: false })
     expect(fails(v, 'ms of thread time')).toEqual(['600/600 (not traced)'])
-    expect(fails(v, "of the fits' tasks")).toEqual(['1/2'])
+    expect(fails(v, "of the fits' tasks")).toEqual([]) // one dropped is allowed (fitsDropped), its wall charged
+    expect(fails(dragVerdict(input({ tasks: [FIT, ...Array(2).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")).toEqual(['1/3'])
     // Nine held of ten is enough, eight is not.
     const many = (held: number): string[] => fails(dragVerdict(input({ tasks: [...Array(held).fill(FIT), ...Array(10 - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
     expect(many(9)).toEqual([])
     expect(many(8)).toEqual(['8/10'])
+  })
+
+  // Round 3, Opus m3-2: with fewer than 10 fits one dropped failed the 90% (ubuntu's drags name 6 to 9 at the least).
+  it("lets the trace drop one fit's task of any number: 6 of 7, not 5; 18 of 20, not 17", () => {
+    const of = (n: number, held: number): string[] => fails(dragVerdict(input({ tasks: [...Array(held).fill(FIT), ...Array(n - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
+    expect(of(7, 6)).toEqual([])
+    expect(of(7, 5)).toEqual(['5/7'])
+    expect(of(20, 18)).toEqual([])
+    expect(of(20, 17)).toEqual(['17/20'])
+    expect(of(1, 0)).toEqual([]) // one fit dropped: charged its wall as thread time, which holds it to 200 ms
+    expect(fails(dragVerdict(input({ tasks: [{ start: 9000, ms: 250, fit: true }] })), 'ms of thread time')).toEqual(['250/250 (not traced)'])
   })
 
   // Round 2, Codex minor: a fit named whose task the check never scored passed.
@@ -245,14 +257,62 @@ describe('the drag trace (dragTrace)', () => {
       tasks: [FIT, { start: 4000, ms: 20_000, fit: true }],
     }))
     const g = at('gpu', 'CommandBufferProxyImpl::WaitForGetOffset')
-    expect(fails(g, `${DRAG_LIMITS.fitCeiling} ms on the wall`)).toEqual(['20000'])
+    expect(fails(g, 'ms on the wall on linux')).toEqual(['20000'])
     expect(fails(g, 'beyond its waits on the GPU')).toEqual([])
     const cc = at('cc', 'ProxyMain::SynchronizeState')
     expect(fails(cc, 'beyond its waits on the GPU')).toEqual(['20000/0'])
-    expect(fails(cc, `${DRAG_LIMITS.fitCeiling} ms on the wall`)).toEqual(['20000'])
-    // At the ceiling it passes.
-    const edge = dragVerdict(input({ events: [...quiet().events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 8000, 50), X('ImplementationBase::WaitForCmd', 'gpu', 4010, 7900, 0)], tasks: [FIT, { start: 4000, ms: 8000, fit: true }] }))
-    expect(broken(edge)).toEqual([])
+    expect(fails(cc, 'ms on the wall on linux')).toEqual(['20000'])
+  })
+
+  // Round 3, Opus I3-1, Codex major 1: an 8000 ms fit after the release, 7900 ms of it on the GPU, passed on every OS.
+  it("bounds a fit's task on the wall by OS: 2 s on Windows and ubuntu, 6 s on macOS, the widest on another", () => {
+    // A fit's task `ms` long on the wall, 50 ms of thread time, all but 100 ms of it waiting on the GPU.
+    const fit = (platform: string, ms: number): ReturnType<typeof dragVerdict> => dragVerdict(input({
+      platform,
+      events: [...quiet().events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, ms, 50), X('ImplementationBase::WaitForCmd', 'gpu', 4010, ms - 100, 0)],
+      tasks: [FIT, { start: 4000, ms, fit: true }],
+    }))
+    const ceiling = (platform: string, ms: number): string[] => fails(fit(platform, ms), `ms on the wall on ${platform}`)
+    expect(broken(fit('linux', 2500))).toHaveLength(1) // the ceiling alone: it breaks no other rule
+    expect(broken(fit('darwin', 6001))).toHaveLength(1)
+    expect(ceiling('linux', 2500)).toEqual(['2500'])
+    expect(ceiling('win32', 2500)).toEqual(['2500'])
+    expect(ceiling('darwin', 2500)).toEqual([])
+    expect(ceiling('linux', 2001)).toEqual(['2001'])
+    expect(ceiling('win32', 2001)).toEqual(['2001'])
+    expect(broken(fit('linux', 2000))).toEqual([])
+    expect(broken(fit('win32', 2000))).toEqual([])
+    expect(ceiling('darwin', 8000)).toEqual(['8000'])
+    expect(ceiling('darwin', 6001)).toEqual(['6001'])
+    expect(broken(fit('darwin', 6000))).toEqual([])
+    expect(ceiling('freebsd', 6001)).toEqual(['6001']) // an OS the limits do not name gets the widest
+    expect(ceiling('freebsd', 6000)).toEqual([])
+    expect(fails(fit('darwin', 6001), 'beyond its waits on the GPU')).toEqual([])
+  })
+
+  // Round 3, Codex major 2: the CPU of a wait was spread over the part another wait showed holds none, so a fit 1025 ms
+  // on the wall beyond its waits on the GPU scored 975; and an outer wait with no thread time hid the inner's.
+  it("excuses a fit no more GPU wait than the trace shows (1875 ms with waits [0,600] of no thread time and [400,1000] of 150: 850, not 900)", () => {
+    const fit = (ms: number, waits: TraceEvent[], tdur = 160): ReturnType<typeof dragVerdict> => dragVerdict(input({
+      events: [...quiet().events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, ms, tdur), ...waits],
+      tasks: [FIT, { start: 4000, ms, fit: true }],
+    }))
+    const overlapping = [X('ImplementationBase::WaitForCmd', 'gpu', 4100, 600, 0), X('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 4500, 600, 150)]
+    const v = fit(1875, overlapping)
+    expect(v.fits[1].gpu).toBeCloseTo(850, 6)
+    expect(fails(v, 'beyond its waits on the GPU')).toEqual(['1875/850'])
+    // A GPU wait the trace gives no thread time, with one inside it of 100 ms of thread time: 900 ms excused, not 1000.
+    const nested = fit(1950, [W('CommandBufferProxyImpl::WaitForToken', 'gpu', 4100, 1000), X('GLES2::Finish', 'gpu', 4300, 300, 100)], 120)
+    expect(nested.fits[1].gpu).toBeCloseTo(900, 6)
+    expect(fails(nested, 'beyond its waits on the GPU')).toEqual(['1950/900'])
+  })
+
+  // Round 3, Codex major 2: the same spreading charged a task less wait than the trace shows.
+  it("charges a task no less wait than the trace shows (waits [10,70] and [50,110] of 30 ms of thread time each: 60, not 50)", () => {
+    const events = [...quiet().events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 300, 145), X('WaitableEvent::Wait', 'base', 4010, 60, 30), X('WaitableEvent::Wait', 'base', 4050, 60, 30)]
+    const v = dragVerdict(input({ events, tasks: [{ start: 4000, ms: 300, fit: false }] }))
+    expect(v.others[0].waited).toBeCloseTo(60, 6)
+    expect(fails(v, "of its own, the fit's left out")).toEqual(['300/205'])
   })
 
   // Round 2, Opus D11: a wait that runs past its task's end excused more than the task waited.
@@ -290,18 +350,30 @@ describe('the drag trace (dragTrace)', () => {
     expect(own.resizes[own.resizes.length - 1].waited).toBeCloseTo(6, 6)
   })
 
-  it('waitedIn: the union of the waits cut to the span, less the thread time of its outermost ones, pro rata', () => {
+  it('waitedIn: the union of the waits cut to the span, less their thread time, the least or the most the trace allows', () => {
     const at = (a: number, d: number, td?: number): TraceEvent => ({ name: 'Wait', cat: 'base', ph: 'X', ts: a, dur: d, ...(td === undefined ? {} : { tdur: td }), pid: 1, tid: 1 })
-    expect(waitedIn([], 0, 100)).toBe(0)
-    expect(waitedIn([at(0, 10), at(5, 20)], 0, 100)).toBe(25) // [0,10] and [5,25]
-    expect(waitedIn([at(0, 10), at(20, 10)], 0, 100)).toBe(20) // apart
-    expect(waitedIn([at(0, 10), at(10, 10)], 0, 100)).toBe(20) // side by side
-    expect(waitedIn([at(0, 20, 4), at(5, 5, 5)], 0, 100)).toBe(16) // nested: the outer's thread time holds the inner's
-    expect(waitedIn([at(0, 10, 0), at(0, 10, 4)], 0, 100)).toBe(6) // the very bounds: the one with more thread time
-    expect(waitedIn([at(0, 10, 10), at(5, 10, 4)], 0, 100)).toBe(3) // [0,10] all thread, [10,15] new: 5 less 4 pro rata (2)
-    expect(waitedIn([at(-50, 100, 50)], 0, 20)).toBe(10) // cut to the span: 20 of it, 10 of its thread time pro rata
-    expect(waitedIn([at(30, 10), at(-10, 5)], 0, 20)).toBe(0) // outside the span
-    expect(waitedIn([at(0, 10, 30)], 0, 100)).toBe(0) // thread time over its wall: no wait
+    const both = (xs: TraceEvent[], s: number, e: number): number[] => [waitedIn(xs, s, e, 'least'), waitedIn(xs, s, e, 'most')]
+    expect(both([], 0, 100)).toEqual([0, 0])
+    expect(both([at(0, 10), at(5, 20)], 0, 100)).toEqual([25, 25]) // [0,10] and [5,25]
+    expect(both([at(0, 10), at(20, 10)], 0, 100)).toEqual([20, 20]) // apart
+    expect(both([at(0, 10), at(10, 10)], 0, 100)).toEqual([20, 20]) // side by side
+    expect(both([at(0, 20, 4), at(5, 5, 3)], 0, 100)).toEqual([16, 16]) // nested: the outer's thread time holds the inner's
+    expect(both([at(0, 20, 2), at(5, 5, 3)], 0, 100)).toEqual([17, 17]) // ... and is at least the inner's
+    expect(both([at(0, 10, 0), at(0, 10, 4)], 0, 100)).toEqual([6, 6]) // the very bounds: the one with more thread time
+    // Codex's case: [0,600] of no thread time shows [400,600] holds none, so the 150 of [400,1000] lie in [600,1000]:
+    // the least is 850. The most takes 150 less the 200 ms it could have in [400,600]: none, 1000.
+    expect(both([at(0, 600, 0), at(400, 600, 150)], 0, 1000)).toEqual([850, 1000])
+    // [0,10] all thread time, [5,15] of 4: in [10,15] at most 4 of them, at least none (all 4 can lie in [5,10]).
+    expect(both([at(0, 10, 10), at(5, 10, 4)], 0, 100)).toEqual([1, 5])
+    expect(both([at(0, 10, 2), at(5, 10, 8)], 0, 100)).toEqual([8, 10]) // in [10,15] at most 5 of the 8, at least 8 less 5
+    // A wait with no thread time given, a wait inside it with some: that much of the outer is not waited, nested deeper too.
+    expect(both([at(0, 1000), at(200, 300, 100)], 0, 1000)).toEqual([900, 900])
+    expect(both([at(0, 1000), at(100, 600), at(200, 300, 100), at(600, 50, 20)], 0, 1000)).toEqual([880, 880])
+    // Cut to the span: of 50 ms of thread time in 100, the 20 inside hold at most 20 of it and at least none.
+    expect(both([at(-50, 100, 50)], 0, 20)).toEqual([0, 20])
+    expect(both([at(-50, 100, 90)], 0, 20)).toEqual([0, 10]) // at least 90 less the 80 cut off
+    expect(both([at(30, 10), at(-10, 5)], 0, 20)).toEqual([0, 0]) // outside the span
+    expect(both([at(0, 10, 30)], 0, 100)).toEqual([0, 0]) // thread time over its wall: no wait
   })
 
   // Round 2, Codex minor: a resize's begin was paired with an end of another process by id, and spans on another
@@ -337,7 +409,7 @@ describe('the drag trace (dragTrace)', () => {
 
   // Round 2, Opus m2-3: the limits are pinned, so a change of one touches a test.
   it('pins the limits (look plan A2.1 note (10), PENDING SIGN-OFF)', () => {
-    expect(DRAG_LIMITS).toEqual({ resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, tracedResizes: 0.8, tracedFits: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 } })
+    expect(DRAG_LIMITS).toEqual({ resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: { win32: 2000, darwin: 6000, linux: 2000 }, tracedResizes: 0.8, tracedFits: 0.9, fitsDropped: 1, gap: { win32: 5000, darwin: 7000, linux: 2000 } })
   })
 
   // Codex minor: a resize whose measure the page failed to name dropped out of every rule.
@@ -355,6 +427,35 @@ describe('the drag trace (dragTrace)', () => {
     const drop = (n: number): TraceEvent[] => q.events.filter((e) => !(e.ph === 'b' && e.ts < us(1000 + n * 100)))
     expect(fails(dragVerdict(input({ events: drop(2) })), 'of the resizes the page named')).toEqual([])
     expect(fails(dragVerdict(input({ events: drop(3) })), 'of the resizes the page named')).toEqual(['7/10'])
+  })
+
+  // Round 3, Opus m3-3 (mutant R6, floor): at 10 resizes floor and ceil agree; at 39 they do not (31.2).
+  it('wants 80% of 39 resizes rounded up: 32, not 31', () => {
+    const q = quiet(39)
+    const drop = (n: number): TraceEvent[] => q.events.filter((e) => !(e.ph === 'b' && e.ts < us(1000 + n * 100)))
+    const at = (n: number): string[] => fails(dragVerdict(input({ events: drop(n), resizes: q.resizes, resizeCount: 39 })), 'of the resizes the page named')
+    expect(at(7)).toEqual([])
+    expect(at(8)).toEqual(['31/39'])
+  })
+
+  // Round 3, Codex minor: ten resizes in the trace with none in the work around them passed as all traced.
+  it("counts a resize toward the 80% only when it is timed on the thread's clock, in the work around it", () => {
+    const bare = quiet().events.filter((e) => !(e.ts < us(2400) && (e.name === 'FunctionCall' || e.name === 'ThreadControllerImpl::RunTask')))
+    const v = dragVerdict(input({ events: bare }))
+    expect(v.own.traced).toBe(10)
+    expect(v.own.resizes.every((x) => !x.matched)).toBe(true)
+    expect(fails(v, 'of the resizes the page named')).toEqual(['0/10'])
+    const some = quiet().events.filter((e) => !(e.ts < us(1300) && (e.name === 'FunctionCall' || e.name === 'ThreadControllerImpl::RunTask')))
+    expect(fails(dragVerdict(input({ events: some })), 'of the resizes the page named')).toEqual(['7/10'])
+  })
+
+  // Round 3, Opus m3-3 (mutant R9, >=): of two threads as many resizes agree with, the one that named a resize first is the page's.
+  it('of two threads as many resizes agree with, takes the one that named a resize first', () => {
+    const page = [{ start: 100, ms: 2 }, { start: 200, ms: 3 }]
+    const thread2: TraceEvent = { ...META, pid: 2, args: { name: 'Other' } }
+    const mine = [...named(100, 2), ...named(200, 3)]
+    expect(ownTimes([META, thread2, ...mine, ...named(100.01, 2, 2), ...named(200.01, 3, 2)], page, []).thread).toBe('CrRendererMain')
+    expect(ownTimes([META, thread2, ...named(99.99, 2, 2), ...named(199.99, 3, 2), ...mine], page, []).thread).toBe('Other')
   })
 
   // Round 2, Opus m2-2, Codex minor: one 7000 ms gap for every OS, and the release after the last move not counted.

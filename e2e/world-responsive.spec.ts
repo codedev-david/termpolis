@@ -1341,13 +1341,14 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // frame presentation takes the CPU from the page, so a task of 200 ms on the wall is 10 to 50 ms of its own), and each
     // is also held to a ceiling on the wall, for a wait the trace does not name. From the first move to DRAG_AFTER_MS after
     // the mouse-up (a debounce, a timer, an idle callback the drag left is the drag's too): every resize the renderer timed
-    // is named (RESIZE_MEASURE, counted against RendererPerf.resizeCount), at least 90% of them are in the trace, and each
+    // is named (RESIZE_MEASURE, counted against RendererPerf.resizeCount), at least 80% of them are timed on the thread's
+    // clock (in the trace, in the work around each; one the trace dropped is timed on the wall), and each
     // takes under 16 ms of its own and 50 ms on the wall; no long task but a buffer fit's runs over 200 ms of its own or
     // 350 ms on the wall; a long task holds a fit named, and the task that holds a fit's measure (BUFFER_FIT_MEASURE: the
     // buffer fitted once the size holds, BUFFER_SETTLE_MS, then the fence and the wake, and whatever else that task runs),
-    // at least 90% of them in the trace and one it lost charged its wall, takes no more than 200 ms of thread time, 1000 ms
-    // on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU process, 50 ms to 5.2 s on the
-    // macOS runner) and 8 s on the wall; and the page handles the drag's pointer moves, and its release, no more than 5 s
+    // at least 90% of them in the trace or all but one, and one it lost charged its wall, takes no more than 200 ms of
+    // thread time, 1000 ms on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU process, 50 ms
+    // to 5.2 s on the macOS runner) and 2 s on the wall on Windows and ubuntu, 6 s on macOS; and the page handles the drag's pointer moves, and its release, no more than 5 s
     // apart on Windows, 7 s on macOS and 2 s on ubuntu. Long animation frames cannot time this (look plan Task 5 deviation, PENDING
     // SIGN-OFF): the app's pages are file:// pages, whose long animation frames name no scripts. The frame drawn right after
     // a fit once waited inside the page for the GPU process to make the new buffer; the fit now puts in a fence that frame

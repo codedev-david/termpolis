@@ -50,34 +50,56 @@ export function disjoint(xs: TraceEvent[]): TraceEvent[] {
   return out
 }
 
+/** A wait cut to a span: its bounds there, and the least and the most of its thread time that can lie inside them. */
+type Cut = { a: number; b: number; lo: number; hi: number }
+/**
+ * The pieces of the union of the cut waits, each with the least and the most thread time it can hold (at most its
+ * length). From the earliest on, a wait that begins before the piece ends and runs past it adds the part past the end:
+ * at most all of its thread time there (at most that part's length), at least what of it cannot lie in the part already
+ * counted. A wait inside the piece (nested, or with its very bounds) adds nothing to it, but the thread time of the waits
+ * inside (their own pieces, the same way) is in the piece too, so a piece holds at least as much as they do: an outer
+ * wait the trace gives no thread time is no proof that the thread spent none in it.
+ */
+function pieces(cut: Cut[]): Cut[] {
+  const out: Cut[] = []
+  let piece: (Cut & { inner: Cut[] }) | undefined
+  const close = (x: Cut & { inner: Cut[] }): void => {
+    const sub = pieces(x.inner)
+    const len = x.b - x.a
+    const sum = (k: 'lo' | 'hi'): number => sub.reduce((t, y) => t + y[k], 0)
+    out.push({ a: x.a, b: x.b, lo: Math.min(len, Math.max(x.lo, sum('lo'))), hi: Math.min(len, Math.max(x.hi, sum('hi'))) })
+  }
+  for (const c of [...cut].sort((p, q) => p.a - q.a || q.b - p.b)) {
+    if (!piece || c.a >= piece.b) {
+      if (piece) close(piece)
+      piece = { ...c, inner: [] }
+    } else if (c.b > piece.b) {
+      piece.hi += Math.min(c.hi, c.b - piece.b)
+      piece.lo += Math.max(0, c.lo - (piece.b - c.a))
+      piece.b = c.b
+    } else piece.inner.push(c)
+  }
+  if (piece) close(piece)
+  return out
+}
+
 /**
  * The time the thread waited inside [s, e] (microseconds) in the waits of a list: the instants one or more of them
  * covers there, each once (the union of the waits, each cut to [s, e], so a wait that runs past either end counts only
- * inside, and one that overlaps another counts what the other does not cover), less the thread time in them. A piece
- * of the union holds the thread time of its outermost waits, each one's cut pro rata to the part of it no wait before
- * it covers (one nested in another, or with its very bounds, is part of it; of two with the very bounds, the one with
- * more thread time is taken), at most the piece's length.
+ * inside, and one that overlaps another counts what the other does not cover), less the thread time in them. Where the
+ * trace does not say where a wait's thread time lies (in the part of it cut off, or in the part another wait covers
+ * too), `least` takes as much of it as can to lie in the waits and `most` as little: `least` for a wait excused (a fit's
+ * waits on the GPU), `most` for one charged (the waits in a resize's or a task's own time), so neither is ever made out
+ * kinder than the trace shows (look plan A2.1 note (10)). A wait with no thread time given has none of its own.
  */
-export function waitedIn(xs: TraceEvent[], s: number, e: number): number {
-  const cut = xs.flatMap((x) => {
+export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'least' | 'most'): number {
+  const cut = xs.flatMap((x): Cut[] => {
     const a = Math.max(s, x.ts)
     const b = Math.min(e, end(x))
-    return b > a ? [{ a, b, t: (x.tdur ?? 0) * ((b - a) / (x.dur as number)) }] : []
-  }).sort((p, q) => p.a - q.a || q.b - p.b || q.t - p.t)
-  let total = 0
-  let piece: { a: number; b: number; t: number } | undefined
-  const close = (x: { a: number; b: number; t: number }): number => x.b - x.a - Math.min(x.b - x.a, x.t)
-  for (const c of cut) {
-    if (!piece || c.a >= piece.b) {
-      if (piece) total += close(piece)
-      piece = { ...c }
-    } else if (c.b > piece.b) {
-      // Past the piece's end: only the part past the end is new, with its thread time pro rata.
-      piece.t += c.t * ((c.b - piece.b) / (c.b - c.a))
-      piece.b = c.b
-    }
-  }
-  return piece ? total + close(piece) : total
+    const t = x.tdur ?? 0
+    return b > a ? [{ a, b, lo: Math.max(0, t - ((x.dur as number) - (b - a))), hi: Math.min(t, b - a) }] : []
+  })
+  return pieces(cut).reduce((w, p) => w + (p.b - p.a) - (bound === 'least' ? p.hi : p.lo), 0)
 }
 
 /**
@@ -151,9 +173,9 @@ export function ownTimes(events: TraceEvent[], named: PageSpan[], longTasks: Pag
     const span = pairs[i]
     const around = span ? onMain.filter((x) => typeof x.tdur === 'number' && x.ts <= span.s + SLACK && end(x) >= span.e - SLACK).sort((p, q) => (p.dur as number) - (q.dur as number))[0] : undefined
     if (!span || !around) return { wall: m.ms, own: m.ms, cpu: m.ms, waited: 0, gpu: 0, matched: false }
-    const waited = waitedIn(waitsOn, span.s, span.e) / 1000
+    const waited = waitedIn(waitsOn, span.s, span.e, 'most') / 1000
     const cpu = within(around, span.s, span.e) / 1000
-    return { wall: m.ms, own: Math.min(m.ms, cpu + waited), cpu, waited, gpu: waitedIn(gpuOn, span.s, span.e) / 1000, matched: true, by: `${around.name} ${((around.dur as number) / 1000).toFixed(1)}/${((around.tdur as number) / 1000).toFixed(1)}` }
+    return { wall: m.ms, own: Math.min(m.ms, cpu + waited), cpu, waited, gpu: waitedIn(gpuOn, span.s, span.e, 'least') / 1000, matched: true, by: `${around.name} ${((around.dur as number) / 1000).toFixed(1)}/${((around.tdur as number) / 1000).toFixed(1)}` }
   })
   const overlap = (x: TraceEvent, s: number, e: number): number => Math.max(0, Math.min(e, end(x)) - Math.max(s, x.ts))
   const tasks = longTasks.map((t): OwnTime => {
@@ -161,9 +183,9 @@ export function ownTimes(events: TraceEvent[], named: PageSpan[], longTasks: Pag
     const e = s + t.ms * 1000
     const run = Number.isFinite(off) ? onMain.filter((x) => /RunTask/.test(x.name) && typeof x.tdur === 'number' && overlap(x, s, e) > 0.5 * t.ms * 1000).sort((p, q) => overlap(q, s, e) - overlap(p, s, e) || (q.dur as number) - (p.dur as number))[0] : undefined
     if (!run) return { wall: t.ms, own: t.ms, cpu: t.ms, waited: 0, gpu: 0, matched: false }
-    const waited = waitedIn(waitsOn, run.ts, end(run)) / 1000
+    const waited = waitedIn(waitsOn, run.ts, end(run), 'most') / 1000
     const cpu = (run.tdur as number) / 1000
-    return { wall: t.ms, own: Math.min(t.ms, cpu + waited), cpu, waited, gpu: waitedIn(gpuOn, run.ts, end(run)) / 1000, matched: true }
+    return { wall: t.ms, own: Math.min(t.ms, cpu + waited), cpu, waited, gpu: waitedIn(gpuOn, run.ts, end(run), 'least') / 1000, matched: true }
   })
   return { traced: offs.length, spread, thread: names.get(main) ?? main, resizes, tasks }
 }
@@ -178,15 +200,17 @@ export function ownTimes(events: TraceEvent[], named: PageSpan[], longTasks: Pag
  *   it runs), its waits left out; one the trace does not hold is charged its wall;
  * - fitWall: each such task on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU
  *   process), so a wait on anything else (a sync call, a lock, an event) or one the trace does not name counts;
- * - fitCeiling: each such task on the wall, its waits on the GPU too;
- * - tracedResizes: the share of the resizes the page named the trace must hold (a share, not ms; the macOS trace drops
- *   up to 4 of 39, and one it drops is timed on the wall);
- * - tracedFits: the share of the fits' tasks the trace must hold (a share; one it drops is charged its wall);
+ * - fitCeiling: by OS (process.platform), each such task on the wall, its waits on the GPU too (the worst seen: 457 ms
+ *   on Windows, 518 on ubuntu, 5204 on macOS, soak 45933131129); an OS it does not name gets the widest;
+ * - tracedResizes: the share of the resizes the page named that the trace holds on the thread's clock, each in the work
+ *   around it (a share, not ms; the macOS trace drops up to 4 of 39, and one it drops is timed on the wall);
+ * - tracedFits: the share of the fits' tasks the trace must hold (a share; one it drops is charged its wall), less
+ *   fitsDropped of them at most (a count), so one dropped of fewer than 10 fails no drag;
  * - gap: by OS (process.platform), the widest gap between two of the drag's pointer moves the page handled, or between
  *   the last and the pointer's release (the page answers none in it).
  */
-export const DRAG_LIMITS: { resizeOwn: number; resizeWall: number; taskOwn: number; taskWall: number; fitCpu: number; fitWall: number; fitCeiling: number; tracedResizes: number; tracedFits: number; gap: Record<string, number> } = {
-  resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: 8000, tracedResizes: 0.8, tracedFits: 0.9, gap: { win32: 5000, darwin: 7000, linux: 2000 },
+export const DRAG_LIMITS: { resizeOwn: number; resizeWall: number; taskOwn: number; taskWall: number; fitCpu: number; fitWall: number; fitCeiling: Record<string, number>; tracedResizes: number; tracedFits: number; fitsDropped: number; gap: Record<string, number> } = {
+  resizeOwn: 16, resizeWall: 50, taskOwn: 200, taskWall: 350, fitCpu: 200, fitWall: 1000, fitCeiling: { win32: 2000, darwin: 6000, linux: 2000 }, tracedResizes: 0.8, tracedFits: 0.9, fitsDropped: 1, gap: { win32: 5000, darwin: 7000, linux: 2000 },
 }
 
 /** What the drag check is handed: the trace, and what the page measured from the first move to DRAG_AFTER_MS after the mouse-up. */
@@ -227,20 +251,24 @@ export function dragVerdict(input: DragInput, limits = DRAG_LIMITS): { checks: D
   const pair = (x: OwnTime, digits = 1): string => `${x.wall.toFixed(digits)}/${x.own.toFixed(digits)}`
   const share = (x: number): string => `${Math.round(x * 100)}%`
   const held = fits.filter((x) => x.matched).length
-  const gap = limits.gap[input.platform] ?? Math.max(...Object.values(limits.gap))
+  const timed = own.resizes.filter((x) => x.matched).length
+  const byOs = (x: Record<string, number>): number => x[input.platform] ?? Math.max(...Object.values(x))
+  const gap = byOs(limits.gap)
+  const ceiling = byOs(limits.fitCeiling)
+  const fitsHeld = Math.min(Math.ceil(fits.length * limits.tracedFits), fits.length - limits.fitsDropped)
   const checks: DragCheck[] = [
     { rule: 'the drag resized the view, each resize named (named/timed)', fails: input.resizeCount > 0 && input.resizes.length === input.resizeCount ? [] : [`${input.resizes.length}/${input.resizeCount}`] },
-    { rule: `the trace holds at least ${share(limits.tracedResizes)} of the resizes the page named (one it dropped is timed on the wall): traced/named`, fails: own.traced >= Math.ceil(input.resizes.length * limits.tracedResizes) ? [] : [`${own.traced}/${input.resizes.length}`] },
+    { rule: `the trace holds at least ${share(limits.tracedResizes)} of the resizes the page named on the thread's clock, each in the work around it (one it dropped is timed on the wall): timed/named`, fails: timed >= Math.ceil(input.resizes.length * limits.tracedResizes) ? [] : [`${timed}/${input.resizes.length}`] },
     { rule: `each resize takes under ${limits.resizeOwn} ms of its own (wall/own ms)`, fails: own.resizes.filter((x) => x.own >= limits.resizeOwn).map((x) => pair(x)) },
     { rule: `each resize takes under ${limits.resizeWall} ms on the wall, a wait the trace does not name (ms)`, fails: own.resizes.filter((x) => x.wall >= limits.resizeWall).map((x) => x.wall.toFixed(1)) },
     { rule: 'the buffer was fitted during or after the drag, its fit named', fails: input.fitCount > 0 ? [] : ['no fit'] },
     { rule: "a long task holds a fit named, so the fits are scored (fits' tasks/fits named)", fails: input.fitCount > 0 && fits.length === 0 ? [`0/${input.fitCount}`] : [] },
     { rule: `no task runs over ${limits.taskOwn} ms of its own, the fit's left out (wall/own ms)`, fails: others.filter((x) => x.own > limits.taskOwn).map((x) => pair(x, 0)) },
     { rule: `no task runs over ${limits.taskWall} ms on the wall, the fit's left out, a wait the trace does not name (ms)`, fails: others.filter((x) => x.wall > limits.taskWall).map((x) => x.wall.toFixed(0)) },
-    { rule: `the trace holds at least ${share(limits.tracedFits)} of the fits' tasks: traced/fits`, fails: held >= Math.ceil(fits.length * limits.tracedFits) ? [] : [`${held}/${fits.length}`] },
+    { rule: `the trace holds at least ${share(limits.tracedFits)} of the fits' tasks, or all but ${limits.fitsDropped}: traced/fits`, fails: held >= fitsHeld ? [] : [`${held}/${fits.length}`] },
     { rule: `no fit's task runs over ${limits.fitCpu} ms of thread time, its waits left out, one the trace does not hold charged its wall (wall/thread ms)`, fails: fits.filter((x) => x.cpu > limits.fitCpu).map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.matched ? '' : ' (not traced)'}`) },
     { rule: `no fit's task runs over ${limits.fitWall} ms on the wall beyond its waits on the GPU, any other wait counted (wall/GPU-waited ms)`, fails: fits.filter((x) => x.wall - x.gpu > limits.fitWall).map((x) => `${x.wall.toFixed(0)}/${x.gpu.toFixed(0)}`) },
-    { rule: `no fit's task runs over ${limits.fitCeiling} ms on the wall, its waits on the GPU too (ms)`, fails: fits.filter((x) => x.wall > limits.fitCeiling).map((x) => x.wall.toFixed(0)) },
+    { rule: `no fit's task runs over ${ceiling} ms on the wall on ${input.platform}, its waits on the GPU too (ms)`, fails: fits.filter((x) => x.wall > ceiling).map((x) => x.wall.toFixed(0)) },
     { rule: `the page handles the drag's pointer moves no more than ${gap} ms apart on ${input.platform}, the release too (ms)`, fails: input.widestGap > gap ? [input.widestGap.toFixed(0)] : [] },
   ]
   return { checks, own, others, fits }
