@@ -141,11 +141,12 @@ export function renameClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<s
 /**
  * WP5 fix I2: annotations with every renamed item's claims also under its new id, after any the new id already has, a claim
  * held under both kept once; the old ids keep theirs, so a migration that stops part way loses nothing (the store caps what
- * it writes). The input is returned as is when no claim needs copying.
+ * it writes). The input is returned as is when no claim needs copying. `from`, when given, is what each id copies (the claims
+ * the annotation store shows under it, holdb-codex-review); `byItem` is still what is copied into and kept.
  */
-export function copyClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<string, string>): Record<string, Claim[]> {
+export function copyClaims(byItem: Record<string, Claim[]>, map: ReadonlyMap<string, string>, from: Record<string, Claim[]> = byItem): Record<string, Claim[]> {
   let out: Record<string, Claim[]> | null = null
-  for (const [id, list] of Object.entries(byItem)) {
+  for (const [id, list] of Object.entries(from)) {
     const to = map.get(id)
     if (to === undefined || to === id) continue
     const have = (out ?? byItem)[to] ?? []

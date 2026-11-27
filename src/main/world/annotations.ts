@@ -356,6 +356,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
       const first = !had && unread.length > 0
       if (first && !(await keepPending(pendingFile, record))) return []
       if (found.length > 0) {
+        await carryMoved(dir, target, own, found.map(([old]) => old))
         const merged: Record<string, Claim[]> = Object.create(null)
         for (const claims of [...found.map(([, c]) => c), ...(own ? [own] : [])]) {
           for (const [id, list] of Object.entries(claims)) {
@@ -419,6 +420,25 @@ async function writeMoved(file: string, moved: Moved): Promise<void> {
   else await rm(file, { force: true })
 }
 
+/** holdb-review M4: the record beside the new key's file (`target`) with each older key's record added, written before the
+ *  merged file, so what an older key hid under an id stays hidden under the new key. A claim the new key's own file (`own`)
+ *  shows under that id is newer than that record and stays shown. Rejects when the record cannot be written; adoption then
+ *  writes nothing and tries again later. */
+async function carryMoved(dir: string, target: string, own: Record<string, Claim[]> | null, olds: string[]): Promise<void> {
+  const file = `${target}${MOVED_SUFFIX}`
+  const have = await readMoved(file)
+  const ownShown = shownClaims(own ?? {}, have)
+  const out: Moved = Object.assign(Object.create(null), have)
+  for (const old of olds) {
+    for (const [id, keys] of Object.entries(await readMoved(`${annotationsFileOf(dir, old)}${MOVED_SUFFIX}`))) {
+      const mine = new Set((ownShown[id] ?? []).map(claimKey))
+      const add = keys.filter((k) => !mine.has(k))
+      if (add.length > 0) out[id] = [...new Set([...(out[id] ?? []), ...add])]
+    }
+  }
+  if (JSON.stringify(out) !== JSON.stringify(have)) await writeMoved(file, out)
+}
+
 /** The claims as shown: `all` less those the record says were copied away from their id. */
 function shownClaims(all: Record<string, Claim[]>, moved: Moved): Record<string, Claim[]> {
   const out: Record<string, Claim[]> = Object.create(null)
@@ -430,15 +450,16 @@ function shownClaims(all: Record<string, Claim[]>, moved: Moved): Record<string,
   return out
 }
 
-/** The record once `map` has copied the claims `all` held (read before the copy): each old id's claims are copied away from
- *  it, and those copied to an id show there again (a part renamed back, or two parts that swapped ids). Null when unchanged. */
-function movedAfter(all: Record<string, Claim[]>, map: ReadonlyMap<string, string>, moved: Moved): Moved | null {
+/** The record once `map` has copied the claims `shown` (the ones shown before the copy): each old id's claims are copied away
+ *  from it, and those copied to an id show there again (a part renamed back, or two parts that swapped ids). Null when
+ *  unchanged. */
+function movedAfter(shown: Record<string, Claim[]>, map: ReadonlyMap<string, string>, moved: Moved): Moved | null {
   const out: Moved = Object.create(null)
   for (const [id, keys] of Object.entries(moved)) out[id] = keys
-  const pairs = [...map].filter(([from, to]) => from !== to && all[from] !== undefined)
-  for (const [from] of pairs) out[from] = [...new Set([...(out[from] ?? []), ...all[from].map(claimKey)])]
+  const pairs = [...map].filter(([from, to]) => from !== to && shown[from] !== undefined)
+  for (const [from] of pairs) out[from] = [...new Set([...(out[from] ?? []), ...shown[from].map(claimKey)])]
   for (const [from, to] of pairs) {
-    const back = new Set(all[from].map(claimKey))
+    const back = new Set(shown[from].map(claimKey))
     const left = (out[to] ?? []).filter((k) => !back.has(k))
     if (left.length > 0) out[to] = left
     else delete out[to]
@@ -517,7 +538,9 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
           const mine = claimKey(clean)
           if (moved[itemId]?.includes(mine)) {
             // HOLD-B #37: a note copied away from this id and added here again is this part's now: shown, once, as the newest.
-            // The record goes first: when it cannot be written, nothing is.
+            // The record goes first: when it cannot be written, nothing is. On purpose the other way round is not covered: when
+            // the record lands and the file write below fails, the add rejects, yet the note shows under the id at its old place
+            // (holdb-review M5). It is the note the person just added there, so that loses nothing, and the add can be retried.
             const left = moved[itemId].filter((k) => k !== mine)
             if (left.length > 0) moved[itemId] = left
             else delete moved[itemId]
@@ -531,17 +554,20 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
     copyRenamed: (key, renames) =>
       lock(key, async () => {
         const map = new Map(Object.entries(renames))
-        const pending = (all: Record<string, Claim[]>): Record<string, Claim[]> | null => {
-          const next = copyClaims(all, map)
-          return next === all ? null : next
-        }
-        const first = await read(key)
-        // The common case: nothing to copy and nothing to record, no lock file taken.
-        if (pending(first) === null && movedAfter(first, map, await readMoved(movedOf(key))) === null) return
-        await withAnnotationFileLock(fileOf(key), async () => {
+        // holdb-codex-review: an id copies only the claims it shows. Those the record hides under it were copied away from it
+        // by an earlier rename and are another part's; the file keeps them under the old id all the same.
+        const plan = async (): Promise<{ next: Record<string, Claim[]> | null; moved: Moved | null }> => {
           const all = await read(key)
-          const next = pending(all)
-          const moved = movedAfter(all, map, await readMoved(movedOf(key)))
+          const record = await readMoved(movedOf(key))
+          const shown = shownClaims(all, record)
+          const next = copyClaims(all, map, shown)
+          return { next: next === all ? null : next, moved: movedAfter(shown, map, record) }
+        }
+        const first = await plan()
+        // The common case: nothing to copy and nothing to record, no lock file taken.
+        if (first.next === null && first.moved === null) return
+        await withAnnotationFileLock(fileOf(key), async () => {
+          const { next, moved } = await plan()
           if (next !== null) {
             for (const id of Object.keys(next)) next[id] = capClaims(next[id])
             await writeAtomic(fileOf(key), JSON.stringify(next))
