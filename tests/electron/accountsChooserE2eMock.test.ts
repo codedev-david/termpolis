@@ -135,6 +135,7 @@ describe('the e2e fixture', () => {
     // then its app server), and one that takes longer fails in the product's own words. Run one after another the six were
     // allowed up to 120 s, four times the test's 30 s, so on a loaded machine the test's clock ran out first and named no
     // check (#106). The checks read different profiles, so they run side by side: two rounds take at most three runs' time.
+    // PENDING SIGN-OFF: this test's budget, 3 * CHECK_TIMEOUT_MS + 10 s (55 s), in place of the 30 s it had.
     const [claudeMain, claudeSide, codexMain, codexSide] = await Promise.all([
       claudeSignedInNow(null, deps), claudeSignedInNow(h.claudeSide, deps), codexSignedInNow(null, deps), codexSignedInNow(h.codexSide, deps),
     ])

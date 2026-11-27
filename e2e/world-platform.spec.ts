@@ -22,6 +22,10 @@
  * test-results/lumopolis-shots-2d/, and the shell command (test 8, which doesn't depend on the renderer) is left
  * to the WebGL run. CI runs it once on Linux.
  *
+ * Proof run (feedback_lumopolis_proof, a Playwright video of the real app): CI on macOS and Linux records the video by
+ * itself; a local proof run, or one on Windows, sets TERMPOLIS_E2E_RECORD_VIDEO=1 (with Playwright's ffmpeg installed),
+ * or it records none (RECORD below, holdb-review M9).
+ *
  * Labelling is off (launchWorldApp), the design draft runs e2e/mocks/mock-claude.cjs (as in
  * lumopolis-sources.spec.ts), and the launch is the shared one: software GL switches, and on Linux the
  * same --no-sandbox the other world specs pass.
