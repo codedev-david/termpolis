@@ -780,7 +780,8 @@ type OwnTime = { wall: number; own: number; waited: number; matched: boolean; by
 
 /**
  * The page's own time in each named resize and each long task of a trace (look plan A2.1 note (10), PENDING SIGN-OFF):
- * the thread time of the work that holds it, the innermost JS call around a resize or the task around a long task, plus
+ * the thread time of the work that holds it, the innermost JS call or task around a resize (less the work in it wholly
+ * before or after the resize) or the task around a long task, plus
  * the waits inside it on the GPU process or another process (a `gpu` or `ipc` event's wall beyond its thread time), at
  * most its time on the wall. CPU the runner took from the page is not the page's; a wait on the GPU is. The page's clock
  * is put on the trace's by the resizes the page named (RESIZE_MEASURE), which the trace holds too: the offset most of them
@@ -831,12 +832,20 @@ function ownTimes(events: TraceEvent[], named: Array<{ start: number; ms: number
     return inside.filter((x) => !inside.some((y) => y !== x && y.ts <= x.ts && end(y) >= end(x) && (y.dur as number) > (x.dur as number)))
       .reduce((t, x) => t + (x.dur as number) - Math.min(x.dur as number, x.tdur ?? 0), 0)
   }
+  // The thread time inside [s, e] of an event around it, at most: its own less that of the work in it wholly before s or
+  // after e (the outermost such pieces, each one's thread time), so a resize run inside a frame's task is not charged
+  // with the frame's other work, and never charged with less than its own.
+  const within = (around: TraceEvent, s: number, e: number): number => {
+    const outside = onMain.filter((x) => x !== around && typeof x.tdur === 'number' && x.ts >= around.ts && end(x) <= end(around) && (end(x) <= s + SLACK || x.ts >= e - SLACK))
+    const outer = outside.filter((x) => !outside.some((y) => y !== x && y.ts <= x.ts && end(y) >= end(x) && (y.dur as number) > (x.dur as number)))
+    return Math.max(0, (around.tdur as number) - outer.reduce((t, x) => t + (x.tdur as number), 0))
+  }
   const resizes = page.map((m, i): OwnTime => {
     const span = pairs[i]
     const around = span ? onMain.filter((x) => typeof x.tdur === 'number' && x.ts <= span.s + SLACK && end(x) >= span.e - SLACK).sort((p, q) => (p.dur as number) - (q.dur as number))[0] : undefined
     if (!span || !around) return { wall: m.ms, own: m.ms, waited: 0, matched: false }
     const waited = waits(span.s, span.e) / 1000
-    return { wall: m.ms, own: Math.min(m.ms, (around.tdur as number) / 1000 + waited), waited, matched: true, by: `${around.name} ${((around.dur as number) / 1000).toFixed(1)}/${((around.tdur as number) / 1000).toFixed(1)}` }
+    return { wall: m.ms, own: Math.min(m.ms, within(around, span.s, span.e) / 1000 + waited), waited, matched: true, by: `${around.name} ${((around.dur as number) / 1000).toFixed(1)}/${((around.tdur as number) / 1000).toFixed(1)}` }
   })
   const overlap = (x: TraceEvent, s: number, e: number): number => Math.max(0, Math.min(e, end(x)) - Math.max(s, x.ts))
   const tasks = longTasks.map((t): OwnTime => {
