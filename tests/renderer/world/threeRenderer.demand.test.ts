@@ -1435,37 +1435,48 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     }
   })
 
-  it("inside a frame-time window each resize is named on the page's timeline (RESIZE_MEASURE), from its start to its end; outside one, or without User Timing, none is", () => {
-    const v = drawnView()
+  it("inside a frame-time window each resize is named on the page's timeline (RESIZE_MEASURE), over the span it was timed; outside one, before the view drew, or without User Timing, none is", () => {
+    gpu.gpuName = GEFORCE
+    const resized = observeResizes()
+    // Each read of the host's width during a resize takes `cost` ms of the clock, as in the resize-cost test above.
+    let cost = 0
+    Object.defineProperty(h.host, 'clientWidth', { configurable: true, get: () => { h.frames.advance(cost); return (h.host as unknown as { _w: number })._w } })
+    const timedResize = (ms: number): { t0: number; t1: number } => { cost = ms; const t0 = h.frames.now; resized(); cost = 0; return { t0, t1: h.frames.now } }
     const measure = vi.spyOn(performance, 'measure')
-    const resizes = (): Array<{ start: number; end: number }> => measure.mock.calls.filter((c) => c[0] === RESIZE_MEASURE).map((c) => c[1] as { start: number; end: number })
+    const spans = (): Array<{ start: number; end: number }> => measure.mock.calls.filter((c) => c[0] === RESIZE_MEASURE).map((c) => c[1] as { start: number; end: number })
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     try {
+      boxCanvas(r.canvas, 800, 600)
+      r.perfBegin()
+      timedResize(5) // the observer's first call, as the view opens
       resizeHost(h.host, 700, 600)
-      v.resized()
-      expect(resizes()).toEqual([]) // no window: a session's resizes leave nothing on the timeline
-      v.r.perfBegin()
+      timedResize(5)
+      expect(spans()).toEqual([]) // the view has not drawn: no resize is timed, none is named
+      r.draw(smallCity(), smallText(), false)
+      h.frames.run(20)
+      r.perfEnd()
+      resizeHost(h.host, 690, 600)
+      timedResize(3)
+      expect(spans()).toEqual([]) // no window: a session's resizes leave nothing on the timeline
+      r.perfBegin()
       resizeHost(h.host, 680, 600)
-      const t0 = h.frames.now
-      v.resized()
-      expect(resizes()).toHaveLength(1)
-      expect(resizes()[0].start).toBeGreaterThanOrEqual(t0)
-      expect(resizes()[0].end).toBeGreaterThanOrEqual(resizes()[0].start)
-      expect(resizes()[0].end - resizes()[0].start).toBe(perf(v.r).resizeWorstMs) // the span the resize was timed over
-      resizeHost(h.host, 660, 600)
-      v.resized()
-      expect(resizes()).toHaveLength(2) // each one
-      v.r.perfEnd()
-      resizeHost(h.host, 640, 600)
-      v.resized()
-      expect(resizes()).toHaveLength(2) // the window over: none again
-      v.r.perfBegin()
+      const a = timedResize(4)
+      expect(spans()).toHaveLength(1)
+      const [first] = spans()
+      expect(perf(r).resizeWorstMs).toBeGreaterThan(0)
+      expect(first.end - first.start).toBe(perf(r).resizeWorstMs) // the span the resize was timed over
+      expect(first.start).toBeGreaterThanOrEqual(a.t0)
+      expect(first.end).toBeLessThanOrEqual(a.t1)
+      resizeHost(h.host, 670, 600)
+      timedResize(2)
+      expect(spans()).toHaveLength(2) // each one
       measure.mockImplementation(() => { throw new TypeError('no User Timing') })
-      resizeHost(h.host, 620, 600)
-      expect(() => v.resized()).not.toThrow()
-      expect(perf(v.r).resizeWorstMs).toBeGreaterThanOrEqual(0) // timed all the same
+      resizeHost(h.host, 660, 600)
+      expect(() => timedResize(9)).not.toThrow()
+      expect(perf(r).resizeWorstMs).toBeGreaterThan(first.end - first.start) // timed all the same
     } finally {
       measure.mockRestore()
-      v.done()
+      r.dispose()
     }
   })
 
