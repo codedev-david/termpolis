@@ -461,6 +461,9 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(agentGone(io(BEFORE + FIRST), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
     expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, 30)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
     expect(agentGone(io(BEFORE + FIRST + 'ls -la\r\n'), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+    // All of the line but its last character, still at the prompt or entered: not the line (holdb-codex-review).
+    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, -1)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, -1) + `${E}[?2004l\r\n`), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
   })
 
   // The switch reads the same output for its first step (liveness): read as the shell back, it pressed the shell's line clear
