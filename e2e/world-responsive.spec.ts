@@ -1350,7 +1350,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // PENDING SIGN-OFF): traced on Windows (45922179018, 45924006574) a resize's own work is under 3 ms of the thread's
     // clock, and a resize the clock on the wall times at 10 to 15 ms is one the runner took the CPU from (up to one of
     // Windows' 15.6 ms clock ticks), which once made a resize 16.5 ms (45918981080). The garbage collected inside a resize
-    // (14 ms of 18, 45922179018), which made the others (25 and 35 ms), is gone: a resize fits the overview with nothing made.
+    // (13.7 ms of one of 18.4 ms, 45922179018) is gone: a resize fits the overview with nothing made, and untraced drags ran
+    // their slowest resize at 1.0 to 13.8 ms after it (45924066048), 25.5 and 35.2 ms before (45919777906, 45918981080).
     test.setTimeout(600_000)
     const v = VIEWPORTS.find((x) => x.name === '1920x1080') as Viewport
     await setViewport(v)
