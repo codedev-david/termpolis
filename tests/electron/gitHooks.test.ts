@@ -34,19 +34,23 @@ const END = '# <<< termpolis commit shield <<<'
  *  on what was touched — and, just as importantly, on what was NOT. */
 function fakeFs(seed: Record<string, string> = {}, kinds: Record<string, HookFileKind> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
+  // The programs a hook names that are there on this computer (I1): PATHS's node and scanner, as the hook spells them.
+  const present = new Set<string>([PRESENT_NODE, PRESENT_SCANNER])
+  const noExec = new Set<string>()
   const modes = new Map<string, number>()
   const removed: string[] = []
   const wrote: string[] = []
   const deps: HookDeps = {
     readFile: (p) => (files.has(p) ? (files.get(p) as string) : null),
     writeFile: (p, data) => { files.set(p, data); wrote.push(p) },
-    exists: (p) => files.has(p),
+    exists: (p) => files.has(p) || present.has(p),
+    canRun: (p) => present.has(p) && !noExec.has(p),
     chmod: (p, mode) => { modes.set(p, mode) },
     remove: (p) => { files.delete(p); removed.push(p) },
     // What lstat would say: a seeded kind (a link, a pipe) first, else a regular file when seeded, else absent.
     fileKind: (p) => kinds[p] ?? (files.has(p) ? 'file' : 'absent'),
   }
-  return { deps, files, modes, removed, wrote }
+  return { deps, files, modes, removed, wrote, present, noExec }
 }
 
 // Windows paths, with the space that breaks every naive hook generator.
@@ -55,6 +59,8 @@ const PATHS: HookPaths = {
   nodePath: 'C:\\Program Files\\nodejs\\node.exe',
   scriptPath: 'C:\\Program Files\\Termpolis\\resources\\mcp-adapter\\termpolis-githook.cjs',
 }
+const PRESENT_NODE = 'C:/Program Files/nodejs/node.exe'
+const PRESENT_SCANNER = 'C:/Program Files/Termpolis/resources/mcp-adapter/termpolis-githook.cjs'
 const PRE_COMMIT = join(PATHS.hooksDir, 'pre-commit')
 const PRE_PUSH = join(PATHS.hooksDir, 'pre-push')
 
@@ -536,11 +542,59 @@ describe('hookStatus', () => {
     expect(fs.files.get(PRE_COMMIT)).not.toContain('command -v node')
   })
 
-  it('reports outdated when node or the scanner moved since the block was written', () => {
+  // I1 (holdb-review): what this launch would write is not what makes a hook stale. A node or scanner found somewhere else
+  // now (an nvm shell against the Dock, a dev build against a packaged one, a new AppImage mount or snap revision) leaves a
+  // hook that still runs; only one whose node or scanner is gone, or can't be run, has stopped scanning.
+  it('stays installed when this launch finds another node and scanner, while the ones the hook names are still there', () => {
     const fs = fakeFs()
     installHooks(PATHS, fs.deps)
-    expect(hookStatus({ ...PATHS, nodePath: 'C:\\Users\\me\\nvm\\v24\\node.exe' }, fs.deps)['pre-push']).toBe('outdated')
-    expect(hookStatus({ ...PATHS, scriptPath: 'D:\\Termpolis\\termpolis-githook.cjs' }, fs.deps)['pre-commit']).toBe('outdated')
+    expect(hookStatus({ ...PATHS, nodePath: 'C:\\Users\\me\\nvm\\v24\\node.exe' }, fs.deps)['pre-push']).toBe('installed')
+    expect(hookStatus({ ...PATHS, scriptPath: 'D:\\Termpolis\\termpolis-githook.cjs' }, fs.deps)['pre-commit']).toBe('installed')
+  })
+
+  it('reports outdated when the node or the scanner the hook names is gone, or that node cannot be run', () => {
+    const fs = fakeFs()
+    installHooks(PATHS, fs.deps)
+    fs.noExec.add(PRESENT_NODE)
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'outdated' })
+    fs.noExec.clear()
+    fs.present.delete(PRESENT_NODE)
+    expect(hookStatus(PATHS, fs.deps)['pre-commit']).toBe('outdated')
+    fs.present.add(PRESENT_NODE)
+    fs.present.delete(PRESENT_SCANNER)
+    expect(hookStatus(PATHS, fs.deps)['pre-push']).toBe('outdated')
+    // Gone even when this launch finds no node at all: the shield has stopped, and Protect again says why it can't help.
+    expect(hookStatus({ ...PATHS, nodePath: '' }, fs.deps)['pre-push']).toBe('outdated')
+    fs.present.add(PRESENT_SCANNER)
+    expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
+  })
+
+  it('an AppImage hook is installed while its mount is there and outdated once that launch exits, whatever this mount is', () => {
+    const mount = (m: string): HookPaths => ({ hooksDir: '/repo/.git/hooks', nodePath: '/usr/bin/node', scriptPath: `/tmp/.mount_Termpo${m}/resources/mcp-adapter/termpolis-githook.cjs` })
+    const fs = fakeFs()
+    fs.present.add('/usr/bin/node')
+    fs.present.add(mount('AAA').scriptPath)
+    installHooks(mount('AAA'), fs.deps)
+    expect(hookStatus(mount('BBB'), fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
+    fs.present.delete(mount('AAA').scriptPath)
+    expect(hookStatus(mount('BBB'), fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'outdated' })
+  })
+
+  it("reads a quote in the named paths back as the hook's sh reads it", () => {
+    const odd: HookPaths = { hooksDir: '/repo/.git/hooks', nodePath: "/home/o'neil/node", scriptPath: "/home/o'neil/scan.cjs" }
+    const fs = fakeFs()
+    installHooks(odd, fs.deps)
+    expect(hookStatus(odd, fs.deps)['pre-commit']).toBe('outdated')
+    fs.present.add("/home/o'neil/node")
+    fs.present.add("/home/o'neil/scan.cjs")
+    expect(hookStatus(odd, fs.deps)['pre-commit']).toBe('installed')
+  })
+
+  it('without canRun, a node that exists counts as one that runs', () => {
+    const fs = fakeFs()
+    installHooks(PATHS, fs.deps)
+    const { canRun: _drop, ...rest } = fs.deps
+    expect(hookStatus(PATHS, rest)['pre-commit']).toBe('installed')
   })
 
   it('reports outdated for a doubled block and for a block whose lines gained CRs (sh would choke on them)', () => {
@@ -552,9 +606,11 @@ describe('hookStatus', () => {
     expect(hookStatus(PATHS, fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'outdated' })
   })
 
-  it('stays installed when Termpolis finds no node now (Protect would refuse) and for a block in a hook Protect skips', () => {
+  // I1: an old block is outdated even when Termpolis finds no node now. It used to stay 'installed' then, because Protect
+  // would refuse; but that showed a hook that may have stopped scanning as armed. Protect again now says why it can't.
+  it('reports an old block outdated when Termpolis finds no node now, and a block in a hook Protect skips installed', () => {
     const fs = fakeFs({ [PRE_COMMIT]: `#!/bin/sh\n${OLD_BLOCK}`, [PRE_PUSH]: `${PYTHON_HOOK}${OLD_BLOCK}` })
-    expect(hookStatus({ ...PATHS, nodePath: '' }, fs.deps)).toEqual({ 'pre-commit': 'installed', 'pre-push': 'installed' })
+    expect(hookStatus({ ...PATHS, nodePath: '' }, fs.deps)).toEqual({ 'pre-commit': 'outdated', 'pre-push': 'installed' })
     expect(hookStatus(PATHS, fs.deps)['pre-push']).toBe('installed')
   })
 })

@@ -51,8 +51,11 @@ const H = vi.hoisted(() => {
   const inSandbox = (p: unknown): boolean =>
     typeof p === 'string' && rpath.resolve(p).startsWith(SANDBOX)
 
+  // The dev build's scanner, which an installed hook names (index.ts hookPathsFor): status asks whether it is still
+  // there (gitHooks.ts hookStatus, I1). Only whether it exists is seen through the fence; nothing is read or written.
+  const DEV_SCANNER = rpath.resolve(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs')
   const fsMock = {
-    existsSync: vi.fn((p: any) => (inSandbox(p) ? rfs.existsSync(p) : false)),
+    existsSync: vi.fn((p: any) => (inSandbox(p) || (typeof p === 'string' && rpath.resolve(p) === DEV_SCANNER) ? rfs.existsSync(p) : false)),
     readFileSync: vi.fn((p: any, o?: any) => (inSandbox(p) ? rfs.readFileSync(p, o) : '{}')),
     writeFileSync: vi.fn((p: any, d: any, o?: any) => {
       if (!inSandbox(p)) return
@@ -72,6 +75,12 @@ const H = vi.hoisted(() => {
     unlinkSync: vi.fn((p: any) => { if (inSandbox(p)) rfs.unlinkSync(p) }),
     rmSync: vi.fn((p: any, o?: any) => { if (inSandbox(p)) rfs.rmSync(p, o) }),
     chmodSync: vi.fn(),
+    // Whether the node a hook names can be run (index.ts realHookDeps.canRun, I1); outside the sandbox nothing can.
+    accessSync: vi.fn((p: any, m?: any) => {
+      if (inSandbox(p)) return rfs.accessSync(p, m)
+      throw Object.assign(new Error(`ENOENT: ${String(p)}`), { code: 'ENOENT' })
+    }),
+    constants: rfs.constants,
     openSync: vi.fn(() => 3),
     closeSync: vi.fn(),
     fsyncSync: vi.fn(),
@@ -750,7 +759,7 @@ describe('gitHooks', () => {
   // The hook is baked with a node found by its full path (M1): one sits in the sandbox, first on PATH.
   const NODE_DIR = join(H.SANDBOX, 'node-bin')
   mkdirSync(NODE_DIR, { recursive: true })
-  writeFileSync(join(NODE_DIR, process.platform === 'win32' ? 'node.exe' : 'node'), '')
+  writeFileSync(join(NODE_DIR, process.platform === 'win32' ? 'node.exe' : 'node'), '', { mode: 0o755 })
 
   beforeEach(() => {
     rmSync(HOOKS, { recursive: true, force: true })

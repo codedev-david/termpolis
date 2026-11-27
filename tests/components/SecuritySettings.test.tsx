@@ -685,7 +685,7 @@ describe('SecuritySettings — Commit Shield git hooks', () => {
     expect(screen.getByTestId('security-hook-list').textContent).toContain('not installed')
   })
 
-  // HOLD-B: a shield an older Termpolis wrote, or one whose node or scanner moved, is not armed as it should be. The row
+  // HOLD-B: a shield an older Termpolis wrote, or one whose node or scanner is gone, no longer scans. The row
   // says so and offers Protect again, which protects that repository without asking for a folder.
   it.each([
     [{ 'pre-commit': 'outdated', 'pre-push': 'installed' }],
@@ -699,6 +699,8 @@ describe('SecuritySettings — Commit Shield git hooks', () => {
     const list = screen.getByTestId('security-hook-list')
     expect(list.textContent).toContain('outdated')
     expect(list.textContent).not.toContain('armed')
+    // I1: outdated means the shield no longer scans, not that a path differs from what this launch would write.
+    expect(within(list).getByRole('button', { name: 'Protect again' }).getAttribute('title')).toMatch(/no longer scans: .*is gone/)
     fireEvent.click(within(list).getByRole('button', { name: 'Protect again' }))
     await waitFor(() => expect(api.gitHooksInstall).toHaveBeenCalledWith('/repos/old'))
     await waitFor(() => expect(screen.getByTestId('security-hook-msg').textContent).toMatch(/Protected \/repos\/old/))

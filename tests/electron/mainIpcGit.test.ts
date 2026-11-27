@@ -28,6 +28,7 @@ import { join as pJoin, resolve as pResolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 import { scanOf, writtenGitArgs } from './_gitArgv'
+import { SHIELD_SCANNER_FILES } from '../../src/main/shieldScanner'
 
 const EMPTY_SCAN = await scanOf()
 
@@ -432,6 +433,8 @@ const SHIELD_REPOS = pJoin(USER_DATA, 'commit-shield-repos.json')
 const SENTINEL = '# >>> termpolis commit shield >>>'
 /** resolveNodeCommand's fixed backstop for this platform; beforeEach puts a node there in the virtual fs. */
 const NODE_AT = process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/local/bin/node'
+/** Where a dev build's hook says the scanner is (index.ts hookPathsFor). */
+const DEV_SCANNER = pResolve(__dirname, '../../src/mcp-adapter/termpolis-githook.cjs')
 const HUSKY_HOOK = '#!/usr/bin/env sh\n. "$(dirname -- "$0")/_/husky.sh"\nnpx lint-staged\n'
 
 /** Seed a file into the virtual fs. */
@@ -497,8 +500,10 @@ beforeEach(async () => {
   H.files.clear()
   H.kinds.clear()
   H.fs.lstatSync.mockImplementation(H.lstatOf)
-  // The node the hook is baked with: resolveNodeCommand's fixed backstop, which exists in the virtual fs (M1).
+  // The node the hook is baked with: resolveNodeCommand's fixed backstop, which exists in the virtual fs (M1). And the
+  // dev build's scanner it names, which status asks after (gitHooks.ts hookStatus, I1).
   seed(NODE_AT, '')
+  seed(DEV_SCANNER, '')
   git(() => '')
   shell('')
   // The read handlers share answers for 1.5 s (src/main/gitCache.ts) so a rail repaint does not
@@ -851,16 +856,31 @@ describe('Commit Shield hooks — repo resolution', () => {
     proc.resourcesPath = '/opt/Termpolis/resources'
     try {
       git(inRepo)
+      // I1: the hook names the scanner's copy in userData, which outlives an AppImage mount or a snap revision; the copy
+      // holds every file the scanner loads, renamed into place.
+      for (const f of SHIELD_SCANNER_FILES) seed(pJoin('/opt/Termpolis/resources/mcp-adapter', f), `shipped ${f}`)
+      H.fs.renameSync.mockImplementation((a: unknown, b: unknown) => { H.files.set(H.norm(b), H.files.get(H.norm(a))!); H.files.delete(H.norm(a)) })
       const r = await invoke('gitHooks:install', { cwd: REPO })
 
       expect(r.success).toBe(true)
       expect(r.data.written).toEqual(['pre-commit', 'pre-push'])
       const hook = wrote(PRE_COMMIT)!
-      expect(hook).toContain('/opt/Termpolis/resources/mcp-adapter/termpolis-githook.cjs')
+      const copy = pJoin(USER_DATA, 'commit-shield')
+      expect(hook).toContain(`${H.norm(copy)}/termpolis-githook.cjs`)
+      expect(hook).not.toContain('/opt/Termpolis')
       expect(hook).not.toContain('src/mcp-adapter')
+      for (const f of SHIELD_SCANNER_FILES) expect(H.files.get(H.norm(pJoin(copy, f)))).toBe(`shipped ${f}`)
+      // A copy that can't be made (here the shipped files can't be read) leaves the hook naming the shipped scanner.
+      H.fs.readFileSync.mockImplementation((p: unknown) => {
+        if (H.norm(p).includes('/opt/Termpolis/')) throw new Error('EACCES')
+        return H.files.has(H.norm(p)) ? H.files.get(H.norm(p))! : '{}'
+      })
+      expect((await invoke('gitHooks:install', { cwd: REPO })).success).toBe(true)
+      expect(wrote(PRE_COMMIT)).toContain('/opt/Termpolis/resources/mcp-adapter/termpolis-githook.cjs')
     } finally {
       app.isPackaged = prevPacked
       proc.resourcesPath = prevRes
+      H.fs.renameSync.mockImplementation(() => {})
     }
   })
 
