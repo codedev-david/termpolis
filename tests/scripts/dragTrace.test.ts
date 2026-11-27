@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DRAG_LIMITS, DRAG_TRACE, dragVerdict, fitsNamed, heaviest, isGpu, isWait, ownTimes, paired, waitedIn, widestGap, type DragInput, type TraceEvent } from '../../e2e/helpers/dragTrace'
+import { DRAG_LIMITS, DRAG_TRACE, dragVerdict, fitsNamed, heaviest, heldAll, isGpu, isWait, ownTimes, paired, waitedIn, widestGap, type DragInput, type TraceEvent } from '../../e2e/helpers/dragTrace'
 import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../../src/renderer/src/world/engine/bufferFit'
 
 // The divider-drag check's clock and rules (e2e/helpers/dragTrace.ts) on made-up traces: the page's clock is OFF ms
@@ -123,6 +123,9 @@ describe('the drag trace (dragTrace)', () => {
     // Two tasks hold the long task alike: the one that runs longer is its.
     const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 100, 30), X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 120, 70)]
     expect(ownTimes(events, q.resizes, [{ start: 4000, ms: 100 }]).tasks[0]).toMatchObject({ cpu: 70, matched: true })
+    // A task the trace gives no thread time holds it, a timed one inside: the untimed one is its, so it is timed on the wall.
+    const bare = [...q.events, W('ThreadControllerImpl::RunTask', 'toplevel', 4000, 100), X('ThreadControllerImpl::RunTask', 'toplevel', 4010, 60, 5)]
+    expect(ownTimes(bare, q.resizes, [{ start: 4000, ms: 100 }]).tasks[0]).toEqual({ wall: 100, own: 100, cpu: 100, waited: 0, gpu: 0, matched: false })
   })
 
   // Opus I-1, Codex major 1: a resize blocked on a wait outside `gpu` and `ipc` was charged its thread time only.
@@ -366,7 +369,7 @@ describe('the drag trace (dragTrace)', () => {
 
   it('waitedIn: the union of the waits cut to the span, less their thread time, the least or the most the trace allows', () => {
     const at = (a: number, d: number, td?: number): TraceEvent => ({ name: 'Wait', cat: 'base', ph: 'X', ts: a, dur: d, ...(td === undefined ? {} : { tdur: td }), pid: 1, tid: 1 })
-    const both = (xs: TraceEvent[], s: number, e: number): number[] => [waitedIn(xs, s, e, 'least'), waitedIn(xs, s, e, 'most')]
+    const both = (xs: TraceEvent[], s: number, e: number): number[] => [waitedIn(xs, s, e, 'least', 0), waitedIn(xs, s, e, 'most')]
     expect(both([], 0, 100)).toEqual([0, 0])
     expect(both([at(0, 10), at(5, 20)], 0, 100)).toEqual([25, 25]) // [0,10] and [5,25]
     expect(both([at(0, 10), at(20, 10)], 0, 100)).toEqual([20, 20]) // apart
@@ -379,10 +382,11 @@ describe('the drag trace (dragTrace)', () => {
     expect(both([at(0, 600, 0), at(400, 600, 150)], 0, 1000)).toEqual([850, 1000])
     // [0,10] all thread time, [5,15] of 4: in [10,15] at most 4 of them, at least none (all 4 can lie in [5,10]).
     // [0,10] all thread time, [5,15] of 4: in [10,15] none at least (all 4 can lie in [5,10]): the most is 5. The least
-    // takes the heavier of the two that overlap, 10, so 5 too: it relies on a slice around them, as ownTimes hands in
-    // (`known`), and with one of 14 (all the two can hold) it is 1.
+    // takes the heavier of the two that overlap, 10, so 5 too: it relies on the window's thread time (`cpu`), and with
+    // 14 (all the two can hold) it is 1, as with a slice of 14 around them (`known`).
     expect(both([at(0, 10, 10), at(5, 10, 4)], 0, 100)).toEqual([5, 5])
-    expect(waitedIn([at(0, 10, 10), at(5, 10, 4)], 0, 100, 'least', [at(0, 15, 14)])).toBe(1)
+    expect(waitedIn([at(0, 10, 10), at(5, 10, 4)], 0, 100, 'least', 14)).toBe(1)
+    expect(waitedIn([at(0, 10, 10), at(5, 10, 4)], 0, 100, 'least', 0, [at(0, 15, 14)])).toBe(1)
     expect(both([at(0, 10, 2), at(5, 10, 8)], 0, 100)).toEqual([7, 10]) // the least: the heavier, 8; the most: in [10,15] at least 8 less 5
     // A wait with no thread time given, a wait inside it with some: that much of the outer is not waited, nested deeper too.
     expect(both([at(0, 1000), at(200, 300, 100)], 0, 1000)).toEqual([900, 900])
@@ -394,19 +398,31 @@ describe('the drag trace (dragTrace)', () => {
     expect(both([at(0, 10, 30)], 0, 100)).toEqual([0, 0]) // thread time over its wall: no wait
     // Round 4, Opus mutant N10: a slice holds at most its part of the union. A call [0,100] of 30 ms of thread time,
     // 10 of its wall in a wait [90,200] of none, and one [150,160] of 10: 20 of the 110 are not shown waiting, so 90 (not 70).
-    expect(waitedIn([at(90, 110)], 0, 1000, 'least', [at(0, 100, 30), at(150, 10, 10)])).toBe(90)
+    expect(waitedIn([at(90, 110)], 0, 1000, 'least', 0, [at(0, 100, 30), at(150, 10, 10)])).toBe(90)
     // Codex's case (Round 4, dragTrace.ts:63): [0,600] of no thread time, [50,150] of 100 nested in it, [500,800] of 70
     // past it: 800 less 100 and 70, which lie apart, 630 (Round 3: 700, the 70 counted only past 600).
-    expect(waitedIn([at(0, 600), at(50, 100, 100), at(500, 300, 70)], 0, 1000, 'least')).toBe(630)
+    expect(waitedIn([at(0, 600), at(50, 100, 100), at(500, 300, 70)], 0, 1000, 'least', 0)).toBe(630)
     // The thread time of a slice of any category inside counts, the heaviest of those that overlap (item 2).
     // A call of 150 ms of thread time inside a 1000 ms wait on the GPU of none, in a task of 150: 850 (item 2), with or
     // without the task (Round 3: 1000, a call not being a wait).
     const call = { ...at(100, 300, 150), name: 'FunctionCall', cat: 'devtools.timeline' }
-    expect(waitedIn([at(0, 1000)], 0, 1000, 'least', [call, at(-10, 1020, 150)])).toBe(850)
-    expect(waitedIn([at(0, 1000)], 0, 1000, 'least', [call])).toBe(850)
+    expect(waitedIn([at(0, 1000)], 0, 1000, 'least', 0, [call, at(-10, 1020, 150)])).toBe(850)
+    expect(waitedIn([at(0, 1000)], 0, 1000, 'least', 0, [call])).toBe(850)
+    expect(waitedIn([at(0, 1000)], 0, 1000, 'least', 150)).toBe(850)
     // A slice in `known` that is also a wait counts once.
     const both150 = at(0, 1000, 150)
-    expect(waitedIn([both150], 0, 1000, 'least', [both150])).toBe(850)
+    expect(waitedIn([both150], 0, 1000, 'least', 0, [both150])).toBe(850)
+    // The window holds at most its part of the union: a window of 300 of thread time, a union of 200 in it, none waited.
+    expect(waitedIn([at(-100, 300)], 0, 1000, 'least', 300)).toBe(0)
+  })
+
+  // Round 5, Codex (c): two waits [0,600] and [400,1000], 100 us of thread time each in its part the other does not
+  // overlap, called with no slice around them: the heavier alone was taken, 900. The window [0,1000] holds the 200 of
+  // the call it is cut to (`cpu`, which every call now hands in), so 800.
+  it("waitedIn's least always holds the window scored: two waits of 100 each that overlap, in a window of 200 of thread time, wait 800 (not 900)", () => {
+    const at = (a: number, d: number, td: number): TraceEvent => ({ name: 'Wait', cat: 'base', ph: 'X', ts: a, dur: d, tdur: td, pid: 1, tid: 1 })
+    expect(waitedIn([at(0, 600, 100), at(400, 600, 100)], 0, 1000, 'least', 200)).toBe(800)
+    expect(waitedIn([at(0, 600, 100), at(400, 600, 100)], 0, 1000, 'least', 0)).toBe(900)
   })
 
   // Round 2, Codex minor: a resize's begin was paired with an end of another process by id, and spans on another
@@ -570,35 +586,88 @@ describe('the drag trace (dragTrace)', () => {
   it('pairs the begins and ends the trace logs into waits: a 20 ms resize with an 18 ms one scores 20', () => {
     const q = quiet()
     const B = (name: string, cat: string, start: number, tts?: number): TraceEvent => ({ name, cat, ph: 'B', ts: us(start), pid: 1, tid: 1, ...(tts === undefined ? {} : { tts: us(tts) }) })
-    const E = (start: number, tts?: number): TraceEvent => ({ name: '', cat: '', ph: 'E', ts: us(start), pid: 1, tid: 1, ...(tts === undefined ? {} : { tts: us(tts) }) })
+    const E = (name: string, start: number, tts?: number): TraceEvent => ({ name, cat: '', ph: 'E', ts: us(start), pid: 1, tid: 1, ...(tts === undefined ? {} : { tts: us(tts) }) })
     const resizes = [...q.resizes, { start: 3000, ms: 20 }]
     const at = (wait: TraceEvent[]): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: [...q.events, X('FunctionCall', 'devtools.timeline', 2999.9, 20.2, 2), ...named(3000, 20), ...wait], resizes, resizeCount: resizes.length }))
-    const v = at([B('WaitableEvent::Wait', 'base', 3001), E(3019)])
+    const v = at([B('WaitableEvent::Wait', 'base', 3001), E('WaitableEvent::Wait', 3019)])
     expect(v.own.resizes[10]).toMatchObject({ cpu: 2, waited: 18, own: 20 })
     expect(fails(v, 'of its own (wall/own ms)')).toEqual(['20.0/20.0'])
     expect(v.own.pairs).toEqual({ 'WaitableEvent::Wait': 1 })
+    expect(v.own.unpaired).toEqual([])
     // The thread clocks of both give its thread time: 0.5 of the 18.
-    expect(at([B('WaitableEvent::Wait', 'base', 3001, 100), E(3019, 100.5)]).own.resizes[10]).toMatchObject({ waited: 17.5, own: 19.5 })
+    expect(at([B('WaitableEvent::Wait', 'base', 3001, 100), E('WaitableEvent::Wait', 3019, 100.5)]).own.resizes[10]).toMatchObject({ waited: 17.5, own: 19.5 })
     // A begin the trace never ends runs to its last instant, waiting all of it: charged to the fit's task, excused nothing.
     const open = dragVerdict(input({ events: [...q.events, B('GLES2::Finish', 'gpu', 2510, 0)] }))
     expect(open.fits[0].gpu).toBe(70)
     expect(open.fits[0].waited).toBeCloseTo(77.5, 9)
-    // An end with no begin open is dropped.
-    expect(dragVerdict(input({ events: [...q.events, E(2510)] })).fits[0]).toEqual(dragVerdict(input()).fits[0])
+    expect(open.own.unpaired).toEqual([{ kind: 'unclosed', name: 'GLES2::Finish', at: 2510 }])
+    // An end with no begin open (Round 5) runs from the trace's first instant, waiting all of it: the fit's task waits
+    // [2500,2510] too, and that much is no wait on the GPU.
+    const lone = dragVerdict(input({ events: [...q.events, E('', 2510)] }))
+    expect(lone.fits[0]).toMatchObject({ gpu: 70, matched: true })
+    expect(lone.fits[0].waited).toBeCloseTo(77, 9)
+    expect(lone.own.unpaired).toEqual([{ kind: 'lone', name: '', at: 2510 }])
   })
 
-  it('paired: an end closes the latest begin open on its thread, in the trace\'s order; one never ended runs to the last instant', () => {
+  // Round 5, Codex (d): an end closed the begin open whatever its name. A begin of a wait at +1, an end of another name
+  // at +3 and the wait's end at +19, in a 20 ms resize of 2 ms of thread time, scored 4 (a 2 ms wait); a lone end of the
+  // wait's name was dropped, 2. An end of another name and a lone end now wait from the trace's first instant, so 20.
+  it('pairs a begin and an end only of one name: an end of another name or none open waits from the first instant (Codex: 4 and 2, now 20)', () => {
+    const q = quiet()
+    const B = (name: string, start: number): TraceEvent => ({ name, cat: 'base', ph: 'B', ts: us(start), pid: 1, tid: 1 })
+    const E = (name: string, start: number): TraceEvent => ({ name, cat: 'base', ph: 'E', ts: us(start), pid: 1, tid: 1 })
+    const resizes = [...q.resizes, { start: 3000, ms: 20 }]
+    const at = (wait: TraceEvent[]): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: [...q.events, X('FunctionCall', 'devtools.timeline', 2999.9, 20.2, 2), ...named(3000, 20), ...wait], resizes, resizeCount: resizes.length }))
+    const crossed = at([B('WaitableEvent::Wait', 3001), E('Nested', 3003), E('WaitableEvent::Wait', 3019)])
+    expect(crossed.own.resizes[10]).toMatchObject({ cpu: 2, waited: 19, own: 20 })
+    expect(fails(crossed, 'of its own (wall/own ms)')).toEqual(['20.0/20.0'])
+    expect(crossed.own.unpaired).toEqual([{ kind: 'mismatched', name: 'Nested', at: 3003 }])
+    expect(crossed.own.pairs).toEqual({ 'WaitableEvent::Wait': 1 })
+    const lone = at([E('WaitableEvent::Wait', 3019)])
+    expect(lone.own.resizes[10]).toMatchObject({ waited: 19, own: 20 })
+    expect(fails(lone, 'of its own (wall/own ms)')).toEqual(['20.0/20.0'])
+    expect(lone.own.unpaired).toEqual([{ kind: 'lone', name: 'WaitableEvent::Wait', at: 3019 }])
+    // An end of another name on another thread is not the page's.
+    expect(dragVerdict(input({ events: [...q.events, { ...E('Other', 3003), tid: 2 }] })).own.unpaired).toEqual([])
+  })
+
+  it('paired: an end closes the latest begin open on its thread of its name, in the trace\'s order; the rest are waits to the edge', () => {
     const ev = (ph: string, name: string, ts: number, tid = 1, tts?: number): TraceEvent => ({ name, cat: 'base', ph, ts, pid: 1, tid, ...(tts === undefined ? {} : { tts }) })
     const x: TraceEvent = { name: 'x', cat: 'base', ph: 'X', ts: 8, dur: 2, pid: 1, tid: 1 }
-    const r = paired([ev('E', '', 5, 1, 3), ev('B', 'b', 1, 1, 1), ev('E', '', 2, 1, 1.5), x, ev('B', 'a', 0, 1, 0), ev('B', 'c', 3, 2), ev('E', '', 4, 2, 9), ev('E', '', 0, 3), ev('B', 'd', 6, 1)])
+    const r = paired([ev('E', 'a', 5, 1, 3), ev('B', 'b', 1, 1, 1), ev('E', 'b', 2, 1, 1.5), x, ev('B', 'a', 0, 1, 0), ev('B', 'c', 3, 2), ev('E', 'c', 4, 2, 9), ev('E', 'z', 0.5, 3), ev('B', 'd', 6, 1), ev('E', 'q', 7, 1, 7), ev('E', '', 7.5, 1)])
     const made = (name: string, ts: number, dur: number, tid: number, tdur?: number): TraceEvent => ({ name, cat: 'base', ph: 'X', ts, dur, ...(tdur === undefined ? {} : { tdur }), pid: 1, tid })
-    expect(r.events).toEqual([made('b', 1, 1, 1, 0.5), made('c', 3, 1, 2), made('a', 0, 5, 1, 3), x, made('d', 6, 4, 1)])
-    expect([...r.open]).toEqual([made('d', 6, 4, 1)])
+    // The lone end (z) and the two of another name than the open begin's (q, unnamed) wait from the first instant, 0,
+    // closing nothing; the begin never ended (d) runs to the last instant, 10.
+    expect(r.events).toEqual([made('z', 0, 0.5, 3), made('b', 1, 1, 1, 0.5), made('c', 3, 1, 2), made('a', 0, 5, 1, 3), made('q', 0, 7, 1), made('', 0, 7.5, 1), x, made('d', 6, 4, 1)])
+    expect([...r.open]).toEqual([made('z', 0, 0.5, 3), made('q', 0, 7, 1), made('', 0, 7.5, 1), made('d', 6, 4, 1)])
     expect(r.pairs).toEqual(new Map([['1:1', new Map([['b', 1], ['a', 1]])], ['1:2', new Map([['c', 1]])]]))
+    expect(r.unpaired).toEqual([
+      { kind: 'lone', name: 'z', ts: 0.5, thread: '1:3' },
+      { kind: 'mismatched', name: 'q', ts: 7, thread: '1:1' },
+      { kind: 'mismatched', name: '', ts: 7.5, thread: '1:1' },
+      { kind: 'unclosed', name: 'd', ts: 6, thread: '1:1' },
+    ])
     // A begin and an end at one instant pair in the trace's order.
     const later: TraceEvent = { name: 'y', cat: 'base', ph: 'X', ts: 4, dur: 1, pid: 1, tid: 1 }
-    expect(paired([ev('B', 'p', 1), ev('E', '', 1), later])).toEqual({ events: [made('p', 1, 0, 1), later], open: new Set(), pairs: new Map([['1:1', new Map([['p', 1]])]]) })
-    expect(paired([])).toEqual({ events: [], open: new Set(), pairs: new Map() })
+    expect(paired([ev('B', 'p', 1), ev('E', 'p', 1), later])).toEqual({ events: [made('p', 1, 0, 1), later], open: new Set(), pairs: new Map([['1:1', new Map([['p', 1]])]]), unpaired: [] })
+    expect(paired([])).toEqual({ events: [], open: new Set(), pairs: new Map(), unpaired: [] })
+    // The first instant is the first event's, a thread's name (metadata) aside.
+    const meta: TraceEvent = { ...META, ts: -5 }
+    const y: TraceEvent = { name: 'y', cat: 'base', ph: 'X', ts: 1, dur: 1, pid: 1, tid: 1 }
+    expect(paired([meta, y, ev('E', 'w', 3)]).events).toEqual([meta, y, made('w', 1, 2, 1)])
+  })
+
+  it('heldAll: the most thread time a set of tasks can hold, of nested ones the outer or its inner ones in all, the wall of one untimed', () => {
+    const t = (ts: number, dur: number, tdur?: number): TraceEvent => ({ name: 'RunTask', cat: 'toplevel', ph: 'X', ts, dur, ...(tdur === undefined ? {} : { tdur }), pid: 1, tid: 1 })
+    expect(heldAll([])).toBe(0)
+    expect(heldAll([t(0, 10, 8), t(1, 5, 4)])).toBe(8) // nested: the outer
+    expect(heldAll([t(1, 5, 4), t(0, 10, 3), t(6, 3, 2)])).toBe(6) // ... or its inner ones, whichever is more, in any order
+    expect(heldAll([t(0, 10, 3), t(10, 1, 1)])).toBe(4) // side by side
+    expect(heldAll([t(0, 10, 3), t(5, 10, 4)])).toBe(7) // overlapping: each
+    expect(heldAll([t(0, 10), t(2, 3, 2)])).toBe(10) // untimed: its wall
+    expect(heldAll([t(0, 10, 9), t(0, 10, 4)])).toBe(9) // the very bounds: one in the other
+    expect(heldAll([t(0, 20, 1), t(1, 10, 2), t(2, 3, 5), t(12, 3, 1)])).toBe(6) // deeper: (5 or 2) and 1, over the outer's 1
+    expect(heldAll([t(0, 5, 4), t(0, 10, 3)])).toBe(4) // the same start: the longer holds the shorter
   })
 
   // Round 4, Codex: 40 fits of 39 ms, each in a task of 40, too short to be long tasks, broke no rule.
@@ -622,13 +691,16 @@ describe('the drag trace (dragTrace)', () => {
   it("charges a fit the trace does not hold its long task's wall, each long task once, or 50 ms in none; and a task with two fits once", () => {
     const q = quiet()
     // Two fits in the 2500 task: charged once; two the trace does not hold in a 120 ms long task: 120 once; one in none: 50.
-    // One before every long task is in none (50). A fit in a task in a task is charged the inner one (4 of 8), and one
-    // that ends 0.03 ms past its task on the thread's clock is still in it (2).
-    const fits = [...q.fits, { start: 2501.6, ms: 0.5 }, { start: 4000.5, ms: 1 }, { start: 4001.5, ms: 1 }, { start: 6000, ms: 1 }, { start: 1500, ms: 1 }, { start: 7002, ms: 2 }, { start: 8000.5, ms: 4.53 }]
+    // One before every long task is in none (50). A fit in a task in a task is charged the outer one (8 of the inner's
+    // 4: Round 5, Opus m5-1, either may be the fit's), and one that ends 0.03 ms past its task on the thread's clock is
+    // still in it (2).
+    const fits = [...q.fits, { start: 2501.6, ms: 0.5 }, { start: 4000.5, ms: 1 }, { start: 4001.5, ms: 1 }, { start: 6000, ms: 1 }, { start: 1550, ms: 1 }, { start: 7002, ms: 2 }, { start: 8000.5, ms: 4.53 }]
     const events = [...q.events, ...fitNamed(2501.6, 0.5), X('ThreadControllerImpl::RunTask', 'toplevel', 7000, 10, 8), X('ThreadControllerImpl::RunTask', 'toplevel', 7001, 5, 4), ...fitNamed(7002, 2)]
     events.push(X('ThreadControllerImpl::RunTask', 'toplevel', 8000, 5, 2), ...fitNamed(8000.5, 4.53))
     const own = ownTimes(events, q.resizes, [FIT, { start: 4000, ms: 120 }], fits)
-    expect(own).toMatchObject({ fitCpu: 7 + 120 + 50 + 50 + 4 + 2, fitsTraced: 6 })
+    expect(own).toMatchObject({ fitCpu: 7 + 120 + 50 + 50 + 8 + 2, fitsTraced: 6 })
+    // A fit the trace drops at 1500 on the page's clock, where a 3 ms task runs: that task may be its (3, not 50).
+    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 1500.2, ms: 1 }])).toMatchObject({ fitCpu: 7 + 3, fitsTraced: 4 })
     // On a trace the page's clock cannot be put on, every fit is charged so.
     expect(ownTimes([META, ...fitNamed(2500.5, 1)], [], [FIT], [{ start: 2500.5, ms: 1 }])).toMatchObject({ fitCpu: 80, fitsTraced: 0 })
     expect(ownTimes(events, q.resizes, [])).toMatchObject({ fitCpu: 0, fitsTraced: 0 })
@@ -637,24 +709,285 @@ describe('the drag trace (dragTrace)', () => {
   // Round 4 data (diag 45983711383, 45983723838, 45983738302): a fit's measure, named from the page's coarsened clock,
   // began up to 0.17 ms before its task and ended up to 0.07 ms after it, so the 50 us slack left it in no task and
   // charged the fit its long task's wall (1142 ms of a drag whose fits' tasks took 31).
-  it("finds a fit's task by its measure within 0.25 ms, the one holding most of it; else the long task's own task the trace holds", () => {
+  it("finds a fit's tasks by its measure within 0.25 ms, every one around it; else the long task's own task the trace holds", () => {
     const q = quiet()
     const fits = [...q.fits, { start: 4000, ms: 120 }, { start: 5000, ms: 0.4 }, { start: 6000, ms: 150 }, { start: 7000, ms: 100 }]
     const events = [...q.events,
       // The measure 0.17 ms before its task's start and 0.07 ms past its end: 3 of thread time, not the long task's 130.
       X('ThreadControllerImpl::RunTask', 'toplevel', 4000.17, 119.76, 3), ...fitNamed(4000, 120),
       // Two tasks within 0.25 ms of a 0.4 ms measure, the shorter ending 0.15 ms into it, the other holding the rest of it
-      // (0.25): that one (2), not the shorter's 0.1.
+      // (0.25): both (2.1), as either may be the fit's (Round 5; Round 4 took the one holding more of it, 2).
       X('ThreadControllerImpl::RunTask', 'toplevel', 4999.95, 0.2, 0.1), X('ThreadControllerImpl::RunTask', 'toplevel', 5000.15, 0.35, 2), ...fitNamed(5000, 0.4),
       // A measure the trace drops, in a long task whose own task the trace holds: that task's thread time (6).
       X('ThreadControllerImpl::RunTask', 'toplevel', 5999, 152, 6),
       // A measure 0.3 ms before its task: in no task; its long task's own task (4).
       X('ThreadControllerImpl::RunTask', 'toplevel', 7000.3, 99.8, 4), ...fitNamed(7000, 100)]
     const long = [FIT, { start: 4000, ms: 130 }, { start: 5999, ms: 152 }, { start: 7000, ms: 101 }]
-    expect(ownTimes(events, q.resizes, long, fits)).toMatchObject({ fitCpu: 7 + 3 + 2 + 6 + 4, fitsTraced: 7 })
+    expect(ownTimes(events, q.resizes, long, fits).fitCpu).toBeCloseTo(7 + 3 + 2.1 + 6 + 4, 9)
+    expect(ownTimes(events, q.resizes, long, fits).fitsTraced).toBe(7)
     // 0.26 ms before and after: in no task, and its long task's wall (none of the trace's tasks hold half of it).
     const far = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000.26, 49, 3), ...fitNamed(4000, 49.52)]
     expect(ownTimes(far, q.resizes, [FIT, { start: 4000, ms: 110 }], [...q.fits, { start: 4000, ms: 49.52 }])).toMatchObject({ fitCpu: 7 + 110, fitsTraced: 3 })
+  })
+
+  // Round 5, the property test's trace 1764: a fit whose measure the trace dropped, 0.44 ms before another fit of its
+  // length, was paired with that one's measure, and its own task (0.38 ms of thread time) went uncharged.
+  it("charges a fit whose measure is in doubt every task it may be in: those around each measure, around it, and its long task's", () => {
+    const q = quiet()
+    const events = [...q.events,
+      X('ThreadControllerImpl::RunTask', 'toplevel', 5000, 0.62, 0.38),
+      X('ThreadControllerImpl::RunTask', 'toplevel', 5000.85, 0.4, 0.29), ...fitNamed(5001, 0.01)]
+    const fits = [...q.fits, { start: 5000.56, ms: 0.01 }, { start: 5001, ms: 0.01 }]
+    // Both fits may be the one measure's, so both are charged its task and the tasks near them: 0.38 + 0.29.
+    expect(ownTimes(events, q.resizes, [FIT], fits)).toMatchObject({ fitCpu: 7 + 0.38 + 0.29, fitsTraced: 5 })
+    // A measure that is one fit's alone charges only the tasks around it (0.29); the dropped one far off, its wall (50).
+    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 5001, ms: 0.01 }, { start: 9000, ms: 0.01 }])).toMatchObject({ fitCpu: 7 + 0.29 + 50, fitsTraced: 4 })
+    // In its long task, one in doubt is charged that task's too, though the tasks near it are found.
+    const long = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 50.5, 30)]
+    expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 50.5 }], fits).fitCpu).toBeCloseTo(7 + 30 + 0.38 + 0.29, 9)
+    // And so when that task the trace holds ends before it, around nothing it may be in (the page's runs 0.5 ms on).
+    const short = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 49.5, 30)]
+    expect(ownTimes(short, q.resizes, [FIT, { start: 4950, ms: 51 }], fits).fitCpu).toBeCloseTo(7 + 30 + 0.38 + 0.29, 9)
+  })
+
+  // Round 5: where a fit in doubt may be. Its measure dropped, every task around it on the thread's clock within the
+  // 0.5 ms a measure is paired in and FIT_SLACK; each measure near it of its length, every task around that one; and a
+  // measure on another thread is none of the page's, so it puts no fit in doubt.
+  it('charges a fit in doubt the tasks around it to 0.75 ms and around each measure near it, and no other thread puts one in doubt', () => {
+    const q = quiet()
+    const lost = [...q.fits, { start: 6000, ms: 2 }]
+    // No measure: a task 0.5 ms after it starts is around it (0.4); one 0.8 ms after is not, so 50 on the wall.
+    expect(ownTimes([...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 6000.5, 1, 0.4)], q.resizes, [FIT], lost)).toMatchObject({ fitCpu: 7 + 0.4, fitsTraced: 4 })
+    expect(ownTimes([...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 6000.8, 1, 0.4)], q.resizes, [FIT], lost)).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3 })
+    // Two measures near it (0.45 before, 0.3 after): the task around the first ends 0.76 ms before it does, around it
+    // not, so only the measure finds it (0.3).
+    const two = [...q.events, ...fitNamed(6999.55, 0.92), ...fitNamed(7000.3, 0.95), X('ThreadControllerImpl::RunTask', 'toplevel', 6999.6, 0.64, 0.3)]
+    expect(ownTimes(two, q.resizes, [FIT], [...q.fits, { start: 7000, ms: 1 }])).toMatchObject({ fitCpu: 7 + 0.3, fitsTraced: 4 })
+    // One measure on the page's thread and one alike on another: the fit is sure, charged the task around its measure
+    // (0.5) and not the one before it that is around it only (0.2).
+    const other = [...q.events, ...fitNamed(8000.4, 1), ...named(8000.4, 1, 2, BUFFER_FIT_MEASURE),
+      X('ThreadControllerImpl::RunTask', 'toplevel', 8000.35, 1.2, 0.5), X('ThreadControllerImpl::RunTask', 'toplevel', 7999.8, 0.5, 0.2)]
+    expect(ownTimes(other, q.resizes, [FIT], [...q.fits, { start: 8000, ms: 1 }])).toMatchObject({ fitCpu: 7 + 0.5, fitsTraced: 4 })
+  })
+
+  // Round 5, Codex (a): six fits, each at the end of a 40 ms task of 39 ms of thread time, its measure 0.15 ms late, so
+  // it lies 0.05 ms in that task and 0.15 in the 0.2 ms task after it (0.1 of thread time). The task holding most of it
+  // was charged, 0.1 each: 7.6 ms in all. Both may be the fit's, so both are charged: 7 + 6 x 39.1, over the 200.
+  it('charges every task around a fit within the slack (Codex: six fits on the edge of a 40 ms task, 7.6 ms, now 241.6)', () => {
+    const q = quiet()
+    const events = [...q.events]
+    const fits = [...q.fits]
+    for (let k = 0; k < 6; k++) {
+      const t = 3000 + k * 100
+      events.push(X('ThreadControllerImpl::RunTask', 'toplevel', t, 40, 39), X('ThreadControllerImpl::RunTask', 'toplevel', t + 40, 0.2, 0.1), ...fitNamed(t + 39.95, 0.2))
+      fits.push({ start: t + 39.95, ms: 0.2 })
+    }
+    const v = dragVerdict(input({ events, fits }))
+    expect(v.own.fitCpu).toBeCloseTo(7 + 6 * 39.1, 9)
+    expect(v.own.fitsTraced).toBe(9)
+    expect(fails(v, 'ms of the thread in all')).toEqual(['242 (9/9)'])
+  })
+
+  // Round 5, Codex (b): a fit's long task [5400,6550] in a task the trace holds from 5000, 25 ms of thread time, 400 ms
+  // of it waiting on the GPU before the page's task began: 375 of it was excused, so 1150 on the wall passed the 1000.
+  // Only a wait inside the window scored counts, so none, and the fit's task fails.
+  it("excuses only the waits on the GPU inside the page's task (Codex: 375 ms excused before the task began, now 0)", () => {
+    const q = quiet()
+    const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 5000, 1550, 25), W('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 5000, 400), ...fitNamed(5500, 1)]
+    const v = dragVerdict(input({ events, tasks: [{ start: 5400, ms: 1150, fit: true }], fits: [...q.fits, { start: 5500, ms: 1 }] }))
+    expect(v.fits).toEqual([{ wall: 1150, own: 25, cpu: 25, waited: 0, gpu: 0, matched: true }])
+    expect(fails(v, 'beyond its waits on the GPU')).toEqual(['1150/0'])
+    // A wait that ends 100 ms into it: 100 waited, and 75 excused, as the 25 of thread time may lie in those 100.
+    const into = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 5000, 1550, 25), W('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 5000, 500), ...fitNamed(5500, 1)]
+    expect(dragVerdict(input({ events: into, tasks: [{ start: 5400, ms: 1150, fit: true }], fits: [...q.fits, { start: 5500, ms: 1 }] })).fits[0]).toMatchObject({ waited: 100, gpu: 75 })
+  })
+
+  // Round 5: a long task's window wider than the task the trace holds for it charges the part outside it whole.
+  it("charges a long task the part of its window outside the trace's task as thread time (300 ms, a task of 240 and 20 of thread time: 80)", () => {
+    const q = quiet()
+    const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 5010, 240, 20)]
+    const own = ownTimes(events, q.resizes, [{ start: 5000, ms: 300 }])
+    expect(own.tasks).toEqual([{ wall: 300, own: 80, cpu: 80, waited: 0, gpu: 0, matched: true }])
+    // One with no thread time given is timed on the wall; for a fit in it, its wall is charged (240).
+    const bare = [...q.events, { ...X('ThreadControllerImpl::RunTask', 'toplevel', 5010, 240, 0), tdur: undefined }]
+    const fit = ownTimes(bare, q.resizes, [{ start: 5000, ms: 300 }], [{ start: 5100, ms: 1 }])
+    expect(fit.tasks[0]).toMatchObject({ own: 300, matched: false })
+    expect(fit).toMatchObject({ fitCpu: 240, fitsTraced: 1 })
+  })
+
+  // Round 5: a seeded brute force. Each trace is a thread's timeline cut in 10 us cells, each one thread time, a wait on
+  // the GPU, another wait, or neither (the thread descheduled, or idle between tasks), and the events a trace would hold
+  // of it: tasks side by side, apart or within the slack, nested ones, calls holding the resizes, waits as complete
+  // events or begins and ends, split in ones that overlap, nested in one another, reaching into the thread time beside
+  // them, their thread time dropped now and then, and begins and ends of other names, lone ends and begins never ended.
+  // The measures (the resizes', the fits', the long tasks') are off by up to 0.25 ms at each end, and a fit's is dropped
+  // now and then. Whatever the trace, the charge is never less than the truth.
+  it('never charges less than the truth: 2000 seeded traces, nested, overlapping, skewed, with B/E noise', () => {
+    let seed = 0x5eed2a21
+    const rnd = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const int = (a: number, b: number): number => a + Math.floor(rnd() * (b - a + 1))
+    const pick = <T,>(xs: T[]): T => xs[Math.floor(rnd() * xs.length)]
+    const UNIT = 10
+    const BASE = OFF * 1000
+    const GPU = 'CommandBufferProxyImpl::WaitForGetOffset'
+    const WAIT = 'WaitableEvent::Wait'
+    const bad: string[] = []
+    let checked = 0
+    for (let n = 0; n < 2000 && bad.length < 5; n++) {
+      // cells: 0 idle, 1 thread time, 2 a wait on the GPU, 3 another wait, 4 descheduled.
+      const cells: number[] = new Array(100).fill(0)
+      const tops: Array<{ a: number; b: number }> = []
+      let longs = 0
+      for (let k = int(3, 8); k > 0; k--) {
+        const gap = pick([0, int(1, 25), int(26, 3000)])
+        for (let g = 0; g < gap; g++) cells.push(0)
+        const len = longs < 2 && rnd() < 0.25 ? (longs++, int(5100, 6000)) : rnd() < 0.5 ? int(2, 50) : int(51, 1500)
+        const a = cells.length
+        while (cells.length < a + len) {
+          const kind = pick([1, 1, 1, 2, 3, 4])
+          const run = int(1, Math.max(1, Math.floor(len / 6)))
+          for (let r = 0; r < run && cells.length < a + len; r++) cells.push(kind)
+        }
+        tops.push({ a, b: cells.length })
+      }
+      for (let g = 0; g < 100; g++) cells.push(0)
+      const pre = (kind: number): number[] => {
+        const p = [0]
+        for (const c of cells) p.push(p[p.length - 1] + (c === kind ? 1 : 0))
+        return p
+      }
+      const P = [pre(0), pre(1), pre(2), pre(3)]
+      const count = (kind: number, a: number, b: number): number => (P[kind][Math.min(Math.max(b, 0), cells.length)] - P[kind][Math.min(Math.max(a, 0), cells.length)]) * UNIT
+      const cpu = (a: number, b: number): number => count(1, a, b)
+      const at = (u: number): number => BASE + u * UNIT
+      const events: TraceEvent[] = [META]
+      const x = (name: string, cat: string, a: number, b: number, drop = 0.05): TraceEvent => ({ name, cat, ph: 'X', ts: at(a), dur: (b - a) * UNIT, ...(rnd() < drop ? {} : { tdur: cpu(a, b) }), pid: 1, tid: 1 })
+      const be = (name: string, cat: string, a: number, b: number): TraceEvent[] => {
+        const tts = rnd() < 0.8
+        return [
+          { name, cat, ph: 'B', ts: at(a), pid: 1, tid: 1, ...(tts ? { tts: cpu(0, a) } : {}) },
+          { name, cat, ph: 'E', ts: at(b), pid: 1, tid: 1, ...(tts ? { tts: cpu(0, b) } : {}) },
+        ]
+      }
+      const resizes: Array<{ start: number; ms: number }> = []
+      const fits: Array<{ start: number; ms: number }> = []
+      const longTasks: Array<{ start: number; ms: number; fit?: boolean }> = []
+      const truth: { resizes: Array<{ a: number; b: number }>; tasks: Array<{ a: number; b: number }>; fitTops: Set<number> } = { resizes: [], tasks: [], fitTops: new Set() }
+      const sub = (t: { a: number; b: number }): { a: number; b: number } => {
+        const a = int(t.a, t.b - 1)
+        return { a, b: int(a + 1, t.b) }
+      }
+      const skew = (): number => int(-25, 25)
+      let resizesLeft = int(1, 4)
+      tops.forEach((t, i) => {
+        const noise = rnd() < 0.15
+        if (noise) events.push({ name: 'Noise', cat: 'toplevel', ph: 'B', ts: at(t.a), pid: 1, tid: 1, ...(rnd() < 0.5 ? { tts: cpu(0, t.a) } : {}) })
+        events.push(x('ThreadControllerImpl::RunTask', 'toplevel', t.a, t.b))
+        if (rnd() < 0.3 && t.b - t.a > 1) {
+          const s2 = sub(t)
+          events.push(x('ThreadControllerImpl::RunTask', 'toplevel', s2.a, s2.b))
+        }
+        // The waits: one event a run of the cells of one kind, or more.
+        for (let u = t.a; u < t.b; ) {
+          const kind = cells[u]
+          let v = u
+          while (v < t.b && cells[v] === kind) v++
+          if (kind === 2 || kind === 3) {
+            const name = kind === 2 ? GPU : WAIT
+            const cat = kind === 2 ? 'gpu' : 'base'
+            // Reaching into the thread time beside it, never into another wait or a descheduled cell.
+            let a = u
+            let b = v
+            if (rnd() < 0.3) while (a > t.a && cells[a - 1] === 1 && rnd() < 0.7) a--
+            if (rnd() < 0.3) while (b < t.b && cells[b] === 1 && rnd() < 0.7) b++
+            const how = rnd()
+            if (how < 0.2) events.push(...be(name, cat, a, b))
+            else if (how < 0.35 && b - a > 2) {
+              const m = int(a + 1, b - 1)
+              events.push(x(name, cat, a, int(m, b), 0.1), x(name, cat, int(a, m), b, 0.1))
+            } else if (how < 0.5 && b - a > 2) {
+              const s2 = { a: int(a, b - 1), b: 0 }
+              s2.b = int(s2.a + 1, b)
+              events.push(x(name, cat, a, b, 0.1), x(name, cat, s2.a, s2.b, 0.1))
+            } else events.push(x(name, cat, a, b, 0.1))
+          }
+          u = v
+        }
+        // The calls that hold the resizes.
+        if (resizesLeft > 0 && (rnd() < 0.5 || i === tops.length - 1)) {
+          resizesLeft--
+          const call = sub(t)
+          const r = sub(call)
+          const rs = r.a + skew()
+          const re = Math.max(rs + 1, r.b + skew())
+          events.push(x('FunctionCall', 'devtools.timeline', call.a, call.b, 0.05))
+          const id = `0x${(++ids).toString(16)}`
+          events.push({ name: RESIZE_MEASURE, cat: 'blink.user_timing', ph: 'b', ts: at(rs), pid: 1, tid: 1, id }, { name: RESIZE_MEASURE, cat: 'blink.user_timing', ph: 'e', ts: at(re), pid: 1, tid: 1, id })
+          resizes.push({ start: at(rs) / 1000 - OFF, ms: ((re - rs) * UNIT) / 1000 })
+          truth.resizes.push({ a: rs, b: re })
+        }
+        // The fits.
+        for (let f = rnd() < 0.5 ? int(1, 2) : 0; f > 0; f--) {
+          const span = sub(t)
+          const fs = span.a + skew()
+          const fe = Math.max(fs + 1, span.b + skew())
+          if (rnd() >= 0.05) {
+            const id = `0x${(++ids).toString(16)}`
+            events.push({ name: BUFFER_FIT_MEASURE, cat: 'blink.user_timing', ph: 'b', ts: at(fs), pid: 1, tid: 1, id }, { name: BUFFER_FIT_MEASURE, cat: 'blink.user_timing', ph: 'e', ts: at(fe), pid: 1, tid: 1, id })
+          }
+          fits.push({ start: at(fs) / 1000 - OFF, ms: ((fe - fs) * UNIT) / 1000 })
+          truth.fitTops.add(i)
+        }
+        if (t.b - t.a > 5000) {
+          const ls = t.a + skew()
+          const le = t.b + skew()
+          longTasks.push({ start: at(ls) / 1000 - OFF, ms: ((le - ls) * UNIT) / 1000 })
+          truth.tasks.push({ a: ls, b: le })
+        }
+        if (noise) events.push({ name: 'Noise', cat: 'toplevel', ph: 'E', ts: at(t.b), pid: 1, tid: 1, ...(rnd() < 0.5 ? { tts: cpu(0, t.b) } : {}) })
+      })
+      // Stray ends and begins never ended.
+      if (rnd() < 0.1) events.push({ name: WAIT, cat: 'base', ph: 'E', ts: at(int(0, cells.length)), pid: 1, tid: 1 })
+      if (rnd() < 0.1) events.push({ name: pick([WAIT, 'Noise']), cat: 'base', ph: 'B', ts: at(int(0, cells.length)), pid: 1, tid: 1 })
+      const own = ownTimes(events, resizes, longTasks, fits)
+      const ms = (us: number): number => us / 1000
+      const fail = (what: string, got: number, want: number, ge: boolean): void => {
+        checked++
+        if (ge ? got < want - 1e-6 : got > want + 1e-6) bad.push(`trace ${n}: ${what} ${got} ${ge ? '<' : '>'} ${want}`)
+      }
+      // The page's resizes in the order ownTimes takes them, by their start (a skew can put one before the one ahead of it).
+      truth.resizes.sort((p, q) => p.a - q.a).forEach((r, i) => fail(`resize ${i} own`, own.resizes[i].own, ms(cpu(r.a, r.b) + count(2, r.a, r.b) + count(3, r.a, r.b)), true))
+      truth.tasks.forEach((t, i) => {
+        fail(`task ${i} own`, own.tasks[i].own, ms(cpu(t.a, t.b) + count(2, t.a, t.b) + count(3, t.a, t.b)), true)
+        fail(`task ${i} cpu`, own.tasks[i].cpu, ms(cpu(t.a, t.b)), true)
+        fail(`task ${i} gpu`, own.tasks[i].gpu, ms(count(2, t.a, t.b)), false)
+      })
+      fail('fitCpu', own.fitCpu, [...truth.fitTops].reduce((sum, i) => sum + ms(cpu(tops[i].a, tops[i].b)), 0), true)
+    }
+    expect(bad).toEqual([])
+    expect(checked).toBeGreaterThan(8000)
+  })
+
+  // Round 5: with the window scored a slice of the family (its thread time the task's or the call's), the other slices
+  // on the thread (known) still count where they may hold more of it: a task around the call, or children whose thread
+  // time outweighs their parent's (clocks the trace does not keep alike). Each is less excused, never more.
+  it("excuses less GPU wait for every slice on the thread that may hold thread time in it, not the window's alone", () => {
+    const q = quiet()
+    // A 20 ms resize all in a GPU wait, in a call of 2 ms of thread time, in a task of 30: the task's 30 may lie in the
+    // wait, so none is excused (with the call alone, 18).
+    const call = [...q.events, X('FunctionCall', 'devtools.timeline', 3000.4, 20.2, 2), W('WaitForCmd', 'gpu', 3000.5, 20), ...named(3000.5, 20)]
+    const resizes = [...q.resizes, { start: 3000.5, ms: 20 }]
+    expect(ownTimes([...call, X('ThreadControllerImpl::RunTask', 'toplevel', 2990, 40, 30)], resizes, []).resizes[10].gpu).toBe(0)
+    expect(ownTimes(call, resizes, []).resizes[10].gpu).toBeCloseTo(18, 9)
+    // A 1000 ms fit all in a GPU wait, its task giving 100 ms of thread time and two calls in it 100 each: 800, not 900.
+    const fit = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 1000, 100), W('WaitForCmd', 'gpu', 4000, 1000), X('FunctionCall', 'devtools.timeline', 4100, 100, 100), X('FunctionCall', 'devtools.timeline', 4300, 100, 100)]
+    expect(ownTimes(fit, q.resizes, [FIT, { start: 4000, ms: 1000, fit: true }]).tasks[1].gpu).toBeCloseTo(800, 9)
+    expect(ownTimes(fit.slice(0, -2), q.resizes, [FIT, { start: 4000, ms: 1000, fit: true }]).tasks[1].gpu).toBeCloseTo(900, 9)
   })
 
   it('a quiet drag breaks no rule, and the limits can be handed in', () => {

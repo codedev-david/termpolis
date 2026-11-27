@@ -1482,7 +1482,9 @@ test.describe.serial('Lumopolis at every screen size', () => {
     console.log(`[world-responsive] divider drag on the thread's clock: ${own.traced} resizes in the trace on ${own.thread} (clocks ${own.spread.toFixed(2)} ms apart), ${own.resizes.filter((x) => x.matched).length} and ${others.filter((x) => x.matched).length} of ${others.length} long tasks timed on it; wall/own ms of the resizes over 4 ms ${pairs(own.resizes, 4)}; of the long tasks ${pairs(others, 0)}; wall/thread ms of the fits' tasks ${threads(fits)}`)
     // The thread time of all the fits' tasks (fitCpuTotal), and the begin/end pairs the trace logs on the page's thread, by name.
     const be = Object.entries(own.pairs).sort((p, q) => q[1] - p[1]).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}`)
+    // A begin or an end it leaves in doubt (an end of another name than the open begin's, one with none open, a begin never ended) is charged as a wait to the edge of the trace.
+    const doubt = own.unpaired.map((u) => `${u.kind} ${u.name || '(unnamed)'} at ${u.at.toFixed(1)}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}; unpaired: ${doubt}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     for (const c of verdict.checks) softly(c.fails, c.rule).toEqual([])
     await glideDone('the divider dragged')

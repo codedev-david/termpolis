@@ -111,20 +111,24 @@ const inside = (x: TraceEvent, u: Array<{ a: number; b: number }>): number => u.
  * it was cut off or in the part of U already counted lies in its own part (pieces).
  *
  * `least`: U less the most thread time a family of timed slices that do not overlap can hold in it (heaviest), each of
- * the waits and of `known` (any slice of the thread, whatever its category) holding at most min(its thread time, its
- * part of U), so the family holds no more than U. It is a lower bound of the wait in U whenever `known` holds a timed slice around U (the task
- * around a fit, the call around a resize, as ownTimes hands them in). The proof: every instant of thread time in U lies
- * in that slice, which holds at most min(its thread time, |U|) of it; alone it is a family, so the family taken holds at
- * least as much as the thread spent in U, and what is left of U is waiting. Of slices nested or overlapping only the
+ * the waits, of `known` (any slice of the thread, whatever its category) and of the window [s, e] itself, whose thread
+ * time is `cpu` (the most the thread can have spent in it: the task or the call it is cut to), holding at most min(its
+ * thread time, its part of U), so the family holds no more than U and nothing outside [s, e] is credited. It is a lower
+ * bound of the wait in U whenever `cpu` is at least the thread time in [s, e]. The proof: every instant of thread time
+ * in U lies in the window, which holds at most min(cpu, |U|) of it; alone it is a family, so the family taken holds at
+ * least as much as the thread spent in U, and what is left of U is waiting. The window is always in the family, so no
+ * caller can leave the slice around U out (look plan A2.1 note (10), Round 5). Of slices nested or overlapping only the
  * heaviest counts; of ones apart, each. So the thread time of a wait cannot count as waiting where the trace does not
- * say where it lies, nor can the thread time of a fit's own work inside a wait the trace gives none (look plan A2.1
- * note (10), Round 4).
+ * say where it lies, nor can the thread time of a fit's own work inside a wait the trace gives none (Round 4).
  */
-export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'least' | 'most', known: TraceEvent[] = []): number {
+export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'most'): number
+export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'least', cpu: number, known?: TraceEvent[]): number
+export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'least' | 'most', cpu = 0, known: TraceEvent[] = []): number {
   if (bound === 'least') {
     const u = union(xs, s, e)
+    const window: TraceEvent = { name: '', cat: '', ph: 'X', ts: s, dur: e - s, tdur: cpu, pid: 0, tid: 0 }
     // A slice both a wait and known is taken once: two of the very bounds overlap, so the family holds one of them.
-    const timed = [...xs, ...known].filter((x) => typeof x.tdur === 'number')
+    const timed = [...xs, ...known, window].filter((x) => typeof x.tdur === 'number')
     const held = heaviest(timed.map((x) => ({ a: x.ts, b: end(x), w: Math.min(x.tdur as number, inside(x, u)) })))
     return u.reduce((t, p) => t + p.b - p.a, 0) - held
   }
@@ -136,21 +140,34 @@ export function waitedIn(xs: TraceEvent[], s: number, e: number, bound: 'least' 
   return pieces(cut).reduce((w, p) => w + (p.b - p.a) - p.lo, 0)
 }
 
+/** A begin or an end the trace does not pair (paired): its kind, its name, its instant and its thread (pid:tid). */
+export type Unpaired = { kind: 'mismatched' | 'lone' | 'unclosed'; name: string; ts: number; thread: string }
 /**
  * The trace's events with each begin (B) and end (E) on a thread made one complete event (X) from the begin to the end:
- * an end closes the latest begin still open on its thread, and its thread time is the end's thread clock less the
- * begin's when both have one (tts). A wait the thread logs that way (a lock, an event) is then a wait as any other. A
- * begin the trace never ends runs to the trace's last instant with no thread time given (`open`: charged as all waiting,
- * excused nothing); an end with no begin open is dropped (the trace starts before the drag). `pairs` counts the pairs by
- * thread (pid:tid) and name.
+ * an end closes the latest begin still open on its thread when it has the begin's name, and its thread time is the
+ * end's thread clock less the begin's when both have one (tts). A wait the thread logs that way (a lock, an event) is
+ * then a wait as any other. Where the trace leaves a pair in doubt, the wait runs to the edge that charges the page the
+ * most, with no thread time given (`open`: charged as all waiting whatever its name, excused nothing), and is listed in
+ * `unpaired` (look plan A2.1 note (10), Round 5):
+ * - an end whose name is not the latest open begin's (`mismatched`; an end Chromium leaves unnamed too), or an end with
+ *   no begin open (`lone`), runs from the trace's first instant to the end, and closes nothing;
+ * - a begin the trace never ends (`unclosed`) runs to the trace's last instant.
+ * `pairs` counts the pairs by thread (pid:tid) and name.
  */
-export function paired(events: TraceEvent[]): { events: TraceEvent[]; open: Set<TraceEvent>; pairs: Map<string, Map<string, number>> } {
+export function paired(events: TraceEvent[]): { events: TraceEvent[]; open: Set<TraceEvent>; pairs: Map<string, Map<string, number>>; unpaired: Unpaired[] } {
   const last = events.reduce((t, e) => Math.max(t, e.ts + (e.dur ?? 0)), 0)
+  const first = events.reduce((t, e) => (e.ph === 'M' ? t : Math.min(t, e.ts)), Infinity)
   const stacks = new Map<string, TraceEvent[]>()
   const pairs = new Map<string, Map<string, number>>()
   const open = new Set<TraceEvent>()
+  const unpaired: Unpaired[] = []
   const out: TraceEvent[] = []
-  const made = (b: TraceEvent, until: number, tdur: number | undefined): TraceEvent => ({ name: b.name, cat: b.cat, ph: 'X', ts: b.ts, dur: until - b.ts, ...(tdur === undefined ? {} : { tdur }), pid: b.pid, tid: b.tid })
+  const made = (b: TraceEvent, from: number, until: number, tdur: number | undefined): TraceEvent => ({ name: b.name, cat: b.cat, ph: 'X', ts: from, dur: until - from, ...(tdur === undefined ? {} : { tdur }), pid: b.pid, tid: b.tid })
+  const doubt = (x: TraceEvent, kind: Unpaired['kind'], at: TraceEvent, thread: string): void => {
+    open.add(x)
+    out.push(x)
+    unpaired.push({ kind, name: at.name, ts: at.ts, thread })
+  }
   const order = events.map((e, i) => [e, i] as const).sort((p, q) => p[0].ts - q[0].ts || p[1] - q[1])
   for (const [e] of order) {
     if (e.ph !== 'B' && e.ph !== 'E') {
@@ -164,19 +181,42 @@ export function paired(events: TraceEvent[]): { events: TraceEvent[]; open: Set<
       stack.push(e)
       continue
     }
-    const b = stack.pop()
-    if (!b) continue
-    out.push(made(b, e.ts, typeof b.tts === 'number' && typeof e.tts === 'number' ? e.tts - b.tts : undefined))
+    const b = stack[stack.length - 1]
+    if (!b || b.name !== e.name) {
+      doubt(made(e, first, e.ts, undefined), b ? 'mismatched' : 'lone', e, k)
+      continue
+    }
+    stack.pop()
+    out.push(made(b, b.ts, e.ts, typeof b.tts === 'number' && typeof e.tts === 'number' ? e.tts - b.tts : undefined))
     const byName = pairs.get(k) ?? new Map<string, number>()
     pairs.set(k, byName)
     byName.set(b.name, (byName.get(b.name) ?? 0) + 1)
   }
-  for (const stack of stacks.values()) for (const b of stack) {
-    const x = made(b, last, undefined)
-    open.add(x)
-    out.push(x)
+  for (const [k, stack] of stacks) for (const b of stack) doubt(made(b, b.ts, last, undefined), 'unclosed', b, k)
+  return { events: out, open, pairs, unpaired }
+}
+
+/**
+ * The most thread time a set of tasks can hold in all (microseconds): of tasks nested in one another, the outer one's
+ * or its inner ones' in all, whichever is more (the inner ones' thread time is the outer's, unless the trace's clocks
+ * disagree); of tasks apart, or overlapping (which a thread's tasks do not), each. One with no thread time given is
+ * charged its wall.
+ */
+export function heldAll(xs: TraceEvent[]): number {
+  const stack: Array<{ x: TraceEvent; inner: number }> = []
+  let total = 0
+  const close = (): void => {
+    const n = stack.pop() as { x: TraceEvent; inner: number }
+    const v = Math.max(n.x.tdur ?? (n.x.dur as number), n.inner)
+    if (stack.length) stack[stack.length - 1].inner += v
+    else total += v
   }
-  return { events: out, open, pairs }
+  for (const x of [...xs].sort((p, q) => p.ts - q.ts || end(q) - end(p))) {
+    while (stack.length && end(x) > end(stack[stack.length - 1].x)) close()
+    stack.push({ x, inner: 0 })
+  }
+  while (stack.length) close()
+  return total
 }
 
 /**
@@ -188,15 +228,20 @@ export function paired(events: TraceEvent[]): { events: TraceEvent[]; open: Set<
  * of its length there, on the thread whose spans the most agree with (an end is paired with a begin of its own process
  * and id, as each renderer numbers its own). A resize the trace dropped (the macOS runner's trace lost one or two of 40
  * in three drags of four, soak 45933131129), and a task with no task around it there, is timed on the wall. The trace's
- * begins and ends are made complete events first (paired), and `pairs` counts them on the page's thread by name.
+ * begins and ends are made complete events first (paired), `pairs` counts them on the page's thread by name, and
+ * `unpaired` lists those the trace leaves in doubt there (at: the page's clock, ms).
  *
- * The fits the page named (`fits`, BUFFER_FIT_MEASURE) are put on the thread's clock the same way, each in the
- * innermost task around it: `fitCpu` is the thread time of those tasks (each once, the fit's fence and wake and whatever
- * else the task runs too), a fit the trace does not hold charged the wall of the long task that holds it (each long
- * task once) or, in none, 50 ms (a task as long would be a long task); `fitsTraced` counts the fits in a task.
+ * Where the trace leaves in doubt what work or wait a span holds, the page is charged the most it allows (look plan
+ * A2.1 note (10), Round 5): a wait counts only inside the window scored (the page's task, the resize's call) as an
+ * excuse, and the whole window counts when charged.
+ *
+ * The fits the page named (`fits`, BUFFER_FIT_MEASURE) are put on the thread's clock the same way, each in every task
+ * around it: `fitCpu` is the thread time of those tasks (each once, heldAll, the fit's fence and wake and whatever else
+ * the task runs too), a fit the trace does not hold charged the wall of the long task that holds it (each long task
+ * once) or, in none, 50 ms (a task as long would be a long task); `fitsTraced` counts the fits in a task.
  */
-export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[] = []): { traced: number; spread: number; thread: string; resizes: OwnTime[]; tasks: OwnTime[]; fitCpu: number; fitsTraced: number; pairs: Record<string, number> } {
-  const { events, open, pairs: allPairs } = paired(raw)
+export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[] = []): { traced: number; spread: number; thread: string; resizes: OwnTime[]; tasks: OwnTime[]; fitCpu: number; fitsTraced: number; pairs: Record<string, number>; unpaired: Array<{ kind: Unpaired['kind']; name: string; at: number }> } {
+  const { events, open, pairs: allPairs, unpaired } = paired(raw)
   const key = (e: { pid: number; tid: number }): string => `${e.pid}:${e.tid}`
   const asyncId = (e: TraceEvent): string => e.id ?? e.id2?.local ?? e.id2?.global ?? ''
   // Each span the trace named `measure`, from its start to its end: a begin with the end of its process and id, or one complete event.
@@ -248,8 +293,9 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   const spread = offs.length ? offs[offs.length - 1] - offs[0] : NaN
   const onMain = events.filter((e) => e.ph === 'X' && typeof e.dur === 'number' && key(e) === main)
   const timed = onMain.filter((x) => typeof x.tdur === 'number')
-  // The thread's waits (waitedIn), and of them the GPU's: a begin the trace never ended is no wait on the GPU.
-  const waitsOn = onMain.filter(isWait)
+  // The thread's waits (waitedIn), a begin or an end the trace does not pair whatever its name, and of them the GPU's:
+  // one the trace does not pair is no wait on the GPU.
+  const waitsOn = onMain.filter((x) => isWait(x) || open.has(x))
   const gpuOn = onMain.filter((x) => isGpu(x) && !open.has(x))
   // The thread time inside [s, e] of an event around it, at most: its own less the most a family of slices in it that do
   // not overlap (itself among them) is shown to hold outside [s, e], each one's thread time less its part of [s, e]
@@ -267,44 +313,70 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
     if (!span || !around) return { wall: m.ms, own: m.ms, cpu: m.ms, waited: 0, gpu: 0, matched: false }
     const waited = waitedIn(waitsOn, span.s, span.e, 'most') / 1000
     const cpu = within(around, span.s, span.e) / 1000
-    const gpu = waitedIn(gpuOn, Math.max(span.s, around.ts), Math.min(span.e, end(around)), 'least', timed) / 1000
+    const gpu = waitedIn(gpuOn, Math.max(span.s, around.ts), Math.min(span.e, end(around)), 'least', around.tdur as number, timed) / 1000
     return { wall: m.ms, own: Math.min(m.ms, cpu + waited), cpu, waited, gpu, matched: true, by: `${around.name} ${((around.dur as number) / 1000).toFixed(1)}/${((around.tdur as number) / 1000).toFixed(1)}` }
   })
   const overlap = (x: TraceEvent, s: number, e: number): number => Math.max(0, Math.min(e, end(x)) - Math.max(s, x.ts))
-  const runs = timed.filter((x) => /RunTask/.test(x.name))
-  const taskRuns = longTasks.map((t) => {
-    const s = (t.start + off) * 1000
-    const e = s + t.ms * 1000
+  const runs = onMain.filter((x) => /RunTask/.test(x.name))
+  // Each long task's window on the thread's clock, and the task the trace holds over most of it (of two as much, the
+  // longer), whether or not the trace gives its thread time.
+  const windows = longTasks.map((t) => ({ s: (t.start + off) * 1000, e: (t.start + off + t.ms) * 1000 }))
+  const taskRuns = longTasks.map((t, i) => {
+    const { s, e } = windows[i]
     return Number.isFinite(off) ? runs.filter((x) => overlap(x, s, e) > 0.5 * t.ms * 1000).sort((p, q) => overlap(q, s, e) - overlap(p, s, e) || (q.dur as number) - (p.dur as number))[0] : undefined
   })
+  // A long task's own time: its task's thread time, its waits inside the window, and the part of the window outside the
+  // task whole; its waits on the GPU only inside both (look plan A2.1 note (10), Round 5: a wait is cut to the window
+  // scored, and nothing outside it is credited). A task with no thread time given is timed on the wall.
   const tasks = longTasks.map((t, i): OwnTime => {
     const run = taskRuns[i]
-    if (!run) return { wall: t.ms, own: t.ms, cpu: t.ms, waited: 0, gpu: 0, matched: false }
-    const waited = waitedIn(waitsOn, run.ts, end(run), 'most') / 1000
-    const cpu = (run.tdur as number) / 1000
-    return { wall: t.ms, own: Math.min(t.ms, cpu + waited), cpu, waited, gpu: waitedIn(gpuOn, run.ts, end(run), 'least', timed) / 1000, matched: true }
+    if (!run || typeof run.tdur !== 'number') return { wall: t.ms, own: t.ms, cpu: t.ms, waited: 0, gpu: 0, matched: false }
+    const { s, e } = windows[i]
+    const [ws, we] = [Math.max(s, run.ts), Math.min(e, end(run))]
+    const waited = waitedIn(waitsOn, ws, we, 'most') / 1000
+    const cpu = ((run.tdur as number) + Math.max(0, run.ts - s) + Math.max(0, e - end(run))) / 1000
+    const gpu = waitedIn(gpuOn, ws, we, 'least', run.tdur as number, timed) / 1000
+    return { wall: t.ms, own: Math.min(t.ms, cpu + waited), cpu, waited, gpu, matched: true }
   })
-  // The fits' tasks, each once: the task around each fit's measure the trace holds (FIT_SLACK; of several, the one
-  // holding most of it, then the innermost); else the task of the long task that holds the fit, if the trace holds it;
-  // else that long task's wall, or 50 ms in none.
-  const fitSpans = pairUp(fits, spansOf(BUFFER_FIT_MEASURE))
-  const charged = new Set<object>()
-  let fitCpu = 0
+  // The fits' tasks (look plan A2.1 note (10), Round 5): every task around a fit's measure the trace holds (FIT_SLACK),
+  // as any of them may be the fit's (all of them charged, heldAll, each once: a fit that could be in either of two is
+  // charged both); else the task of the long task that holds the fit, if the trace holds one. A fit whose measure is in
+  // doubt (the trace dropped it, or a measure of its length is as near another fit) is charged every task around each
+  // measure it may be, every task around it on the thread's clock put from the page's (within the 0.5 ms a measure is
+  // paired in, and FIT_SLACK), and its long task's (any of them may be its). In none, a fit is charged that long task's
+  // wall, or 50 ms in none (each once). A task with no thread time given is charged its wall (heldAll).
+  const fitMeasures = spansOf(BUFFER_FIT_MEASURE).filter((x) => x.key === main)
+  const near = fits.map((m) => (Number.isFinite(off) ? fitMeasures.filter((y) => alike(m, y) && Math.abs(y.s / 1000 - m.start - off) < 0.5) : []))
+  const claims = new Map<object, number>()
+  for (const xs of near) for (const x of xs) claims.set(x, (claims.get(x) ?? 0) + 1)
+  const aroundOf = (s: number, e: number, slack: number): TraceEvent[] => runs.filter((x) => x.ts <= s + slack && end(x) >= e - slack)
+  const held = new Set<TraceEvent>()
+  const walls = new Set<object>()
+  let fitWalls = 0
   let fitsTraced = 0
   fits.forEach((f, i) => {
-    const span = fitSpans[i]
-    const held = span ? runs.filter((x) => x.ts <= span.s + FIT_SLACK && end(x) >= span.e - FIT_SLACK).sort((p, q) => overlap(q, span.s, span.e) - overlap(p, span.s, span.e) || (p.dur as number) - (q.dur as number))[0] : undefined
+    const sure = near[i].length === 1 && claims.get(near[i][0]) === 1
     const at = longTasks.findIndex((t) => f.start >= t.start - 1 && f.start + f.ms <= t.start + t.ms + 1)
     const long = longTasks[at]
-    const run = held ?? taskRuns[at]
-    if (run) fitsTraced++
-    const by: object = run ?? long ?? f
-    if (charged.has(by)) return
-    charged.add(by)
-    fitCpu += run ? (run.tdur as number) / 1000 : long ? long.ms : 50
+    const run = taskRuns[at]
+    const around = sure ? aroundOf(near[i][0].s, near[i][0].e, FIT_SLACK) : [
+      ...near[i].flatMap((x) => aroundOf(x.s, x.e, FIT_SLACK)),
+      ...(Number.isFinite(off) ? aroundOf((f.start + off) * 1000, (f.start + off + f.ms) * 1000, 500 + FIT_SLACK) : []),
+    ]
+    const found = sure && around.length ? around : run ? [...around, run] : around
+    if (found.length) {
+      fitsTraced++
+      for (const x of found) held.add(x)
+      return
+    }
+    const by: object = long ?? f
+    if (walls.has(by)) return
+    walls.add(by)
+    fitWalls += long ? long.ms : 50
   })
+  const fitCpu = heldAll([...held]) / 1000 + fitWalls
   const onPage = allPairs.get(main) ?? new Map<string, number>()
-  return { traced: offs.length, spread, thread: names.get(main) ?? main, resizes, tasks, fitCpu, fitsTraced, pairs: Object.fromEntries(onPage) }
+  return { traced: offs.length, spread, thread: names.get(main) ?? main, resizes, tasks, fitCpu, fitsTraced, pairs: Object.fromEntries(onPage), unpaired: unpaired.filter((u) => u.thread === main).map((u) => ({ kind: u.kind, name: u.name, at: u.ts / 1000 - off })) }
 }
 
 /**
