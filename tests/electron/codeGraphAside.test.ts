@@ -1174,3 +1174,212 @@ describe('the reads a build settles before it publishes run a few at a time, all
     expect(codeSymbols('_v9', 100, KEY)).toHaveLength(20)
   })
 })
+
+describe('a brain import (initCodeGraph) while a build lists: the file a batch could not read is in the live graph again (Opus R4-m1)', () => {
+  // A 16-hex key: the one shape of key initCodeGraph loads from a graph file (GRAPH_FILE_RE).
+  const HEX = '0123456789abcdef'
+  const F0 = '/repo/src/f0.ts'
+  let d1 = ''
+  let d2 = ''
+  beforeEach(() => {
+    d1 = mkdtempSync(join(tmpdir(), 'cg-imp1-'))
+    d2 = mkdtempSync(join(tmpdir(), 'cg-imp2-'))
+    initCodeGraph(d1)
+  })
+  afterEach(() => { _resetCodeGraphForTests(); rmSync(d1, { recursive: true, force: true }); rmSync(d2, { recursive: true, force: true }) })
+
+  for (const [how, answer] of [['comes back empty', [] as string[]], ['fails', null]] as const) {
+    it(`the listing ${how} and the file is unreadable once more: the build keeps what the import holds of it, once, and ends`, async () => {
+      const list = files(3)
+      await buildCodeGraph({ listFiles: async () => list, readFile: async (f) => src(f, 'v1') }, HEX)
+      const name = `code-graph-${HEX}.json`
+      writeFileSync(join(d2, name), readFileSync(join(d1, name)))
+      const listing = gate<string[] | null>()
+      const listFiles = async (): Promise<string[]> => { const v = await listing.wait(); if (v === null) throw new Error('git gone'); return v }
+      const rb = buildCodeGraph({ listFiles, readFile: async (f) => { if (f === F0) throw busy(); return src(f, 'v2') } }, HEX)
+      await listing.started
+      await reindexPaths([F0], async () => { throw busy() }, HEX)
+      expect(codeSymbols('f0_', 10, HEX)).toHaveLength(0)
+      initCodeGraph(d2) // the import: f0 at v1 is in the live graph again, while the build still lists
+      expect(codeSymbols('f0_v1', 10, HEX)).toHaveLength(1)
+      const write = vi.spyOn(fs.promises, 'writeFile')
+      // A copy of the live graph into itself appends to the list it walks, and never ends: stopped here after a
+      // bound no build of three files comes near, so the test fails rather than hangs.
+      const push = Array.prototype.push
+      let pushes = 0
+      Array.prototype.push = function (this: unknown[], ...items: unknown[]): number {
+        if (++pushes > 1_000_000) throw new Error('a copy that never ends')
+        return push.apply(this, items)
+      }
+      let stats: Awaited<ReturnType<typeof buildCodeGraph>>
+      try {
+        listing.open(answer)
+        stats = await rb
+      } finally {
+        Array.prototype.push = push
+      }
+      expect(pushes).toBeLessThan(1_000_000)
+      expect(stats.files).toBe(3)
+      expect(codeSymbols('f0_v1', 10, HEX)).toHaveLength(1)
+      expect(fileSymbols(F0)).toHaveLength(1)
+      // The graph holds the file the batch could not read, as the copy into a new graph would: it is saved as held.
+      expect(write).toHaveBeenCalled()
+      expect(readFileSync(join(d2, name), 'utf8')).toContain('f0_v1')
+    })
+
+    it(`the listing ${how}, the file unreadable once more and no import: the graph does not hold it, and is not written again`, async () => {
+      const list = files(3)
+      await buildCodeGraph({ listFiles: async () => list, readFile: async (f) => src(f, 'v1') }, HEX)
+      const listing = gate<string[] | null>()
+      const listFiles = async (): Promise<string[]> => { const v = await listing.wait(); if (v === null) throw new Error('git gone'); return v }
+      const rb = buildCodeGraph({ listFiles, readFile: async (f) => { if (f === F0) throw busy(); return src(f, 'v2') } }, HEX)
+      await listing.started
+      await reindexPaths([F0], async () => { throw busy() }, HEX)
+      const write = vi.spyOn(fs.promises, 'writeFile')
+      listing.open(answer)
+      expect((await rb).files).toBe(2)
+      expect(codeSymbols('f0_', 10, HEX)).toHaveLength(0)
+      expect(write).not.toHaveBeenCalled()
+    })
+  }
+
+  it('readable once more: the new version replaces what the import loaded, and is not added beside it', async () => {
+    const list = files(3)
+    await buildCodeGraph({ listFiles: async () => list, readFile: async (f) => src(f, 'v1') }, HEX)
+    const name = `code-graph-${HEX}.json`
+    writeFileSync(join(d2, name), readFileSync(join(d1, name)))
+    const listing = gate<string[]>()
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => src(f, 'v2') }, HEX)
+    await listing.started
+    await reindexPaths([F0], async () => { throw busy() }, HEX)
+    initCodeGraph(d2)
+    listing.open([])
+    expect((await rb).files).toBe(3)
+    expect(codeSymbols('f0_v2', 10, HEX)).toHaveLength(1)
+    expect(codeSymbols('f0_v1', 10, HEX)).toHaveLength(0)
+    expect(fileSymbols(F0)).toHaveLength(1)
+  })
+})
+
+describe("a build's own read that finds a file gone clears a batch's earlier retry of it (Codex r5 6)", () => {
+  it('a second read that finds it again does not bring it back', async () => {
+    const list = files(5)
+    const F = list[2]
+    await build(list, 'v1')
+    const listing = gate<string[]>()
+    let reads = 0
+    const readFile = async (f: string): Promise<string> => {
+      if (f !== F) return src(f, 'v2')
+      if (++reads === 1) throw enoent()
+      return src(f, 'v2') // a settle read would find it: it must not be asked
+    }
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile }, KEY)
+    await listing.started
+    await reindexPaths([F], async () => { throw busy() }, KEY)
+    listing.open(list)
+    expect((await rb).files).toBe(4)
+    expect(reads).toBe(1)
+    expect(codeSymbols('f2_', 10, KEY)).toHaveLength(0)
+  })
+})
+
+describe("a project's settle reads: on a monotonic clock, and at most a few out over all its builds (Codex r5 7)", () => {
+  afterEach(() => { _setCodeGraphTimeoutsForTests() })
+  const list = files(40)
+  /** A build whose read of each file in `hang` fails at first (so it is read again before it publishes), and whose
+   *  read again goes to `again`. */
+  const rebuild = (hang: Set<string>, again: (f: string) => Promise<string>) => {
+    const first = new Set<string>()
+    return buildCodeGraph({
+      listFiles: async () => list,
+      readFile: (f) => {
+        if (!hang.has(f)) return Promise.resolve(src(f, 'v2'))
+        if (!first.has(f)) {
+          first.add(f)
+          return Promise.reject(busy())
+        }
+        return again(f)
+      },
+    }, KEY)
+  }
+  const never = (): Promise<never> => new Promise<never>(() => { /* never settles */ })
+
+  it('the wall clock set back while reads are out starts no second wave', async () => {
+    await build(list, 'v1')
+    _setCodeGraphTimeoutsForTests({ readMs: 200 })
+    const now = Date.now.bind(Date)
+    let back = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => now() - back)
+    let again = 0
+    const t0 = performance.now()
+    await rebuild(new Set(list.slice(0, 30)), () => {
+      again++
+      back = 3_600_000 // an hour back, once the first read is out
+      return never()
+    })
+    expect(again).toBe(8)
+    expect(performance.now() - t0).toBeLessThan(2000)
+    expect(codeSymbols('_v1', 100, KEY)).toHaveLength(30)
+  })
+
+  it('a second build meeting the same hung reads starts none of its own while they are out', async () => {
+    await build(list, 'v1')
+    _setCodeGraphTimeoutsForTests({ readMs: 150 })
+    const hang = new Set(list.slice(0, 10))
+    let out = 0
+    const hung = (): Promise<never> => { out++; return never() }
+    await rebuild(hang, hung)
+    expect(out).toBe(8)
+    const t0 = performance.now()
+    await rebuild(hang, hung)
+    expect(out).toBe(8)
+    // It waited one limit for a slot, no more, and kept the last graph's version of each.
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(130)
+    expect(performance.now() - t0).toBeLessThan(1500)
+    expect(codeSymbols('_v1', 100, KEY)).toHaveLength(10)
+  })
+
+  it('a read of an earlier build that comes back frees its slot for a later build, whose reads then take turns in it', async () => {
+    await build(list, 'v1')
+    _setCodeGraphTimeoutsForTests({ readMs: 300 })
+    const hang = new Set(list.slice(0, 10))
+    const late: Array<(v: string) => void> = []
+    await rebuild(hang, () => new Promise<string>((r) => late.push(r)))
+    expect(late).toHaveLength(8)
+    // Two come back late (not applied: that build is over): a later build has two slots at once.
+    late[0](src(list[0], 'late'))
+    late[1](src(list[1], 'late'))
+    await settle()
+    expect(codeSymbols('_late', 100, KEY)).toHaveLength(0)
+    const read: string[] = []
+    // Two slots for ten reads: each read that comes back hands its slot to one waiting.
+    await rebuild(hang, async (f) => {
+      read.push(f)
+      return src(f, 'v3')
+    })
+    expect(read).toHaveLength(10)
+    expect(codeSymbols('_v3', 100, KEY)).toHaveLength(10)
+  })
+
+  it('a read that gets a slot late has only what is left of its build’s time, not a whole limit', async () => {
+    await build(list, 'v1')
+    _setCodeGraphTimeoutsForTests({ readMs: 600 })
+    const hang = new Set(list.slice(0, 8))
+    const late: Array<(v: string) => void> = []
+    await rebuild(hang, () => new Promise<string>((r) => late.push(r)))
+    expect(late).toHaveLength(8)
+    // All eight slots are out; one comes back 400 ms into the next build, whose one read then hangs in it.
+    const t0 = performance.now()
+    const freed = setTimeout(() => late[0](src(list[0], 'late')), 400)
+    let asked = 0
+    try {
+      await rebuild(new Set([list[9]]), () => { asked++; return never() })
+    } finally {
+      clearTimeout(freed)
+    }
+    expect(asked).toBe(1)
+    const took = performance.now() - t0
+    expect(took).toBeGreaterThanOrEqual(580)
+    expect(took).toBeLessThan(850) // a whole limit from the slot would end near 1000 ms
+  })
+})

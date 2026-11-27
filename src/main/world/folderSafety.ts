@@ -159,7 +159,9 @@ export interface ConfinedFs {
 export const realConfinedFs: ConfinedFs = {
   real: (p) => fsp.realpath(p),
   open: async (p) => {
-    // Read-only, and never waiting for a writer: a FIFO opens at once (POSIX; Windows has no such flag) and its read fails.
+    // Read-only, and never waiting for a writer: a FIFO opens at once (POSIX; Windows has no such flag). With no writer
+    // its read is no error but empty text (end of file at once); with a writer that has sent nothing yet it fails with
+    // EAGAIN instead of waiting.
     const h = await fsp.open(p, fsp.constants.O_RDONLY | (fsp.constants.O_NONBLOCK ?? 0))
     return { stat: () => h.stat({ bigint: true }), readText: () => h.readFile('utf8'), close: () => h.close() }
   },

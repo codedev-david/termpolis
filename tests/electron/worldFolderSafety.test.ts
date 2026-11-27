@@ -335,6 +335,21 @@ describe('cloneReader', () => {
 })
 
 describe('forbiddenFolderReal', () => {
+  it('a junction to a clone (or into one) is Termpolis’s own data: refused at the pick (Codex r5 8)', async () => {
+    const home = join(dir, 'home')
+    const userData = join(dir, 'ud')
+    const clone = join(userData, 'world', 'repos', 'abc')
+    await mkdir(join(clone, 'src'), { recursive: true })
+    await mkdir(home, { recursive: true })
+    const alias = join(dir, 'alias')
+    await symlink(clone, alias, 'junction')
+    expect(await forbiddenFolderReal(alias, { home, userData })).toBe(FORBIDDEN_FOLDER)
+    expect(await forbiddenFolderReal(join(alias, 'src'), { home, userData })).toBe(FORBIDDEN_FOLDER)
+    // The clone named as it is, too; a plain folder beside it is not.
+    expect(await forbiddenFolderReal(clone, { home, userData })).toBe(FORBIDDEN_FOLDER)
+    expect(await forbiddenFolderReal(home, { home: join(dir, 'other'), userData })).toBeNull()
+  })
+
   it('a junction to the home folder is the home folder', async () => {
     const home = join(dir, 'home')
     await mkdir(join(home, 'code'), { recursive: true })

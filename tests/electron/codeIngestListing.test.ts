@@ -205,4 +205,32 @@ describe('discoverRepoFiles (git mocked)', () => {
     await discoverRepoFiles(root)
     expect(repoListingNotes(root)?.unreadable).toEqual(['last�.ts'])
   })
+
+  for (const how of ['fails', 'is refused by the confinement'] as const) {
+    it(`drops the notes of a listing that comes back after a newer one that ${how} (Codex r5 2)`, async () => {
+      const other = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-other-'))
+      try {
+        let release!: () => void
+        const held = new Promise<void>((r) => { release = r })
+        let reached!: () => void
+        const atOld = new Promise<void>((r) => { reached = r })
+        let phase: 'old' | 'new' = 'old'
+        answers.fn = ((): string | Promise<string> => {
+          if (phase === 'new') throw Object.assign(new Error('fatal: not a git repository'), { code: 128 })
+          reached()
+          return held.then(() => 'H a.ts H old�.ts ')
+        }) as unknown as (a: string[]) => string
+        const late = discoverRepoFiles(root)
+        await atOld
+        phase = 'new'
+        expect(await discoverRepoFiles(root, how === 'fails' ? {} : { confineTo: other })).toEqual([])
+        release()
+        // Its files still go to the sweep that asked for them; its notes (the name it could not read) do not land.
+        expect(rel(await late)).toEqual(['a.ts'])
+        expect(repoListingNotes(root)).toBeNull()
+      } finally {
+        fs.rmSync(other, { recursive: true, force: true })
+      }
+    })
+  }
 })

@@ -27,7 +27,7 @@ import type { StageCache, StageFile } from './stageCache'
 import { RUNS_WAIT_MS, type TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
-import { cloneReader, isCloneRoot } from './folderSafety'
+import { FORBIDDEN_FOLDER, cloneConfinement, cloneReader, isCloneRoot } from './folderSafety'
 import {
   CANCELLED_MESSAGE,
   CLONE_TIMEOUT_MS,
@@ -618,6 +618,22 @@ interface HostState {
 
 export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: WorldHostDeps = {}): WorldHost {
   const plain = deps.compile
+  /**
+   * A root read as a clone is one spelled as one (isCloneRoot): its reads are confined to it (confinedTo). A root
+   * spelled otherwise whose real path is in a clone (a junction or symlink to one, or a Git Bash spelling of one) is
+   * refused here, with the folder pick's own refusal (forbiddenFolderReal, FORBIDDEN_FOLDER), and read by neither
+   * reader. The pick refuses such a root already, so none reaches here today; this keeps it so should a new way in skip
+   * the pick (Codex r5 8: fail closed). Every other folder is read as it always was. Every compile request, every
+   * watcher recompile (its snapshot is main's newest) and every snapshot from files asks, with the real paths as they
+   * are then. A label follow-up or a late-CI recompile reuses a snapshot a compile already asked about and does not ask
+   * again, so a junction re-pointed into a clone between that ask and such a recompile is read as the folder it was (a
+   * concurrent local writer: outside the threat model, like the other time-of-check residuals).
+   */
+  const refuseClonedAlias = async (root: string): Promise<void> => {
+    const userData = (state as HostState).userDataPath
+    if (isCloneRoot(userData, root)) return
+    if ((await cloneConfinement(userData, root)) !== null) throw Object.assign(new Error(FORBIDDEN_FOLDER), { code: 'FORBIDDEN_FOLDER' })
+  }
   const compile = async (input: StagedInput, d: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache | null }> =>
     plain ? { doc: await plain(input, d), cache: null } : compileWorldStaged(input, d)
   const createStore = deps.createStore ?? createWorldStore
@@ -1095,6 +1111,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             // Once this lifetime has checked the cache, only the changed files are read again and the rest of
             // the scan comes from it; before that, every file is read and hash-checked.
             const cache = await stagesOf(st, key)
+            await refuseClonedAlias(cur.snap.root)
             const reread = st.checked.has(key) ? undefined : [...cur.snap.files]
             const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...stagedArg(cache, reread), ...planArg(cur.plan) }
             st.checked.delete(key)
@@ -1170,6 +1187,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           // With a stored stage cache every file is read but only one whose text changed is scanned again; a file the
           // snapshot just read is scanned from that text, never read twice.
           const cache = await stagesOf(st, key)
+          await refuseClonedAlias(snap.root)
           st.checked.delete(key)
           const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn } : {}) }
           const out = await compile(input, stoppable(withPrescan(depsFor(st, key, snap, head, labelled ? cacheOnly : null), scans), stop))
@@ -1266,6 +1284,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     // map before they finish (drawFirst).
     snapshotFromFiles: async (root: unknown, opts?: { projectKey?: unknown; head?: unknown }) => {
       if (!isStr(root) || root === '') throw new Error('worldHost: root required')
+      await refuseClonedAlias(root)
       const read = isCloneRoot(st.userDataPath, root) ? confinedTo(st, root, readSource) : readSource
       const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
       const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }

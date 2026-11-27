@@ -34,7 +34,9 @@
 // needs an alias migration of its own, for folder names no git host or shell makes by default. What the shared key
 // must not do is share one folder's results with the other: the code graph's builds join only a request naming the same
 // root (codeGraph.ts CodeGraphDeps.root), so each folder is listed and read for itself, and the last one built is the
-// graph the key answers with.
+// graph the key answers with. That is the worst left, and it stands for 2.0: with both folders open, the last one
+// built owns the key, and a code search, a world or an agent's code question for either answers from that folder's
+// graph until the other is built again. POSIX only: on Windows `\` is a separator, so the two spellings are one folder.
 
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'

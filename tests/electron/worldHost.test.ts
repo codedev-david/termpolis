@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { symlinkSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import {
   captureExec,
   gitListFiles,
@@ -49,6 +49,7 @@ import {
 import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, NO_GIT_MESSAGE, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
+import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
@@ -308,6 +309,47 @@ describe('host file-system deps', () => {
     // A folder that is not a clone keeps the plain reader.
     await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k2', snap(dir), HEAD] })
     expect(await seen[1].readSource(join(dir, 'world', 'repos', 'outside.ts'))).toBe('outside')
+  })
+
+  it('a root not spelled as a clone whose real path is in one is refused, with the pick’s refusal (Codex r5 8)', async () => {
+    const ud = join(dir, 'ud')
+    const clone = join(ud, 'world', 'repos', 'abc')
+    await mkdir(join(clone, 'src'), { recursive: true })
+    await writeFile(join(clone, 'src', 'a.ts'), 'inside')
+    await mkdir(join(dir, 'plain', 'src'), { recursive: true })
+    await writeFile(join(dir, 'plain', 'src', 'a.ts'), 'plain')
+    const alias = join(dir, 'alias')
+    await symlink(clone, alias, 'junction')
+    const compile = vi.fn(async (input: CompileInput) => doc(input.projectKey))
+    const h = harness({ compile, debounceMs: 1 }, memStore({ k1: doc() }))
+    await h.send({ kind: 'init', userDataPath: ud, labelling: false })
+    const refused = { ok: false, error: { message: FORBIDDEN_FOLDER, code: 'FORBIDDEN_FOLDER' } }
+    // A compile, through the alias and through a folder inside it: nothing is compiled, nothing saved.
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(alias), HEAD] })
+    expect(h.last()).toMatchObject({ id: 1, ...refused })
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(join(alias, 'src')), HEAD] })
+    expect(h.last()).toMatchObject({ id: 2, ...refused })
+    // A snapshot from files: no file of the clone is read.
+    await h.send({ kind: 'call', id: 3, fn: 'snapshotFromFiles', args: [alias] })
+    expect(h.last()).toMatchObject({ id: 3, ...refused })
+    // A watcher recompile of the stored world, with main's newest snapshot through the alias.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await h.send({ kind: 'call', id: 4, fn: 'notifyChanged', args: ['k1', snap(alias), HEAD, ['src/a.ts']] })
+      await new Promise((r) => setTimeout(r, 150))
+      expect(compile).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+    expect(h.store.saves).toEqual([])
+    // The clone spelled as one, and a plain folder, are compiled as before.
+    await h.send({ kind: 'call', id: 5, fn: 'compile', args: ['k1', snap(clone), HEAD] })
+    expect(h.last()).toMatchObject({ id: 5, ok: true })
+    await h.send({ kind: 'call', id: 6, fn: 'compile', args: ['k2', snap(join(dir, 'plain')), HEAD] })
+    expect(h.last()).toMatchObject({ id: 6, ok: true })
+    await h.send({ kind: 'call', id: 7, fn: 'snapshotFromFiles', args: [join(dir, 'plain')] })
+    expect(h.last()).toMatchObject({ id: 7, ok: true })
+    expect(compile).toHaveBeenCalledTimes(2)
   })
 
   it('globFiles returns absolute matches, skips node_modules and .git, and drops ! patterns', async () => {
@@ -635,6 +677,11 @@ describe('createWorldHost', () => {
     await h.init()
     const a = h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), { head: 'first', dirty: false }] })
     const b = h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), { head: 'second', dirty: false }] })
+    // PENDING SIGN-OFF (test change, sweepfollow r5): waits for the first job to start instead of one tick, as every
+    // compile request now asks the real path of its root (refuseClonedAlias) before its compile starts, and a real path
+    // takes longer than a tick. It still proves the two jobs run one after the other: the second has not started
+    // while the first is held open, and the order of all four steps is asserted exactly below.
+    await vi.waitFor(() => expect(order).toContain('start first'))
     await tick()
     expect(order).toEqual(['start first'])
     release()

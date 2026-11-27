@@ -583,8 +583,54 @@ async function runBuild(deps: CodeGraphDeps, projectKey: string): Promise<CodeGr
   return statsOf(out)
 }
 
-/** How many reads settleEdits keeps out at once. */
+/** How many reads settleEdits keeps out at once, for a project, over all its builds (settleSlots). */
 const SETTLE_READS_AT_ONCE = 8
+
+/**
+ * Each project's settle reads still out, over all its builds. A read past its time limit counts as failed, but nothing
+ * stops it (readFile takes no signal): it holds its slot until it settles. A build's settle takes only the slots free,
+ * and waits for one within its own time limit, so successive builds over a disk that hangs keep at most
+ * SETTLE_READS_AT_ONCE of the project's reads out, not that many each (Codex r5 7). Waiting is bounded as any settle
+ * read is (one read limit per build, as before), and a read of an earlier build that comes back frees its slot for
+ * this one. A count per project, not a wait on the old build's reads: a read that never comes back would hold such a
+ * wait for ever, and the project with it.
+ */
+interface SettleSlots { out: number; waiting: Set<() => void> }
+const settleSlots = new Map<string, SettleSlots>()
+/** A monotonic clock: a deadline counted on the wall clock moves when the clock is set back or on, and a step back would
+ *  start a second wave of reads (Codex r5 7). */
+const monotonicNow = (): number => performance.now()
+
+/** One of `key`'s settle slots (the project's record, to free it by), or null if none is free by `deadline`. */
+async function takeSettleSlot(key: string, deadline: number): Promise<SettleSlots | null> {
+  let s = settleSlots.get(key)
+  if (!s) settleSlots.set(key, (s = { out: 0, waiting: new Set() }))
+  const slots = s
+  for (;;) {
+    const left = deadline - monotonicNow()
+    if (left <= 0) return null
+    if (slots.out < SETTLE_READS_AT_ONCE) {
+      slots.out++
+      return slots
+    }
+    await new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer)
+        slots.waiting.delete(wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, left)
+      slots.waiting.add(wake)
+    })
+  }
+}
+/** A settle read settled (in time or not): its slot goes to a read waiting for one. The record, not the key: a reset of
+ *  the module's state (tests) leaves a read still out freeing the record it took. */
+function freeSettleSlot(slots: SettleSlots): void {
+  slots.out--
+  const next = slots.waiting.values().next()
+  if (!next.done) next.value()
+}
 
 /**
  * The files a watcher batch touched while a build ran, settled against the disk before it publishes (under graphLock,
@@ -599,17 +645,24 @@ const SETTLE_READS_AT_ONCE = 8
  *   so a failure that passed is not published. Still unreadable (not gone), it keeps what the live graph holds of it:
  *   the last good graph's version for one the build could not read (Opus R3-m1), nothing for one a batch removed.
  *
- * The reads run SETTLE_READS_AT_ONCE at a time, and all of them within one read's time limit (readTimeoutMs): one not
- * back by then counts as failed, as a read past its own limit does. So N files that hang hold the project for one
- * limit, not N (Opus R3-m2). True when it changed `target`.
+ * The reads run SETTLE_READS_AT_ONCE at a time, counting those of earlier builds still out (settleSlots), and all of them
+ * within one read's time limit (readTimeoutMs, on a monotonic clock): one not back by then, or not begun for want of a
+ * slot, counts as failed, as a read past its own limit does. So N files that hang hold the project for one limit, not
+ * N (Opus R3-m2), and leave at most SETTLE_READS_AT_ONCE reads out however many builds meet them. True when it changed
+ * `target`.
  */
 async function settleEdits(rec: BuildRec, key: string, target: GraphState, files: string[], readFile: (file: string) => Promise<string>): Promise<boolean> {
   const listed = new Set(files)
-  const deadline = Date.now() + readTimeoutMs
-  const read = (file: string): Promise<string> => {
-    const left = deadline - Date.now()
-    if (left <= 0) return Promise.reject(Object.assign(new Error(`settling ${file}: out of time`), { code: 'ETIMEDOUT' }))
-    return bounded(readFile(file), left, `reading ${file}`)
+  const deadline = monotonicNow() + readTimeoutMs
+  const outOfTime = (file: string): Error => Object.assign(new Error(`settling ${file}: out of time`), { code: 'ETIMEDOUT' })
+  const read = async (file: string): Promise<string> => {
+    const slots = await takeSettleSlot(key, deadline)
+    if (!slots) throw outOfTime(file)
+    // The slot is held until the read itself settles, whether or not this settle still waits for it.
+    const work = (async () => readFile(file))()
+    const free = (): void => freeSettleSlot(slots)
+    void work.then(free, free)
+    return bounded(work, deadline - monotonicNow(), `reading ${file}`)
   }
   let changed = false
   await eachAtOnce([...rec.edited].filter((file) => !listed.has(file)), async (file) => {
@@ -640,10 +693,13 @@ async function settleEdits(rec: BuildRec, key: string, target: GraphState, files
     }
     // An edit of the file made while this read and parsed (indexFileContent) is newer, and was written already. A file
     // on this list is not in `target`: the batch that failed removed it from every graph it writes, a build's read that
-    // failed did not index it, and fillGraph takes a file off the list when it indexes it.
+    // failed did not index it, and fillGraph takes a file off the list when it indexes it. The one exception is a brain
+    // import since, into the live graph (copyFile).
     if (rec.edited.has(file)) return
-    if (ex) indexExtract(target, ex, '')
-    else if (!unread || !copyFile(stateFor(key), target, file)) return
+    if (ex) {
+      removeFile(target, file) // the version an import loaded, if one did, goes: this read is newer
+      indexExtract(target, ex, '')
+    } else if (!unread || !copyFile(stateFor(key), target, file)) return
     changed = true
   })
   return changed
@@ -659,8 +715,13 @@ async function eachAtOnce(items: string[], work: (item: string) => Promise<void>
 }
 
 /** `file`'s symbols and imports as `from` holds them, put into `to` (which holds none of it); false when `from` holds
- *  none of it (as when it is `to`: a file settled into the live graph, after a failed listing, is not in it). */
+ *  none of it. True when `to` holds the file afterwards.
+ *  `from` is `to` when a failed or empty listing settles into the live graph. The batch that failed took the file out of
+ *  it, but a brain import (initCodeGraph, which runs without graphLock) may have loaded it back since: then it is kept
+ *  as loaded, and not copied, as a copy into the graph it walks would add to the list it walks and never end (Opus
+ *  R4-m1). */
 function copyFile(from: GraphState, to: GraphState, file: string): boolean {
+  if (from === to) return (from.idsByFile.get(file)?.length ?? 0) > 0 || from.fileImports.has(file)
   const ids = from.idsByFile.get(file) ?? []
   for (const id of ids) addSymbolRec(to, from.symbolsById.get(id) as SymbolRec)
   const imports = from.fileImports.get(file)
@@ -689,8 +750,11 @@ async function fillGraph(rec: BuildRec, files: string[], boundary: () => Promise
       content = await readBounded(readFile, file)
     } catch (e) {
       // Listed and gone since: it stays out. Could not be read just now (slow, busy): read once more before the build
-      // publishes, and the last graph's version kept if that fails too (settleEdits; Opus R3-m1).
-      if (!isGone(e)) rec.retry.add(file)
+      // publishes, and the last graph's version kept if that fails too (settleEdits; Opus R3-m1). Gone is definitive,
+      // and newer than a batch's failed read before it: that batch's retry goes too, so no second read can bring the
+      // file back (Codex r5 6).
+      if (isGone(e)) rec.retry.delete(file)
+      else rec.retry.add(file)
       continue
     }
     if (content.length > cap) {
@@ -1165,6 +1229,7 @@ export function _resetCodeGraphForTests(): void {
   buildQueue.clear()
   graphLock.clear()
   persisting.clear()
+  settleSlots.clear()
   activeKey = ''
   sweepCounters.parsed = sweepCounters.skippedLarge = sweepCounters.pauses = 0
 }

@@ -185,8 +185,19 @@ export async function discoverRepoFiles(repoRoot: string, opts: { confineTo?: st
   // Started now: notes of a listing started earlier and coming back later (one a sweep gave up waiting for) never land
   // over these (Codex r4 M2).
   const generation = ++listingsStarted
+  const key = notesKey(repoRoot)
+  // Whether this is the newest listing of the root to come back; if so it is from now on. A listing that fails, or
+  // that the clone's confinement refuses, is newer too: an older one coming back after it lands nothing (Codex r5 2).
+  const newest = (): boolean => {
+    if ((notesGeneration.get(key) ?? 0) >= generation) return false
+    notesGeneration.set(key, generation)
+    return true
+  }
   const within = opts.confineTo ?? null
-  if (within !== null && !(await insideReal(within, repoRoot))) return []
+  if (within !== null && !(await insideReal(within, repoRoot))) {
+    newest()
+    return []
+  }
   // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
   // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
   // code re-index (a watcher event), and only fell back to the host when that failed. safeGitAsync also resolves the
@@ -207,12 +218,11 @@ export async function discoverRepoFiles(repoRoot: string, opts: { confineTo?: st
   const readText = (p: string): Promise<string | null> => read(p).then((t) => t, () => null)
   const walk = (dir: string, cap: number): ReturnType<typeof walkNested> => walkNested(dir, cap, read)
   const listed = await listRepo(repoRoot, { git, exists, isFile, readText, walk })
-  if (listed === null) return []
-  const key = notesKey(repoRoot)
-  if ((notesGeneration.get(key) ?? 0) < generation) {
-    notesGeneration.set(key, generation)
-    listingNotes.set(key, { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
+  if (listed === null) {
+    newest()
+    return []
   }
+  if (newest()) listingNotes.set(key, { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
   return listed.files.map((rel) => join(repoRoot, rel))
 }
 
