@@ -100,12 +100,16 @@ describe("the watcher's re-index asks the same pause (reindexPaths, reindexWatch
     let read = 0
     let release!: () => void
     const held = new Promise<void>((r) => { release = r })
+    let reachedResolve!: (readSoFar: number) => void
+    const reached = new Promise<number>((r) => { reachedResolve = r })
     let first = true
     const running = reindexPaths(files(40), async () => { read++; return SRC }, 'rp-held', async () => {
-      if (first) { first = false; await held }
+      if (first) { first = false; reachedResolve(read); await held }
     })
-    for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r))
-    expect(read).toBe(15)
+    // Waits for the pause itself, however long the first files take (the parser's first load can take a while).
+    expect(await reached).toBe(15)
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+    expect(read).toBe(15) // and nothing past the boundary is read while it holds
     release()
     await running
     expect(read).toBe(40)

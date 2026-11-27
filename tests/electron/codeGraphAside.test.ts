@@ -4,15 +4,17 @@
 //
 // Counted here, on a sweep held at its first pause: what a reader sees while it is held (the last whole graph on a
 // rebuild, the files read so far on a first build), and that an edit indexed meanwhile (indexFileContent, and the
-// watcher's reindexPaths) is still in the graph after the swap.
+// watcher's reindexPaths) is still in the graph after the swap. And that one project's full builds run one after
+// another, and a watcher batch never runs over a build's read (codeGraph.ts, buildQueue and graphLock): it goes
+// through while the build lists or at one of the build's yield boundaries.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
-import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   buildCodeGraph, codeCallers, codeGraphStats, codeSymbols, fileSymbols, graphSweeping, indexFileContent, initCodeGraph,
-  persistCodeGraph, reindexPaths, _codeGraphBuildsForTests, _resetCodeGraphForTests,
+  persistCodeGraph, reindexPaths, _codeGraphBuildsForTests, _codeGraphImportsForTests, _resetCodeGraphForTests,
 } from '../../src/main/codeGraph'
 
 const KEY = 'aside'
@@ -134,20 +136,31 @@ describe('a code-graph rebuild is filled aside and swapped in whole', () => {
     expect(codeSymbols('f2_', 10, KEY)).toHaveLength(0)
   })
 
-  it('two rebuilds that overlap both write aside, and the graph ends whole with every edit made meanwhile', async () => {
+  it('a second rebuild asked for while one is held waits its turn, and the graph ends whole with every edit made meanwhile', async () => {
     const list = files(40)
     await build(list, 'v1')
     const a = heldPause()
     const b = heldPause()
     const ra = build(list, 'v2', a.pause)
-    const rb = build(list, 'v3', b.pause)
-    await Promise.all([a.reached, b.reached])
-    indexFileContent('/repo/src/both.ts', 'export function epsilon() { return 4 }\n', KEY)
+    let bListed = false
+    // b lists when its turn comes, after the edit: the file the edit made is in its listing.
+    const both = '/repo/src/both.ts'
+    const bothSrc = 'export function epsilon() { return 4 }\n'
+    const rb = buildCodeGraph({
+      listFiles: async () => { bListed = true; return [...list, both] },
+      readFile: async (f) => (f === both ? bothSrc : src(f, 'v3')),
+      pause: b.pause,
+    }, KEY)
+    await a.reached
+    await settle(20)
+    expect(bListed).toBe(false) // it has not started
+    indexFileContent(both, bothSrc, KEY)
     a.release()
     await ra
-    expect(graphSweeping(KEY)).toBe(true) // b still runs
     expect(codeSymbols('_v2', 100, KEY)).toHaveLength(40)
     expect(codeSymbols('epsilon', 10, KEY)).toHaveLength(1)
+    await b.reached
+    expect(graphSweeping(KEY)).toBe(true) // b runs now
     b.release()
     await rb
     expect(codeSymbols('_v3', 100, KEY)).toHaveLength(40)
@@ -185,15 +198,18 @@ describe('a build waiting on a read of a file an edit changes meanwhile leaves t
   const heldRead = (version: string, f30: Gate<string>) =>
     (f: string): Promise<string> => (f === F ? f30.wait() : Promise.resolve(src(f, version)))
 
-  it("a rebuild: the watcher's newer edit of the file survives the stale read and the swap", async () => {
+  it("a rebuild: the watcher's newer edit of the file waits for the read, and survives it and the swap", async () => {
     const list = files(40)
     await build(list, 'v1')
     const f30 = gate<string>()
     const running = buildCodeGraph({ listFiles: async () => list, readFile: heldRead('v2', f30) }, KEY)
     await f30.started
-    await reindexPaths([F], async () => src(F, 'v9'), KEY)
-    expect(codeSymbols('f30_v9', 10, KEY)).toHaveLength(1) // live at once
+    const pass = reindexPaths([F], async () => src(F, 'v9'), KEY)
+    await settle(20)
+    expect(codeSymbols('f30_v9', 10, KEY)).toHaveLength(0) // held behind the build's read
     f30.open(src(F, 'v2'))
+    await pass
+    expect(codeSymbols('f30_v9', 10, KEY)).toHaveLength(1) // live once the build reached its next boundary
     await running
     expect(codeSymbols('f30_v9', 10, KEY)).toHaveLength(1)
     expect(codeSymbols('f30_v2', 10, KEY)).toHaveLength(0)
@@ -206,10 +222,25 @@ describe('a build waiting on a read of a file an edit changes meanwhile leaves t
     const f30 = gate<string>()
     const running = buildCodeGraph({ listFiles: async () => list, readFile: heldRead('v2', f30) }, KEY)
     await f30.started
-    await reindexPaths([F], async () => { throw new Error('ENOENT') }, KEY)
+    const pass = reindexPaths([F], async () => { throw new Error('ENOENT') }, KEY)
     f30.open(src(F, 'v2'))
-    await running
+    await Promise.all([pass, running])
     expect(codeSymbols('f30_', 10, KEY)).toHaveLength(0)
+    expect(codeGraphStats(KEY).files).toBe(39)
+  })
+
+  it('a rebuild: the same before its first yield boundary, where the build has held the project since its listing', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const F5 = list[5]
+    const f5 = gate<string>()
+    const running = buildCodeGraph({ listFiles: async () => list, readFile: (f) => (f === F5 ? f5.wait() : Promise.resolve(src(f, 'v2'))) }, KEY)
+    await f5.started
+    const pass = reindexPaths([F5], async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }) }, KEY)
+    await settle(20)
+    f5.open(src(F5, 'v2')) // read before the delete
+    await Promise.all([pass, running])
+    expect(codeSymbols('f5_', 10, KEY)).toHaveLength(0)
     expect(codeGraphStats(KEY).files).toBe(39)
   })
 
@@ -245,52 +276,140 @@ describe('a build waiting on a read of a file an edit changes meanwhile leaves t
   })
 })
 
-describe('overlapping builds: only the newest whole graph goes live', () => {
-  it('two rebuilds that finish out of order: the newer one stays, the older one is dropped', async () => {
+describe("one project's full builds run one after another, in the order asked for", () => {
+  it('a rebuild asked for later, whose listing comes back first, still ends live: an older listing never lands over it', async () => {
     const list = files(40)
     await build(list, 'v1')
-    const a = heldPause()
-    const b = heldPause()
-    const ra = build(list, 'v2', a.pause)
-    const rb = build(list, 'v3', b.pause)
-    await Promise.all([a.reached, b.reached])
-    b.release()
-    await rb
-    expect(codeSymbols('_v3', 100, KEY)).toHaveLength(40)
-    a.release()
-    await ra
+    const listing = gate<string[]>()
+    const ra = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => src(f, 'v2') }, KEY)
+    await listing.started
+    const rb = build(list, 'v3')
+    await Promise.race([rb, settle(200)])
+    listing.open(list)
+    await Promise.all([ra, rb])
     expect(codeSymbols('_v3', 100, KEY)).toHaveLength(40)
     expect(codeSymbols('_v2', 100, KEY)).toHaveLength(0)
   })
 
-  it('two first builds of a project with different listings end with the newer listing, not both', async () => {
-    const a = heldPause()
-    const b = heldPause()
-    const ra = build(files(40, 'a'), 'v1', a.pause)
-    const rb = build(files(40, 'b'), 'v1', b.pause)
-    await Promise.all([a.reached, b.reached])
-    a.release()
-    await ra
+  it('three first builds asked for together each list only once the one before has finished, and the last stays', async () => {
+    const listed: string[] = []
+    const finished: string[] = []
+    const one = (tag: string) =>
+      buildCodeGraph({ listFiles: async () => { listed.push(`${tag}:${finished.join('')}`); return files(40, tag) }, readFile: async (f) => src(f, 'v1') }, KEY)
+        .then(() => { finished.push(tag) })
+    await Promise.all([one('a'), one('b'), one('c')])
+    expect(listed).toEqual(['a:', 'b:a', 'c:ab'])
     expect(codeGraphStats(KEY).files).toBe(40)
-    expect(codeSymbols('', 100, KEY).every((s) => s.name.startsWith('a'))).toBe(true)
-    b.release()
-    await rb
-    expect(codeGraphStats(KEY).files).toBe(40)
-    expect(codeSymbols('', 100, KEY).every((s) => s.name.startsWith('b'))).toBe(true)
+    expect(codeSymbols('', 100, KEY).every((s) => s.name.startsWith('c'))).toBe(true)
   })
 
-  it('two first builds that finish out of order: the newer one, swapped in first, stays', async () => {
-    const a = heldPause()
-    const b = heldPause()
-    const ra = build(files(40, 'a'), 'v1', a.pause)
-    const rb = build(files(40, 'b'), 'v1', b.pause)
-    await Promise.all([a.reached, b.reached])
-    b.release()
-    await rb
-    a.release()
-    await ra
+  it('an empty listing asked for while a first build (no symbol read yet) is held does not wipe what that build reads', async () => {
+    const list = [...Array.from({ length: 20 }, (_, i) => `/repo/doc${i}.md`), ...files(40)]
+    const held = heldPause()
+    const ra = build(list, 'v1', held.pause)
+    await held.reached
+    expect(codeGraphStats(KEY).files).toBe(0) // nothing indexed yet: twenty docs, no code
+    const rb = buildCodeGraph({ listFiles: async () => [], readFile: async () => '' }, KEY)
+    held.release()
+    await Promise.all([ra, rb])
     expect(codeGraphStats(KEY).files).toBe(40)
-    expect(codeSymbols('', 100, KEY).every((s) => s.name.startsWith('b'))).toBe(true)
+  })
+
+  it('an empty listing keeps a graph that holds only an import entry (no symbol): the same test a rebuild goes aside on', async () => {
+    const only = '/repo/src/only.ts'
+    await reindexPaths([only], async () => "import { x } from './x'\n", KEY)
+    expect(codeGraphStats(KEY).files).toBe(0)
+    expect(_codeGraphImportsForTests(KEY, only)).toBeDefined()
+    await buildCodeGraph({ listFiles: async () => [], readFile: async () => '' }, KEY)
+    expect(_codeGraphImportsForTests(KEY, only)).toBeDefined()
+  })
+})
+
+describe('a watcher batch and a full build of a project never run over each other', () => {
+  it('a file the watcher indexes while a rebuild is still listing survives the swap', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const listing = gate<string[]>()
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => src(f, 'v2') }, KEY)
+    await listing.started
+    // The batch goes through at once: the build lets the project go while it lists.
+    await reindexPaths(['/repo/src/created.ts'], async () => 'export function createdFn() { return 1 }\n', KEY)
+    expect(codeSymbols('createdFn', 10, KEY)).toHaveLength(1)
+    listing.open(list) // listed before the file was made
+    await rb
+    expect(codeSymbols('createdFn', 10, KEY)).toHaveLength(1)
+    expect(codeSymbols('_v2', 100, KEY)).toHaveLength(40)
+  })
+
+  it('a file the watcher indexes while a first build is still listing is kept, and not read again', async () => {
+    const listing = gate<string[]>()
+    const reads: string[] = []
+    const rb = buildCodeGraph({ listFiles: () => listing.wait(), readFile: async (f) => { reads.push(f); return src(f, 'v1') } }, KEY)
+    await listing.started
+    await reindexPaths(['/repo/src/f3.ts'], async (f) => src(f, 'v9'), KEY)
+    listing.open(files(20))
+    await rb
+    expect(codeSymbols('f3_v9', 10, KEY)).toHaveLength(1)
+    expect(reads).toHaveLength(19)
+    expect(codeGraphStats(KEY).files).toBe(20)
+  })
+
+  it('a full build that publishes while a batch waits on a read cannot have a deleted file brought back by that batch', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const A = list[0]
+    const B = list[1]
+    const b = gate<string>()
+    // The batch has read A (it still exists) and waits on B. A is deleted; a full build lists the project without it.
+    const pass = reindexPaths([A, B], (f) => (f === B ? b.wait() : Promise.resolve(src(f, 'v2'))), KEY)
+    await b.started
+    const rb = build(list.slice(1), 'v3')
+    await Promise.race([rb, settle(200)])
+    b.open(src(B, 'v2'))
+    await Promise.all([pass, rb])
+    expect(codeSymbols('f0_', 10, KEY)).toHaveLength(0)
+    expect(codeGraphStats(KEY).files).toBe(39)
+  })
+
+  it('a rebuild asked for while a batch waits on its read starts after the batch, and keeps what the batch made', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const created = '/repo/src/created.ts'
+    const body = 'export function createdFn() { return 1 }\n'
+    const g = gate<string>()
+    const pass = reindexPaths([created], () => g.wait(), KEY)
+    await g.started
+    let listedAfterBatch: boolean | null = null
+    const held = heldPause()
+    const rb = buildCodeGraph({
+      listFiles: async () => { listedAfterBatch = codeSymbols('createdFn', 10, KEY).length === 1; return [...list, created] },
+      readFile: async (f) => (f === created ? body : src(f, 'v2')),
+      pause: held.pause,
+    }, KEY)
+    await settle(20)
+    expect(listedAfterBatch).toBe(null) // not started
+    g.open(body)
+    await pass
+    await held.reached
+    expect(listedAfterBatch).toBe(true)
+    held.release()
+    await rb
+    expect(codeSymbols('createdFn', 10, KEY)).toHaveLength(1)
+  })
+
+  it('a read that fails in a batch while a rebuild is held removes the file, and the rebuild reads it again itself', async () => {
+    const list = files(40)
+    await build(list, 'v1')
+    const F = list[30] // ahead of the held build
+    const held = heldPause()
+    const rb = build(list, 'v2', held.pause)
+    await held.reached
+    await reindexPaths([F], async () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }) }, KEY)
+    expect(codeSymbols('f30_', 10, KEY)).toHaveLength(0)
+    held.release()
+    await rb
+    expect(codeSymbols('f30_v2', 10, KEY)).toHaveLength(1)
+    expect(codeGraphStats(KEY).files).toBe(40)
   })
 })
 
@@ -329,6 +448,16 @@ describe('persisting a graph: calls for one project run one after another', () =
   beforeEach(() => { d = mkdtempSync(join(tmpdir(), 'cg-persist-')); initCodeGraph(d) })
   afterEach(() => { _resetCodeGraphForTests(); rmSync(d, { recursive: true, force: true }) })
 
+  it('a first build whose listing fails writes nothing: a graph file the load skipped (unreadable) is left as it was', async () => {
+    const key = '0123456789abcdef'
+    const kept = join(d, `code-graph-${key}.json`)
+    writeFileSync(kept, '{ not json')
+    initCodeGraph(d) // skips it: the project's live graph is empty, so the next build of it is a first build
+    await buildCodeGraph({ listFiles: async () => { throw new Error('git is not on PATH') }, readFile: async () => '' }, key)
+    expect(names()).toEqual([`code-graph-${key}.json`])
+    expect(readFileSync(kept, 'utf8')).toBe('{ not json')
+  })
+
   it('an older write that is slow does not land over a newer one', async () => {
     indexFileContent('/repo/src/one.ts', 'export function one() { return 1 }\n', KEY)
     const real = fs.promises.writeFile.bind(fs.promises)
@@ -357,6 +486,16 @@ describe('persisting a graph: calls for one project run one after another', () =
     vi.spyOn(fs.promises, 'rename').mockRejectedValue(new Error('EPERM'))
     await persistCodeGraph(KEY)
     expect(names()).toEqual([])
+  })
+
+  it('a write that rejects does not hold the later persists of the project', async () => {
+    initCodeGraph(42 as unknown as string) // path.join throws on it, outside writeGraphFile's own try
+    indexFileContent('/repo/src/one.ts', 'export function one() { return 1 }\n', KEY)
+    await expect(persistCodeGraph(KEY)).rejects.toThrow()
+    initCodeGraph(d)
+    indexFileContent('/repo/src/two.ts', 'export function two() { return 2 }\n', KEY)
+    await persistCodeGraph(KEY)
+    expect(names().filter((f) => f.startsWith('code-graph'))).toHaveLength(1)
   })
 
   it('a temp file that cannot be removed either is left, and the call still resolves', async () => {

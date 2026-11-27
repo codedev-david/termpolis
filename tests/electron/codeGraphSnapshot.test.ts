@@ -129,7 +129,7 @@ describe('graphSnapshot', () => {
     expect(graphSnapshot('nope', 'C:/r', { structureOnly: true })).toEqual({ root: 'C:/r', files: [], symbols: [], callEdges: [], fileImports: {} })
   })
 
-  it('says a full build is under way until it ends, overlapping builds and a failed listing included, while the graph holds only the files read so far', async () => {
+  it('says a full build is under way until it ends, a build waiting its turn and a failed listing included, while the graph holds only the files read so far', async () => {
     const cg = await import('../../src/main/codeGraph')
     expect(cg.graphSweeping('k')).toBe(false)
     let release!: () => void
@@ -146,17 +146,23 @@ describe('graphSnapshot', () => {
     expect(cg.graphSweeping('k')).toBe(true)
     expect(cg.graphSweeping('other')).toBe(false)
     expect(graphSnapshot('k', 'C:/repo/src', { structureOnly: true }).files).toEqual(['a.ts']) // part of the project
+    // A second build asked for meanwhile waits its turn (one project's builds run one after another).
+    let secondDone = false
     const second = cg.buildCodeGraph({ listFiles: async () => { throw new Error('no git') }, readFile: async () => '' }, 'k')
-    await second
-    expect(cg.graphSweeping('k')).toBe(true) // the first is still running
+      .then(() => { secondDone = true })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(secondDone).toBe(false)
+    expect(cg.graphSweeping('k')).toBe(true)
     release()
     await first
+    await second // its listing fails: it keeps the graph the first build made
     expect(cg.graphSweeping('k')).toBe(false)
     expect(graphSnapshot('k', 'C:/repo/src', { structureOnly: true }).files).toEqual(['a.ts', 'lib/b.ts'])
     // A reset forgets a build in flight.
     let stuck!: () => void
     const pending = cg.buildCodeGraph({ listFiles: () => new Promise<string[]>((r) => { stuck = () => r([]) }), readFile: async () => '' }, 'k')
     expect(cg.graphSweeping('k')).toBe(true)
+    await expect.poll(() => typeof stuck).toBe('function') // it lists once it holds the project
     _resetCodeGraphForTests()
     expect(cg.graphSweeping('k')).toBe(false)
     stuck()
