@@ -441,6 +441,24 @@ describe('annotation store copyRenamed (WP5)', () => {
     expect(JSON.parse(await readFile(fileFor('k'), 'utf8'))['b-foo']).toEqual([person('about A'), person('about B')])
   })
 
+  // holdb-codex-review MAJOR: a rename copies only the claims the old id shows. Those the record hides under it were copied
+  // away from it before and belong to another part, which must not show them twice.
+  it('a part moved off an id that another part left copies only its own claims, not the hidden ones of the part before', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'foo', person('about A'))
+    await store.copyRenamed('k', { foo: 'foo--a' }) // A moves off foo
+    await store.add('k', 'foo', person('about B')) // B, which took foo, gets a note
+    await store.copyRenamed('k', { foo: 'foo--b' }) // and B moves off foo too
+    expect(await store.list('k')).toEqual({ 'foo--a': [person('about A')], 'foo--b': [person('about B')] })
+    // The old id keeps both in the file, for an older build.
+    expect(JSON.parse(await readFile(fileFor('k'), 'utf8')).foo).toEqual([person('about A'), person('about B')])
+    // A third part moved off foo, with nothing of its own, takes nothing, and nothing is written.
+    const before = await readFile(fileFor('k'), 'utf8')
+    await store.copyRenamed('k', { foo: 'foo--c' })
+    expect(await readFile(fileFor('k'), 'utf8')).toBe(before)
+    expect((await store.list('k'))['foo--c']).toBeUndefined()
+  })
+
   it('a part renamed back to its old id shows its claims there again, and a swap shows each part its own', async () => {
     const store = createAnnotationStore(dir)
     await store.add('k', 'x', person('about A'))

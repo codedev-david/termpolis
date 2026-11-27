@@ -125,6 +125,30 @@ describe('adoptAnnotationAliases', () => {
     expect(Object.keys(await store.list('new-key')).sort()).toEqual(['b1', 'b2'])
     expect((await readdir(folder())).filter((f) => !f.endsWith('.json'))).toEqual([]) // no temp or lock file is left behind
   })
+  // holdb-review M4: the record of claims a rename copied away from an id (HOLD-B #37, MOVED_SUFFIX) comes with the claims,
+  // so what an older key hid under a renamed-away id stays hidden under the new key. A claim the new key's own file shows
+  // there is newer than that record, and stays shown.
+  it('brings an older key\'s record of claims renamed away along with them, the new key\'s own shown claims kept shown', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('old-key', 'b-foo', claim('about A'))
+    await store.copyRenamed('old-key', { 'b-foo': 'b-foo--a1' })
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
+    expect(await store.list('new-key')).toEqual({ 'b-foo--a1': [claim('about A')] })
+    // A later try of another older key (held on the first open), when the new key shows that same claim under the id itself.
+    await store.add('older-key', 'c', claim('one'))
+    await store.add('older-key', 'c', claim('two'))
+    await store.add('older-key', 'd', claim('z'))
+    await store.copyRenamed('older-key', { c: 'c--x', d: 'd--x' })
+    await store.add('new-key', 'c', claim('two'))
+    await store.add('new-key', 'd', claim('z'))
+    await writeFile(`${fileFor('new-key')}${ADOPT_PENDING_SUFFIX}`, JSON.stringify([{ key: 'older-key', tries: 1, next: 0 }]))
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key', 'older-key'])).toEqual(['older-key'])
+    const shown = await store.list('new-key')
+    expect(shown.c).toEqual([claim('two')])
+    expect(shown['c--x']).toEqual([claim('one'), claim('two')])
+    expect(shown.d).toEqual([claim('z')])
+    expect(shown['b-foo']).toBeUndefined()
+  })
   it('takes every older spelling: their items merged in the order given, a claim under two keys kept once, each item capped (R-M2)', async () => {
     const store = createAnnotationStore(dir)
     await store.add('git-bash', 'b1', claim('the billing door'))
