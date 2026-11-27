@@ -1,7 +1,8 @@
 // sweepPause.ts
 //
 // What a code-graph sweep (codeGraph.ts buildCodeGraph, and the watcher's reindexPaths) waits on at each of its yield
-// boundaries, every 16 files; the conversation ingest (ingestRuntime.ts) waits on it too, before each file and slice.
+// boundaries: before its 16th file and every 16 files after, so the first 15 go ahead unasked. The conversation ingest
+// (ingestRuntime.ts) waits on it too, before each file and slice.
 //
 // 1. The loop governor (HP-3): while the main thread is starved, the sweep holds (whenNotShed, capped).
 // 2. The typing gate (typingQuiet.ts): within 500 ms of a keystroke the sweep stands aside (capped at 2 s, then one
@@ -14,11 +15,12 @@
 // while keys arrive cut main's CPU during the e2e typing-during-a-compile check (e2e/world-view.spec.ts test 5) on the
 // 3-core macOS runner from about 17-27% to 6-13% of the machine. It did not, on its own, make that check's p95 steady.
 //
-// Why in this order. The work starts the moment the LAST wait ends, so the last one is the condition that still holds
-// when it starts. The governor's wait can run for seconds (its cap), and someone may start typing meanwhile; the typing
-// gate is a look at the time of the last key. Asked last, it lets the work start only inside a quiet period it has just
-// seen. (The ingest asked them the other way round until 2.0; a SHED that began during its typing wait was the one
-// held, and a key typed during its SHED wait was not.)
+// Why in this order. The work starts the moment the LAST wait ends, so the last one is the condition most likely
+// still to hold when it starts. The governor's wait can run for seconds (its cap), and someone may start typing
+// meanwhile; the typing gate is a look at the time of the last key. Asked last, it lets the work start inside a quiet
+// period it has just seen, unless its own cap ran out first. Neither is asked twice: a SHED that begins during the
+// typing wait is not waited for here, only at the next boundary. (The ingest asked them the other way round until
+// 2.0, so a key typed during its SHED wait was not waited for.)
 //
 // It only ever delays, and fails open: whenNotShed never rejects, whenTypingQuiet waits at most its cap, and a throw
 // from either is ignored by the sweep (buildCodeGraph), which goes on.

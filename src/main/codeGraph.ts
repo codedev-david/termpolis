@@ -99,9 +99,17 @@ let dir: string | null = null
 const graphs = new Map<string, GraphState>()
 /** Full builds under way, by project key (buildCodeGraph), with how many: two may overlap. */
 const sweeping = new Map<string, number>()
-/** The graphs full builds are filling aside, by project key, until each is swapped in (buildCodeGraphImpl). An
- *  edit indexed meanwhile (reindexPaths, indexFileContent) goes into these too, or the swap would undo it. */
-const buildingAside = new Map<string, Set<GraphState>>()
+/** A full build under way (buildCodeGraphImpl). `target` is the graph it fills: a new one aside (a rebuild, swapped
+ *  in once whole) or the live one (a first build). `gen` orders the builds of a project by when their listing came
+ *  back. `edited` holds the files an edit (indexFileContent, reindexPaths) wrote or removed while it ran: the build
+ *  leaves those as the edit left them, since its own read of such a file may have started before the edit. */
+interface BuildRec { gen: number; target: GraphState; aside: boolean; edited: Set<string> }
+const builds = new Map<string, Set<BuildRec>>()
+/** Per project: the newest build generation handed out, and the newest one whose graph went live. A rebuild swaps
+ *  its graph in only when it is newer than the last one that did, so overlapping rebuilds that finish out of order
+ *  never put an older snapshot over a newer one. */
+const lastGen = new Map<string, number>()
+const liveGen = new Map<string, number>()
 let activeKey = ''
 
 /** The repo key for a root path (stable, full-path derived). Empty string = the default graph. */
@@ -121,7 +129,13 @@ function stateFor(key?: string): GraphState {
 /** States to WRITE an edit into: the live graph, and every graph a full build is filling aside for that key. */
 function writeStates(key?: string): GraphState[] {
   const k = key ?? activeKey
-  return [stateFor(k), ...(buildingAside.get(k) ?? [])]
+  const out = [stateFor(k)]
+  for (const b of builds.get(k) ?? []) if (b.aside) out.push(b.target)
+  return out
+}
+/** An edit of `file` was just written: every build of `key` under way leaves the file as the edit left it. */
+function markEdited(key: string, file: string): void {
+  for (const b of builds.get(key) ?? []) b.edited.add(file)
 }
 /** States to READ for a query: ALL_REPOS → every graph; else the one (active/explicit). */
 function readStates(key?: string): GraphState[] {
@@ -284,13 +298,24 @@ function indexExtract(st: GraphState, ex: FileExtract, content: string): number 
 /** Index (or re-index) one file's content via the heuristic extractor, pruning its prior symbols.
  *  Synchronous — used by the incremental single-file path and tests. Does NOT rebuild edges. */
 export function indexFileContent(file: string, content: string, projectKey?: string): number {
-  const [st, ...aside] = writeStates(projectKey)
-  for (const t of aside) removeFile(t, file)
-  removeFile(st, file)
+  const key = projectKey ?? activeKey
   const ex = extractFile(file, content)
-  if (!ex) return 0
-  for (const t of aside) indexExtract(t, ex, content)
-  return indexExtract(st, ex, content)
+  let n = 0
+  for (const t of writeStates(key)) {
+    removeFile(t, file)
+    if (ex) n = indexExtract(t, ex, content)
+  }
+  markEdited(key, file)
+  return n
+}
+
+/** `ex` with every symbol's refs filled in from `content`, so it can be indexed later without the content. */
+function withRefs(ex: FileExtract, content: string): FileExtract {
+  const lines = content.split('\n')
+  return {
+    ...ex,
+    symbols: ex.symbols.map((sym) => sym.refs ? sym : { ...sym, refs: extractReferences(lines.slice(sym.startLine - 1, sym.endLine).join('\n')) }),
+  }
 }
 
 /** Incremental single-file re-index: index + rebuild edges + persist (one repo). */
@@ -404,33 +429,39 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
   }
   // A rebuild fills a new graph aside and swaps it in once it is whole, so a reader (the MCP code tools) keeps the
   // last complete graph meanwhile instead of a partial one; a held sweep (sweepPause) can take minutes under steady
-  // typing. A first build has nothing to keep, so it fills the live graph and answers grow file by file.
-  const aside = st.symbolsById.size > 0 || st.fileImports.size > 0
-  const target = aside ? newState() : st
-  if (aside) {
-    const set = buildingAside.get(projectKey) ?? new Set<GraphState>()
-    set.add(target)
-    buildingAside.set(projectKey, set)
-  } else {
-    clearState(st)
-  }
+  // typing. A first build has nothing to keep, so it fills the live graph and answers grow file by file. A build that
+  // starts while another of the project runs goes aside too: two filling the live graph would leave it the union of
+  // their listings.
+  const under = builds.get(projectKey) ?? new Set<BuildRec>()
+  const aside = st.symbolsById.size > 0 || st.fileImports.size > 0 || under.size > 0
+  const gen = (lastGen.get(projectKey) ?? 0) + 1
+  lastGen.set(projectKey, gen)
+  const rec: BuildRec = { gen, target: aside ? newState() : st, aside, edited: new Set() }
+  if (!aside) clearState(st)
+  under.add(rec)
+  builds.set(projectKey, under)
   try {
-    await fillGraph(target, files, deps)
+    await fillGraph(rec, files, deps)
   } finally {
-    if (aside) {
-      const set = buildingAside.get(projectKey)
-      set?.delete(target)
-      if (set && set.size === 0) buildingAside.delete(projectKey)
-    }
+    under.delete(rec)
+    if (under.size === 0 && builds.get(projectKey) === under) builds.delete(projectKey)
   }
-  if (aside) graphs.set(projectKey, target)
+  // Only the newest whole graph goes live. A first build's graph is live already, unless a rebuild that started
+  // while it ran was swapped in first; a rebuild older than the last graph swapped in is dropped.
+  const published = aside ? gen > (liveGen.get(projectKey) ?? 0) : graphs.get(projectKey) === rec.target
+  if (!published) return statsOf(stateFor(projectKey))
+  liveGen.set(projectKey, gen)
+  if (aside) graphs.set(projectKey, rec.target)
   rebuildEdges(projectKey)
   await persistCodeGraph(projectKey)
-  return statsOf(target)
+  return statsOf(rec.target)
 }
 
-/** One sweep's reads and parses into `st`, yielding (and asking deps.pause) every YIELD_EVERY files. */
-async function fillGraph(st: GraphState, files: string[], deps: CodeGraphDeps): Promise<void> {
+/** One sweep's reads and parses into its graph, yielding (and asking deps.pause) every YIELD_EVERY files. A file an
+ *  edit wrote meanwhile (rec.edited) is left as the edit left it; each file's old symbols go and its new ones come in
+ *  one synchronous step, after the awaits. */
+async function fillGraph(rec: BuildRec, files: string[], deps: CodeGraphDeps): Promise<void> {
+  const st = rec.target
   const cap = maxGraphFileChars()
   let sinceYield = 0
   for (const file of files) {
@@ -444,7 +475,7 @@ async function fillGraph(st: GraphState, files: string[], deps: CodeGraphDeps): 
         try { await deps.pause() } catch { /* fail open: the sweep goes on */ }
       }
     }
-    if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
+    if (!isIndexableCodeFile(file) || !languageForFile(file) || rec.edited.has(file)) continue
     let content: string
     try {
       content = await deps.readFile(file)
@@ -458,17 +489,20 @@ async function fillGraph(st: GraphState, files: string[], deps: CodeGraphDeps): 
     sweepCounters.parsed++
     // Prefer AST-precise extraction (web-tree-sitter); fall back to the heuristic for languages
     // without a grammar, or if the grammar can't load. The graph degrades, it never breaks.
-    removeFile(st, file)
     const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
+    // The read and the parse awaited: an edit of this file made meanwhile is newer than what was read.
+    if (rec.edited.has(file)) continue
+    removeFile(st, file)
     if (ex) indexExtract(st, ex, content)
   }
 }
 
 /** Incremental re-index of just the changed paths of one repo — the file-watch fast path. For each
- *  path: drop its old symbols, then (if it still reads and is indexable) re-extract it AST-first
- *  (web-tree-sitter, heuristic fallback) EXACTLY as buildCodeGraph does — so an edited file KEEPS its
- *  AST precision instead of downgrading to the heuristic. A path that no longer reads (deleted or
- *  renamed away) simply stays removed. Edges are rebuilt and the graph persisted once, at the end.
+ *  path: (if it still reads and is indexable) re-extract it AST-first (web-tree-sitter, heuristic
+ *  fallback) EXACTLY as buildCodeGraph does — so an edited file KEEPS its AST precision instead of
+ *  downgrading to the heuristic — then swap its old symbols for the new. A path that no longer reads
+ *  (deleted or renamed away) is removed. The whole batch is applied, and its edges rebuilt, in one step
+ *  at the end, and the graph persisted once.
  *  Far cheaper than a whole-repo re-sweep: only the changed files are re-parsed. No wipe-guard here
  *  (unlike buildCodeGraph) — an explicit change set of deletes SHOULD be able to empty the graph. */
 export async function reindexPaths(
@@ -487,7 +521,10 @@ async function reindexPathsImpl(
   pause?: () => Promise<unknown>,
 ): Promise<number> {
   const key = projectKey ?? activeKey
-  let n = 0
+  // Read and parse every path first, then apply them all in one synchronous step with the edges, so a reader sees
+  // the graph from before the pass or after it, never a file removed while its replacement is still being read.
+  // Refs are filled in at once (withRefs), so the file contents are not held until then.
+  const changes: { file: string; ex: FileExtract | null }[] = []
   let sinceYield = 0
   for (const file of files) {
     if (++sinceYield >= YIELD_EVERY) {
@@ -499,24 +536,33 @@ async function reindexPathsImpl(
         try { await pause() } catch { /* fail open: the pass goes on */ }
       }
     }
-    // Read the write states at each file: a full build may have started, or ended, during the last await.
-    const [st, ...aside] = writeStates(key)
-    for (const t of aside) removeFile(t, file)
-    removeFile(st, file) // prune old symbols first — this alone handles a delete/rename
-    if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
-    let content: string
-    try {
-      content = await readFile(file)
-    } catch {
-      continue // gone / unreadable — leave it removed
+    // A path that is not code, or no longer reads (deleted or renamed away), is removed: that alone handles a delete.
+    let ex: FileExtract | null = null
+    if (isIndexableCodeFile(file) && languageForFile(file)) {
+      let content: string | null = null
+      try {
+        content = await readFile(file)
+      } catch {
+        /* gone / unreadable — leave it removed */
+      }
+      if (content !== null) {
+        const got = (await extractFileTS(file, content)) ?? extractFile(file, content)
+        if (got) ex = withRefs(got, content)
+      }
     }
-    const ex = (await extractFileTS(file, content)) ?? extractFile(file, content)
-    if (ex) {
-      const [live, ...asideNow] = writeStates(key) // again: the reads above awaited
-      for (const t of asideNow) { removeFile(t, file); indexExtract(t, ex, content) }
-      removeFile(live, file)
-      n += indexExtract(live, ex, content)
+    changes.push({ file, ex })
+  }
+  // Into the live graph and every graph a full build is filling aside, read now: one may have started or ended
+  // during the awaits above. Each file is marked edited, so a build under way keeps it as it is here.
+  const states = writeStates(key)
+  let n = 0
+  for (const { file, ex } of changes) {
+    for (const t of states) {
+      removeFile(t, file)
+      if (ex) indexExtract(t, ex, '')
     }
+    markEdited(key, file)
+    if (ex) n += ex.symbols.length
   }
   rebuildEdges(key)
   await persistCodeGraph(key)
@@ -550,9 +596,22 @@ export async function reindexWatchedChange(
   }
 }
 
-export async function persistCodeGraph(projectKey?: string): Promise<void> {
-  if (!dir) return
+/** Each project's persist under way, so the next one waits for it (persistCodeGraph). */
+const persisting = new Map<string, Promise<void>>()
+
+/** Write a project's graph to disk. Calls for one project run one after another, each writing the graph as it is when
+ *  its turn comes: two overlapping writes shared the one temp file, and the one renamed last, maybe the older, won. */
+export function persistCodeGraph(projectKey?: string): Promise<void> {
+  if (!dir) return Promise.resolve()
   const key = projectKey ?? activeKey
+  const at = dir
+  const run = (persisting.get(key) ?? Promise.resolve()).then(() => writeGraphFile(at, key))
+  persisting.set(key, run)
+  void run.then(() => { if (persisting.get(key) === run) persisting.delete(key) })
+  return run
+}
+
+async function writeGraphFile(at: string, key: string): Promise<void> {
   const st = stateFor(key)
   // The write and the rename are async. This was the last synchronous tail in a file whose sweep had
   // already been moved onto setImmediate yields (see yieldToEventLoop: 645 files went from 2,777 ms
@@ -560,14 +619,16 @@ export async function persistCodeGraph(projectKey?: string): Promise<void> {
   // file-watch reindex, so an edit storm paid a full blocking writeFileSync per save on the thread
   // that pumps every PTY. Atomicity is unchanged: still temp-file + rename, just without blocking.
   // JSON.stringify is still synchronous, but it is bounded by graph size rather than by disk.
+  const target = path.join(at, graphFileFor(key))
+  const tmp = `${target}.tmp`
   try {
     const data = { symbols: [...st.symbolsById.values()], imports: [...st.fileImports.entries()] }
-    const target = path.join(dir!, graphFileFor(key))
-    const tmp = `${target}.tmp`
     await fs.promises.writeFile(tmp, JSON.stringify(data))
     await fs.promises.rename(tmp, target) // atomic replace
   } catch {
-    /* best effort — the graph rebuilds from source on next full index */
+    // Best effort — the graph rebuilds from source on next full index. The last file stays; a half-written or
+    // unrenamed temp file does not.
+    try { await fs.promises.rm(tmp, { force: true }) } catch { /* nothing more to do */ }
   }
 }
 
@@ -835,11 +896,19 @@ export function activeProjectKey(): string {
   return activeKey
 }
 
+/** How many full builds of `projectKey` are under way, as their records count (tests: none is left behind). */
+export function _codeGraphBuildsForTests(projectKey: string): number {
+  return builds.get(projectKey)?.size ?? 0
+}
+
 export function _resetCodeGraphForTests(): void {
   dir = null
   graphs.clear()
   sweeping.clear()
-  buildingAside.clear()
+  builds.clear()
+  lastGen.clear()
+  liveGen.clear()
+  persisting.clear()
   activeKey = ''
   sweepCounters.parsed = sweepCounters.skippedLarge = sweepCounters.pauses = 0
 }

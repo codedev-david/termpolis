@@ -96,6 +96,21 @@ describe("the watcher's re-index asks the same pause (reindexPaths, reindexWatch
     expect(codeGraphSweepCounters()).toMatchObject({ pauses: 2 })
   })
 
+  it('reindexPaths waits for its pause: no file past the boundary is read until the pause resolves', async () => {
+    let read = 0
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    let first = true
+    const running = reindexPaths(files(40), async () => { read++; return SRC }, 'rp-held', async () => {
+      if (first) { first = false; await held }
+    })
+    for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r))
+    expect(read).toBe(15)
+    release()
+    await running
+    expect(read).toBe(40)
+  })
+
   it('fails open: a pause that throws does not stop the re-index', async () => {
     let read = 0
     await reindexPaths(files(20), async () => { read++; return SRC }, 'rp-throws', async () => { throw new Error('governor gone') })
@@ -123,6 +138,22 @@ describe("the watcher's re-index asks the same pause (reindexPaths, reindexWatch
       for (let i = 0; i < 40; i++) writeFileSync(join(root, 'src', `r${i}.ts`), SRC)
       let asked = 0
       await reindexWatchedChange(root, [], async () => '', async () => { asked++ })
+      expect(codeGraphSweepCounters().parsed).toBe(40)
+      expect(asked).toBe(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reindexWatchedChange hands its pause to the full re-sweep it falls back to when the incremental pass throws', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cg-watch-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      mkdirSync(join(root, 'src'))
+      for (let i = 0; i < 40; i++) writeFileSync(join(root, 'src', `r${i}.ts`), SRC)
+      let asked = 0
+      // A change set the incremental pass cannot take (path.join throws on a non-string): it falls back.
+      await reindexWatchedChange(root, [42 as unknown as string], async () => '', async () => { asked++ })
       expect(codeGraphSweepCounters().parsed).toBe(40)
       expect(asked).toBe(2)
     } finally {

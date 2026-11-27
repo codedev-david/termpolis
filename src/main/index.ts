@@ -2933,8 +2933,9 @@ const worldClient = createWorldClient(undefined, {
   snapshot: async (root): Promise<GraphSnapshot> => {
     const key = graphKeyForRoot(root)
     // graphSnapshot reads the in-memory graph only: no file or database access on this path. While a sweep of
-    // the project is under way the graph holds only the files read so far (a terminal opened in the folder
-    // starts one), and a world compiled from that would map part of the project: the world lists it itself.
+    // the project is under way (a terminal opened in the folder starts one) the graph is either the files read so
+    // far (a first build) or the last build's, kept while the new one fills aside (a rebuild), which may be stale.
+    // A world compiled from either could map a part or an old copy of the project: the world lists it itself.
     const snap = graphSnapshot(key, root, { structureOnly: true })
     if (snap.files.length > 0 && !graphSweeping(key)) return snap
     const built = await worldClient.snapshotFromFiles(root)
