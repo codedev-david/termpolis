@@ -4,6 +4,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { watchRepo, fsBackedWatchDeps, type WatchDeps } from '../../src/main/codeWatch'
 import { setWatchGatesPaused } from '../../src/main/watchGuard'
+import { reindexWatchedChange } from '../../src/main/codeGraph'
+import { repoListingNotes } from '../../src/main/codeIngest'
+import os from 'os'
+import path from 'path'
 
 type Listener = (event: string, filename: string | null) => void
 
@@ -211,6 +215,37 @@ describe('codeWatch storm guard', () => {
       await new Promise((r) => setImmediate(r))
     }
     expect(reindex).toHaveBeenCalledTimes(4)
+  })
+
+  // holdb-codex-review: a re-sweep whose listing fails (the root unavailable: a drive gone, a network share down) resolves
+  // with the graph it had, and listed nothing. It is not one that mapped nothing either. Through the real re-index path.
+  it('a re-sweep whose listing fails (an unavailable root) resolves, and is not counted as one that mapped nothing', async () => {
+    const root = path.join(os.tmpdir(), `termpolis-gone-${process.pid}-${Date.now()}`)
+    const runs: Promise<unknown>[] = []
+    const reindex = vi.fn((r: string, files: string[]) => {
+      const run = reindexWatchedChange(r, files, async () => '')
+      runs.push(run)
+      return run
+    })
+    const h = harness({ nestedKept: () => repoListingNotes(root)?.nested ?? [], listed: () => repoListingNotes(root), reindex })
+    watchRepo(root, h.deps)
+    for (const d of ['.cache/a', '.cache/b', '.cache/c', '.cache/d']) {
+      h.emit(`${d}/.git/HEAD`)
+      h.flush()
+      await Promise.all(runs)
+      await new Promise((r) => setImmediate(r))
+    }
+    expect(repoListingNotes(root)).toBeNull()
+    expect(reindex).toHaveBeenCalledTimes(4)
+  }, 60_000)
+
+  it('a re-sweep that listed the repository and mapped nothing it asked for is counted', () => {
+    let listing = { n: 0 }
+    const reindex = vi.fn(() => { listing = { n: listing.n + 1 }; return undefined })
+    const h = harness({ nestedKept: () => [], listed: () => listing, reindex })
+    watchRepo('/repo', h.deps)
+    for (const d of ['.cache/a', '.cache/b', '.cache/c', '.cache/d']) { h.emit(`${d}/.git/HEAD`); h.flush() }
+    expect(reindex).toHaveBeenCalledTimes(3)
   })
 
   it('compares a learned repository with the listing by the platform: case folded on Windows and macOS, as written on Linux', () => {
