@@ -96,6 +96,8 @@ interface Harness {
   drawn(): { changing: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }>; frames: number; presented: number; shaderErrors: number; perf: { tier: string } }
   setQuality(q: 'high' | 'low' | 'flat' | 'auto'): void
   setWorking(on: boolean): void
+  /** Asks for one more frame (a frame is drawn even where nothing moves). */
+  requestFrame(): void
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -195,14 +197,20 @@ test('reduced motion freezes the ring, fog drift, wireframe pulse and selection 
     const d = await readMotion()
     return { ring: d.ringAngle !== c.ringAngle, fog: d.fogDrift !== c.fogDrift }
   }, { message: 'with motion on, the ring turns and the fog drifts', timeout: 10_000 }).toEqual({ ring: true, fog: true })
-  // The Holotable stage at High with the world at work: still under reduced motion, its disc, sweep and dust frozen
-  // however long it is watched; with motion on, each moves on the next frame drawn (waited for, as above).
+  // The Holotable stage at High with the world at work: under reduced motion its disc, sweep and dust rest at t = 0
+  // (look spec §3.4) however long it is watched. Nothing loops under reduced motion, so a frame is asked for 800 ms
+  // later and waited for: the frame drawn then would move whatever was not frozen.
   await page.goto(base)
   await stageAtHighWorking()
   const s1 = await readMotion()
+  const framesBefore = await page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().frames)
   await page.waitForTimeout(800)
+  await page.evaluate(() => { (window as unknown as HarnessWindow).__worldTest.requestFrame() })
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().frames), { message: 'the frame asked for is drawn', timeout: 30_000 }).toBeGreaterThan(framesBefore)
   const s2 = await readMotion()
-  expect({ discAngle: s2.discAngle, sweep: s2.sweep, dustDrift: s2.dustDrift }).toEqual({ discAngle: s1.discAngle, sweep: s1.sweep, dustDrift: s1.dustDrift })
+  const AT_REST = { discAngle: 0, sweep: 0, dustDrift: 0 }
+  expect({ discAngle: s1.discAngle, sweep: s1.sweep, dustDrift: s1.dustDrift }).toEqual(AT_REST)
+  expect({ discAngle: s2.discAngle, sweep: s2.sweep, dustDrift: s2.dustDrift }).toEqual(AT_REST)
   await page.goto(base + '?motion=1')
   await stageAtHighWorking()
   const m = await readMotion()

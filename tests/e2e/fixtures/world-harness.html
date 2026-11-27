@@ -64,6 +64,7 @@
       drawn: () => viewer.drawn(),
       setQuality: (q) => viewer.setQuality(q),
       setWorking: (on) => viewer.setWorking(on),
+      requestFrame: () => viewer.requestFrame(),
       screenPoint: (id) => viewer.screenPoint(id),
     }
     document.body.dataset.ready = '1'

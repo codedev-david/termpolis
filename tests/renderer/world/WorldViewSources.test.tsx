@@ -936,6 +936,58 @@ describe('WorldView sign in needed', () => {
     expect(screen.getByTestId('world-export-saved-at')).toBeInTheDocument()
   })
 
+  // Look spec §3.2: the disc sweeps over the saved map while a recompile after a repository update runs.
+  it('a recompile after a repository update shows the world at work until it settles', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    const api = gitBridge(ok({ changed: true }), { worldCompile: vi.fn(() => compile.promise) })
+    await openGit()
+    expect(api.worldCompile).toHaveBeenCalledWith('C:/data/r')
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true)
+    await act(async () => { compile.resolve(ok(minimal())) })
+    await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+  })
+
+  it('a recompile that throws stops the world at work too', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    gitBridge(ok({ changed: true }), { worldCompile: vi.fn(() => compile.promise) })
+    await openGit()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true)
+    await act(async () => { compile.reject(new Error('down')) })
+    await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+  })
+
+  it('a recompile still going when another world opens leaves that world at rest', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    gitBridge(ok({ changed: true }), {
+      worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT, FOLDER])),
+      worldCompile: vi.fn(() => compile.promise),
+    })
+    await openGit()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true)
+    switchTo('kf')
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+    await act(async () => { compile.resolve(ok(minimal())) })
+    await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+  })
+
+  it('a compile or labelling run reporting its progress shows the world at work until it reaches 100', async () => {
+    const p = progressHub()
+    gitBridge(ok({ changed: false }), { onWorldProgress: p.on })
+    await openGit()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+    p.emit({ root: 'C:/data/r', projectKey: 'k', stage: 'labelling', pct: 65 })
+    await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(true)
+    p.emit({ root: 'C:/data/r', projectKey: 'k', stage: 'labelling', pct: 100 })
+    await settle()
+    expect(viewer().setWorking).toHaveBeenLastCalledWith(false)
+  })
+
   it('Sign in retries interactively and the notice goes away', async () => {
     const api = gitBridge(ok(NEEDS))
     await openGit()

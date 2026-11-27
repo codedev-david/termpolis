@@ -65,7 +65,7 @@ export interface LayoutExtent {
  * past the farthest building (compile.ts, in main), and the renderer only read positions. Defined here as the
  * spike's table (core.js) measures it.
  */
-export function layoutExtent(scene: SceneModel): LayoutExtent {
+export function layoutExtent(scene: Pick<SceneModel, 'districts' | 'orbs'>): LayoutExtent {
   let [minX, minZ, maxX, maxZ] = [Infinity, Infinity, -Infinity, -Infinity]
   for (const d of scene.districts) {
     minX = Math.min(minX, d.pos[0] - d.radius)
@@ -97,6 +97,14 @@ export function holoMarks(scene: SceneModel, palette: HoloPalette, tier: TierNam
     ...scene.orbs.map((o): DataMark => ({ kind: 'orb', id: o.id, pos: o.pos, fog: o.fog, color: palette.orb })),
   ]
 
+  return { data, stage: stageMarks(scene, palette, tier) }
+}
+
+/**
+ * The stage marks alone of `scene` in `palette` at `tier` (High when none is given), in drawing order: what the stage
+ * is built and fitted from (holoStage), without the data marks. They read only the plates and the orbs.
+ */
+export function stageMarks(scene: Pick<SceneModel, 'districts' | 'orbs'>, palette: HoloPalette, tier: TierName = 'high'): StageMark[] {
   const look = TIER_LOOK[tier]
   const extent = layoutExtent(scene)
   const radius = scene.districts.length > 0 ? extent.reach * DISC_SCALE : DISC_MIN_RADIUS
@@ -112,5 +120,5 @@ export function holoMarks(scene: SceneModel, palette: HoloPalette, tier: TierNam
     { kind: 'dust', count: look.dust, stars: true },
     { kind: 'vignetteGrain', ...gradeOf(tier) },
   )
-  return { data, stage }
+  return stage
 }

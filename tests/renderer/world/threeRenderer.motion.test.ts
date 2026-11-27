@@ -510,6 +510,8 @@ describe('threeRenderer Holotable stage motion', () => {
   /** The disc's uniforms, as the last frame set them. */
   const discU = (): Record<string, { value: unknown }> => (stagePart(sceneOf(), 'disc')!.material as THREE.ShaderMaterial).uniforms
   const uTime = (kind: string): number => ((stagePart(sceneOf(), kind)!.material as THREE.ShaderMaterial).uniforms.uTime.value as number)
+  /** Where the dust points stand now (a copy). */
+  const dustAt = (): number[] => Array.from((sceneOf().getObjectByName('holo-dust') as THREE.Points).geometry.getAttribute('position').array)
 
   it('the sweep runs only while working, and never under reduced motion', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
@@ -531,29 +533,35 @@ describe('threeRenderer Holotable stage motion', () => {
     h.frames.run(20, 50)
     expect(r.motionState().sweep).toBe(s1)
     expect(discU().uSweepOn.value).toBe(0)
-    // Working under reduced motion: nothing sweeps.
+    // Working, then reduced motion turned on mid-session: nothing sweeps, and the sweep rests at t = 0 (look spec §3.4).
     r.setWorking(true)
+    h.frames.run(5, 50)
+    expect(r.motionState().sweep).toBeGreaterThan(s1)
     r.setReducedMotion(true)
     h.frames.run(20, 50)
-    expect(r.motionState().sweep).toBe(s1)
+    expect(r.motionState().sweep).toBe(0)
+    expect(discU().uSweep.value).toBe(0)
     expect(discU().uSweepOn.value).toBe(0)
-    // Motion back on at Low: it sweeps again; at Flat the scan lines hold still.
+    // Motion back on at Low: it sweeps again from t = 0; the tier changed to Flat mid-session, the scan lines rest at t = 0.
     r.setReducedMotion(false)
     r.setTier('low')
     h.frames.run(20, 50)
     const s2 = r.motionState().sweep
-    expect(s2).toBeGreaterThan(s1)
+    expect(s2).toBeGreaterThan(0.9 * MOTION_HZ.sweep)
+    expect(s2).toBeLessThanOrEqual(1.05 * MOTION_HZ.sweep)
     r.setTier('flat')
     h.frames.run(20, 50)
-    expect(r.motionState().sweep).toBe(s2)
+    expect(r.motionState().sweep).toBe(0)
+    expect(discU().uSweep.value).toBe(0)
     expect(discU().uSweepOn.value).toBe(0)
     r.dispose()
     r.setWorking(false) // after dispose: nothing
   })
 
-  it('the disc arcs, the shafts, the beams and the dust move at High and Low, hold still at Flat and under reduced motion', () => {
+  it('the disc arcs, the shafts, the beams and the dust move at High and Low, and rest at t = 0 at Flat and under reduced motion', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     expect(r.motionState()).toMatchObject({ discAngle: 0, sweep: 0, dustDrift: 0 })
+    const home = dustAt()
     r.draw(smallCity(), smallText(), false)
     h.frames.run(20, 50)
     const a1 = r.motionState()
@@ -567,13 +575,24 @@ describe('threeRenderer Holotable stage motion', () => {
     const a2 = r.motionState()
     expect(a2.discAngle).toBeGreaterThan(a1.discAngle)
     expect(a2.dustDrift).toBeGreaterThan(a1.dustDrift)
+    expect(dustAt()).not.toEqual(home)
+    // The tier changed to Flat mid-session: the arcs, the shafts, the beams and the dust rest at t = 0 (look spec §3.4).
     r.setTier('flat')
     h.frames.run(20, 50)
-    expect(r.motionState()).toMatchObject({ discAngle: a2.discAngle, dustDrift: a2.dustDrift })
+    expect(r.motionState()).toMatchObject({ discAngle: 0, dustDrift: 0 })
+    for (const kind of ['disc', 'shafts', 'beams']) expect(uTime(kind)).toBe(0)
+    expect(dustAt()).toEqual(home)
+    // High again: they move from t = 0; reduced motion turned on mid-session rests them at t = 0 again.
     r.setTier('high')
+    h.frames.run(20, 50)
+    expect(r.motionState().discAngle).toBeGreaterThan(0)
+    expect(r.motionState().dustDrift).toBeGreaterThan(0)
+    expect(dustAt()).not.toEqual(home)
     r.setReducedMotion(true)
     h.frames.run(20, 50)
-    expect(r.motionState()).toMatchObject({ discAngle: a2.discAngle, dustDrift: a2.dustDrift })
+    expect(r.motionState()).toMatchObject({ discAngle: 0, sweep: 0, dustDrift: 0 })
+    for (const kind of ['disc', 'shafts', 'beams']) expect(uTime(kind)).toBe(0)
+    expect(dustAt()).toEqual(home)
     r.dispose()
   })
 

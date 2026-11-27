@@ -509,6 +509,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setError(null)
     setMapping(false)
     setProgress(null)
+    // A recompile still going belongs to the folder being left: it settles unheard (recompile).
+    setRecompiling(false)
     setCard(null)
     let live = true
     const api = window.termpolis
@@ -557,13 +559,17 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // pushes it through the listener below, so the new map arrives like any other change.
   // A recompile that fails says so over the saved map, which stays up, and Try again maps the folder again.
   const [recompileError, setRecompileError] = useState<{ at: string; message: string } | null>(null)
+  /** A recompile of the open folder is under way (the map shows the world at work until it settles). */
+  const [recompiling, setRecompiling] = useState(false)
   const recompile = (at: string): void => {
     setRecompileError(null)
+    setRecompiling(true)
     // A recompile that fails pushes no world: its last progress must not read as a run still going. A world
     // opened meanwhile has its own runs, so only this folder's progress is cleared, and only it hears the failure.
     const settled = (): boolean => {
       if (!mountedRef.current || rootRef.current !== at) return false
       setProgress(null)
+      setRecompiling(false)
       return true
     }
     window.termpolis.worldCompile(at).then(
@@ -754,9 +760,15 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // The Quality menu's choice reaches the viewer as it is read from the settings and as it is picked.
   useEffect(() => { viewer?.setQuality(quality) }, [viewer, quality])
 
+  /**
+   * A compile or labelling run is going (an export uses the map as it was last saved), and what it is doing:
+   * describing the parts (the labelling stage), or any other update.
+   */
+  const mapRun = progress !== null && progress.pct < 100 ? (progress.stage === 'labelling' ? 'describing' : 'updating') : null
   // The world at work, its projector disc sweeping (look spec §3.2): an Ask answering, a relayout or a repository
-  // update under way, or a first map shown while the full world compiles.
-  const working = askBusy || busy || repoBusy || doc?.provisional === true
+  // update under way, a recompile over the saved map until it settles, a compile or labelling run reporting its
+  // progress, or a first map shown while the full world compiles.
+  const working = askBusy || busy || repoBusy || recompiling || mapRun !== null || doc?.provisional === true
   useEffect(() => { viewer?.setWorking(working) }, [viewer, working])
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
@@ -1256,12 +1268,6 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setNotice(null)
     setSaved(file)
   }
-  /**
-   * A compile or labelling run is going (an export uses the map as it was last saved), and what it is doing:
-   * describing the parts (the labelling stage), or any other update.
-   */
-  const mapRun = progress !== null && progress.pct < 100 ? (progress.stage === 'labelling' ? 'describing' : 'updating') : null
-
   return (
     <UiScaleContext.Provider value={scale}>
     <div
