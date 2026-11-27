@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
-import { batchCapacity } from '../../../src/renderer/src/world/engine/batching'
+import { batchCapacity, programOf } from '../../../src/renderer/src/world/engine/batching'
 import { bldg, boxBatches, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, gpu, installFrames, makeHost, orb, rendererOf, sceneOf, smallCity, smallText, type Frames } from './threeHarness'
 
 vi.mock('three', async (orig) => ({ ...(await orig<typeof import('three')>()), WebGLRenderer: (await import('./threeHarness')).FakeWebGLRenderer }))
@@ -258,32 +258,77 @@ describe('threeRenderer scene build', () => {
     r.dispose()
   })
 
-  it('an outgrown batch frees its material only after the frame has drawn its replacement, so the two share one program', () => {
-    // three.js frees a shader program with the last material using it: freed before the frame drew the bigger
-    // batch, the old material took the program along and the new one compiled it again (100 to 250 ms in software).
+  it('an outgrown batch hands its material to the bigger one, so its program is not built again', () => {
+    // three.js frees a shader program with the last material using it: freed with the old batch, the bigger one
+    // compiled the same program again (100 to 250 ms in software, inside one frame of a divider drag).
     const r = createThreeRenderer(host, DEFAULT_OPTS)
     boxCanvas(r.canvas, 800, 600)
     r.draw(smallCity(), smallText(), false)
     r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
     frames.run(2)
     const before = boxBatches(sceneOf())
+    const mats = before.map((im) => im.material as THREE.Material)
     const freed: THREE.Material[] = []
-    for (const im of before) (im.material as THREE.Material).addEventListener('dispose', (e) => freed.push(e.target as THREE.Material))
-    const gl = rendererOf()
-    const render = gl.render.bind(gl)
-    let freedAtFirstDraw: number | null = null
-    gl.render = (scene, camera): void => {
-      if (freedAtFirstDraw === null && boxBatches(sceneOf()).some((im) => im.instanceMatrix.count > 16)) freedAtFirstDraw = freed.length
-      render(scene, camera)
-    }
+    for (const m of mats) m.addEventListener('dispose', () => freed.push(m))
     const many = smallCity()
     many.buildings = [...many.buildings, ...Array.from({ length: 40 }, (_, i) => bldg(`n${i}`, [(i % 8) * 6 - 21, 0, Math.floor(i / 8) * 6 - 30]))]
     r.draw(many, smallText(), false)
     r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
     frames.run(2)
-    expect(freedAtFirstDraw).toBe(0) // the bigger batch was drawn with the old material still alive
-    expect(freed.length).toBeGreaterThan(0) // and the old material was freed after that draw
+    const grown = boxBatches(sceneOf()).filter((im) => im.instanceMatrix.count > 16)
+    expect(grown.length).toBeGreaterThan(0)
+    for (const im of grown) expect(mats).toContain(im.material)
+    expect(freed).toEqual([])
     r.dispose()
+  })
+
+  it('the batch last dropped of each program keeps its material, so the next batch drawn with that program finds it built', () => {
+    // A slab clicked at the overview draws the buildings' batches again: their programs, freed with the last
+    // materials using them, were built again (155 ms to 1.4 s on macOS, once past world-visual 3's 5 s).
+    const r = createThreeRenderer(host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(smallCity(), smallText(), false)
+    const freed = new Set<THREE.Material>()
+    let frees = 0
+    const drawn = (): THREE.Material[] => boxBatches(sceneOf()).map((im) => im.material as THREE.Material)
+    const watch = (): THREE.Material[] => {
+      const ms = drawn()
+      for (const m of ms) m.addEventListener('dispose', () => { freed.add(m); frees++ })
+      return ms
+    }
+    r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
+    frames.run(2)
+    const first = watch()
+    expect(new Set(first.map(programOf)).size).toBe(first.length) // a program each (lit and dimmed)
+    r.setFocus(null)
+    frames.run(2)
+    expect(drawn()).toEqual([]) // no box batch drawn
+    expect(freed.size).toBe(0) // their materials kept, and with them their programs
+    r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
+    const gl = rendererOf()
+    const render = gl.render.bind(gl)
+    const freedAtDraw: number[] = []
+    gl.render = (scene, camera): void => {
+      freedAtDraw.push(freed.size)
+      render(scene, camera)
+    }
+    frames.run(2)
+    const second = watch()
+    expect(second.map(programOf).sort()).toEqual(first.map(programOf).sort()) // drawn with the programs kept
+    expect(freed.size).toBe(0)
+    const draws = freedAtDraw.length
+    r.setFocus(null)
+    frames.run(2)
+    // The newer of two materials of a program is kept (it holds the program built for the scene as it is now),
+    // and the older freed once the frame dropping the batches is drawn.
+    expect([...freed].sort()).toEqual([...first].sort())
+    frames.run(2)
+    expect(frees).toBe(first.length) // each freed once
+    expect(freedAtDraw.length).toBeGreaterThan(draws)
+    expect(freedAtDraw[draws]).toBe(0) // the frame dropping them drew with them alive
+    r.dispose()
+    expect([...freed].sort()).toEqual([...first, ...second].sort()) // closing the view frees the kept ones
+    expect(frees).toBe(first.length + second.length)
   })
 
   it('closing the view frees the batch materials then and there', () => {
@@ -292,7 +337,7 @@ describe('threeRenderer scene build', () => {
     r.draw(smallCity(), smallText(), false)
     r.setFocus({ ids: new Set(['a']), edgeIds: new Set() })
     frames.run(2)
-    const mats = [...boxBatches(sceneOf())].map((im) => im.material as THREE.Material)
+    const mats = boxBatches(sceneOf()).map((im) => im.material as THREE.Material)
     expect(mats.length).toBeGreaterThan(0)
     const freed = new Set<THREE.Material>()
     for (const m of mats) m.addEventListener('dispose', () => freed.add(m))

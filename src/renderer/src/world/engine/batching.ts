@@ -216,6 +216,25 @@ export function poolChanges(have: Iterable<string>, want: Iterable<string>): { a
   return { add: [...w].filter((k) => !h.has(k)), drop: [...h].filter((k) => !w.has(k)) }
 }
 
+/** What of a material's own three.js builds into its shader program; its colour, opacity and the like are uniforms, set per draw. */
+export interface ProgramLook {
+  type: string
+  transparent: boolean
+  blending: number
+  side: number
+  vertexColors: boolean
+  fog?: boolean
+  customProgramCacheKey(): string
+}
+
+/**
+ * The program a batch material is drawn with, as a key: two materials with one key share one program
+ * (three.js 0.160's WebGLPrograms keys a program on these and on the scene, the same for every batch).
+ */
+export function programOf(m: ProgramLook): string {
+  return [m.type, m.transparent, m.blending, m.side, m.vertexColors, m.fog === true, m.customProgramCacheKey()].join('|')
+}
+
 /**
  * Where a batch draws among the other batches (lower first): the packets, then the boxes from the
  * most opaque to the faintest. A focused part's batch so draws before the dimmed parts' batch, whose

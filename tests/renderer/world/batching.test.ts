@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
+import * as THREE from 'three'
+import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, programOf, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
 
 describe('partDrawn', () => {
   it('draws floors from the floors tier in, and one block further out', () => {
@@ -176,6 +177,26 @@ describe('groupBatches', () => {
   })
   it('makes no batch from nothing', () => {
     expect(groupBatches([]).size).toBe(0)
+  })
+})
+
+describe('programOf', () => {
+  it('keys a material by what three.js builds into its program, not by its uniforms', () => {
+    const box = (extra: object = {}): THREE.Material => Object.assign(new THREE.MeshStandardMaterial({ fog: true, transparent: true }), { customProgramCacheKey: () => 'lw-box-batch' }, extra)
+    const k = programOf(box())
+    const lit = new THREE.MeshStandardMaterial({ fog: true, transparent: true, color: 0xff0000, opacity: 0.3, metalness: 0.9, roughness: 0.1 })
+    lit.customProgramCacheKey = () => 'lw-box-batch'
+    expect(programOf(lit)).toBe(k) // colour, opacity, metalness and roughness are uniforms
+    expect(programOf(box({ transparent: false }))).not.toBe(k)
+    expect(programOf(box({ blending: THREE.AdditiveBlending }))).not.toBe(k)
+    expect(programOf(box({ side: THREE.DoubleSide }))).not.toBe(k)
+    expect(programOf(box({ vertexColors: true }))).not.toBe(k)
+    expect(programOf(box({ fog: false }))).not.toBe(k)
+    expect(programOf(box({ customProgramCacheKey: () => 'other' }))).not.toBe(k)
+    const basic = new THREE.MeshBasicMaterial({ fog: true, transparent: true })
+    basic.customProgramCacheKey = () => 'lw-box-batch'
+    expect(programOf(basic)).not.toBe(k)
+    expect(programOf(Object.assign(new THREE.LineBasicMaterial(), { fog: undefined }))).toBe(programOf(Object.assign(new THREE.LineBasicMaterial(), { fog: false })))
   })
 })
 

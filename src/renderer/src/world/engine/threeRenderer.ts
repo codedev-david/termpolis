@@ -11,7 +11,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
+import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, programOf, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
 import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSignals'
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
@@ -3004,9 +3004,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const have = im ? im.instanceMatrix.count : 0
     const cap = batchCapacity(n, have)
     if (!im || cap !== have) {
-      if (im) dropBatch(im)
+      // A batch outgrown hands its material to the bigger one, so its program is not built again.
+      const mat = im ? dropBatch(im) : make()
       const g = geo()
-      im = new THREE.InstancedMesh(g, make(), cap)
+      im = new THREE.InstancedMesh(g, mat, cap)
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       im.frustumCulled = false // its instances move: it is never culled as a whole
       // three.js sorts see-through objects by their bounding sphere's centre, which an InstancedMesh
@@ -3024,21 +3025,32 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
 
   /**
-   * The materials of the batches dropped this frame, freed once the frame is drawn. three.js frees a shader program
-   * when the last material using it is freed, so a batch outgrown (or sorted under a new key) and freed before the
-   * frame drew its replacement took its program with it, and the replacement compiled the same program again:
-   * drawn in software, 100 to 250 ms inside one frame of a divider drag. Freed after the draw, the replacement
-   * finds the program still there.
+   * three.js frees a shader program with the last material using it, and building one again takes 100 ms to over
+   * a second drawn in software. So an outgrown batch hands its material to the bigger one (a divider drag's one 100
+   * to 250 ms frame on ubuntu-24.04 was the box batch's program freed and built again there), and the material of
+   * the batch last dropped of each program (programOf) is kept, so the next batch drawn with that program finds it
+   * built: a slab clicked at the overview draws the buildings' batches again (the first frame built their three
+   * programs again, 155 ms to 1.4 s on macOS, and once missed world-visual 3's 5 s). A batch's key holds its
+   * opacity, which a focus fade changes every frame, so the materials are kept by program, a handful, not by key.
+   * A material let go is freed once the frame is drawn (retiredMats), so a batch that took its program finds it.
    */
+  const keepers = new Map<string, THREE.Material>()
+  function keepProgram(m: THREE.Material): void {
+    const k = programOf(m)
+    const old = keepers.get(k)
+    if (old) retiredMats.push(old) // the newer one holds the program built for the scene as it is now
+    keepers.set(k, m)
+  }
   const retiredMats: THREE.Material[] = []
   function freeRetired(): void {
     for (const m of retiredMats.splice(0)) m.dispose()
   }
-  function dropBatch(im: THREE.InstancedMesh): void {
+  /** Takes a batch out of the scene and frees its own geometry; its material is the caller's. */
+  function dropBatch(im: THREE.InstancedMesh): THREE.Material {
     batchLayer.remove(im)
-    retiredMats.push(im.material as THREE.Material)
     if (!shared.has(im.geometry)) im.geometry.dispose()
     im.dispose()
+    return im.material as THREE.Material
   }
 
   /** Before every render: sorts the parts into batches again, refills them, or only moves the packets. */
@@ -3081,7 +3093,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const boxGroups = groupBatches(boxes)
     const packetGroups = groupBatches(packets)
     for (const k of poolChanges(instPool.keys(), [...boxGroups.keys(), ...packetGroups.keys()]).drop) {
-      dropBatch(instPool.get(k) as THREE.InstancedMesh)
+      keepProgram(dropBatch(instPool.get(k) as THREE.InstancedMesh))
       instPool.delete(k)
     }
     boxBatches = [...boxGroups].map(([key, idx]) => {
@@ -3695,8 +3707,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       stopPulses()
       clearWorld()
       // The batches' materials and their own geometries (a box batch's unit box with its outline colours).
-      for (const im of instPool.values()) dropBatch(im)
+      for (const im of instPool.values()) retiredMats.push(dropBatch(im))
       instPool.clear()
+      retiredMats.push(...keepers.values())
+      keepers.clear()
       freeRetired()
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
       starGeo.dispose(); starMat.dispose()
