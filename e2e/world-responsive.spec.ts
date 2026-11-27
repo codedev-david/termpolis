@@ -38,7 +38,7 @@ import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../src/renderer/src/world/engine/bufferFit'
-import { DRAG_TRACE, dragVerdict, type OwnTime, type TraceEvent } from './helpers/dragTrace'
+import { DRAG_TRACE, dragVerdict, fitsNamed, widestGap, type OwnTime, type TraceEvent } from './helpers/dragTrace'
 import { CORNER_MAX_LEVELS, cornerPatches, drawnBackground, levelsApart, MAX_WHITE_FRACTION, MIN_LIT_FRACTION, pngMetrics } from './worldPixels'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -1341,12 +1341,14 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // frame presentation takes the CPU from the page, so a task of 200 ms on the wall is 10 to 50 ms of its own), and each
     // is also held to a ceiling on the wall, for a wait the trace does not name. From the first move to DRAG_AFTER_MS after
     // the mouse-up (a debounce, a timer, an idle callback the drag left is the drag's too): every resize the renderer timed
-    // is named (RESIZE_MEASURE, counted against RendererPerf.resizeCount) and takes under 16 ms of its own and 100 ms on the
-    // wall; no long task but a buffer fit's runs over 200 ms of its own or 350 ms on the wall; the task that holds a fit's
-    // measure (BUFFER_FIT_MEASURE: the buffer fitted once the size holds, BUFFER_SETTLE_MS, then the fence and the wake, and
-    // whatever else that task runs) takes no more than 200 ms of thread time and 1000 ms on the wall beyond its waits (in
-    // software its GL calls wait for the GPU process, 50 ms to 1.8 s on the macOS runner); and the page handles the drag's
-    // pointer moves no more than 7 s apart. Long animation frames cannot time this (look plan Task 5 deviation, PENDING
+    // is named (RESIZE_MEASURE, counted against RendererPerf.resizeCount), at least 90% of them are in the trace, and each
+    // takes under 16 ms of its own and 50 ms on the wall; no long task but a buffer fit's runs over 200 ms of its own or
+    // 350 ms on the wall; a long task holds a fit named, and the task that holds a fit's measure (BUFFER_FIT_MEASURE: the
+    // buffer fitted once the size holds, BUFFER_SETTLE_MS, then the fence and the wake, and whatever else that task runs),
+    // at least 90% of them in the trace and one it lost charged its wall, takes no more than 200 ms of thread time, 1000 ms
+    // on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU process, 50 ms to 5.2 s on the
+    // macOS runner) and 8 s on the wall; and the page handles the drag's pointer moves, and its release, no more than 5 s
+    // apart on Windows, 7 s on macOS and 2 s on ubuntu. Long animation frames cannot time this (look plan Task 5 deviation, PENDING
     // SIGN-OFF): the app's pages are file:// pages, whose long animation frames name no scripts. The frame drawn right after
     // a fit once waited inside the page for the GPU process to make the new buffer; the fit now puts in a fence that frame
     // waits for. On ubuntu-24.04 a shader program freed with a batch outgrown was built again for its replacement; the
@@ -1462,15 +1464,18 @@ test.describe.serial('Lumopolis at every screen size', () => {
         .map((x) => ({ start: x.start, ms: x.ms, fit: fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1) }))
       // The resizes named in the frame-time window, as the renderer counts them (resizeCount).
       const resizes = performance.getEntriesByName(resizeName, 'measure').filter((m) => m.startTime >= w.__benchAt).map((m) => ({ start: m.startTime, ms: m.duration }))
-      const gaps = w.__moves.slice(1).map((m, i) => m - w.__moves[i])
-      return { resizeWorstMs: perf.resizeWorstMs, resizeCount: perf.resizeCount, tier: perf.tier, tasks, resizes, fitCount: fits.filter((f) => f.end > first).length, moves: w.__moves.length, widestGap: Math.max(0, ...gaps), frames: w.__worldPerf.end().frames }
+      return { resizeWorstMs: perf.resizeWorstMs, resizeCount: perf.resizeCount, tier: perf.tier, tasks, resizes, fits, moves: w.__moves, upAt, frames: w.__worldPerf.end().frames }
     }, [BUFFER_FIT_MEASURE, RESIZE_MEASURE, DRAG_AFTER_MS] as const)
-    const verdict = dragVerdict({ events: traced, resizes: after.resizes, resizeCount: after.resizeCount, tasks: after.tasks, fitCount: after.fitCount, widestGap: after.widestGap })
+    // The fits named in the long tasks' window (fitsNamed), and the widest gap between the moves the page handled, the
+    // release's after the last one included (widestGap).
+    const fitCount = fitsNamed(after.fits, after.moves[0], after.upAt + DRAG_AFTER_MS)
+    const gap = widestGap(after.moves, after.upAt)
+    const verdict = dragVerdict({ events: traced, resizes: after.resizes, resizeCount: after.resizeCount, tasks: after.tasks, fitCount, widestGap: gap, platform: process.platform })
     const { own, others, fits } = verdict
     const show = (xs: Array<{ wall: number }>): string => xs.map((x) => x.wall.toFixed(0)).join(', ') || 'none'
     const pairs = (xs: OwnTime[], over: number): string => xs.filter((x) => x.wall > over).map((x) => `${x.wall.toFixed(1)}/${x.own.toFixed(1)}${x.waited >= 0.05 ? ` (${x.waited.toFixed(1)} waited)` : ''}${x.matched ? '' : ' (not traced)'}${x.by && x.own >= 4 ? ` [in ${x.by}]` : ''}`).join(', ') || 'none'
-    const threads = (xs: OwnTime[]): string => xs.map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.waited >= 0.5 ? ` (${x.waited.toFixed(0)} waited)` : ''}${x.matched ? '' : ' (not traced)'}`).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.resizes.length} of ${after.resizeCount} resizes named, ${after.frames} frames, tier ${after.tier}, ${after.moves} moves (widest gap ${after.widestGap.toFixed(0)} ms), ${after.fitCount} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(others)}, the fits ${show(fits)}`)
+    const threads = (xs: OwnTime[]): string => xs.map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.waited >= 0.5 ? ` (${x.waited.toFixed(0)} waited, ${x.gpu.toFixed(0)} on the GPU)` : ''}${x.matched ? '' : ' (not traced)'}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.resizes.length} of ${after.resizeCount} resizes named, ${after.frames} frames, tier ${after.tier}, ${after.moves.length} moves (widest gap ${gap.toFixed(0)} ms, the release's included), ${fitCount} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(others)}, the fits ${show(fits)}`)
     console.log(`[world-responsive] divider drag on the thread's clock: ${own.traced} resizes in the trace on ${own.thread} (clocks ${own.spread.toFixed(2)} ms apart), ${own.resizes.filter((x) => x.matched).length} and ${others.filter((x) => x.matched).length} of ${others.length} long tasks timed on it; wall/own ms of the resizes over 4 ms ${pairs(own.resizes, 4)}; of the long tasks ${pairs(others, 0)}; wall/thread ms of the fits' tasks ${threads(fits)}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     for (const c of verdict.checks) softly(c.fails, c.rule).toEqual([])
