@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const spawnSync = vi.fn()
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawnSync }))
 
-const { fixtureSkipReason, fixtureToolsMissing, startGitHttps } = await import('../fixtures/gitHttps/server')
+const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process')
+const { fakeHelperConfig, fixtureSkipReason, fixtureToolsMissing, startGitHttps } = await import('../fixtures/gitHttps/server')
 
 describe('the local https git server tool check', () => {
   const ci = process.env.CI
@@ -66,4 +67,23 @@ describe('the local https git server tool check', () => {
       fs.rmSync(scratch, { recursive: true, force: true })
     }
   }, 60_000)
+
+  // The config's helper line, run by git as git runs a `!` helper (through sh, the operation after it), from a folder whose
+  // path holds a single quote, as a temporary folder's can: quoted as it was, the quote ended sh's string (holdb-review M10).
+  it('names a helper script whose path holds a single quote', () => {
+    const dir = fs.mkdtempSync(join(tmpdir(), "lumopolis-it's-"))
+    try {
+      const script = join(dir, 'say.sh')
+      fs.writeFileSync(script, 'echo "sourced $1"\n')
+      const config = join(dir, 'config')
+      fs.writeFileSync(config, fakeHelperConfig(script))
+      const line = execFileSync('git', ['config', '--file', config, '--list'], { encoding: 'utf8' }).trim()
+      const run = line.slice(line.indexOf('=') + 1)
+      expect(run.startsWith('!')).toBe(true)
+      const said = execFileSync('git', ['-c', `alias.probe=${run}`, 'probe', 'get'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      expect(said.trim()).toBe('sourced get')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
