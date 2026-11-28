@@ -50,8 +50,16 @@ export interface WorldStoreDeps {
   now?: () => number
   readFile?: typeof fsp.readFile
   rename?: typeof fsp.rename
+  /** A file's size and modified time (default fs.promises.stat). */
+  stat?: (file: string) => Promise<FileSeen>
   /** Writes a line to the app log. Default console.warn, which main mirrors into the app log. */
   log?: (message: string) => void
+}
+
+/** A world file's size and modified time, as this store last read or wrote it. */
+export interface FileSeen {
+  size: number
+  mtimeMs: number
 }
 
 /** What a stored world that cannot be read says: the raw error (its code and full path) goes to the log only. */
@@ -108,6 +116,10 @@ const tmpFor = (target: string): string => `${target}.${process.pid}.${Math.rand
 /** Item labels for the log: kind and place only, never what the item said. */
 const droppedText = (dropped: DroppedItem[]): string => dropped.map((d) => `${d.kind} #${d.index}`).join(', ')
 
+/** Whether a file looked up now is as it was last seen: false when either is unknown. */
+const same = (now: FileSeen | null, last: FileSeen | undefined): boolean =>
+  now !== null && last !== undefined && now.size === last.size && now.mtimeMs === last.mtimeMs
+
 /** A doc as the disk holds it: the in-memory-only marks taken off. */
 const forDisk = (doc: WorldDoc): WorldDoc => {
   if (doc.savedByNewer === undefined) return doc
@@ -155,6 +167,7 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   const now = deps.now ?? Date.now
   const read = deps.readFile ?? fsp.readFile
   const rename = deps.rename ?? fsp.rename
+  const statOf = deps.stat ?? fsp.stat
   const log = deps.log ?? ((message: string) => console.warn(message))
   const folder = join(dir, 'world')
   const cacheDir = join(folder, 'label-cache')
@@ -173,17 +186,30 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   const ignore = (): void => undefined
   /** Per world file name of a newer version's world: what this version compiled or saved for it, kept in memory only. */
   const shadow = new Map<string, WorldDoc>()
+  /** DSN R2, F4: per world file name, the file's size and modified time as this store last read or wrote it. A save reads
+   *  the file again before its rename only when they changed (or cannot be looked up), so a recompile reads nothing more. */
+  const seen = new Map<string, FileSeen>()
+  /** The file's size and modified time; null when they cannot be looked up. */
+  const look = async (file: string): Promise<FileSeen | null> => {
+    try {
+      const st = await statOf(file)
+      return { size: st.size, mtimeMs: st.mtimeMs }
+    } catch {
+      return null
+    }
+  }
   let pruning: Promise<unknown> | null = null
 
   const readText = (file: string): Promise<string> => retryLocked(() => read(file, 'utf8'), sleep)
 
   /** Writes `text` to `target` through a temp file, removing the temp file when the write fails. With `beforeRename`,
-   *  the temp file is put in place only when it answers true once the temp file is written; false removes it instead. */
-  async function writeAtomic(target: string, text: string, beforeRename?: () => Promise<boolean>): Promise<void> {
+   *  the temp file is put in place only when it answers true once the temp file (its path given) is written; false
+   *  removes it instead. */
+  async function writeAtomic(target: string, text: string, beforeRename?: (tmp: string) => Promise<boolean>): Promise<void> {
     const tmp = tmpFor(target)
     try {
       await fsp.writeFile(tmp, text, 'utf8')
-      if (beforeRename && !(await beforeRename())) {
+      if (beforeRename && !(await beforeRename(tmp))) {
         await fsp.rm(tmp, { force: true })
         return
       }
@@ -227,15 +253,20 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
 
   async function loadNow(name: string, beforeSave: boolean): Promise<WorldDoc | null> {
     const file = join(folder, name)
+    // Looked up before the read: a file changed in between is read again by the next save, never taken as unchanged.
+    const at = await look(file)
     let text: string
     try {
       text = await readText(file)
     } catch (err) {
+      seen.delete(name)
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read${beforeSave ? ' before a save' : ''}: ${String(err)}`)
       newerOnDisk.set(name, false)
       shadow.delete(name)
       return null
     }
+    if (at) seen.set(name, at)
+    else seen.delete(name)
     const parsed = parseOrUndefined(text)
     if (isNewerWorld(parsed)) {
       // Never moved aside, never written over: this version shows its own copy, or reads what it can of the newer one.
@@ -281,25 +312,35 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       }
       await fsp.mkdir(folder, { recursive: true })
       const file = join(folder, name)
-      // DSN Round 1, item 4: another Termpolis, a newer one, may have saved this world since the load above. The file is
-      // read again once the temp copy is written, just before the rename, and a newer world found there is kept: this
-      // copy goes in memory only, as when the load had found it. A gap remains between that read and the rename (a few
-      // microseconds on a local disk): a newer version writing in that gap is still written over. Closing it would take
-      // an OS file lock both versions honour, which older versions do not take; the gap is noted in dsn-report.md.
-      await writeAtomic(file, JSON.stringify(clean), async () => {
-        let text: string
-        try {
-          text = await readText(file)
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
-          return true
+      // DSN Round 1, item 4: another Termpolis, a newer one, may have saved this world since this store last read or wrote
+      // it. Once the temp copy is written, just before the rename, the file is looked at again: read only when its size or
+      // modified time changed since then (DSN R2, F4). A newer world found there is kept as it is, and this copy is not
+      // kept in memory either (DSN R2, F2): a change refused there never shows later in the session, and the next load
+      // shows the newer file, as opening it afresh would. A gap remains between that look and the rename (a few
+      // microseconds on a local disk): a newer version writing in it is written over. The gap is accepted: only a later
+      // version can be that newer writer, and nothing this version does can make it wait.
+      let wrote = null as FileSeen | null
+      await writeAtomic(file, JSON.stringify(clean), async (tmp) => {
+        if (!same(await look(file), seen.get(name))) {
+          let text: string | null = null
+          try {
+            text = await readText(file)
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
+          }
+          if (text !== null && isNewerWorld(parseOrUndefined(text))) {
+            newerOnDisk.set(name, true)
+            shadow.delete(name)
+            doc.savedByNewer = true
+            return false
+          }
         }
-        if (!isNewerWorld(parseOrUndefined(text))) return true
-        newerOnDisk.set(name, true)
-        shadow.set(name, structuredClone(clean))
-        doc.savedByNewer = true
-        return false
+        // The rename keeps the temp copy's size and modified time: what the file will have once it is in place.
+        wrote = await look(tmp)
+        return true
       })
+      if (wrote) seen.set(name, wrote)
+      else seen.delete(name)
     },
 
     async loadStages(projectKey) {

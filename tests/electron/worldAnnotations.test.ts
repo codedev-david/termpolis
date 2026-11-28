@@ -323,6 +323,15 @@ describe('mergeAnnotations and hasPart', () => {
     expect(mergeAnnotations(once, {}).buildings[0].claims.map((c) => c.text)).toEqual(['seen'])
   })
 
+  it('drops only a claim exactly equal to a stored one: the same words with other evidence or another state stay (DSN R2, F1)', () => {
+    const agent: Claim = { text: 'Calls the bank.', state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent' }] }
+    const inFile: Claim = { text: 'Calls the bank.', state: 'observed', evidence: [{ kind: 'file', ref: 'bank.ts:1' }] }
+    const otherState: Claim = { ...agent, state: 'inferred' }
+    const d = doc()
+    d.buildings[1].claims = [inFile, otherState, agent, { ...agent, evidence: [{ ...agent.evidence[0] }] }]
+    expect(mergeAnnotations(d, { b2: [agent] }).buildings[1].claims).toEqual([inFile, otherState, agent])
+  })
+
   it('an id like "constructor" or "__proto__" picks up nothing from the prototype', () => {
     const d = doc()
     d.buildings[1].id = 'constructor'

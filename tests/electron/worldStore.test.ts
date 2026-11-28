@@ -851,6 +851,13 @@ describe('a save looks at the file again just before it puts its copy in place (
       reads.length = 0
       await store.save({ ...doc(), generatedAt: 4 })
       expect(reads).toEqual([])
+      // A file another writer changed is what a load then sees: the save after that load reads nothing more either.
+      await writeFile(file(), JSON.stringify({ ...doc(), generatedAt: 12345 }))
+      expect(await store.load('demo')).toMatchObject({ generatedAt: 12345 })
+      reads.length = 0
+      await store.save({ ...doc(), generatedAt: 6 })
+      expect(reads).toEqual([])
+      expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(6)
     })
 
     it('a changed modified time is read, and a newer world there is kept', async () => {

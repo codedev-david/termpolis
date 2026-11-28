@@ -45,8 +45,8 @@ import {
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
-import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, type WorldStore } from './worldStore'
-import { validateWorld } from '../../shared/world/validate'
+import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, worldFileName, type WorldStore } from './worldStore'
+import { isNewerWorld, validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 
@@ -1129,6 +1129,19 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   }
 
   type Handler = (...args: never[]) => Promise<unknown>
+  /**
+   * Whether a design's file holds a newer Termpolis's world (DSN R2, F5). Only its version is read: a design is main's
+   * designer's, so nothing here loads it through the store, which could back it up or move it aside. A file that is
+   * missing, cannot be read or does not parse says no.
+   */
+  const designSavedByNewer = async (userDataPath: string, key: string): Promise<boolean> => {
+    try {
+      return isNewerWorld(JSON.parse(await fsp.readFile(join(userDataPath, 'world', worldFileName(key)), 'utf8')))
+    } catch {
+      return false
+    }
+  }
+
   const handlers = (st: HostState): Record<string, Handler> => ({
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean; plan?: unknown }) => {
       const key = compiledKey(projectKey)
@@ -1233,8 +1246,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const key = needKey(projectKey)
       if (key.startsWith('design:')) {
         // A design a newer Termpolis saved says so, as the designer would (DSN Round 1, item 10), not that it is missing.
-        return st.store.load(key).then((doc) => {
-          throw doc?.savedByNewer ? new WorldSavedByNewerError() : new Error('No world with that key.')
+        return designSavedByNewer(st.userDataPath, key).then((newer) => {
+          throw newer ? new WorldSavedByNewerError() : new Error('No world with that key.')
         })
       }
       return serial(key, async () => {

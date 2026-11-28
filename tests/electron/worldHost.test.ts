@@ -2290,12 +2290,23 @@ describe('annotate', () => {
 
   it('a design a newer Termpolis saved is refused with the B7 words, not "No world with that key." (DSN Round 1, item 10)', async () => {
     const ann = memAnnotations()
-    const h = harness({ createAnnotations: () => ann }, memStore({ 'design:d1': { ...doc(), projectKey: 'design:d1', savedByNewer: true } }))
-    await h.init()
+    // DSN R2, F5: only the design file's version is read, never the design through the store.
+    const store = memStore({ 'design:d1': { ...doc(), projectKey: 'design:d1' } })
+    const loads = vi.spyOn(store, 'load')
+    const h = harness({ createAnnotations: () => ann }, store)
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    await mkdir(join(dir, 'world', 'design_d4.json'), { recursive: true })
+    await writeFile(join(dir, 'world', 'design_d1.json'), JSON.stringify({ ...doc(), projectKey: 'design:d1', version: 99 }))
+    await writeFile(join(dir, 'world', 'design_d2.json'), JSON.stringify({ ...doc(), projectKey: 'design:d2' }))
+    await writeFile(join(dir, 'world', 'design_d3.json'), '{ not json')
     await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
     expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
-    await h.send({ kind: 'call', id: 2, fn: 'annotate', args: ['design:gone', 'b-api', person('x')] })
-    expect(h.last()).toMatchObject({ id: 2, ok: false, error: { message: 'No world with that key.' } })
+    // Missing, one of this version's, not parsing, or not readable (a folder): the design is not the host's to annotate.
+    for (const [id, key] of [[2, 'design:gone'], [3, 'design:d2'], [4, 'design:d3'], [5, 'design:d4']] as const) {
+      await h.send({ kind: 'call', id, fn: 'annotate', args: [key, 'b-api', person('x')] })
+      expect(h.last()).toEqual({ kind: 'result', id, ok: false, error: { message: 'No world with that key.', name: 'Error' } })
+    }
+    expect(loads).not.toHaveBeenCalled()
     expect(ann.added).toEqual([])
     expect(h.store.saves).toEqual([])
   })

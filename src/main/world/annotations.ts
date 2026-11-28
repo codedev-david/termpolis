@@ -7,6 +7,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
@@ -592,6 +593,9 @@ const isPerson = (c: Claim): boolean => c.evidence.some((e) => e.kind === 'perso
 /**
  * The doc with each building's and edge's annotations as its person claims: any person claim it carried
  * is replaced, so merging twice, or after the store dropped an old one, never duplicates or keeps a stale claim.
+ * A claim of any other kind that exactly equals a stored one (an agent's note, which carries transcriptStep evidence)
+ * is the stored one saved with the doc, so it is dropped before the stored ones go back (DSN R2, F1): a design saved
+ * and loaded again shows each such note once, and a file that already holds copies of one is left with one.
  */
 export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>): WorldDoc {
   const runtimeNames: Record<string, string[]> = { ...doc.runtimeNames }
@@ -606,7 +610,9 @@ export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>)
       if (names.length > 0) runtimeNames[item.id] = names
       else delete runtimeNames[item.id]
     }
-    return { ...item, claims: [...item.claims.filter((c) => !isPerson(c) && !isRuntime(c)), ...own.filter((c) => !isRuntime(c))] }
+    const notes = own.filter((c) => !isRuntime(c))
+    const kept = item.claims.filter((c) => !isPerson(c) && !isRuntime(c) && !notes.some((n) => isDeepStrictEqual(n, c)))
+    return { ...item, claims: [...kept, ...notes] }
   }
   const buildings = doc.buildings.map(merge)
   const edges = doc.edges.map(merge)
