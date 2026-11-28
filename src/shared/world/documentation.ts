@@ -35,8 +35,8 @@ export const PROPOSED_MEANS = 'Statements marked *proposed* come from the design
 export const NOT_SEEN_IN_CODE = 'not seen in code'
 export const NOT_DETAILED_IN_DESIGN = 'not detailed in the design'
 /** What no Lumopolis world records, closing the "doesn't cover yet" section: a code world's, then a design world's. */
-export const NOT_SEEN = 'Lumopolis reads the code, not the running app: it does not see runtime behaviour or data contents.'
-export const NOT_SEEN_DESIGN = 'A design records what is planned, not a running app: it does not show runtime behaviour or data contents.'
+export const NOT_SEEN = 'Lumopolis reads the code, not the running app: it does not see runtime behavior or data contents.'
+export const NOT_SEEN_DESIGN = 'A design records what is planned, not a running app: it does not show runtime behavior or data contents.'
 /** The Connections table's columns: every field of the line card. */
 export const CONNECTION_HEAD = ['From', 'To', CARD_HEADINGS.travels, 'How', CARD_HEADINGS.direction, 'Why', CARD_HEADINGS.howOften]
 

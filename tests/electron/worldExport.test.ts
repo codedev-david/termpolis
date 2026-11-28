@@ -334,6 +334,7 @@ describe('exportWorld: the page', () => {
   it('refuses a proposal the world no longer has, and a world that fails its checks, writing nothing', async () => {
     const a = deps()
     expect(await exportWorld(request({ proposalId: 'gone' }), a.d)).toEqual({ ok: false, error: NO_PROPOSAL })
+    expect(NO_PROPOSAL).toBe("That proposal isn't in this world anymore.")
     const doc = labelledWorld()
     doc.edges[0].from = 'nowhere'
     const b = deps()

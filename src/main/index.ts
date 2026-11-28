@@ -2175,7 +2175,8 @@ const SHIELD_NOT_INSTALLED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, strin
   gitDirOutside: 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.',
 }
 /** What Remove protection says when a shield may still be there: one it was refused to touch, or none there.
- *  SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, HOLD-A N2; hooksPath in the install refusal's words, B2). */
+ *  SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, HOLD-A N2); hooksPath in the install refusal's words,
+ *  SIGNED OFF 2026-11-28 (signoff-decisions.md, COPY1 R1 M1). */
 const SHIELD_NOT_REMOVED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
   hooksPath: "The Commit Shield was not removed: this repository's settings put its git hooks outside it (core.hooksPath).",
   gitDirOutside: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.',

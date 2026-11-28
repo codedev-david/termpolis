@@ -90,7 +90,7 @@ figcaption{margin-top: .625rem; color: var(--muted); font-size: .85rem; text-ali
 <section class="chapter" id="outside"><h2>Outside systems</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>What it is</th><th>Reached by</th></tr></thead><tbody><tr><td>Model API (not seen in code)</td><td>provider</td><td>Agent runner</td></tr><tr><td>Shared drive</td><td>files</td><td></td></tr></tbody></table></div></section>
 <section class="chapter" id="planned"><h2>Planned changes</h2><p>No planned changes are recorded.</p></section>
 <section class="chapter" id="glossary"><h2>Glossary</h2><div class="table-wrap"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody><tr><td>electron</td><td>A framework for desktop apps.</td></tr><tr><td>ipc</td><td>How two programs talk.</td></tr><tr><td>sqlite</td><td>A small database in one file.</td></tr></tbody></table></div></section>
-<section class="chapter" id="notCovered"><h2>What this document doesn&#39;t cover yet</h2><p>These connections are not described yet:</p><ul><li>reads 1 setting +1 more (Desktop app → Agent runner)</li></ul><p>Lumopolis reads the code, not the running app: it does not see runtime behaviour or data contents.</p></section></main>
+<section class="chapter" id="notCovered"><h2>What this document doesn&#39;t cover yet</h2><p>These connections are not described yet:</p><ul><li>reads 1 setting +1 more (Desktop app → Agent runner)</li></ul><p>Lumopolis reads the code, not the running app: it does not see runtime behavior or data contents.</p></section></main>
 <footer class="colophon"><p>Made with Lumopolis in Termpolis · <a href="https://termpolis.com">termpolis.com</a></p></footer>
 </div>
 </body>

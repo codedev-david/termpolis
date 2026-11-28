@@ -181,6 +181,7 @@ describe('WorldAsk', () => {
       view.unmount()
     }
     expect(Object.keys(NO_MEMORY_NOTE).sort()).toEqual(['down', 'empty', 'locked', 'timeout'])
+    expect(NO_MEMORY_NOTE.locked).toBe('Answered without project memory (memory is locked: open the Memory panel to see why).')
   })
 
   it('says the answer comes from the code alone when no saved notes matched, in the approved words (WPA2 M8)', async () => {

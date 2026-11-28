@@ -733,6 +733,7 @@ describe('useVoiceInput cancel, generations and mic lifetime', () => {
       else expect(h.writeToTerminal).toHaveBeenCalledWith('term-1', 'hello world')
       expect(result.current.status).toBe('idle')
       expect(result.current.notice).toBe(RECORDING_CAP_MESSAGE)
+      expect(RECORDING_CAP_MESSAGE).toBe('Recording stopped at the 5-minute limit. What you said up to then was transcribed.')
       expect(result.current.errorMsg).toBeNull()
       expect(vi.getTimerCount()).toBe(0)
       // The next recording clears the note.

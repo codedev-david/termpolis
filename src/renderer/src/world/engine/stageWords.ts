@@ -1,6 +1,7 @@
-// The words the mapping progress shows and says for a compile stage (signoff-decisions.md B11). The stage ids stay as
-// they are on the wire (main/world/compile.ts CompileStage, and worldHost.ts's 'cloning'); only the pane turns them into
-// words. A stage with no words of its own (layout, or one a later version adds) reads as "Mapping".
+// The words the mapping progress shows and says for a compile stage (signoff-decisions.md B11; layout, COPY1 R1 M3).
+// The stage ids stay as they are on the wire (main/world/compile.ts CompileStage, and worldHost.ts's 'cloning'); only
+// the pane turns them into words. Every stage main sends has its own words; an id a later version adds reads as
+// "Mapping" until it gets some.
 
 export const STAGE_WORDS: Readonly<Record<string, string>> = Object.freeze({
   structure: 'Listing files',
@@ -8,6 +9,7 @@ export const STAGE_WORDS: Readonly<Record<string, string>> = Object.freeze({
   grouping: 'Grouping files',
   status: 'Checking changes',
   labelling: 'Naming parts',
+  layout: 'Arranging',
   cloning: 'Cloning',
 })
 

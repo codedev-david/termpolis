@@ -241,7 +241,7 @@ All text is HTML-escaped. Names come from code and may contain markup.
 | Plan vs built | When a design is linked: matched, missing, extra, changed | n/a |
 | Planned changes | Each proposal: title, summary, parts added and removed | Same |
 | Glossary | The world glossary | Same |
-| What this document doesn't cover yet | Every part and line still undescribed, by name; what Lumopolis does not see (runtime behaviour, data contents) | Same |
+| What this document doesn't cover yet | Every part and line still undescribed, by name; what Lumopolis does not see (runtime behavior, data contents) | Same |
 
 The Connections table likewise carries every line-card field, including How often.
 

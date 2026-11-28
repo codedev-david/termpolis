@@ -450,14 +450,14 @@ describe("what this document doesn't cover yet", () => {
       { kind: 'list', items: doc.edges.slice(590).map((e) => `uses 1 message channel (${e.from.replace('b', 'Part ')} → ${e.to.replace('b', 'Part ')})`) }
     ])
     expect(paragraphs(s)[2]).toBe(NOT_SEEN)
-    expect(NOT_SEEN).toContain('runtime behaviour')
+    expect(NOT_SEEN).toContain('runtime behavior')
     expect(NOT_SEEN).toContain('data contents')
   })
   it('a design world closes with what a design does not show, not with what the code reading misses', () => {
     const s = sectionOf(build(designWorld()), 'notCovered')
     expect(paragraphs(s)).toEqual(['Every part and connection is described.', NOT_SEEN_DESIGN])
-    expect(NOT_SEEN_DESIGN).toBe('A design records what is planned, not a running app: it does not show runtime behaviour or data contents.')
-    expect(NOT_SEEN).toBe('Lumopolis reads the code, not the running app: it does not see runtime behaviour or data contents.')
+    expect(NOT_SEEN_DESIGN).toBe('A design records what is planned, not a running app: it does not show runtime behavior or data contents.')
+    expect(NOT_SEEN).toBe('Lumopolis reads the code, not the running app: it does not see runtime behavior or data contents.')
     expect(allText(build(designWorld()))).not.toContain('reads the code')
   })
   it('lists only the lines when every part is described, and says so when everything is', () => {

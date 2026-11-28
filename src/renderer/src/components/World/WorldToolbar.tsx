@@ -104,7 +104,8 @@ export interface WorldToolbarProps {
 
 /**
  * The Quality menu's choices, in order (look spec §5.1).
- * SIGNED OFF 2026-11-27 (signoff-decisions.md) (look A2): the menu's label, its four choices and its tooltip.
+ * SIGNED OFF 2026-11-27 (signoff-decisions.md) (look A2): the menu's label and its four choices; the tooltip,
+ * SIGNED OFF 2026-11-28 (signoff-decisions.md, COPY1 R1 M2).
  */
 export const QUALITY_CHOICES: { value: WorldQuality; label: string }[] = [
   { value: 'auto', label: 'Auto' },
