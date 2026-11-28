@@ -376,3 +376,16 @@ describe('resume: no wait outlasts the lock the step holds the terminal under (M
     expect(relaunchLockReason('t1', s.clock())).toBeNull()
   })
 })
+
+// HOLD-C R1 F2: a record of agy typed over an agent never seen ended (limitLook.ts noteEnteredLine): the line may have gone into the agent
+// before, so the exit step types nothing without the user's word, and with it names no conversation, not even a hint's on screen.
+describe('exit: a record typed over one never seen ended (HOLD-C R1 F2)', () => {
+  it('types nothing without the user\'s word, and with it names no conversation', async () => {
+    const t = new FakeTerminal(agy({ start: 'gone-hint' }))
+    const over = { at: t.launchedAt, commands: ['agy'], unsure: true as const, overUnended: true as const }
+    const run = (req: Partial<AgyStepRequest>) => runAgyStep({ terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'exit', ...req }, { io: t.io(), start: over, env: {}, record: () => {} })
+    expect(await run({})).toEqual({ kind: 'unknown-exit' })
+    expect(t.writes).toEqual([])
+    expect(await run({ assumeExited: true })).toEqual({ kind: 'exited', conversationId: null })
+  })
+})

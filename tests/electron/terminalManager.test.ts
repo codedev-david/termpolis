@@ -55,6 +55,7 @@ const {
   getTerminalPid,
   getTerminalSize,
   terminalShellAlone,
+  shellAloneSince,
   computeWindowsPty,
   isShellInForeground,
   terminalLumopolis,
@@ -321,6 +322,46 @@ describe('terminalManager', () => {
   it('has no answer for a terminal it has no process for', async () => {
     expect(await terminalShellAlone('no-such-terminal')).toBeNull()
     expect(shellAlone).not.toHaveBeenCalled()
+  })
+
+  // HOLD-C R1 F2: the usage-limit look never asks the OS (endpoint security reads a process query on a timer as discovery), but it
+  // reads the last answer an ask that something needed got (a switch, the model switch, a submit): with when it was asked, for that
+  // terminal's own shell, and only an answer the OS gave.
+  it('keeps the OS\'s last answer for the terminal\'s shell, with when it was asked, and gives it only for an ask since the time named', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5000)
+    spawnTerminal('alone-2', '/bin/zsh', '/tmp', vi.fn())
+    expect(shellAloneSince('alone-2', 0)).toBeNull()
+    vi.mocked(shellAlone).mockResolvedValueOnce(true)
+    await terminalShellAlone('alone-2')
+    expect(shellAloneSince('alone-2', 5000)).toBe(true)
+    expect(shellAloneSince('alone-2', 5001)).toBeNull()
+    // "Still running" is kept too; "can't tell" keeps the answer before it.
+    now.mockReturnValue(6000)
+    vi.mocked(shellAlone).mockResolvedValueOnce(false)
+    await terminalShellAlone('alone-2')
+    expect(shellAloneSince('alone-2', 5500)).toBe(false)
+    now.mockReturnValue(7000)
+    vi.mocked(shellAlone).mockResolvedValueOnce(null)
+    await terminalShellAlone('alone-2')
+    expect(shellAloneSince('alone-2', 5500)).toBe(false)
+    expect(shellAloneSince('no-such-terminal', 0)).toBeNull()
+    now.mockRestore()
+  })
+
+  it('gives no answer the OS gave for a shell the terminal no longer runs, or one asked before it started', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5000)
+    spawnTerminal('alone-3', '/bin/zsh', '/tmp', vi.fn())
+    let answer!: (alone: boolean) => void
+    vi.mocked(shellAlone).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    const asked = terminalShellAlone('alone-3')
+    // The terminal is closed and opened again under the same id while the OS answers: that answer was for the shell before.
+    killTerminal('alone-3')
+    spawnTerminal('alone-3', '/bin/zsh', '/tmp', vi.fn())
+    answer(true)
+    await asked
+    expect(shellAloneSince('alone-3', 0)).toBeNull()
+    killTerminal('alone-3')
+    now.mockRestore()
   })
 
   // 6. killTerminal handles non-existent terminal gracefully

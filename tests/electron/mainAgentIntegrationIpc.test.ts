@@ -119,6 +119,7 @@ const H = vi.hoisted(() => {
     getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
     isShellInForeground: vi.fn((_id: string): boolean | null => null),
     terminalShellAlone: vi.fn(async (_id: string): Promise<boolean | null> => null),
+    shellAloneSince: vi.fn((_id: string, _since: number): boolean | null => null),
     mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
     mkdirSync: vi.fn(),
@@ -281,6 +282,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalSize: H.getTerminalSize,
   isShellInForeground: H.isShellInForeground,
   terminalShellAlone: H.terminalShellAlone,
+  shellAloneSince: H.shellAloneSince,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
@@ -1053,6 +1055,10 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(H.terminalShellAlone).toHaveBeenLastCalledWith('t-sw')
     H.terminalShellAlone.mockResolvedValueOnce(null)
     expect(await io.shellAlone!('t-sw')).toBeNull()
+    // The last of those answers, kept with when it was asked, which the usage-limit look reads and never asks for (HOLD-C R1).
+    H.shellAloneSince.mockReturnValueOnce(true)
+    expect(io.aloneSince!('t-sw', 4000)).toBe(true)
+    expect(H.shellAloneSince).toHaveBeenLastCalledWith('t-sw', 4000)
     vi.useFakeTimers()
     const slept = io.sleep(250)
     vi.advanceTimersByTime(250)

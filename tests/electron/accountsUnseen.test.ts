@@ -136,18 +136,21 @@ beforeEach(() => {
 afterEach(() => { _resetTerminalAccountsForTest(); sb.dispose() })
 
 describe('an agent\'s exit in a terminal that never shows one (CH4-1, HOLD-C)', () => {
-  it('stays on record after its exit hint and the shell\'s prompt: an edited line makes no guess, and a launch typed after it starts no record', async () => {
+  // HOLD-C R1 F2: the record is not the first agent's for ever. A launch typed later replaces it as one started with unknown options,
+  // over a record never seen ended: the chip shows the new agent, and the switch from it carries nothing and types nothing.
+  it('stays on record after its exit hint and the shell\'s prompt, an edited line making no guess, until a launch typed after it replaces it as unsure', async () => {
     await firstSession()
     const first = terminalAgentStart('t1')
     await editedLine()
     expect(terminalAgentStart('t1')).toBe(first)
     expect(terminalAgentStart('t1')).not.toHaveProperty('unseen')
     clock += 3000
-    type('codex\r'); clock += 100
-    data('codex\r\n' + paint(CODEX_UP))
-    await lookNow()
-    expect(terminalAgentStart('t1')).toBe(first)
-    expect(first).toMatchObject({ agent: 'claude', commands: ['claude'] })
+    type('codex -m gpt-5.6-sol\r'); clock += 100
+    data('codex -m gpt-5.6-sol\r\n' + paint(CODEX_UP))
+    const l = await lookNow()
+    expect(terminalAgentStart('t1')).not.toBe(first)
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'], unsure: true, overUnended: true })
+    expect(l).toMatchObject({ agent: 'codex', live: true })
     expect(first?.ended).not.toBe(true)
   })
 })

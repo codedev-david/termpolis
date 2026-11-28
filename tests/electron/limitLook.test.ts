@@ -459,6 +459,43 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(agentGone(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN), 't', start(), FOREGROUND_GRACE_MS * 10)).toBe(true)
   })
 
+  // HOLD-C R1 F3: after a minute of the agent's output its launch, and the shell's first prompt after it, have scrolled out of the
+  // 32 KB window main keeps, and the first report left in it is the exit's. Once a look has seen that first prompt, it is kept as
+  // seen, so the exit's report still counts; a start no look saw it for can't tell, and stays live (no exit without evidence).
+  it('reads the shell\'s report after the agent as its exit once the launch has scrolled out of the window, the first prompt kept as seen', () => {
+    const WORK = ('Reading src/main/accountSwitch.ts and the tests beside it, one at a time.\r\n').repeat(500)
+    const all = BEFORE + FIRST + ECHO + BOX + WORK + '\r\n' + AGAIN
+    const SIZE = 32_000
+    const windowed: SwitchIO = { ...io(all), output: () => ({ raw: all.slice(-SIZE), end: all.length }), outputFrom: (_id, from) => all.slice(Math.max(from, all.length - SIZE)) }
+    const s = start()
+    const rec: { at: number; commands: string[]; prompted?: true } = { at: BEFORE.length, commands: [LINE] }
+    // The looks while the launch was in the window: the agent runs.
+    expect(agentGone(io(BEFORE + FIRST + ECHO + BOX), 't', s, FOREGROUND_GRACE_MS * 10)).toBe(false)
+    expect(liveness(io(BEFORE + FIRST + ECHO + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
+    expect(all.length - s.at).toBeGreaterThan(SIZE)
+    expect(agentGone(windowed, 't', s, FOREGROUND_GRACE_MS * 10)).toBe(true)
+    expect(lookForLimit(windowed, 't', start(), FOREGROUND_GRACE_MS * 10).live).toBe(true)
+    expect(liveness(windowed, 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    // No look saw the first prompt: nothing tells which report is the exit's, and nothing is read as one.
+    expect(agentGone(windowed, 't', start(), FOREGROUND_GRACE_MS * 10)).toBe(false)
+    expect(liveness(windowed, 't', 'claude', { at: BEFORE.length, commands: [LINE] }).state).not.toBe('gone')
+  })
+
+  it('keeps the first prompt as seen only once its row is entered, and never past a report the shell made before the line', () => {
+    // The first prompt's row not ended yet: a second report on it would be the same prompt's, so nothing is kept.
+    const s = start()
+    expect(agentGone(io(BEFORE + FIRST), 't', s, FOREGROUND_GRACE_MS * 10)).toBe(false)
+    expect(s.prompted).toBeUndefined()
+    // A second report on the same row is still that first prompt's, once its row is entered.
+    expect(agentGone(io(BEFORE + FIRST + `${E}]9;9;C:\\tmp\x07` + ECHO + BOX), 't', s, FOREGROUND_GRACE_MS * 10)).toBe(false)
+    expect(s.prompted).toBe(true)
+    expect(agentGone(io(BEFORE + FIRST + `${E}]9;9;C:\\tmp\x07` + ECHO + BOX + '\r\n' + AGAIN), 't', s, FOREGROUND_GRACE_MS * 10)).toBe(true)
+    // A shell that reported a prompt before the line: its first report since is the shell back, as before (#106 does not apply).
+    const before = { at: (report + 'bash-5.3$ ').length, commands: [LINE], agent: 'claude' as const, time: 0 }
+    const out = report + 'bash-5.3$ ' + ECHO + BOX + '\r\n' + AGAIN
+    expect(agentGone(io(out), 't', before, FOREGROUND_GRACE_MS * 10)).toBe(true)
+  })
+
   // That first prompt is the shell's first, on its way when the line was typed, and the agent runs after it: whatever follows it
   // (part of the line, another line, nothing), it is no exit at any moment, only the shell's next report is (HOLD-C).
   it('reads that first prompt as no exit whatever follows it, at any moment', () => {
@@ -568,5 +605,73 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(agentGone(io(BEFORE + FIRST + 'agy\r\n' + AGY + '\r\n' + AGAIN), 't', agy, FOREGROUND_GRACE_MS)).toBe(true)
     expect(liveness(io(BEFORE + FIRST + 'agy\r\n'), 't', 'agy', rec)).toEqual({ state: 'unknown' })
     expect(agentGone(io(BEFORE + FIRST + 'agy\r\n'), 't', agy, FOREGROUND_GRACE_MS)).toBe(false)
+  })
+})
+
+// HOLD-C R1 F2: a shell that never shows an agent's exit (Git Bash whose rc sets a PROMPT_COMMAND of its own, WSL, a shell with no
+// integration), on Windows, which reads no foreground. The record must not stay the first agent's for ever: the OS's last answer,
+// asked by something that needed it (a switch, the model switch, a submit), ends it where it says only the shell was left after the
+// agent's start; and where nothing can tell, an agent typed later replaces it as one started with unknown options, over a record
+// never seen ended, which the switch types nothing for (signoff-decisions.md, HOLD-C R1).
+describe('a terminal that never shows an exit (HOLD-C R1 F2)', () => {
+  /** Claude Code started at 1000, exited printing no hint at a shell that reports nothing, on Windows. */
+  function silentExit(over: Partial<SwitchIO> = {}): { t: FakeTerminal; io: SwitchIO; start: LiveStart } {
+    const { t, start } = setup({ exit: 'no-hint', reports: false })
+    t.type('/exit')
+    t.type('\r')
+    start.time = 1000
+    return { t, start, io: { ...t.io(), atShell: () => null, ...over } }
+  }
+
+  it('reads the agent gone on the OS\'s last answer that only the shell was left, asked once the agent had started, and on no other', () => {
+    const asked: number[] = []
+    const seen = silentExit({ aloneSince: (_id, since) => { asked.push(since); return since <= 5000 ? true : null } })
+    expect(agentGone(seen.io, 't', seen.start, 9000)).toBe(true)
+    expect(asked).toEqual([1000 + FOREGROUND_GRACE_MS])
+    expect(lookForLimit(seen.io, 't', silentExit({ aloneSince: () => true }).start, 9000).live).toBe(false)
+    // An answer from before the agent was past its start (the cache gives none for it), or one that something still runs: no exit.
+    expect(agentGone(silentExit({ aloneSince: () => null }).io, 't', silentExit().start, 9000)).toBe(false)
+    const running = silentExit({ aloneSince: () => false })
+    expect(agentGone(running.io, 't', running.start, 9000)).toBe(false)
+    // Within the moment the shell takes to start the agent, no answer is read.
+    const early = silentExit({ aloneSince: () => true })
+    expect(agentGone(early.io, 't', early.start, 1000 + FOREGROUND_GRACE_MS - 1)).toBe(false)
+  })
+
+  it('replaces the record with one of an agent typed later, its options unknown, over a record never seen ended; the chip shows the new agent', () => {
+    const { io, start } = silentExit()
+    expect(agentGone(io, 't', start, 9000)).toBe(false)
+    const next = noteEnteredLine(io, 't', start, 'codex -m gpt-5.6-sol --dangerously-bypass-approvals-and-sandbox', 900, 9000)
+    expect(next).toEqual({ at: 900, commands: ['codex'], agent: 'codex', time: 9000, unsure: true, overUnended: true })
+    // The first is not read as ended: nothing said so.
+    expect(start.ended).toBeUndefined()
+    expect(lookForLimit(io, 't', next!, 9000)).toMatchObject({ agent: 'codex', live: true, startAt: 900 })
+    // A command that starts no agent changes nothing.
+    expect(noteEnteredLine(io, 't', start, 'git status', 900, 9000)).toBeNull()
+  })
+
+  it('keeps an agent named in the live agent\'s box a prompt, a turn, in such a terminal', () => {
+    const { t, start } = setup({ reports: false })
+    const io = { ...t.io(), atShell: () => null }
+    t.type('codex review the diff')
+    expect(noteEnteredLine(io, 't', start, 'codex review the diff', 500, 9000)).toBeNull()
+    expect(start).toMatchObject({ turned: true, turnedAt: 500 })
+    // Not yet drawn in it (pasted with its Enter), it can't be told from a line typed at the shell under the last frame an agent left:
+    // the record is the agent typed, over one never seen ended, which the switch types nothing for.
+    const pasted = setup({ reports: false })
+    expect(noteEnteredLine({ ...pasted.t.io(), atShell: () => null }, 't', pasted.start, 'codex review the diff', 500, 9000)).toMatchObject({ agent: 'codex', overUnended: true })
+  })
+
+  it('starts nothing over a record a shell that reports its prompts, or the PTY\'s foreground, still shows running', () => {
+    // An agent asking something of its own (no box): the line answers it.
+    const reporting = setup({ start: 'question' })
+    expect(noteEnteredLine(reporting.t.io(), 't', reporting.start, 'codex', 500, 9000)).toBeNull()
+    const foreground = setup({ start: 'question', reports: false, foreground: true })
+    expect(noteEnteredLine(foreground.t.io(), 't', foreground.start, 'codex', 500, 9000)).toBeNull()
+    // A shell that reported a prompt once (SW2-10), though not in the window: the same.
+    const once = setup({ start: 'question', reports: false })
+    expect(noteEnteredLine({ ...once.t.io(), reported: () => ({ posix: true, windows: false }) }, 't', once.start, 'codex', 500, 9000)).toBeNull()
+    const prompted = setup({ start: 'question', reports: false })
+    expect(noteEnteredLine(prompted.t.io(), 't', { ...prompted.start, prompted: true }, 'codex', 500, 9000)).toBeNull()
   })
 })

@@ -333,3 +333,31 @@ describe('a real shell with integration whose agent exited still switches with n
     expect(t.ran.filter((line) => line !== '')).toHaveLength(1)
   })
 })
+
+// HOLD-C R1 F2: a record of an agent typed over one never seen ended (limitLook.ts noteEnteredLine, a terminal that can't show an exit) may be
+// a line the agent before took into itself: the switch from it types nothing, whatever the screen shows, and on the user's word that it
+// exited resumes no conversation, neither the one a hint on screen names nor the one Termpolis launched, and carries no flags.
+describe('a record typed over one never seen ended (HOLD-C R1 F2)', () => {
+  const over = (t: FakeTerminal) => ({ at: t.launchedAt, commands: ['claude'], unsure: true as const, overUnended: true as const })
+
+  it('types nothing without the user\'s word, even where the screen shows the shell back with an exit hint', async () => {
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'gone-hint', exit: 'hint' })
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'gitbash' }, {
+      io: t.io(), agent: 'claude', start: over(t), target: TARGET, sessionId: ID, hasTranscript: () => true, newSessionId: () => NEW_ID, record: () => {},
+    })
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
+    expect(t.writes).toEqual([])
+  })
+
+  it('on the user\'s word starts a new session, bare, resuming neither the hint\'s conversation nor the launch\'s', async () => {
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'gone-hint', exit: 'hint' })
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'gitbash', assumeExited: true }, {
+      io: t.io(), agent: 'claude', start: over(t), target: TARGET, sessionId: '33333333-4444-4555-8666-777777777777', hasTranscript: () => true,
+      newSessionId: () => NEW_ID, record: () => {},
+    })
+    expect(outcome).toEqual({ kind: 'fresh', why: 'no-session', unseenStart: true })
+    expect(t.ran.join('\n')).not.toContain(ID)
+    expect(t.ran.join('\n')).not.toContain('33333333-4444-4555-8666-777777777777')
+    expect(t.ran.join('\n')).toContain(`--session-id ${NEW_ID}`)
+  })
+})

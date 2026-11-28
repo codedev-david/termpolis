@@ -982,3 +982,61 @@ describe('accounts:switch after a line the shell ran that the keys do not say (S
     expect(term.ran.join('\n')).toContain('--session-id')
   })
 })
+
+// HOLD-C R1 F2: the same after a launch typed in a terminal that never shows an exit (Git Bash whose rc sets a PROMPT_COMMAND of its own, on
+// Windows: no prompt report, no foreground read). Nothing says the agent before is gone, so the record of the line typed after it is one of an
+// agent started with unknown options over a record never seen ended: the switch from it types nothing (unknown-exit), and on the user's word
+// that it exited carries none of the earlier launch's flags and resumes none of its conversation.
+describe('accounts:switch after a launch typed in a terminal that never shows an exit (SAFETY-R3-1, HOLD-C R1)', () => {
+  const OLD_FLAGS = '--dangerously-skip-permissions --model opus'
+
+  async function silentAfterClaude(line: string): Promise<{ b: string; cb: string }> {
+    const ids = await twoClaude()
+    mkdirSync(join(sb.paths.codexHome, 'sessions'), { recursive: true })
+    const cb = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cb', folder: 'new', copy: false })).account.id
+    term = new FakeTerminal(claude({ start: 'gone-quiet', exit: 'no-hint', reports: false }))
+    register({ outputEnd: () => term.out.length })
+    // Termpolis's launch of Claude Code on its own session, which has a transcript; the account it runs on is not known.
+    noteAgentStart('t1', { at: term.launchedAt, commands: [`claude ${OLD_FLAGS} --session-id ${ID}`], agent: 'claude' })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+    noteTypedInput('t1', `${line}\r`, 40)
+    return { b: ids.b, cb }
+  }
+
+  it('a Codex launch after Claude Code: the record is Codex\'s, unsure; the switch types nothing, and on the user\'s word resumes and carries nothing of Claude\'s', async () => {
+    const { cb } = await silentAfterClaude('codex -m gpt-5.6-sol')
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'], unsure: true, overUnended: true })
+    expect(terminalSessionId('t1')).toBeUndefined()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(await switchTo(cb)).toEqual({ kind: 'unknown-exit' })
+    expect(term.writes).toEqual([])
+    await switchTo(cb, { assumeExited: true })
+    const ran = term.ran.join('\n')
+    expect(ran).toContain('codex')
+    expect(ran).not.toContain(ID)
+    expect(ran).not.toMatch(/--resume|\bresume\b/)
+    expect(ran).not.toContain('--dangerously-skip-permissions')
+    expect(ran).not.toContain('--model opus')
+    expect(ran).not.toContain('gpt-5.6-sol')
+    log.mockRestore()
+  })
+
+  it('a Claude Code launch after Claude Code: the switch types nothing, and on the user\'s word starts a new session, bare, saying so', async () => {
+    const { b } = await silentAfterClaude('claude --model sonnet --session-id 9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f')
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude'], unsure: true, overUnended: true })
+    expect(terminalSessionId('t1')).toBeUndefined()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(await switchTo(b)).toEqual({ kind: 'unknown-exit' })
+    expect(term.writes).toEqual([])
+    const r = await switchTo(b, { assumeExited: true })
+    expect(r).toMatchObject({ kind: 'fresh', unseenStart: true })
+    const ran = term.ran.join('\n')
+    expect(ran).not.toContain(`--resume ${ID}`)
+    expect(ran).not.toContain('9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f')
+    expect(ran).not.toContain('--dangerously-skip-permissions')
+    expect(ran).not.toContain('--model')
+    log.mockRestore()
+  })
+})
