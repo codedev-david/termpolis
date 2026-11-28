@@ -37,6 +37,8 @@ function home(g: Grouping, file: string): Grouping['buildings'][number] {
 }
 
 const ids = (g: Grouping): string[] => g.buildings.map((b) => b.id)
+// How many seeded random projects the cap ceiling's property test groups (WORLD_GROUP_SEEDS for a longer run).
+const SEEDS = Number(process.env.WORLD_GROUP_SEEDS ?? 400)
 
 /** Structural invariants every grouping must satisfy. */
 function checkInvariants(g: Grouping, files: string[]): void {
@@ -1057,6 +1059,9 @@ describe('groupProject', () => {
       })
     // District b: buildings of five files with no name stem, so no part, and no links out.
     const other = (k: number): Record<string, string[]> => clique(['p', 'q', 'r', 's', 't'].map((x) => `src/b/${x}${k}`))
+    // District z: one building of 24 files with no links, larger than any these tests make, so the cap never touches it and
+    // the plan's largest building (the ceiling) never decides where a building goes. The ceiling's own tests leave it out.
+    const ballast = (): Record<string, string[]> => clique(bare('src/z', 'za', 24))
     /** One merge over the cap: where the mixed building went. */
     const capOnce = (s: GraphSnapshot, count: number): Grouping => {
       expect(groupProject(s, []).buildings).toHaveLength(count)
@@ -1070,13 +1075,13 @@ describe('groupProject', () => {
     })
 
     it('growth in one district does not cost another district a part that another neighbour could spare', () => {
-      const base = snap({ ...clique(part), ...clique(wave), ...mixed(), ...other(1), ...other(2) })
+      const base = snap({ ...clique(part), ...clique(wave), ...mixed(), ...other(1), ...other(2), ...ballast() })
       const grown = snap({ ...base.fileImports, ...other(3) })
-      const before = groupProject(base, [], { maxBuildings: 5 })
-      expect(before.buildings).toHaveLength(5)
-      const after = groupProject(grown, [], { maxBuildings: 5 })
+      const before = groupProject(base, [], { maxBuildings: 6 })
+      expect(before.buildings).toHaveLength(6)
+      const after = groupProject(grown, [], { maxBuildings: 6 })
       checkInvariants(after, grown.files)
-      expect(after.buildings).toHaveLength(5)
+      expect(after.buildings).toHaveLength(6)
       // District b grew by a building, so district a's smallest now merges. Into its densest link it would leave the
       // part 3 code files of 10, no longer a third; it goes to the wave building, which stays a part, instead.
       expect(home(before, 'src/a/codeAlpha.ts').members).toEqual(files(part))
@@ -1085,7 +1090,7 @@ describe('groupProject', () => {
     })
 
     it('sends the smallest building to a link that keeps its part before a denser one that does not', () => {
-      const g = capOnce(snap({ ...clique(part), ...clique(wave), ...mixed() }), 3)
+      const g = capOnce(snap({ ...clique(part), ...clique(wave), ...mixed(), ...ballast() }), 4)
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
       expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
@@ -1095,7 +1100,7 @@ describe('groupProject', () => {
       const kelp = [...inA('kelpAlpha', 'kelpBeta', 'kelpDelta', 'kelpEcho', 'kelpGamma'), ...bare('src/a', 'ra', 3)]
       const m = mixed()
       m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', kelp[0]))
-      const g = capOnce(snap({ ...clique(part), ...clique(wave), ...clique(kelp), ...m }), 4)
+      const g = capOnce(snap({ ...clique(part), ...clique(wave), ...clique(kelp), ...m, ...ballast() }), 5)
       expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...wave, ...inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')]))
       expect(home(g, 'src/a/kelpAlpha.ts').members).toEqual(files(kelp))
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
@@ -1168,7 +1173,7 @@ describe('groupProject', () => {
         const keeper = [...bare('src/a', 'qa', size - 5), ...inA('waveAlpha', 'waveBeta', 'waveDelta', 'waveEcho', 'waveGamma')]
         const m = mixed(part[0], keeper[0])
         m['src/a/pathGamma.ts'].push('./codeBeta')
-        const g = capOnce(snap({ ...clique(part), ...clique(keeper), ...m }), 3)
+        const g = capOnce(snap({ ...clique(part), ...clique(keeper), ...m, ...ballast() }), 4)
         const small = inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')
         expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...(to === 'wave' ? keeper : part), ...small]))
       })
@@ -1180,7 +1185,7 @@ describe('groupProject', () => {
       const m = mixed()
       m['src/a/pathGamma.ts'].push('./zork')
       m['src/a/ruleDelta.ts'].push('./zork')
-      const s = snap({ ...clique(part), ...clique(wave), ...m, 'src/a/zork.ts': [], 'src/solo/x.ts': [] })
+      const s = snap({ ...clique(part), ...clique(wave), ...m, 'src/a/zork.ts': [], 'src/solo/x.ts': [], ...ballast() })
       const bounds = [B('worker', 'zork', 'consume', 'src/solo/x.ts')]
       const all = groupProject(s, bounds).buildings.length
       const g = groupProject(s, bounds, { maxBuildings: all - 1 })
@@ -1318,7 +1323,7 @@ describe('groupProject', () => {
       const bay16 = bare('src/a/bay', 'ba', FAMILY_FOLDER_MAX)
       const m = mixed(part[0], bay16[0])
       m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', bay16[1]))
-      const g = capOnce(snap({ ...clique(part), ...clique(bay16), ...m }), 3)
+      const g = capOnce(snap({ ...clique(part), ...clique(bay16), ...m, ...ballast() }), 4)
       expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...bay16, ...inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')]))
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(part))
     })
@@ -1407,6 +1412,25 @@ describe('groupProject', () => {
       expect(home(groupProject(s, []), 'src/a/zonkOne.test.ts').name).toBe('mnemeAlpha.test')
     })
 
+    it('names a part of tests and a type declaration after the code, not the declaration (review R3-m1)', () => {
+      // No code runs in a .d.ts file: like a test, it names the building only when nothing else can. (The relay's part,
+      // pairing tests with env.d.ts, went back to pairingRoom.)
+      const tests = inA('mnemeAlpha.test', 'mnemeBeta.test', 'mnemeGamma.test')
+      const g = groupProject(snap(clique([...tests, ...inA('env.d', 'guardTwo', 'hostThree')])), [])
+      expect(home(g, 'src/a/env.d.ts').members).toHaveLength(6)
+      expect(home(g, 'src/a/env.d.ts').name).toBe('guardTwo')
+      // With nothing but tests and a declaration, the declaration ranks with the tests.
+      expect(home(groupProject(snap(clique([...tests, ...inA('aaa.d')])), []), 'src/a/aaa.d.ts').name).toBe('mnemeAlpha.test')
+      // The ESM and CommonJS declarations too (.d.mts, .d.cts), imported as .d.mjs and .d.cjs.
+      const decl = { 'src/a/aaa.d.mts': './aaa.d.mjs', 'src/a/aab.d.cts': './aab.d.cjs' }
+      const code = [...tests, ...inA('guardTwo', 'hostThree')]
+      const all = [...Object.keys(decl), ...files(code)]
+      const to = (f: string): string => decl[f as keyof typeof decl] ?? `./${f.slice(6, -3)}`
+      const m = groupProject(snap(Object.fromEntries(all.map((f) => [f, all.filter((o) => o !== f).map(to)]))), [])
+      expect(home(m, 'src/a/aaa.d.mts').members).toEqual([...all].sort())
+      expect(home(m, 'src/a/aaa.d.mts').name).toBe('guardTwo')
+    })
+
     it('goes to the densest link when no link keeps its part', () => {
       // A second part, three tile files of seven: either merge leaves its part short of a third.
       const tiles = inA('tileAlpha', 'tileBeta', 'tileGamma', 'jamOne', 'kelpTwo', 'lynxThree', 'mothFour')
@@ -1454,7 +1478,7 @@ describe('groupProject', () => {
         'src/a/tileAlpha': ['./codeAlpha'],
         'src/a/mixDelta': [rel('src/a/mixDelta', wave[0])]
       })
-      const g = capOnce(snap({ ...clique(four), ...clique(wave), ...tiles }), 3)
+      const g = capOnce(snap({ ...clique(four), ...clique(wave), ...tiles, ...ballast() }), 4)
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(four))
       expect(home(g, 'src/a/tileAlpha.ts').members).toHaveLength(12)
     })
@@ -1466,14 +1490,14 @@ describe('groupProject', () => {
         'src/a/tileAlpha': ['./codeAlpha'],
         'src/a/alphaMix': [rel('src/a/alphaMix', wave[0])]
       })
-      const g = capOnce(snap({ ...clique(three), ...clique(wave), ...tiles }), 3)
+      const g = capOnce(snap({ ...clique(three), ...clique(wave), ...tiles, ...ballast() }), 4)
       expect(home(g, 'src/a/codeAlpha.ts').members).toEqual(files(three))
       expect(home(g, 'src/a/tileAlpha.ts').members).toHaveLength(13)
     })
 
     it('counts a small sub-folder as one group, as name families do', () => {
       const zone = ['src/a/zone/alpha', 'src/a/zone/bravo', 'src/a/zone/charlie', ...inA('deltaOne', 'echoTwo', 'foxThree')]
-      const g = capOnce(snap({ ...clique(zone), ...clique(wave), ...mixed(zone[0]) }), 3)
+      const g = capOnce(snap({ ...clique(zone), ...clique(wave), ...mixed(zone[0]), ...ballast() }), 4)
       expect(home(g, 'src/a/zone/alpha.ts').members).toEqual(files(zone))
       expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
     })
@@ -1506,9 +1530,9 @@ describe('groupProject', () => {
       const za = bare('src/a', 'za', 3)
       const m = mixed(za[0])
       m['src/a/pathGamma.ts'].push(rel('src/a/pathGamma', za[1]))
-      const s = snap({ ...bayInto(za[0]), ...clique(za), ...clique(wave), ...m })
-      expect(groupProject(s, []).buildings).toHaveLength(4)
-      const g = groupProject(s, [], { maxBuildings: 2 })
+      const s = snap({ ...bayInto(za[0]), ...clique(za), ...clique(wave), ...m, ...ballast() })
+      expect(groupProject(s, []).buildings).toHaveLength(5)
+      const g = groupProject(s, [], { maxBuildings: 3 })
       checkInvariants(g, s.files)
       expect(home(g, 'src/a/zaAA.ts').members).toEqual(files([...bay, ...za]))
       expect(home(g, 'src/a/mixAlpha.ts').members).toHaveLength(11)
@@ -1540,15 +1564,265 @@ describe('groupProject', () => {
           ...bayInto(three[0]),
           ...clique(three, { [three[1]]: [rel(three[1], yard[0])], [three[2]]: [rel(three[2], wave[0])] }),
           ...clique(yard),
-          ...clique(wave)
+          ...clique(wave),
+          ...ballast()
         })
-        expect(groupProject(s, []).buildings).toHaveLength(4)
-        const g = groupProject(s, [], { maxBuildings: 2 })
+        expect(groupProject(s, []).buildings).toHaveLength(5)
+        const g = groupProject(s, [], { maxBuildings: 3 })
         checkInvariants(g, s.files)
         expect(home(g, 'src/a/yardOne.ts').members).toEqual(files(yard))
         expect(home(g, 'src/a/qaAA.ts').members).toEqual(files([...bay, ...three, ...wave]))
       })
     }
+
+    const small = inA('mixAlpha', 'nodeBeta', 'pathGamma', 'ruleDelta')
+
+    it('passes over a link only into a building no larger than the plan would make its largest (the ceiling)', () => {
+      // With nothing else on the map, the plan's largest is the part with the mixed building in it, 10 files; the wave
+      // building taking it in would be 11, so the plan's pick stands. A building of 11 files elsewhere makes the room.
+      const s = snap({ ...clique(part), ...clique(wave), ...mixed() })
+      const g = capOnce(s, 3)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...part, ...small]))
+      expect(home(g, 'src/a/qaAA.ts').members).toEqual(files(wave))
+      for (const [size, to] of [
+        [10, part],
+        [11, wave]
+      ] as const) {
+        const room = capOnce(snap({ ...s.fileImports, ...clique(bare('src/z', 'za', size)) }), 4)
+        expect(home(room, 'src/a/mixAlpha.ts').members).toEqual(files([...to, ...small]))
+      }
+    })
+
+    it('keeps a pass over that fits under the ceiling while another district falls back to the plan', () => {
+      // District a as above, and district c with a keeper of nine files (exactly a third as dense as its part): taking the
+      // mixed building in, wave makes 11 files and c's keeper 13. With 11 files elsewhere the ceiling is 11, so a's pass
+      // over stands and c's mixed building goes to its part, as in the plan.
+      const keeper = [...bare('src/a', 'qa', 4), ...inA('waveAlpha', 'waveBeta', 'waveDelta', 'waveEcho', 'waveGamma')]
+      const m = mixed(part[0], keeper[0])
+      m['src/a/pathGamma.ts'].push('./codeBeta')
+      const toC = (r: Record<string, string[]>): Record<string, string[]> =>
+        Object.fromEntries(Object.entries(r).map(([k, v]) => [k.replace('src/a/', 'src/c/'), v]))
+      const s = snap({ ...clique(part), ...clique(wave), ...mixed(), ...toC({ ...clique(part), ...clique(keeper), ...m }), ...clique(bare('src/z', 'za', 11)) })
+      expect(groupProject(s, []).buildings).toHaveLength(7)
+      const g = groupProject(s, [], { maxBuildings: 5 })
+      checkInvariants(g, s.files)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...wave, ...small]))
+      expect(home(g, 'src/c/mixAlpha.ts').members).toEqual(files([...part, ...small].map((f) => f.replace('src/a/', 'src/c/'))))
+    })
+
+    it('caps by the plan alone with planCap, passing over no link', () => {
+      const s = snap({ ...clique(part), ...clique(wave), ...mixed(), ...ballast() })
+      const g = groupProject(s, [], { maxBuildings: 3, planCap: true })
+      checkInvariants(g, s.files)
+      expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...part, ...small]))
+      expect(home(groupProject(s, [], { maxBuildings: 3 }), 'src/a/mixAlpha.ts').members).toEqual(files([...wave, ...small]))
+    })
+  })
+
+  describe("building cap ceiling: never above the plan's largest building (groupcap review round 4)", () => {
+    // Codex's repros (round 3), all in one folder: name families (platformFile0...) and loose names (detail0File...).
+    const family = (stem: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${stem}File${i}`)
+    const loose = (stem: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${stem}${i}File`)
+    const at = (name: string): string => `pkg/${name}.ts`
+    // The first four files of a group import all of it, the rest import those four.
+    const mesh = (m: Record<string, string[]>, group: string[]): void => {
+      const core = group.slice(0, 4)
+      for (const f of group) {
+        const to = (core.includes(f) ? group : core).filter((o) => o !== f)
+        m[at(f)] = [...(m[at(f)] ?? []), ...to.map((o) => `./${o}`)]
+      }
+    }
+    // `count` imports from `from` (its files in turn) into the first `count` files of `to`.
+    const link = (m: Record<string, string[]>, from: string[], to: string[], count: number): void => {
+      for (let j = 0; j < count; j++) m[at(from[j % from.length])].push(`./${to[j]}`)
+    }
+    const largest = (g: Grouping): number => Math.max(...g.buildings.map((b) => b.members.length))
+    /** The plan's and this grouping's largest building at 60, the same grouping whatever order files and imports come in. */
+    const check = (m: Record<string, string[]>, before: number): [number, number] => {
+      const s = snap(m)
+      expect(groupProject(s, [], { maxBuildings: 200 }).buildings).toHaveLength(before)
+      const plan = groupProject(s, [], { maxBuildings: 60, planCap: true })
+      const g = groupProject(s, [], { maxBuildings: 60 })
+      checkInvariants(g, s.files)
+      expect([plan.buildings.length, g.buildings.length]).toEqual([60, 60])
+      const flip = (order: (a: string[]) => string[]): GraphSnapshot => ({
+        ...s,
+        files: order(s.files),
+        fileImports: Object.fromEntries(order(Object.keys(m)).map((f) => [f, [...m[f]].reverse()]))
+      })
+      expect(groupProject(flip((a) => [...a].reverse()), [], { maxBuildings: 60 })).toEqual(g)
+      expect(groupProject(flip((a) => [...a].sort((x, y) => (x < y ? 1 : -1))), [], { maxBuildings: 60 })).toEqual(g)
+      return [largest(plan), largest(g)]
+    }
+    const extras = (m: Record<string, string[]>, n: number): void => {
+      for (let i = 0; i < n; i++) mesh(m, family(`extra${i}`, 8))
+    }
+    // Each module's own domain: four files of a family and eight loose ones, twelve in all.
+    const domain = (i: number): string[] => [...family(`domain${i}`, 4), ...loose(`detail${i}x`, 8)]
+
+    for (const [size, direct] of [
+      [36, 3],
+      [37, 3],
+      [42, 4]
+    ] as const) {
+      it(`keeps ten modules that link a ${size}-file platform as densely as their own domains out of it (Codex a)`, () => {
+        // Ten modules of seven, each with three imports into its own domain and, at a third of that density or more, into
+        // a shared platform. Passing over its domain (which it would dissolve), each went to the platform: 106 files of
+        // 36 on the plan's map, 112 of 42.
+        const m: Record<string, string[]> = {}
+        const hub = family('platform', size)
+        mesh(m, hub)
+        for (let i = 0; i < 10; i++) {
+          const close = domain(i)
+          const leaf = loose(`feature${i}x`, 7)
+          mesh(m, close)
+          mesh(m, leaf)
+          link(m, leaf, close, 3)
+          link(m, leaf, hub, size === 37 ? direct : Math.max(direct, Math.ceil((size + 7 * i) / 12)))
+        }
+        extras(m, 49)
+        expect(check(m, 70)).toEqual([size, size])
+      })
+    }
+
+    it('keeps thirteen modules out of a 16-file service that a 28-file adapter each would outgrow (Codex b)', () => {
+      // Each module links its own domain (5), the service (5), an adapter of its own (4) and every module before it (2).
+      // Passing over domains, the service grew from 16 files to 107; the plan's largest is an adapter, 28.
+      const m: Record<string, string[]> = {}
+      const hub = loose('service', 16)
+      mesh(m, hub)
+      const prior: string[][] = []
+      for (let i = 0; i < 13; i++) {
+        const close = domain(i)
+        const leaf = loose(`feature${i}x`, 7)
+        const adapter = family(`adapter${i}`, 28)
+        for (const g of [close, leaf, adapter]) mesh(m, g)
+        link(m, leaf, close, 5)
+        link(m, leaf, hub, 5)
+        link(m, leaf, adapter, 4)
+        for (const earlier of prior) link(m, leaf, earlier, 2)
+        prior.push(leaf)
+      }
+      extras(m, 33)
+      expect(check(m, 77)).toEqual([28, 28])
+    })
+
+    it('keeps a chain of modules, each linking the one before, out of a 42-file platform', () => {
+      const m: Record<string, string[]> = {}
+      const hub = family('platform', 42)
+      mesh(m, hub)
+      let before: string[] = []
+      for (let i = 0; i < 10; i++) {
+        const close = domain(i)
+        const leaf = loose(`feature${i}x`, 7)
+        mesh(m, close)
+        mesh(m, leaf)
+        link(m, leaf, close, 3)
+        link(m, leaf, hub, 4)
+        if (before.length) link(m, leaf, before, 1)
+        before = leaf
+      }
+      extras(m, 49)
+      expect(check(m, 70)).toEqual([42, 42])
+    })
+
+    // Seeded random projects: one to four districts of 6 to 65 groups each (name families, small sub-folders, loose
+    // files with tests and type declarations, a tenth of them 15 to 54 files), linked inside at a random density, and
+    // across, more often into a few hubs.
+    const rng = (seed: number): (() => number) => {
+      let a = seed >>> 0
+      return () => {
+        a = (a + 0x6d2b79f5) >>> 0
+        let t = a
+        t = Math.imul(t ^ (t >>> 15), t | 1)
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+      }
+    }
+    const randomProject = (seed: number): GraphSnapshot => {
+      const r = rng(seed)
+      const int = (n: number): number => Math.floor(r() * n)
+      const word = (len: number): string => Array.from({ length: len }, () => 'abcdefghijklmnopqrstuvwxyz'[int(26)]).join('')
+      const upper = (s: string): string => s[0].toUpperCase() + s.slice(1)
+      const groups: string[][] = []
+      const seen = new Set<string>()
+      const add = (f: string, g: string[]): void => {
+        if (seen.has(f)) return
+        seen.add(f)
+        g.push(f)
+      }
+      const nDist = 1 + int(4)
+      for (let d = 0; d < nDist; d++) {
+        const base = `src/${word(4)}`
+        const nGroups = 6 + int(60)
+        for (let k = 0; k < nGroups; k++) {
+          const g: string[] = []
+          const roll = r()
+          const n = roll < 0.1 ? 15 + int(40) : 1 + int(roll < 0.5 ? 4 : 12)
+          if (roll < 0.35) {
+            const stem = word(4 + int(3))
+            for (let i = 0; i < n; i++) add(`${base}/${stem}${upper(word(2 + int(3)))}.ts`, g)
+          } else if (roll < 0.6) {
+            const sub = `${base}/${word(5)}`
+            for (let i = 0; i < Math.min(n, 18); i++) add(`${sub}/${word(4 + int(4))}.ts`, g)
+          } else {
+            for (let i = 0; i < n; i++) add(`${base}/${word(5 + int(4))}${r() < 0.15 ? '.test' : r() < 0.05 ? '.d' : ''}.ts`, g)
+          }
+          if (g.length) groups.push(g)
+        }
+      }
+      const imports: Record<string, string[]> = {}
+      for (const f of seen) imports[f] = []
+      const join = (a: string, b: string): void => {
+        if (a === b) return
+        const to = posix.relative(posix.dirname(a), b).replace(/(\.d)?\.ts$/, '')
+        imports[a].push(to.startsWith('.') ? to : `./${to}`)
+      }
+      const pick = (g: string[]): string => g[int(g.length)]
+      for (const g of groups) {
+        const density = r()
+        for (const a of g) for (const b of g) if (r() < density * 0.6) join(a, b)
+      }
+      const hubs = groups.filter(() => r() < 0.1)
+      const nEdges = int(groups.length * 4)
+      for (let e = 0; e < nEdges; e++) {
+        const a = groups[int(groups.length)]
+        const b = hubs.length && r() < 0.35 ? hubs[int(hubs.length)] : groups[int(groups.length)]
+        const w = 1 + int(r() < 0.2 ? 8 : 3)
+        for (let j = 0; j < w; j++) join(pick(a), pick(b))
+      }
+      return { root: '/repo', files: [...seen].sort(), symbols: [], callEdges: [], fileImports: imports }
+    }
+
+    it("keeps the largest building at or under the plan's on seeded random projects", () => {
+      let passedOver = 0
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const s = randomProject(seed)
+        const g = groupProject(s, [], { maxBuildings: 60 })
+        const plan = groupProject(s, [], { maxBuildings: 60, planCap: true })
+        if (largest(g) > largest(plan)) throw new Error(`seed ${seed}: ${largest(g)} files against the plan's ${largest(plan)}`)
+        if (g.buildings.some((b, k) => b.members.join() !== plan.buildings[k]?.members.join())) passedOver++
+      }
+      // And on a good share of them the passes over still change the map.
+      expect(passedOver).toBeGreaterThan(SEEDS / 20)
+    }, 300_000)
+
+    it("starts the passes over from the state the plan's run started from", () => {
+      // Seeds where no pass over applies, so the map is the plan's. The plan's run merges folder and name-stem counts
+      // in place; had the second run started from those (the stems shared, not copied), 420 of 1,500 seeds would differ.
+      for (const seed of [1, 5, 11, 30]) {
+        const s = randomProject(seed)
+        expect(groupProject(s, [], { maxBuildings: 60 })).toEqual(groupProject(s, [], { maxBuildings: 60, planCap: true }))
+      }
+    })
+
+    it("falls back to the plan's whole map when a pass over, under the ceiling itself, lets a later merge grow past it", () => {
+      // Seeds where the passes over alone made a building of 64 files against the plan's 61, 62 against 51, 57 against 54.
+      for (const seed of [48, 507, 752]) {
+        const s = randomProject(seed)
+        expect(groupProject(s, [], { maxBuildings: 60 })).toEqual(groupProject(s, [], { maxBuildings: 60, planCap: true }))
+      }
+    })
   })
 
   it('ignores node_modules, dist, out, build, vendor, *.min.js', () => {

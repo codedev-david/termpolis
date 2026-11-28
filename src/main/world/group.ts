@@ -27,15 +27,28 @@
 //    a link at least a third as dense as the module's densest: a weak link into a big family or a
 //    big hub never outweighs a much denser one home. Growth in one district, which only moves the point
 //    where merging stops, then does not cost another district a part that a near rival could spare.
+//    The ceiling (PENDING SIGN-OFF, groupcap review round 4): the plan's own run, passing no link over, goes first,
+//    and its largest building is the ceiling. A link is passed over only into a building that stays at or under it
+//    with the building in; and when the run still ends with a building above it (a pass over changes the sizes that
+//    later merges see), the plan's run stands, for the whole map. So no building is larger than the plan's largest on
+//    the same input. The ruled form, which also let a receiver grow to its size before any pass over plus the building,
+//    left 5 of 1,000 seeded random projects above the plan's largest (by up to 11 files) and Codex's 36-file platform
+//    at 43; this one leaves none of 3,000.
 // 5. Names: a process building is named after its process; any other after its front door, the
-//    non-test member reaching most of the building, then most imported from outside it, skipping
-//    names that would pass for the district or a main/renderer/preload entry. A part (PART_MIN) is
-//    named after a member of its own group instead, so a part that took in a busier helper keeps its
-//    own name: the first non-test one reaching most of the building, then in path order with case
-//    ignored, then by exact path. That reads only the building's own files, so an import from
-//    outside or a case-only rename moves no part's name. A part of nothing but tests in a building
-//    with a non-test file takes the front door's name (PENDING SIGN-OFF: the plan names every
-//    building by its paths and has no rule for which member).
+//    member reaching most of the building that is no test or type declaration (.d.ts), then most
+//    imported from outside it, skipping names that would pass for the district or a
+//    main/renderer/preload entry. A part (PART_MIN) is named after a member of its own group instead,
+//    so a part that took in a busier helper keeps its own name: the first one that is no test or
+//    declaration reaching most of the building, then in path order with case ignored, then by exact
+//    path. That reads only the building's own files, so an import from outside or a case-only rename
+//    moves no part's name. A part of nothing but tests and declarations in a building with other
+//    files takes the front door's name (PENDING SIGN-OFF: the plan names every building by its paths
+//    and has no rule for which member). Known limit (ruled for 2.0, groupcap review R3-m2): which
+//    files make up a part's group, and so its name, also depends on how many files their folder holds
+//    (FAMILY_FOLDER_MAX: a sub-folder of up to that many is one group, a bigger one groups by name
+//    word), so one unlinked file added to a folder of 16 can move the name to another member (apple
+//    to zebraAa). The same tree always gives the same name, and a recompile that keeps the buildings
+//    no change touched (touchedBuildings, fromPrevious) keeps the old one.
 // 6. Ids are slugs of member paths (a name with no letter or digit a slug keeps, such as an emoji or
 //    a non-Latin script, is 'u' plus a short hash of the name, never 'root', which is the repository
 //    root's alone). A base no other building shares is used as is; colliding bases get '--' plus the
@@ -81,6 +94,9 @@ export interface Grouping {
 export interface GroupOptions {
   maxDistricts?: number
   maxBuildings?: number
+  /** Cap buildings by the plan's step 4 alone, with no link passed over (the run whose largest building is the ceiling
+   *  on the passes over): for tests that compare the two. */
+  planCap?: boolean
 }
 
 export const DEFAULT_MAX_DISTRICTS = 12
@@ -128,8 +144,10 @@ export const PART_MIN = 3
  *  groupcap review round 2). */
 export const PART_LINK_FLOOR = 3
 const RELATIVE = /^\.\.?(\/|$)/
-/** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
+/** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry, and a building's name only when nothing else can. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
+/** A type declaration file: no code runs there, so it names a building only after the code (groupcap review R3-m1). */
+const DECLARATION = /\.d\.[cm]?ts$/
 /** How many imports naming one building's front door may examine (review K6; WP5 fix M2 counts each import looked at, so a
  *  barrel file with thousands of imports costs what it reads): a search from every member is quadratic on a long chain.
  *  Members with the fewest importers inside the building are searched first, as they reach the most, each in import order;
@@ -237,6 +255,15 @@ class Links {
       }
     })
     this.at[o] = undefined
+  }
+  /** A copy whose links fold apart from these (forEach skips the holes of buildings with no link; a folded one's
+   *  undefined becomes an empty map, which reads the same). */
+  clone(): Links {
+    const c = new Links(this.at.length)
+    this.at.forEach((m, a) => {
+      c.at[a] = new Map(m)
+    })
+    return c
   }
 }
 
@@ -862,15 +889,15 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // 4. Cap buildings. Heap key orders (process?, size, first path); adjacency is same-district only.
   const nb = bFiles.length
   const K = n + 1
-  const bSize = bFiles.map((m) => m.length)
+  let bSize = bFiles.map((m) => m.length)
   // reduce, not Math.min(...m): spreading a 100k-member building overflows the call stack.
-  const bMin = bFiles.map((m) => m.reduce((a, x) => Math.min(a, x)))
+  let bMin = bFiles.map((m) => m.reduce((a, x) => Math.min(a, x)))
   const bDist = bFiles.map((m) => district[m[0]])
-  const bStamp = new Int32Array(nb)
+  let bStamp = new Int32Array(nb)
   // Per building: how many members share each folder + name stem, and the largest such count.
   // No map for a building with no named member, as most of a big project's one-file buildings are (fix round 4).
-  const bTop = new Array<number>(nb).fill(0)
-  const bStems = bFiles.map((m, b) => {
+  let bTop = new Array<number>(nb).fill(0)
+  let bStems = bFiles.map((m, b) => {
     let c: Map<string, number> | undefined
     for (let j = 0; j < m.length; j++) {
       const i = m[j]
@@ -885,7 +912,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
     return c
   })
-  const bAdj = new Links(nb)
+  let bAdj = new Links(nb)
   imports.forEach((targets, i) => {
     for (let j = 0; j < targets.length; j++) {
       const a = owner[i]
@@ -896,10 +923,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       }
     }
   })
-  const prev = new Int32Array(nb).fill(-1)
-  const next = new Int32Array(nb).fill(-1)
+  let prev = new Int32Array(nb).fill(-1)
+  let next = new Int32Array(nb).fill(-1)
   const tail = new Map<number, number>()
-  const perDistrict = new Map<number, number>()
+  let perDistrict = new Map<number, number>()
   const byFirst = Int32Array.from({ length: nb }, (_, b) => b).sort((x, y) => bMin[x] - bMin[y])
   for (let k = 0; k < nb; k++) {
     const b = byFirst[k]
@@ -929,10 +956,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // since by (a) no count grows in a merge, so a tie at the top stays a tie (no part, whatever the key) and a tie
   // below it keeps the same count; and capTarget's loop over the links may skip fixed buildings or not, since by (b)
   // they have no part while a plain building looks at them (round 3 too).
-  const pTop = new Int32Array(nb)
-  const pSecond = new Int32Array(nb)
-  const pTopKey = new Array<string>(nb).fill('')
-  const pSecondKey = new Array<string>(nb).fill('')
+  let pTop = new Int32Array(nb)
+  let pSecond = new Int32Array(nb)
+  let pTopKey = new Array<string>(nb).fill('')
+  let pSecondKey = new Array<string>(nb).fill('')
   /** A file's part group: its small sub-folder (not its district's seed folder), else its folder and leading name word,
    *  else none (''). */
   const partKey = (i: number): string => {
@@ -999,9 +1026,6 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // Weighted sizes reach COHESIVE_WEIGHT * n, so fixed buildings sit above every plain key.
   const key = (b: number): number =>
     (fixed(b) ? (COHESIVE_WEIGHT + 1) * K * K : 0) + bSize[b] * (cohesive(b) ? COHESIVE_WEIGHT : 1) * K + bMin[b]
-  const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
-  for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
-  const bUf = new UnionFind(nb)
   const step = (from: number, dir: Int32Array): number => {
     let x = from
     while (x >= 0 && fixed(x)) x = dir[x]
@@ -1020,12 +1044,16 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // The links of the building being placed that would dissolve their part (stamped with the pass), for capTarget.
   const cut = new Int32Array(nb)
   let pass = 0
+  // Which run this is: the plan's alone (plan), or with the passes over; and the plan's largest building (ceiling).
+  let plan = false
+  let ceiling = 0
   /** Where b goes: the densest link (weight over the neighbour's size, so a hub that imports everything never wins by
    *  bulk), ties in path order, as the plan's step 4 has it; except that when that link is a part b would dissolve and
    *  some link is a part that stays one taking b in (keepsPart) and at least 1 / PART_LINK_FLOOR as dense, every link
    *  that would dissolve its part is passed over. A link with no part is weighed by density like any other. A fixed
    *  building never takes in a plain one by a link: its name says what runs or answers there, and unrelated helpers would
-   *  blur that. PENDING SIGN-OFF (step 4 of the header).
+   *  blur that. A link is passed over only for one that stays at or under the plan's largest building (ceiling) with b
+   *  in. PENDING SIGN-OFF (step 4 of the header).
    *  Two limits: a building with no link keeps the plan's path-order fallback, which can land it in a part and dilute
    *  it, or dissolve it. And passing over a link changes where one building goes, so the sizes, and with them which
    *  building is smallest next and where later merges go, can differ from the plan's; never the policy (smallest first,
@@ -1033,7 +1061,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const capTarget = (b: number): number => {
     const near = bAdj.of(b)
     const t = densest(near, fixed)
-    if (t >= 0 && partOf(t) !== '' && !keepsPart(b, t)) {
+    if (!plan && t >= 0 && partOf(t) !== '' && !keepsPart(b, t)) {
       // The densest link would dissolve its part: pass it over, and every other such link, for a link that stays a part,
       // but only one at least 1 / PART_LINK_FLOOR as dense. (When the densest link stays a part or has none, passing
       // over the others could not change the pick, so this test only saves the loop.)
@@ -1045,7 +1073,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
         if (!keepsPart(b, o)) cut[o] = pass
         else if (w * bSize[t] * PART_LINK_FLOOR >= wt * bSize[o]) spare = true
       })
-      if (spare) return densest(near, (o) => fixed(o) || cut[o] === pass)
+      if (spare) {
+        const r = densest(near, (o) => fixed(o) || cut[o] === pass)
+        if (bSize[r] + bSize[b] <= ceiling) return r
+      }
     }
     if (t >= 0) return t
     // Nearest in path order, skipping fixed buildings while a plain one is left.
@@ -1061,42 +1092,73 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
     return lp >= lq ? p : q
   }
-  for (let live = nb; live > maxBuildings; ) {
-    const item = heap.pop()
-    const b = item[1]
-    if (item[2] !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
-    const t = capTarget(b)
-    if (prev[b] >= 0) next[prev[b]] = next[b]
-    if (next[b] >= 0) prev[next[b]] = prev[b]
-    bStamp[b]++
-    bStamp[t]++
-    bUf.attach(b, t)
-    perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) as number) - 1)
-    live--
-    mergedTop(b, t)
-    pTopKey[t] = k1
-    pTop[t] = v1
-    pSecondKey[t] = k2
-    pSecond[t] = v2
-    bSize[t] += bSize[b]
-    bMin[t] = Math.min(bMin[t], bMin[b])
-    // Counts in t only grow, so its largest is the old one or a count this merge raised: no pass over all of t's
-    // stems per merge, which made a big flat folder's grouping quadratic in garbage (WP4a fix round 1, I5).
-    // With no stems of its own, t takes b's map as it is (b is gone after the merge).
-    const into = bStems[t]
-    const from = bStems[b]
-    let top = Math.max(bTop[t], bTop[b])
-    if (!into) bStems[t] = from
-    else
-      from?.forEach((c, k) => {
-        const v = (into.get(k) ?? 0) + c
-        into.set(k, v)
-        if (v > top) top = v
-      })
-    bTop[t] = top
-    bAdj.fold(b, t)
-    heap.push([key(t), t, bStamp[t]])
+  /** Runs the cap from the state as it stands and returns where each building went. */
+  const runCap = (): UnionFind => {
+    const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
+    for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
+    const bUf = new UnionFind(nb)
+    for (let live = nb; live > maxBuildings; ) {
+      const item = heap.pop()
+      const b = item[1]
+      if (item[2] !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
+      const t = capTarget(b)
+      if (prev[b] >= 0) next[prev[b]] = next[b]
+      if (next[b] >= 0) prev[next[b]] = prev[b]
+      bStamp[b]++
+      bStamp[t]++
+      bUf.attach(b, t)
+      perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) as number) - 1)
+      live--
+      mergedTop(b, t)
+      pTopKey[t] = k1
+      pTop[t] = v1
+      pSecondKey[t] = k2
+      pSecond[t] = v2
+      bSize[t] += bSize[b]
+      bMin[t] = Math.min(bMin[t], bMin[b])
+      // Counts in t only grow, so its largest is the old one or a count this merge raised: no pass over all of t's
+      // stems per merge, which made a big flat folder's grouping quadratic in garbage (WP4a fix round 1, I5).
+      // With no stems of its own, t takes b's map as it is (b is gone after the merge).
+      const into = bStems[t]
+      const from = bStems[b]
+      let top = Math.max(bTop[t], bTop[b])
+      if (!into) bStems[t] = from
+      else
+        from?.forEach((c, k) => {
+          const v = (into.get(k) ?? 0) + c
+          into.set(k, v)
+          if (v > top) top = v
+        })
+      bTop[t] = top
+      bAdj.fold(b, t)
+      heap.push([key(t), t, bStamp[t]])
+    }
+    return bUf
   }
+  // The plan's own run first, on copies of the state, for the ceiling: its largest building.
+  const saved = { bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey }
+  bSize = bSize.slice()
+  bMin = bMin.slice()
+  bStamp = bStamp.slice()
+  bTop = bTop.slice()
+  bStems = bStems.map((m) => m && new Map(m))
+  bAdj = bAdj.clone()
+  prev = prev.slice()
+  next = next.slice()
+  perDistrict = new Map(perDistrict)
+  pTop = pTop.slice()
+  pSecond = pSecond.slice()
+  pTopKey = pTopKey.slice()
+  pSecondKey = pSecondKey.slice()
+  plan = true
+  const planned = runCap()
+  ceiling = bSize.reduce((a, x) => Math.max(a, x), 0)
+  ;({ bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey } = saved)
+  plan = false
+  // A pass over that stays under the ceiling still changes the sizes later merges see, and the plan's own rule can then
+  // grow a building past the plan's largest. Then the plan's run stands, for the whole map (step 5 reads only bUf).
+  const passed = runCap()
+  const bUf = opts.planCap === true || bSize.reduce((a, x) => Math.max(a, x), 0) > ceiling ? planned : passed
 
   // 5. Ids and names.
   const finalOf = (i: number): number => bUf.find(owner[i])
@@ -1166,7 +1228,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       }
       // A walk the budget cut short leaves nothing on the shared stack for the next one.
       stack.length = 0
-      plain[i] = TEST_NAME.test(files[i]) ? 0 : 1
+      plain[i] = TEST_NAME.test(files[i]) || DECLARATION.test(files[i]) ? 0 : 1
       reach[i] = seen
       outside[i] = importers[i].length - inner[i]
     }
