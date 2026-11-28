@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import type { SwitchIO } from '../../src/main/accountSwitch'
-import { liveness, ranAtFirstPrompt } from '../../src/main/accountSwitch'
+import { liveness, livenessNow, ranAtFirstPrompt } from '../../src/main/accountSwitch'
+import type { AccountAgent } from '../../src/shared/agentAccounts'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
@@ -432,15 +433,15 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
   const ECHO = `${LINE}${E}[?2004l\r\n`
   const BOX = `${E}[?25l${E}[H${E}[?25h${E}[2J${E}[?25l▐▛███▜▌ Claude Code v2.1.309 (mock)${E}[K\r\n\r\n${RULE}\r\n❯${E}[K\r\n${RULE}\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)${E}[K\r\n`
   const AGAIN = `${report}${E}[?2004hbash-5.3$ `
-  function io(out: string): SwitchIO {
+  function io(out: string, clock = { t: 0 }): SwitchIO {
     return {
       output: () => ({ raw: out, end: out.length }),
       outputFrom: (_id, from) => out.slice(from),
       end: () => out.length,
       size: () => ({ cols: 120, rows: 30 }),
       write: () => undefined,
-      sleep: async () => undefined,
-      now: () => 0,
+      sleep: async (ms) => { clock.t += ms },
+      now: () => clock.t,
     }
   }
   const start = (): LiveStart => ({ at: BEFORE.length, commands: [LINE], agent: 'claude', time: 0 })
@@ -481,14 +482,78 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(liveness(io(BEFORE + FIRST + 'claude\r\n'), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
   })
 
-  // A prompt drawn like an agent's box (powerlevel10k's ruler over its ❯, starship's ❯) at the first prompt, the line lost: the
-  // shell is back, as nothing is drawn under it, where an agent's box has its closing rule and footer (holdb-review M1).
-  it('reads a first prompt drawn like a box, with nothing under it, as the shell back, and an agent box under it as live', () => {
+  // Two looks at the same output, `gap` ms apart, nothing printed between, as the limit look and the switch each take them: what
+  // each reads the second time.
+  function twoLooks(out: string, gap: number): { gone: boolean; state: string } {
+    const clock = { t: 0 }
+    const t = io(BEFORE + out, clock)
+    const s = start()
     const rec = { at: BEFORE.length, commands: [LINE] }
-    const ruled = `${report}${E}[2J${E}[H${RULE}\r\n❯ `
-    expect(agentGone(io(BEFORE + ruled), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
-    expect(liveness(io(BEFORE + ruled), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
+    agentGone(t, 't', s, FOREGROUND_GRACE_MS * 10)
+    liveness(t, 't', 'claude', rec)
+    clock.t += gap
+    return { gone: agentGone(t, 't', s, FOREGROUND_GRACE_MS * 10 + gap), state: liveness(t, 't', 'claude', rec).state }
+  }
+  /** A prompt drawn like an agent's box: powerlevel10k's ruler over its ❯. */
+  const RULED = `${report}${E}[2J${E}[H${RULE}\r\n❯ `
+
+  // A prompt drawn like an agent's box (powerlevel10k's ruler over its ❯, starship's ❯) at the first prompt, the line lost: one
+  // look can't tell it from an agent's box caught before its closing rule was drawn (holdb-review R2-2), so it is the shell back
+  // only once a second look, a moment on, finds nothing more printed and still no closing rule (holdb-review M1).
+  it('reads a first prompt drawn like a box, with nothing under it, as the shell back on a second look, and an agent box under it as live', () => {
+    const rec = { at: BEFORE.length, commands: [LINE] }
+    expect(agentGone(io(BEFORE + RULED), 't', start(), FOREGROUND_GRACE_MS)).toBe(false)
+    expect(liveness(io(BEFORE + RULED), 't', 'claude', rec).state).toBe('live')
+    expect(twoLooks(RULED, 100)).toEqual({ gone: false, state: 'live' })
+    expect(twoLooks(RULED, 60_000)).toEqual({ gone: true, state: 'gone' })
     expect(liveness(io(BEFORE + FIRST + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
+  })
+
+  // Under such a prompt, only an agent's closing structure tells a box: the line typed at it wrapped onto the next row, a command's
+  // output under it, a status row the prompt paints under it (the cursor put back) are the shell's, and read as a box with the line
+  // lost, the switch typed /exit into the shell (holdb-review R2-1, holdb-codex-review round 2).
+  it('reads such a prompt with a wrapped line, output or a status row under it as the shell back on a second look', () => {
+    const wrapped = RULED + 'x'.repeat(130)
+    const output = RULED + `ls${E}[?2004l\r\nfile1  file2\r\n`
+    const status = RULED + `${E}7\r\n  main ✔ 12:04${E}8`
+    for (const out of [wrapped, output, status]) expect(twoLooks(out, 60_000)).toEqual({ gone: true, state: 'gone' })
+  })
+
+  // An agent's first frame caught before it was all drawn, the launch echo gone from the window: Claude Code's box before its
+  // closing rule, Codex's composer before its footer, agy's > before its closing rule. One look read each as the shell back: on
+  // Windows nothing else told, so the switch skipped its exit step and typed its line clear, the relaunch line and Enter into the
+  // live agent, and the limit look latched it gone for good (holdb-review R2-2, holdb-codex-review round 2).
+  const WIPE = `${report}${E}[?25l${E}[H${E}[?25h${E}[2J`
+  const CLAUDE_HALF = `${WIPE}▐▛███▜▌ Claude Code v2.1.309 (mock)${E}[K\r\n\r\n${RULE}\r\n❯${E}[K\r\n`
+  const CLAUDE_REST = `${RULE}\r\n  ⏵⏵ bypass permissions on (shift+tab to cycle)${E}[K\r\n`
+  const CODEX_HALF = `${WIPE}╭──────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.164.0)           │\r\n╰──────────────────────────────────────╯\r\n\r\n› Ask Codex to do anything${E}[K`
+  const CODEX_REST = `\r\n\r\n  gpt-5.6 · 100% left · ~/project\r\n  ⏎ send   ⇧⏎ newline   ⌃T transcript${E}[K`
+  const AGY_HALF = `${WIPE}      ▄▀▀▄        Antigravity CLI 1.4.3${E}[K\r\n     a@example.com (Google AI Pro)${E}[K\r\n\r\n${RULE}\r\n> ${E}[K`
+  const AGY_REST = `\r\n${RULE}\r\n? for shortcuts${E}[K\r\n`
+  const HALVES: [AccountAgent, string, string][] = [['claude', CLAUDE_HALF, CLAUDE_REST], ['codex', CODEX_HALF, CODEX_REST], ['agy', AGY_HALF, AGY_REST]]
+
+  it('is an agent whose first frame is caught half drawn no exit on one look, to the limit look or the switch', () => {
+    for (const [agent, half, rest] of HALVES) {
+      const rec = { at: BEFORE.length, commands: [LINE] }
+      const s: LiveStart = { ...start(), agent }
+      expect(agentGone(io(BEFORE + half), 't', s, FOREGROUND_GRACE_MS * 10)).toBe(false)
+      expect(lookForLimit(io(BEFORE + half), 't', s, FOREGROUND_GRACE_MS * 10).live).toBe(true)
+      expect(s.ended).toBeUndefined()
+      expect(liveness(io(BEFORE + half), 't', agent, rec).state).not.toBe('gone')
+      // Drawn whole, its closing structure says it runs, however long after.
+      expect(twoLooks(half + rest, 60_000)).toEqual({ gone: false, state: 'live' })
+    }
+  })
+
+  it('looks again a moment on before the switch reads the agent gone at that first prompt, and finds it live once the frame is drawn', async () => {
+    for (const [agent, half, rest] of HALVES) {
+      let out = BEFORE + half
+      const clock = { t: 0 }
+      const t: SwitchIO = { ...io('', clock), output: () => ({ raw: out, end: out.length }), outputFrom: (_id, from) => out.slice(from), end: () => out.length, sleep: async (ms) => { clock.t += ms; out = BEFORE + half + rest } }
+      expect((await livenessNow(t, 't', agent, { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('live')
+    }
+    // A box-like prompt still as it was, nothing more printed, is the shell back.
+    expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('gone')
   })
 
   it('ranAtFirstPrompt answers no for output with no prompt report in it', () => {
