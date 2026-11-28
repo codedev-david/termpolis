@@ -179,6 +179,25 @@ describe('LumopolisSidebarEntry and the active terminal (#29)', () => {
     expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-slow', 'zsh-slow'])
   })
 
+  // holdb-codex-review round 2: the only ready mark lands after main has answered no but before that answer reaches the sidebar.
+  // The mark asks again, and the answer asked after the mark wins over the one asked before it, whichever lands last.
+  it('asks again on a ready mark that lands while an answer is on its way, and keeps the answer asked after the mark', async () => {
+    const ready = (id: string): void => { window.dispatchEvent(new CustomEvent(LUMOPOLIS_READY_EVENT, { detail: id })) }
+    let first: (v: unknown) => void = () => undefined
+    typable.mockReturnValueOnce(new Promise((r) => { first = r }))
+    typable.mockResolvedValueOnce({ success: true, data: true })
+    useTerminalStore.setState({ activeTerminalId: 'zsh-slow' })
+    await mount()
+    expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-slow'])
+    await act(async () => { ready('zsh-slow'); await Promise.resolve(); await Promise.resolve() })
+    expect(typable.mock.calls.map((c) => c[0])).toEqual(['zsh-slow', 'zsh-slow'])
+    await act(async () => { first({ success: true, data: false }); await Promise.resolve() })
+    expect(screen.getByTestId('sidebar-lumopolis-hint')).toHaveTextContent(LUMOPOLIS_HINT)
+    // The answer kept is the yes: a later mark asks nothing more.
+    await act(async () => { ready('zsh-slow'); await Promise.resolve(); await Promise.resolve() })
+    expect(typable).toHaveBeenCalledTimes(2)
+  })
+
   it('asks nothing on a ready mark once the hint is gone', async () => {
     typable.mockResolvedValue({ success: true, data: false })
     useTerminalStore.setState({ activeTerminalId: 'zsh-slow' })
