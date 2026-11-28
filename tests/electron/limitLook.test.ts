@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import type { SwitchIO } from '../../src/main/accountSwitch'
-import { liveness, livenessNow, ranAtFirstPrompt } from '../../src/main/accountSwitch'
+import { firstPromptRead, liveness, livenessNow } from '../../src/main/accountSwitch'
 import type { AccountAgent } from '../../src/shared/agentAccounts'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
@@ -556,8 +556,8 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('gone')
   })
 
-  it('ranAtFirstPrompt answers no for output with no prompt report in it', () => {
-    expect(ranAtFirstPrompt(`bash-5.3$ ${LINE}\r\n`, [LINE], null)).toBe(false)
+  it('firstPromptRead reads no first prompt in output with no prompt report in it', () => {
+    expect(firstPromptRead(`bash-5.3$ ${LINE}\r\n`, [LINE], null)).toBeNull()
   })
 
   // agy is started by its name alone, and no echo of a name can be told from a prompt that shows it: the box agy draws after that

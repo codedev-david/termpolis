@@ -17,8 +17,8 @@ import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
 import { CODEX_STARTING } from '../shared/accountSwitch'
-import { HINT_HEAD, hintAtFoot, indexOf, look, plain, ranAtFirstPrompt } from './accountSwitch'
-import type { Look, SwitchIO } from './accountSwitch'
+import { HINT_HEAD, firstPromptRead, hintAtFoot, indexOf, look, plain, settledQuiet } from './accountSwitch'
+import type { Look, QuietLook, SwitchIO } from './accountSwitch'
 import { PROMPT_REPORT, sinceStarted } from './mcpServer'
 
 /** Where a terminal's agent was started, as main recorded it (accountsIpc.ts AgentStart). */
@@ -38,6 +38,8 @@ export interface LiveStart {
   unseen?: boolean
   /** Seen gone since: latched until the next start. */
   ended?: boolean
+  /** The first look that read the shell's first prompt since as quiet (accountSwitch.ts settledQuiet). */
+  quiet?: QuietLook
   /** Took a turn since: a prompt entered in its box, or seen at work. */
   turned?: boolean
   /** Where in its output that turn began (the Enter, or the first look that saw it at work). */
@@ -77,7 +79,12 @@ export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: numbe
   // The replay is read only once a shell reported a prompt since the start: David's Git Bash, zsh
   // and fish report none.
   const since = l.raw.slice(from)
-  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell && !ranAtFirstPrompt(since, start.commands, io.size(id))) return true
+  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell) {
+    // At the shell's first prompt, a screen one look can't tell from an agent's first frame caught half drawn is gone only on a
+    // second look a moment on, nothing more printed (holdb-review R2-2): latched gone, the agent stayed gone for good.
+    const first = firstPromptRead(since, start.commands, io.size(id))
+    if (first !== 'ran' && (first !== 'quiet' || settledQuiet(start, l.end, now))) return true
+  }
   return !fresh && io.atShell?.(id) === true
 }
 
