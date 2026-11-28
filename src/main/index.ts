@@ -143,7 +143,7 @@ import {
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, hasTerminal, terminalLumopolis, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, hasTerminal, terminalLumopolis, getTerminalSize, terminalShellAlone, shellAloneSince, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
 import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -3898,6 +3898,8 @@ registerAccountsIpc(ipcMain, {
     // The OS's full word on whether the agent is gone, asked at the moments that need it (a switch's
     // exit), never polled: the same read as the model switch's and write_to_terminal's submit's.
     shellAlone: (terminalId) => terminalShellAlone(terminalId),
+    // The last of those answers, which the usage-limit look reads and never asks for (HOLD-C R1).
+    aloneSince: (terminalId, since) => shellAloneSince(terminalId, since),
   },
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')

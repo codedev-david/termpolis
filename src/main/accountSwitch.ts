@@ -120,6 +120,9 @@ export interface SwitchIO {
    *  the agent's process is gone, false while it runs, null where main can't tell. Absent: the
    *  screen alone decides. */
   shellAlone?(terminalId: string): Promise<boolean | null>
+  /** The OS's last answer above, if it was asked at `since` (epoch ms) or later; null otherwise (terminalManager.ts shellAloneSince).
+   *  Never asks: what the usage-limit look reads on its timer (HOLD-C R1). Absent: no answer is kept. */
+  aloneSince?(terminalId: string, since: number): boolean | null
   /** Which shells have printed a prompt report in this terminal, ever (terminalOutputBuffer.ts reportedFamilies), which
    *  the 32 KB window the reads above replay does not keep. Absent: the window is all there is to go on. */
   reported?(terminalId: string): { posix: boolean; windows: boolean }
@@ -135,9 +138,17 @@ export interface AgentStartRecord {
   commands: string[]
   /** The line was edited by the shell as it was typed, so `commands` name only the agent (limitLook.ts LiveStart.unsure). */
   unsure?: boolean
-  /** The terminal's shell had reported a prompt when the line was entered (accountsIpc.ts setStart): the first report since is
-   *  the shell back, not its first prompt still on its way (promptSince). */
+  /** The terminal's shell had reported a prompt when the line was entered (accountsIpc.ts setStart), or a look has seen its first
+   *  prompt since (notePrompted): the first report since `shellFrom` is the shell back, not its first prompt still on its way
+   *  (promptSince). */
   prompted?: true
+  /** Where the shell's first prompt after the line, seen by a look, ended (notePrompted): what the exit's report is looked for
+   *  after, once the line has scrolled out of the window. Absent: from `at`. */
+  shellFrom?: number
+  /** Typed while the agent before was never seen gone, in a terminal that can't show its exit (limitLook.ts noteEnteredLine): the
+   *  line may have gone into that agent. The switch types nothing for it, and on the user's word carries nothing and resumes no
+   *  conversation (HOLD-C R1). */
+  overUnended?: true
 }
 
 export interface SwitchContext {
@@ -343,6 +354,31 @@ export function promptSince(io: SwitchIO, id: string, l: Look, at: number, comma
   return sinceStarted(l.raw, from, false, io.size(id), commands).shell
 }
 
+/** Keeps the shell's first prompt after a start as seen, the first look that sees it whole (its row entered): after a minute of the
+ *  agent's output the line and that prompt scroll out of the 32 KB window, and the first report left in it is then the exit's. Where
+ *  the shell had reported a prompt before the line, that is already so. A start no look saw it for stays as it is: nothing tells
+ *  which report is the exit's, and none is read as one (HOLD-C R1). */
+export function notePrompted(l: Look, start: AgentStartRecord): void {
+  if (start.prompted || l.end - start.at > l.raw.length) return
+  const from = indexOf(l, start.at)
+  if (l.raw.slice(0, from).search(PROMPT_REPORT) >= 0) {
+    start.prompted = true
+    return
+  }
+  const since = l.raw.slice(from)
+  const first = since.search(PROMPT_REPORT)
+  const row = first < 0 ? -1 : since.indexOf('\n', first)
+  if (row < 0) return
+  start.prompted = true
+  start.shellFrom = l.end - (since.length - row)
+}
+
+/** The shell back at its prompt since the agent `start` records was started (promptSince), its first prompt kept as seen. */
+export function shellBackSince(io: SwitchIO, id: string, l: Look, start: AgentStartRecord): boolean {
+  notePrompted(l, start)
+  return promptSince(io, id, l, start.shellFrom ?? start.at, start.commands, start.prompted)
+}
+
 /** Claude Code waiting out its limit, the user's choice on its menu, on its status line over the
  *  box: Esc stops the wait. */
 const WAITING_OUT = /continuing automatically at.*\besc to cancel\b/
@@ -359,7 +395,7 @@ export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: A
   const l = look(io, id)
   // The last frame an agent left, box and all, stays on screen above the shell's prompt.
   const hint = hintAtFoot(l, agent)
-  if ((start && promptSince(io, id, l, start.at, start.commands, start.prompted)) || io.atShell?.(id) === true) return { state: 'gone', hint }
+  if ((start && shellBackSince(io, id, l, start)) || io.atShell?.(id) === true) return { state: 'gone', hint }
   // A hint under the agent's box is what an exit prints, but no word from the shell that the agent is gone: nothing is typed.
   if (hint) return { state: 'unknown' }
   const status = detectAgentStatus(l.lines.join('\n'), ACCOUNT_AGENT_LABEL[agent], 'idle', { screen: true, title: l.title })
@@ -833,6 +869,10 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const probe = lineFor(ctx, family, probeSpec)
   if ('refused' in probe) return { kind: 'refused', why: probe.refused }
 
+  // Typed over an agent never seen gone, where nothing can show its exit: the line may have gone into that agent, and nothing on
+  // screen tells which agent is up, so nothing is typed without the user's word (HOLD-C R1).
+  const over = ctx.start?.overUnended === true
+  if (over && !req.assumeExited) return { kind: 'unknown-exit' }
   if (req.assumeExited) {
     // The user's word that it exited: an exit hint on screen still names the session. It replaces the exit check (the
     // OS is not asked, and not waited for), not the screen: a box still drawn with no hint, no prompt since the start
@@ -878,10 +918,12 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     }
   }
 
-  // Step 5: the session, by its exact id (R8).
-  let sessionId: string | null = req.fresh ? null : hint?.id ?? null
-  const worktree = req.fresh ? undefined : hint?.worktree
-  if (!sessionId && !req.fresh && agent === 'claude' && ctx.sessionId && ctx.hasTranscript?.(ctx.sessionId)) sessionId = ctx.sessionId
+  // Step 5: the session, by its exact id (R8). None after a line typed over an agent never seen gone: a hint on screen, and the
+  // session Termpolis launched, may be that agent's, and the line's own is not known.
+  const noSession = req.fresh === true || over
+  let sessionId: string | null = noSession ? null : hint?.id ?? null
+  const worktree = noSession ? undefined : hint?.worktree
+  if (!sessionId && !noSession && agent === 'claude' && ctx.sessionId && ctx.hasTranscript?.(ctx.sessionId)) sessionId = ctx.sessionId
   // Step 6: the transcript, where the target can see it (Claude Code).
   let carried: { carried: boolean; kept?: string } = { carried: false }
   if (sessionId && agent === 'claude' && ctx.carry) {

@@ -592,11 +592,29 @@ export function getTerminalPid(id: string): number | null {
   return proc?.pty.pid || null
 }
 
+/** The OS's last answer for each terminal's shell (true: only the shell runs; false: something else does), and when it was asked,
+ *  kept with that shell's own entry: a terminal closed and opened again under the same id has none. */
+const lastAlone = new WeakMap<PtyProcess, { alone: boolean; askedAt: number }>()
+
 /** Whether nothing runs in terminal `id` but its shell (shellAlone.ts); null for no such terminal,
- *  or where that can't be told. */
+ *  or where that can't be told. An answer is kept for shellAloneSince. */
 export function terminalShellAlone(id: string): Promise<boolean | null> {
   const proc = processes.get(id)
-  return proc?.pty.pid ? shellAlone(proc.pty.pid, proc.executable) : Promise.resolve(null)
+  if (!proc?.pty.pid) return Promise.resolve(null)
+  const askedAt = Date.now()
+  return shellAlone(proc.pty.pid, proc.executable).then((alone) => {
+    if (alone !== null && processes.get(id) === proc) lastAlone.set(proc, { alone, askedAt })
+    return alone
+  })
+}
+
+/** The OS's last answer for terminal `id`'s shell, if it was asked at `since` or later; null otherwise. Never asks: the usage-limit
+ *  look reads it on its timer, where a process query would be read as discovery by endpoint security (HOLD-C R1, v1.54.3). The
+ *  asks are the ones something needed (a switch's exit, the model switch, a submit). */
+export function shellAloneSince(id: string, since: number): boolean | null {
+  const proc = processes.get(id)
+  const last = proc ? lastAlone.get(proc) : undefined
+  return last && last.askedAt >= since ? last.alone : null
 }
 
 /** The shell pipeline that reads a pid's cwd: fast /proc on Linux, lsof on macOS. */

@@ -66,7 +66,11 @@ async function locked(io: SwitchIO, id: string, run: () => Promise<AgyStepOutcom
 
 /** Exits a live agy with its own /exit, or reads the hint of one gone already: the conversation's id. */
 async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undefined, assumeExited: boolean): Promise<AgyStepOutcome> {
-  if (assumeExited) return { kind: 'exited', conversationId: hintAtFoot(look(io, id), 'agy')?.id ?? null }
+  // Typed over an agent never seen gone, where nothing can show its exit: the line may have gone into that agent, so nothing is typed
+  // without the user's word, and a hint on screen may be that agent's, so it names no conversation (HOLD-C R1).
+  const over = start?.overUnended === true
+  if (assumeExited) return { kind: 'exited', conversationId: over ? null : hintAtFoot(look(io, id), 'agy')?.id ?? null }
+  if (over) return { kind: 'unknown-exit' }
   const os: OsMemo = { known: false }
   const alive = await livenessNow(io, id, 'agy', start, os)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }

@@ -457,8 +457,10 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
     if (started) {
       setStart(terminalId, started)
       // The conversation of the line just typed is the terminal's now, and the one an earlier launch named is not: a switch before
-      // this session has a turn (no exit hint) must not resume the old one (SAFETY-R3-1). A line the shell edited names none.
-      if (started.agent === 'claude') noteTerminalSession(terminalId, started.unsure ? null : claudeSessionOf(typed).id)
+      // this session has a turn (no exit hint) must not resume the old one (SAFETY-R3-1). A line the shell edited names none, and nor
+      // does one typed over an agent never seen gone, whatever agent it names: it may have gone into that agent (HOLD-C R1).
+      if (started.overUnended) noteTerminalSession(terminalId, null)
+      else if (started.agent === 'claude') noteTerminalSession(terminalId, started.unsure ? null : claudeSessionOf(typed).id)
     } else if (edited) noteUnseenLaunch(terminalId, end, now, lookNow)
   } catch { /* the next look reads it */ }
 }
