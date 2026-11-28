@@ -556,7 +556,13 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   closeAccountMenu: () => set({ accountMenu: null }),
   setLaunchAsk: (ctx) => set({ launchAsk: ctx }),
   closeAccountSwitch: () => set({ accountSwitch: null }),
-  putSwitchRun: (run) => set(s => ({ switchRuns: { ...s.switchRuns, [run.terminalId]: run } })),
+  // A running switch's next step keeps the key held during it: the overlay's hint stays its time.
+  putSwitchRun: (run) => set(s => {
+    const was = s.switchRuns[run.terminalId]
+    const going = (r: { status: string }): boolean => r.status === 'checking' || r.status === 'running'
+    const heldAt = run.heldAt ?? (was && going(was) && going(run) ? was.heldAt : undefined)
+    return { switchRuns: { ...s.switchRuns, [run.terminalId]: heldAt === undefined ? run : { ...run, heldAt } } }
+  }),
   dropSwitchRun: (terminalId) => set(s => {
     const next = { ...s.switchRuns }
     delete next[terminalId]
