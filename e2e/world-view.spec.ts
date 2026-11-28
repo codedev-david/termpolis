@@ -28,6 +28,7 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { spawn } from 'child_process'
+import fs from 'fs'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
 import { closeMore, toolbarControl } from './helpers/worldToolbar'
@@ -297,6 +298,7 @@ test.describe.serial('Lumopolis in the real app', () => {
         if (!/^[a-z]$/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return
         s.down.push(performance.now())
         s.echo.push(0)
+        performance.mark(`tfd${s.down.length - 1}`)
         s.lineKeys += e.key
       }, true)
       const poll = (): void => {
@@ -308,7 +310,7 @@ test.describe.serial('Lumopolis in the real app', () => {
             let n = 0
             while (n < s.lineKeys.length && line[at + marker.length + n] === s.lineKeys[n]) n++
             const now = performance.now()
-            for (let k = 0; k < n; k++) if (!s.echo[s.lineBase + k]) s.echo[s.lineBase + k] = now
+            for (let k = 0; k < n; k++) if (!s.echo[s.lineBase + k]) { s.echo[s.lineBase + k] = now; performance.mark(`tfe${s.lineBase + k}`) }
           }
         }
         setTimeout(poll, 1)
@@ -486,6 +488,18 @@ test.describe.serial('Lumopolis in the real app', () => {
       s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send }
     })
 
+    // DIAG typeflake: a Chromium trace of the whole app while the compiles run (macOS CI only); the page marks each
+    // key's press and echo (tfd<i>, tfe<i>), so the slow keys' windows can be found in it.
+    const tfTrace = test.info().outputPath('typeflake-trace.json')
+    const tfTracing = !!process.env.CI && process.platform === 'darwin'
+    if (tfTracing) {
+      await app.evaluate(async ({ contentTracing }) => {
+        await contentTracing.startRecording({
+          recording_mode: 'record-continuously', trace_buffer_size_in_kb: 200_000,
+          included_categories: ['toplevel', 'toplevel.flow', 'ipc', 'mojom', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'v8.execute', 'sequence_manager', 'scheduler', 'renderer.scheduler', 'cc', 'viz', 'gpu', 'benchmark', 'input', 'blink', 'electron', 'node', '__metadata'],
+        })
+      })
+    }
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
     // As each compile ends the next starts at once (a forced recompile, world:relayout, the call
     // Re-layout makes), until MIN_SAMPLES keys fell inside a compile or MAX_COMPILES ran. The typing
@@ -546,6 +560,12 @@ test.describe.serial('Lumopolis in the real app', () => {
     await until('every key to echo', allEchoed)
     await clearLine()
     topProc?.kill()
+    let tfTraced = ''
+    if (tfTracing) {
+      tfTraced = await app.evaluate(async ({ contentTracing }, tp) => {
+        try { return await contentTracing.stopRecording(tp) } catch (e) { return `failed: ${String(e)}` }
+      }, tfTrace)
+    }
 
     const r = await page.evaluate(() => {
       const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compiling: boolean; runs: { start: number; end: number }[]; compileError?: string; done: boolean } }).__echo
@@ -657,6 +677,114 @@ test.describe.serial('Lumopolis in the real app', () => {
     const firstVsRest = `first compile ${worst(during.filter((x) => x.run === 0))}, recompiles ${worst(during.filter((x) => x.run > 0))}`
     const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms; by quarter of the compile: ${quarters}; ${firstVsRest}; no compile running: ${idleStats}`
     console.log(`[typing while compiling] ${summary}`)
+    if (tfTracing) {
+      try {
+        const size = fs.existsSync(tfTrace) ? fs.statSync(tfTrace).size : 0
+        if (!size || size > 250e6) console.log(`[typeflake trace] ${tfTraced} size ${size}: not read`)
+        else {
+          type Ev = { name: string; ph: string; ts: number; dur?: number; tdur?: number; pid: number; tid: number; args?: { name?: string; labels?: string } }
+          const raw = JSON.parse(fs.readFileSync(tfTrace, 'utf8')) as Ev[] | { traceEvents: Ev[] }
+          const evs = Array.isArray(raw) ? raw : raw.traceEvents
+          const pname = new Map<number, string>()
+          const tname = new Map<string, string>()
+          for (const e of evs) {
+            if (e.ph !== 'M') continue
+            if (e.name === 'process_name') pname.set(e.pid, e.args?.name ?? '?')
+            if (e.name === 'thread_name') tname.set(`${e.pid}:${e.tid}`, e.args?.name ?? '?')
+          }
+          for (const e of evs) if (e.ph === 'M' && e.name === 'process_labels' && e.args?.labels) pname.set(e.pid, `${pname.get(e.pid) ?? '?'}[${e.args.labels}]`)
+          const label = (pid: number, tid: number): string => `${pname.get(pid) ?? pid}/${tname.get(`${pid}:${tid}`) ?? tid}`
+          const down = new Map<number, number>()
+          const echo = new Map<number, number>()
+          for (const e of evs) {
+            const m = /^tf([de])(\d+)$/.exec(e.name)
+            if (m && e.ph !== 'e') (m[1] === 'd' ? down : echo).set(Number(m[2]), e.ts)
+          }
+          const merge = (xs: [number, number][]): [number, number][] => {
+            const out: [number, number][] = []
+            for (const w of xs.sort((a, b) => a[0] - b[0])) {
+              const last = out[out.length - 1]
+              if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1])
+              else out.push([w[0], w[1]])
+            }
+            return out
+          }
+          const slowW: [number, number][] = []
+          const fastW: [number, number][] = []
+          for (const [i, d] of down) {
+            const x = echo.get(i)
+            if (x === undefined) continue
+            if ((x - d) / 1000 > 40) slowW.push([d, x])
+            else if ((x - d) / 1000 < 25) fastW.push([d, x])
+          }
+          const slow = merge(slowW)
+          const fast = merge(fastW)
+          // Each thread's slices, and its top-level ones (not inside another on that thread), in order.
+          const byThread = new Map<string, Ev[]>()
+          for (const e of evs) {
+            if (e.ph !== 'X' || !e.dur) continue
+            const k = `${e.pid}:${e.tid}`
+            let a = byThread.get(k)
+            if (!a) byThread.set(k, (a = []))
+            a.push(e)
+          }
+          const top = new Map<string, Ev[]>()
+          for (const [k, a] of byThread) {
+            a.sort((p, q) => p.ts - q.ts || (q.dur ?? 0) - (p.dur ?? 0))
+            const t: Ev[] = []
+            let end = -Infinity
+            for (const e of a) if (e.ts >= end) { t.push(e); end = e.ts + (e.dur ?? 0) }
+            top.set(k, t)
+          }
+          const overlap = (e: Ev, ws: [number, number][]): number => {
+            let o = 0
+            for (const [a, b] of ws) o += Math.max(0, Math.min(b, e.ts + (e.dur ?? 0)) - Math.max(a, e.ts))
+            return o
+          }
+          const report = (what: string, ws: [number, number][]): void => {
+            const span = ws.reduce((a, w) => a + w[1] - w[0], 0)
+            const rows: { k: string; busy: number; cpu: number; names: string }[] = []
+            for (const [k, t] of top) {
+              let busy = 0
+              let cpu = 0
+              for (const e of t) {
+                const o = overlap(e, ws)
+                if (!o) continue
+                busy += o
+                cpu += (e.tdur ?? 0) * (o / (e.dur ?? 1))
+              }
+              if (busy < span * 0.03) continue
+              const names: Record<string, number> = {}
+              for (const e of byThread.get(k) ?? []) { const o = overlap(e, ws); if (o) names[e.name] = (names[e.name] ?? 0) + o }
+              const [pid, tid] = k.split(':').map(Number)
+              rows.push({ k: label(pid, tid), busy, cpu, names: Object.entries(names).sort((p, q) => q[1] - p[1]).slice(0, 6).map(([n, o]) => `${n} ${(o / 1000).toFixed(0)}`).join(', ') })
+            }
+            rows.sort((p, q) => q.busy - p.busy)
+            console.log(`[typeflake trace] ${what}: ${ws.length} windows, ${(span / 1000).toFixed(0)} ms | ${rows.slice(0, 14).map((x) => `${x.k} busy ${(100 * x.busy / span).toFixed(0)}% cpu ${(100 * x.cpu / span).toFixed(0)}% [${x.names}]`).join(' | ')}`)
+          }
+          console.log(`[typeflake trace] ${tfTraced} ${(size / 1e6).toFixed(0)} MB, ${evs.length} events, marks ${down.size}/${echo.size}, slow keys ${slowW.length}, fast keys ${fastW.length}`)
+          if (slow.length) report('slow keys (echo over 40 ms)', slow)
+          if (fast.length) report('fast keys (echo under 25 ms)', fast)
+          // The longest slow window: every top-level slice of 2 ms or more, on any thread, in time order.
+          const longest = slow.slice().sort((p, q) => (q[1] - q[0]) - (p[1] - p[0]))[0]
+          if (longest) {
+            const lines: [number, string][] = []
+            for (const [k, t] of top) {
+              for (const e of t) {
+                if ((e.dur ?? 0) < 2000 || overlap(e, [longest]) === 0) continue
+                const [pid, tid] = k.split(':').map(Number)
+                lines.push([e.ts, `${((e.ts - longest[0]) / 1000).toFixed(1)} ${label(pid, tid)} ${e.name} ${((e.dur ?? 0) / 1000).toFixed(1)}/${((e.tdur ?? 0) / 1000).toFixed(1)}`])
+              }
+            }
+            lines.sort((a, b) => a[0] - b[0])
+            console.log(`[typeflake trace] longest slow window ${((longest[1] - longest[0]) / 1000).toFixed(0)} ms (start ms, thread, slice, wall/cpu ms): ${lines.slice(0, 90).map((x) => x[1]).join(' ; ')}`)
+          }
+          if (!slow.length) fs.rmSync(tfTrace, { force: true })
+        }
+      } catch (e) {
+        console.log(`[typeflake trace] analysis failed: ${String(e)}`)
+      }
+    }
     {
       // DIAG typeflake2: each top sample in or out of a compile (top's first sample has no CPU deltas).
       const first = origin + r.runs[0].start
