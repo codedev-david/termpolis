@@ -80,7 +80,7 @@ export const WORLD_SAVE_FAILED = "Lumopolis couldn't save this world's map. Try 
 
 /** PENDING SIGN-OFF by David (the M8 line, the same text as the pane's SAVED_BY_NEWER note): what refusing to change a
  *  world a newer Termpolis saved answers. */
-export const WORLD_SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
+export const WORLD_SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.'
 
 /** A change this version will not make to a world a newer version saved (annotating it would rewrite its notes file). */
 export class WorldSavedByNewerError extends Error {

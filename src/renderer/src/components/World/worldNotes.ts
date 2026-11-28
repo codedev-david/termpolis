@@ -15,7 +15,7 @@ const READ_CAPPED = /^All [\d,]+ files are shown, but only [\d,]+ were read for 
 const PROVISIONAL = 'Still reading the files: '
 // PENDING SIGN-OFF by David (WP3 report): the line he proposed for a world a newer Termpolis saved. main's
 // WORLD_SAVED_BY_NEWER (world/worldStore.ts) says the same when an annotate over such a world is refused.
-const SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
+const SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.'
 
 const count = (n: number): string => n.toLocaleString('en-US')
 
