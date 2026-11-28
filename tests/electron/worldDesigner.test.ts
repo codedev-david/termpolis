@@ -12,7 +12,8 @@ import { validateWorld } from '../../src/shared/world/validate'
 import { districtRadius } from '../../src/main/world/layout'
 import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/sources'
 import { createAnnotationStore, NO_PART, withAnnotations, type AnnotationStore } from '../../src/main/world/annotations'
-import { createWorldStore, WORLD_SAVED_BY_NEWER, type WorldStore } from '../../src/main/world/worldStore'
+import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
+import { runtimeText } from '../../src/shared/world/runtimeNames'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import { ISOLATION_SETUP_FAILED } from '../../src/main/readOnlyIsolation'
 
@@ -33,7 +34,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'listStrict'> } = {}) {
+function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'listStrict'> & Partial<Pick<AnnotationStore, 'transact'>> } = {}) {
   const execFn = vi.fn(exec)
   const execDeps = { deliver: vi.fn() }
   // As the app gives it (index.ts, worldHost.ts): a design shows the notes the annotation store holds (DSN R3-2).
@@ -1212,5 +1213,87 @@ describe('a person\'s service names, a note added twice and a note read back aft
     const listStrict = vi.fn(annotations.listStrict).mockImplementationOnce(annotations.listStrict).mockRejectedValue(new Error('EIO'))
     const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, listStrict } })
     expect(notesOn(await designer.annotate('design:id1', 'api', agentNote('Note 1.')), 'api')).toEqual(texts(1, 20))
+  })
+})
+
+describe("annotate is one transaction: the store's claim first, the design file second, and a failure takes back only its own (DSN R5)", () => {
+  const worldFile = (): string => join(dir, 'world', 'design_id1.json')
+  const raw = async (): Promise<WorldDoc> => JSON.parse(await readFile(worldFile(), 'utf8')) as WorldDoc
+  const fresh = async (): Promise<WorldDoc> => (await withAnnotations(createWorldStore(dir), createAnnotationStore(dir)).load('design:id1')) as WorldDoc
+  const ioFailure = (): Error => Object.assign(new Error('EIO'), { code: 'EIO' })
+
+  it("a runtime-name annotation whose store write fails leaves another process's edit of the names on disk, and its names never land (Codex R2 :132)", async () => {
+    await stored(withAnnotations(createWorldStore(dir), createAnnotationStore(dir)))
+    // Another process edits the part's names in the design.
+    const other = setup(noRun)
+    await other.designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: ['other-user-edit'] }])
+    expect((await raw()).runtimeNames.api).toEqual(['other-user-edit'])
+    const failing = createAnnotationStore(dir, { writeFileAtomic: async () => { throw ioFailure() } })
+    const { designer } = setup(noRun, { store: withAnnotations(createWorldStore(dir), failing), annotations: failing })
+    expect(await failure(designer.annotate('design:id1', 'api', person(runtimeText(['attempted']))))).toBe(DESIGN_SAVE_FAILED)
+    expect((await raw()).runtimeNames.api).toEqual(['other-user-edit'])
+    expect(JSON.stringify(await raw())).not.toContain('attempted')
+    expect((await fresh()).runtimeNames.api).toEqual(['other-user-edit'])
+    expect(await createAnnotationStore(dir).list('design:id1')).not.toHaveProperty('api')
+  })
+
+  it('a failed store write shows nothing after a reload (Opus R5-2)', async () => {
+    await stored(withAnnotations(createWorldStore(dir), createAnnotationStore(dir)))
+    const failing = createAnnotationStore(dir, { writeFileAtomic: async () => { throw ioFailure() } })
+    const { designer } = setup(noRun, { store: withAnnotations(createWorldStore(dir), failing), annotations: failing })
+    expect(await failure(designer.annotate('design:id1', 'api', person('Takes orders.')))).toBe(DESIGN_SAVE_FAILED)
+    expect(personClaims(await fresh(), 'api')).toEqual([])
+  })
+
+  it('a design save that fails after the claim was stored takes the claim back and puts the old names back: nothing reported failed shows after a reload (Opus R5-2)', async () => {
+    const real = withAnnotations(createWorldStore(dir), createAnnotationStore(dir))
+    await stored(real)
+    const ok = setup(noRun)
+    await ok.designer.annotate('design:id1', 'api', person(runtimeText(['orders-api'])))
+    await ok.designer.annotate('design:id1', 'api', person('Kept.'))
+    const before = await raw()
+    const { designer } = setup(noRun, { store: { ...real, save: async () => { throw ioFailure() } } })
+    expect(await failure(designer.annotate('design:id1', 'api', person(runtimeText(['attempted']))))).toBe(DESIGN_SAVE_FAILED)
+    expect(await failure(designer.annotate('design:id1', 'api', person('Never shown.')))).toBe(DESIGN_SAVE_FAILED)
+    expect(await raw()).toEqual(before)
+    const shown = await fresh()
+    expect(shown.runtimeNames.api).toEqual(['orders-api'])
+    expect(personClaims(shown, 'api')).toEqual([person('Kept.')])
+    expect((await createAnnotationStore(dir).list('design:id1')).api).toEqual([person('Kept.'), person(runtimeText(['orders-api']))])
+  })
+
+  it('a crash between the two steps leaves the whole before or the whole after once restarted, and the dead lock is taken over', async () => {
+    const real = withAnnotations(createWorldStore(dir), createAnnotationStore(dir))
+    await stored(real)
+    await setup(noRun).designer.annotate('design:id1', 'api', person(runtimeText(['before-name'])))
+    const beforeNames = (await fresh()).runtimeNames.api
+    // The process dies once the store's claim is written: the design save never ends, and its lock file stays.
+    const hung = setup(noRun, { store: { ...real, save: () => new Promise<void>(() => undefined) } })
+    void hung.designer.annotate('design:id1', 'api', person(runtimeText(['after-name'])))
+    void hung.designer.annotate('design:id1', 'db', person('A note.'))
+    for (let i = 0; i < 100 && !(await createAnnotationStore(dir).list('design:id1')).api?.some((c) => c.text === runtimeText(['after-name'])); i++) {
+      await new Promise<void>((r) => { setTimeout(r, 5) })
+    }
+    // A restart, the lock past its age.
+    const later = (): number => Date.now() + 10_000
+    const restarted = createAnnotationStore(dir, { now: later })
+    const store = withAnnotations(createWorldStore(dir), restarted)
+    const shown = (await store.load('design:id1')) as WorldDoc
+    expect([beforeNames, ['after-name']]).toContainEqual(shown.runtimeNames.api)
+    const { designer } = setup(noRun, { store, annotations: restarted, now: later })
+    const after = await designer.annotate('design:id1', 'db', person('After the restart.'))
+    expect(personClaims(after, 'db').map((c) => c.text)).toContain('After the restart.')
+  })
+
+  it('a design whose stored notes cannot be read gives the read-failure words when opened to annotate (DSN R5, T4)', async () => {
+    await stored(withAnnotations(createWorldStore(dir), createAnnotationStore(dir)))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const unreadable = { ...createAnnotationStore(dir), listStrict: async (): Promise<never> => { throw new WorldReadError('ANNOTATIONS_READ_FAILED') } }
+      const { designer } = setup(noRun, { store: withAnnotations(createWorldStore(dir), unreadable), annotations: unreadable })
+      expect(await failure(designer.annotate('design:id1', 'api', person('x')))).toBe(WORLD_READ_FAILED)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

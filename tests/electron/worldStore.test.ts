@@ -978,7 +978,7 @@ describe('a save over a newer world never puts its copy in place unchecked, nor 
     expect(await readFile(file(), 'utf8')).toBe(newer())
   })
 
-  it("a compile's world over a newer world is kept in memory until a refused save drops it (D4-2; sign-off #16)", async () => {
+  it("a compile's world over a newer world is kept in memory, and a refused save leaves it as it was (D4-2, DSN R5 T6; sign-off #16)", async () => {
     const store = createWorldStore(dir)
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(file(), newer())
@@ -987,9 +987,28 @@ describe('a save over a newer world never puts its copy in place unchecked, nor 
     await store.save(compiled, { compiled: true })
     expect(compiled.savedByNewer).toBe(true)
     expect(await store.load('demo')).toMatchObject({ generatedAt: 6, savedByNewer: true })
-    await store.save({ ...doc(), generatedAt: 7 })
-    expect(await store.load('demo')).toMatchObject({ generatedAt: 99, savedByNewer: true })
+    const refused = { ...doc(), generatedAt: 7 }
+    await store.save(refused)
+    expect(refused.savedByNewer).toBe(true)
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 6, savedByNewer: true })
     expect(await readFile(file(), 'utf8')).toBe(newer())
+  })
+
+  it("a save refused just before its rename leaves the compile's copy in memory as it was too (DSN R5 T6; Codex R2 :81)", async () => {
+    const newerOnDisk = new Map<string, boolean>()
+    const store = createWorldStore(dir, { newerOnDisk })
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(file(), newer())
+    await store.load('demo')
+    await store.save({ ...doc(), generatedAt: 41 }, { compiled: true })
+    // The store's record says the file is its own again (a restart's first look, say), so the save goes as far as its rename,
+    // where it finds the newer file and is refused.
+    newerOnDisk.set('demo.json', false)
+    const refused = { ...doc(), generatedAt: 42 }
+    await store.save(refused)
+    expect(refused.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 41, savedByNewer: true })
   })
 
   it('a load that finds a newer file while the save looks at its temp copy is not written over (D4-1, Codex probe :46)', async () => {
@@ -1126,5 +1145,49 @@ describe('a save over a newer world never puts its copy in place unchecked, nor 
     await writeFile(file(), newer())
     await store.save({ ...doc(), generatedAt: 5 })
     expect(JSON.parse(await readFile(file(), 'utf8'))).toMatchObject({ version: 1, generatedAt: 5 })
+  })
+})
+
+describe("a design's load only reads: a backup or a move-aside is a save's (DSN R5, T3 and T5)", () => {
+  const world = (): string => join(dir, 'world')
+  const designFile = (): string => join(world(), worldFileName('design:x'))
+  const at = Date.UTC(2026, 10, 28, 1, 2, 3, 4)
+
+  it('a design file that does not parse is reported, never moved aside, by a load; a save then moves it aside and writes (Codex R2 :93)', async () => {
+    const store = createWorldStore(dir, { now: () => at, log: () => undefined })
+    await mkdir(world(), { recursive: true })
+    await writeFile(designFile(), '{ not json')
+    for (let i = 0; i < 2; i++) {
+      const e = await store.load('design:x').then(() => null, (x: unknown) => x)
+      expect(e).toBeInstanceOf(WorldReadError)
+      expect((e as Error).message).toBe(WORLD_READ_FAILED)
+    }
+    expect(await readdir(world())).toEqual([worldFileName('design:x')])
+    expect(await readFile(designFile(), 'utf8')).toBe('{ not json')
+    await store.save(doc('design:x'))
+    expect((await readdir(world())).sort()).toEqual([worldFileName('design:x'), `${worldFileName('design:x')}.2026-11-28T01-02-03-004Z-1.bad`])
+    expect(JSON.parse(await readFile(designFile(), 'utf8'))).toMatchObject({ projectKey: 'design:x' })
+  })
+
+  it('a design file that parses but is not a world is reported by a load and left as it is', async () => {
+    const store = createWorldStore(dir, { log: () => undefined })
+    await mkdir(world(), { recursive: true })
+    await writeFile(designFile(), '{}')
+    await expect(store.load('design:x')).rejects.toBeInstanceOf(WorldReadError)
+    expect(await readFile(designFile(), 'utf8')).toBe('{}')
+  })
+
+  it('a design whose load leaves items out makes no backup on the load; the save that writes over it does', async () => {
+    const store = createWorldStore(dir, { now: () => at, log: () => undefined })
+    const bad = { text: 'kept in the backup', state: 'nonsense', evidence: [] }
+    const text = JSON.stringify({ ...doc('design:x'), buildings: [{ ...doc().buildings[0], why: [bad] }] })
+    await mkdir(world(), { recursive: true })
+    await writeFile(designFile(), text)
+    const loaded = (await store.load('design:x')) as WorldDoc
+    expect(loaded.buildings[0].why).toEqual([])
+    expect(await readdir(world())).toEqual([worldFileName('design:x')])
+    await store.save(loaded)
+    expect((await readdir(world())).sort()).toEqual([worldFileName('design:x'), `${worldFileName('design:x')}.2026-11-28T01-02-03-004Z-1.bad`])
+    expect(await readFile(join(world(), `${worldFileName('design:x')}.2026-11-28T01-02-03-004Z-1.bad`), 'utf8')).toBe(text)
   })
 })

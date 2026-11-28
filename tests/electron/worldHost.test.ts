@@ -2376,6 +2376,25 @@ describe('annotate', () => {
     expect(h.store.saves).toEqual([])
   })
 
+  it('a design file that parses but is not a world says it could not be read, not "No world with that key." (DSN R5, T5; Codex R2 worldHost:2358)', async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann, readWorldText: async () => '{}' }, memStore({}))
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+      expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
+      // A world of this version's shape still has no such part here: that one stays "No world with that key."
+      const h2 = harness({ createAnnotations: () => memAnnotations(), readWorldText: async () => JSON.stringify({ ...doc(), projectKey: 'design:d1' }) }, memStore({}))
+      await h2.send({ kind: 'init', userDataPath: dir, labelling: false })
+      await h2.send({ kind: 'call', id: 2, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+      expect(h2.last()).toMatchObject({ kind: 'result', id: 2, ok: false, error: { message: 'No world with that key.' } })
+    } finally {
+      warn.mockRestore()
+    }
+    expect(ann.added).toEqual([])
+  })
+
   it("never compiles a design: a design is main's designer's to write (DSN Round 1, item 5)", async () => {
     const plan = { ...doc(), projectKey: 'design:d1' }
     const h = harness({}, memStore({ 'design:d1': plan }))

@@ -803,17 +803,16 @@ describe("a design's notes move into the store once, and the store is then their
       expect(Object.keys((await store.listStrict('k')).byItem).sort()).toEqual(['b1', 'b2--a'])
     })
 
-    it('rejects, where list shows none, for a file that does not parse or cannot be read, and writes nothing', async () => {
+    it('reads a file that does not parse as none (DSN R5, T5) and rejects, where list shows none, for one that cannot be read; it writes nothing', async () => {
       const warn = quiet()
       try {
         const store = createAnnotationStore(dir)
         await mkdir(folder(), { recursive: true })
         await writeFile(fileFor('broken'), '{ not json')
         await mkdir(join(fileFor('folder'), 'held'), { recursive: true })
-        for (const key of ['broken', 'folder']) {
-          await expect(store.listStrict(key)).rejects.toMatchObject({ name: 'WorldReadError', code: 'ANNOTATIONS_READ_FAILED', message: WORLD_READ_FAILED })
-          expect(await store.list(key)).toEqual({})
-        }
+        expect(await store.listStrict('broken')).toEqual({ byItem: {}, migrated: false })
+        await expect(store.listStrict('folder')).rejects.toMatchObject({ name: 'WorldReadError', code: 'ANNOTATIONS_READ_FAILED', message: WORLD_READ_FAILED })
+        for (const key of ['broken', 'folder']) expect(await store.list(key)).toEqual({})
         expect(String(warn.mock.calls[0][0])).toContain("a world's annotations could not be read")
         // Nothing was moved aside or written: a read never writes.
         expect(await readFile(fileFor('broken'), 'utf8')).toBe('{ not json')
