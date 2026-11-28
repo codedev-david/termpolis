@@ -87,7 +87,7 @@ const pieceBudget = (piece: string): number => {
 }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined, link?.whenComplete)
+  const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined, link?.whenComplete, link?.confirmRemoval)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -287,7 +287,8 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     said.current.count = revealed
   }, [state, answer, revealed])
 
-  const disabled = root === '' || (viewer === null && !design)
+  // A design a newer Termpolis saved is read-only: main refuses every change to it, so none is asked for (WP3).
+  const disabled = root === '' || (viewer === null && !design) || (design && doc?.savedByNewer === true)
   const placeholder = design ? 'Change the design…' : 'Ask about this project…'
   // A disabled button gets no release, so a press in progress ends here rather than firing late.
   useEffect(() => { if (disabled) endPressRef.current() }, [disabled])

@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
+import type { DistrictRemoval } from '../../../../shared/world/designPatch'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { sameParts } from '../../../../shared/world/diff'
 import { worldTitle } from '../../../../shared/world/worldTitle'
@@ -111,6 +112,11 @@ export interface WorldAskLink {
    * must not play, whether or not the box has seen the change yet (fix round 3, N4 and N5).
    */
   whenComplete?(): Promise<boolean>
+  /**
+   * Asks the user, in the pane, whether to make a design change that removes these districts with their buildings;
+   * true for Remove. It answers false when the pane closes or opens another world meanwhile (D3).
+   */
+  confirmRemoval?(removals: DistrictRemoval[]): Promise<boolean>
 }
 
 /** The e2e probe on window.__termpolis_world. */
