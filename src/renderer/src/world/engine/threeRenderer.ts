@@ -1774,11 +1774,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    panelMoved = true
+    recheck = true
     try {
       rig.refit()
     } finally {
-      panelMoved = false
+      recheck = false
     }
   }
 
@@ -2053,15 +2053,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * A line's close-up (WP2 M-a). The search (searchLineShot) runs once per line, framing and layout: a resize or a
    * panel change, which the rig answers by asking for the framing's shot again (resized, refit), only fits the kept
-   * shot's distance to the new free area (reaim), with no search; after a panel's change the re-aimed look's ends are
-   * checked once more, and one hidden there searches again. A new framing, a new layout and an explode search again.
+   * shot's distance to the new free area (reaim), with no search. After a panel's change, and once a resize's size has
+   * held (the buffer's settle), the re-aimed look is checked as the search accepts one (keptLookHolds); one that fails
+   * there searches again. A new framing, a new layout and an explode search again.
    */
   const lineShots = createLineShotCache()
   let layoutVersion = 0
-  /** Set while a panel's change (reframe) asks for the framing's shot again, not a resize of the view. */
-  let panelMoved = false
-  /** The ends each kept close-up's search checked (their probe points), checked again after a panel's change. */
-  const keptEnds = new WeakMap<CachedLineShot, LineEnd[]>()
+  /**
+   * Set while the framing's shot is asked for again after a panel's change (reframe) or once a resize's size has held
+   * (settleCheck): not for each frame of a divider dragged, which is only re-aimed.
+   */
+  let recheck = false
+  /** The other lines' balls each kept close-up's search tested its camera's clearance against (clearOf). */
+  const keptBalls = new WeakMap<CachedLineShot, Map<EdgeRec, THREE.Sphere>>()
+  /** The box a line end's probe points are measured in, for the ball round them (lineEnds). */
+  const endBox = new THREE.Box3()
   function newLayout(): void {
     layoutVersion++
     lineShots.clear()
@@ -2073,15 +2079,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (kept) {
       const { pos, target } = reaim(kept, fitAspect(), fitFov(), fit)
       const shot = { pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target) }
-      // A panel that changed size (the building card giving way to a taller line card) moves the camera along the kept
-      // look, closer or further out, where a tower can stand in front of an end that showed from the searched spot. The
-      // search's own check of its ends (endsHidden) is run there once: a look that now hides an end is dropped, and the
-      // search runs again for the new free area, going on to its next look. A resize of the view (a divider dragged,
-      // every frame) is only re-aimed, as is a look that already hid an end when it was found.
-      if (!panelMoved || !kept.clear || endsHidden(keptEnds.get(kept) as LineEnd[], shot.pos, shot.target, 1) === 0) return shot
+      // A panel that changed size (the building card giving way to a taller line card), or a view resized, moves the
+      // camera along the kept look, closer or further out, where a tower can stand in front of an end that showed from
+      // the searched spot, or round the camera itself. After a panel's change, and once a resize's size has held, the
+      // look is checked there as the search accepts one (keptLookHolds): one that fails is dropped, and the search runs
+      // again for the new free area, going on to its next look. Each frame of a divider dragged is only re-aimed, as is
+      // a look that already hid an end when it was found.
+      if (!recheck || !kept.clear || keptLookHolds(kept, e, shot)) return shot
     }
     const { points } = lineFrame(e)
-    const { pos, target: aim, clear, ends } = searchLineShot(e, from)
+    const { pos, target: aim, clear, balls } = searchLineShot(e, from)
     const off = pos.clone().sub(aim)
     const dist = Math.max(1e-6, off.length())
     const dir: V3 = [off.x / dist, off.y / dist, off.z / dist]
@@ -2089,14 +2096,28 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const fitted = fitDistance(points, target, dir, fitFov(), fitAspect(), fit.margin, fit.minDist)
     const entry: CachedLineShot = { dir, target, points, stretch: dist / fitted, clear }
     lineShots.put(key, entry)
-    keptEnds.set(entry, ends)
+    keptBalls.set(entry, balls)
     return { pos, target: aim }
+  }
+  /**
+   * Whether a kept close-up's look, re-aimed to `shot`, passes the search's own test of a look where it now stands:
+   * the camera clear of every building, orb and other line (insideAny, clearOf), and both ends showing beside the card
+   * (endsHidden). The world is measured as it stands now (an open tower's floors may have risen since the search):
+   * its matrices, the pick shapes' balls and the ends' probe points are taken again. The line's middle is not tested
+   * again: the search's best look may already hide it (the wide pass keeps one that shows both ends), and testing it
+   * would search again, on every check, for a look the search already found the best.
+   */
+  function keptLookHolds(kept: CachedLineShot, e: EdgeRec, shot: Shot): boolean {
+    scene.updateMatrixWorld()
+    takePickBalls()
+    return !insideAny(shot.pos) && clearOf(shot.pos, shot.target, e, keptBalls.get(kept) as Map<EdgeRec, THREE.Sphere>) &&
+      endsHidden(lineEnds(e), shot.pos, shot.target, 1) === 0
   }
   /** The buildings or orbs at a line's two ends, with the points a click on each is looked for at (endsHidden). */
   function lineEnds(e: EdgeRec): LineEnd[] {
     return [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m).map((node): LineEnd => {
       const probes = lineProbes(node)
-      return { node, probes, ball: new THREE.Sphere().setFromPoints(probes) }
+      return { node, probes, ball: endBox.setFromPoints(probes).getBoundingSphere(new THREE.Sphere()) }
     })
   }
   /** What a line's close-up frames: the arch and each end building's upper part (`points`), and the ends' name points. */
@@ -2114,8 +2135,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     return { pts, names, points: pts.concat(names) }
   }
-  /** The search's shot, whether it shows both ends beside the card (`clear`), and the ends it checked. */
-  function searchLineShot(e: EdgeRec, from: THREE.Vector3): Shot & { clear: boolean; ends: LineEnd[] } {
+  /** The search's shot, whether it shows both ends beside the card (`clear`), and the lines' balls it tested clearance against. */
+  function searchLineShot(e: EdgeRec, from: THREE.Vector3): Shot & { clear: boolean; balls: Map<EdgeRec, THREE.Sphere> } {
     scene.updateMatrixWorld()
     takePickBalls()
     const balls = new Map<EdgeRec, THREE.Sphere>()
@@ -2152,7 +2173,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
         for (const back of LINE_BACKS) {
           const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
-          if (!insideAny(eye) && clearOf(eye, target, e, balls) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target, 1) === 0) return { pos: eye, target, clear: true, ends }
+          if (!insideAny(eye) && clearOf(eye, target, e, balls) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target, 1) === 0) return { pos: eye, target, clear: true, balls }
         }
       }
     }
@@ -2179,13 +2200,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
           // Once a view hides at most one end, only a view hiding none is better: one hidden end is enough to know.
           const hidden = endsHidden(ends, eye, target, bestScore > 1 ? ends.length : 1)
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
-          if (midSeen) return { pos: eye, target, clear: true, ends }
+          if (midSeen) return { pos: eye, target, clear: true, balls }
           const score = hidden === 0 ? 0.5 : hidden
           if (score < bestScore) { bestShot = { pos: eye, target }; bestScore = score }
         }
       }
     }
-    if (bestScore < ends.length) return { ...(bestShot as Shot), clear: bestScore < 1, ends } // a finite score was set with its shot
+    if (bestScore < ends.length) return { ...(bestShot as Shot), clear: bestScore < 1, balls } // a finite score was set with its shot
     // Nothing shows an end: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
     const fit = lineFit(dir)
@@ -2193,7 +2214,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
     while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e, balls)) dist *= 1.15
-    return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target, clear: false, ends }
+    return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target, clear: false, balls }
   }
 
   // ---------------- pulses ----------------
@@ -2538,8 +2559,22 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     settleTimer = setTimeout(() => {
       settleTimer = null
       fitBuffer()
+      settleCheck()
       wake()
     }, BUFFER_SETTLE_MS)
+  }
+  /**
+   * The size has held (a divider let go): the camera's goal is asked for once more with a framing's look checked
+   * (recheck), so a line close-up that each frame of the drag only re-aimed to where a tower hides an end searches again
+   * (lineShot). The overview's camera is already home (resized put it there) and a camera moved by hand has no goal.
+   */
+  const settleCheck = (): void => {
+    recheck = true
+    try {
+      rig.refit()
+    } finally {
+      recheck = false
+    }
   }
   const resizeNow = (drawn: boolean): void => {
     solids = null
