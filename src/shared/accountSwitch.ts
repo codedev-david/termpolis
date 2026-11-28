@@ -377,7 +377,9 @@ export type SwitchOutcome =
    *  terminal's shell is of another kind than the one the line was built for (one was started inside
    *  it), so there is no line to type; the agent has exited. */
   | { kind: 'didnt-start'; line: string; otherShell?: true }
-  /** Claude Code couldn't find the conversation on the target. */
+  /** The target couldn't see the conversation, and the shell is proven back at its prompt: Claude Code, which exits on it,
+   *  or Codex whose fallback could not start its new session. A Codex that said so with nothing proving it exited is
+   *  unknown-exit, its resume line typed and nothing after it (HOLD-C R1 F1). */
   | { kind: 'resume-not-found' }
   /** The target shows its sign-in screen, which Termpolis never answers. */
   /** `sessionId`: the conversation that was being relaunched, which a new terminal on the account can
