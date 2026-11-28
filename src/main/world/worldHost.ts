@@ -1217,10 +1217,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       return provisional.get(key)?.doc ?? null
     },
     // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved
-    // doc, which is returned so the pane shows it at once. Works on design worlds as well (their files sit in
-    // the same store).
+    // doc, which is returned so the pane shows it at once. A design world is main's designer's to write, under its
+    // lock, so a refine's save there never drops a confirmation made here (DSN D1): its key is refused.
     annotate: (projectKey: unknown, itemId: unknown, claim: unknown) => {
       const key = needKey(projectKey)
+      if (key.startsWith('design:')) return Promise.reject(new Error('No world with that key.'))
       return serial(key, async () => {
         const doc = await st.store.load(key)
         if (!doc || !isStr(itemId) || !hasPart(doc, itemId)) throw new Error(NO_PART)

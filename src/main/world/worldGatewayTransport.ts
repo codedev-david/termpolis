@@ -22,7 +22,7 @@ import { MAX_DESIGN_OPS } from '../../shared/world/designPatch'
 import type { Claim, Evidence, EvidenceKind, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { EVIDENCE_KINDS, MAX_ANNOTATION_EVIDENCE, MAX_ANNOTATION_TEXT, MAX_EVIDENCE_EXCERPT, MAX_EVIDENCE_REF } from './annotations'
 import { evidenceRef } from './evidencePath'
-import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, type Designer } from './designer'
+import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure, type Designer } from './designer'
 import { createKeyedLock } from './keyedLock'
 import { keyForSource, type SourceRegistry, type WorldSource } from './sources'
 import type { WorldClient } from './worldClient'
@@ -57,7 +57,8 @@ export type WorldRootFor = (cwd?: string) => string | null | Promise<string | nu
 export type IsDirectory = (p: string) => Promise<boolean>
 /** What world_propose and designKey reads need: the designer, the source registry and a design reader. */
 export interface WorldDesignDeps {
-  designer: Pick<Designer, 'propose'>
+  /** `annotate` writes an agent's note on a design under the designer's lock, as the world host leaves designs alone (DSN D1). */
+  designer: Pick<Designer, 'propose' | 'annotate'>
   registry: Pick<SourceRegistry, 'get' | 'upsert'>
   /** The read result for a stored design, or null when there is none. */
   readDesign(key: string, q: WorldQuery): Promise<WorldReadResult | null>
@@ -299,7 +300,12 @@ export function createWorldGatewayTransport(
     }
     const claim: Claim = { text: p.text.trim().slice(0, MAX_ANNOTATION_TEXT), state: 'observed', evidence: evidence.length > 0 ? evidence : [AGENT_EVIDENCE] }
     try {
-      await client.annotate(key, p.id, claim)
+      if (p.designKey !== undefined && design) {
+        // The designer's "no such design" reads as the host's "no such world", so one mapping below answers both.
+        await design.designer.annotate(key, p.id, claim).catch((e: unknown) => {
+          throw e instanceof DesignFailure && e.message === DESIGN_NOT_FOUND ? new Error('No world with that key.') : e
+        })
+      } else await client.annotate(key, p.id, claim)
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       if (m === NO_PART_MESSAGE) fail(NO_PART_MESSAGE)

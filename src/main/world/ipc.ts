@@ -156,6 +156,10 @@ export interface WorldDesigner {
   draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
   refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
   cancel(key: string): boolean
+  /** Makes the change a refine held for a yes (D3): removing a district that has buildings in it. */
+  confirm(key: string): Promise<DesignRefineResult>
+  /** A person's confirmation on a design, written by the designer under its lock (D1). */
+  annotate(key: string, itemId: string, claim: Claim): Promise<WorldDoc>
 }
 
 const DRAFT_KEY_RE = /^draft:[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
@@ -178,6 +182,13 @@ const refineRequestOf = (args: unknown): { key: string; message: string; summary
 
 /** The designer's own friendly failure as it is; anything else that escapes it is never shown raw. */
 const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : DESIGN_FAILED)
+
+/** A designer refusal of a confirmation as the pane reads it: the lines the host's refusals use, else ANNOTATE_FAILED. */
+const designAnnotateErr = (e: unknown) => {
+  const m = e instanceof DesignFailure ? e.message : ''
+  if (m === NO_PART || m === WORLD_SAVED_BY_NEWER) return err(m)
+  return err(m === DESIGN_NOT_FOUND ? 'No world with that key.' : ANNOTATE_FAILED)
+}
 
 /** What the source handlers need; main passes the real registry, store, dialog and world host. */
 export interface WorldSourcesDeps {
@@ -325,6 +336,14 @@ export function registerWorldIpc(
     if (!nonEmpty(key) || typeof itemId !== 'string' || typeof text !== 'string' || text.trim() === '') return err('key, itemId and text required')
     try {
       const claim: Claim = { text: text.trim(), state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] }
+      // A design is written in main only, by the designer under its lock, so a refine's save never drops it (D1).
+      if (designer && key.startsWith('design:')) {
+        try {
+          return ok(await designer.annotate(key, itemId, claim))
+        } catch (e) {
+          return designAnnotateErr(e)
+        }
+      }
       return ok(await client.annotate(key, itemId, claim))
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
@@ -401,6 +420,15 @@ export function registerWorldIpc(
       const key = field(args, 'key')
       if (typeof key !== 'string' || !(DESIGN_KEY_RE.test(key) || DRAFT_KEY_RE.test(key))) return err('design key required')
       return ok(designer.cancel(key))
+    })
+    ipc.handle('world:design-confirm', async (_event: unknown, args?: unknown) => {
+      const key = field(args, 'key')
+      if (typeof key !== 'string' || !DESIGN_KEY_RE.test(key)) return err('design key required')
+      try {
+        return ok(await designer.confirm(key))
+      } catch (e) {
+        return designErr(e)
+      }
     })
   }
 
