@@ -2278,6 +2278,16 @@ describe('annotate', () => {
     expect(h.store.saves).toEqual([])
   })
 
+  it("leaves a design's annotations to main's designer, which writes the design under its lock: it adds and saves nothing (DSN D1)", async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann }, memStore({ 'design:d1': { ...doc(), projectKey: 'design:d1' } }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+    expect(h.last()).toMatchObject({ id: 1, ok: false, error: { message: 'No world with that key.' } })
+    expect(ann.added).toEqual([])
+    expect(h.store.saves).toEqual([])
+  })
+
   it('rejects an unknown part, an unknown world and a non-string id with "No part with that id."', async () => {
     const ann = memAnnotations()
     const h = harness({ createAnnotations: () => ann }, memStore({ k1: doc() }))

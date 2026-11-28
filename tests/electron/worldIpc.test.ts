@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ANNOTATE_FAILED, DESIGN_FAILED, SETTINGS_FAILED, SETTINGS_LOAD_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
-import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
+import { DESIGN_CHANGED, DESIGN_NOT_FOUND, DESIGN_REPLACED, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
+import { NO_PART } from '../../src/main/world/annotations'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 import { shownAsIs, shownError, WORLD_CALL_FAILED } from '../../src/main/world/windowError'
@@ -468,15 +469,33 @@ describe('registerWorldIpc design handlers', () => {
   const draftResult = { key: 'design:d1', doc: DOC, text: 'A plan.' }
   const refineResult = { doc: DOC, text: 'Done.', applied: 1, skipped: 0, summary: 'Q: x, A: Done.' }
   const fakeDesigner = () =>
-    ({ draft: vi.fn(async () => draftResult), refine: vi.fn(async () => refineResult) }) as WorldDesigner & {
+    ({ draft: vi.fn(async () => draftResult), refine: vi.fn(async () => refineResult), confirm: vi.fn(async () => refineResult) }) as unknown as WorldDesigner & {
       draft: ReturnType<typeof vi.fn>
       refine: ReturnType<typeof vi.fn>
+      confirm: ReturnType<typeof vi.fn>
     }
   const withDesigner = (d: WorldDesigner) => setup(undefined, undefined, undefined, d)
 
   it('registers the design handlers only when a designer is passed, after the rest', () => {
     expect([...setup().handlers.keys()]).not.toContain('world:design-draft')
-    expect([...withDesigner(fakeDesigner()).handlers.keys()].slice(-3)).toEqual(['world:design-draft', 'world:design-refine', 'world:design-cancel'])
+    expect([...withDesigner(fakeDesigner()).handlers.keys()].slice(-4)).toEqual(['world:design-draft', 'world:design-refine', 'world:design-cancel', 'world:design-confirm'])
+  })
+
+  it('world:design-confirm makes the change a refine held for a yes, by design key (D3)', async () => {
+    const d = fakeDesigner()
+    const s = withDesigner(d)
+    expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: true, data: refineResult })
+    expect(d.confirm).toHaveBeenCalledWith('design:d1')
+    for (const args of [undefined, 'design:d1', {}, { key: 'C:/repo' }, { key: 'design:..' }, { key: 'draft:t1' }, { key: 7 }]) {
+      expect(await s.invoke('world:design-confirm', args)).toEqual({ success: false, error: 'design key required' })
+    }
+    expect(d.confirm).toHaveBeenCalledTimes(1)
+    d.confirm.mockRejectedValueOnce(new DesignFailure(DESIGN_REPLACED))
+    expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_REPLACED })
+    d.confirm.mockRejectedValueOnce(new DesignFailure(DESIGN_CHANGED))
+    expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_CHANGED })
+    d.confirm.mockRejectedValueOnce(new Error('EIO C:/Users/me'))
+    expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_FAILED })
   })
 
   it('world:design-draft passes the description through', async () => {
@@ -589,6 +608,36 @@ describe('world:annotate', () => {
     // The code alone is not enough: an error main never marked fit to show (it did not come from the host) is fixed text.
     annotated(s).annotate.mockRejectedValueOnce(Object.assign(new Error('raw'), { code: 'WORLD_SAVED_BY_NEWER' }))
     expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
+  })
+
+  describe('a design key goes to the designer, which writes the design under its lock (D1)', () => {
+    const designerWith = (annotate: ReturnType<typeof vi.fn>) => {
+      const designer = { draft: vi.fn(), refine: vi.fn(), cancel: vi.fn(), confirm: vi.fn(), annotate } as unknown as WorldDesigner
+      return setup(undefined, undefined, undefined, designer)
+    }
+
+    it('stores the verified claim through the designer and never through the world host', async () => {
+      const annotate = vi.fn(async () => DOC)
+      const s = designerWith(annotate)
+      expect(await s.invoke('world:annotate', { key: 'design:d1', itemId: 'b1', text: ' Takes orders ' })).toEqual({ success: true, data: DOC })
+      expect(annotate).toHaveBeenCalledWith('design:d1', 'b1', { text: 'Takes orders', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] })
+      expect(annotated(s).annotate).not.toHaveBeenCalled()
+      // A project world still goes to the host.
+      await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })
+      expect(annotated(s).annotate).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      [new DesignFailure(NO_PART), NO_PART],
+      [new DesignFailure(WORLD_SAVED_BY_NEWER), WORLD_SAVED_BY_NEWER],
+      [new DesignFailure(DESIGN_NOT_FOUND), 'No world with that key.'],
+      [new DesignFailure(DESIGN_SAVE_FAILED), ANNOTATE_FAILED],
+      [new Error('No part with that id.'), ANNOTATE_FAILED],
+      ['odd', ANNOTATE_FAILED]
+    ])('answers the designer refusal %s as the pane reads it', async (e, error) => {
+      const s = designerWith(vi.fn(async () => { throw e }))
+      expect(await s.invoke('world:annotate', { key: 'design:d1', itemId: 'b1', text: 'x' })).toEqual({ success: false, error })
+    })
   })
 
   it('rejects a missing key, a non-string id, and blank or non-string text', async () => {

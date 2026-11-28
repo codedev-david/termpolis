@@ -30,7 +30,7 @@ import {
 } from '../../src/main/world/worldGatewayTransport'
 import type { Claim, WorldDoc, WorldQuery, WorldReadResult } from '../../src/shared/world/types'
 import { MAX_DESIGN_OPS } from '../../src/shared/world/designPatch'
-import { createDesigner, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED } from '../../src/main/world/designer'
+import { createDesigner, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import { keyForSource, type SourceRegistry, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
 import type { WorldStore } from '../../src/main/world/worldStore'
 import type { ExecDeps } from '../../src/main/headlessExec'
@@ -258,7 +258,8 @@ describe('world_propose and design reads', () => {
     let n = 0
     const designer = createDesigner({
       exec: vi.fn(), execDeps: {} as ExecDeps, store, registry: registry as unknown as SourceRegistry,
-      designsDir: '/designs', newId: () => `n${++n}`, now: () => 50
+      designsDir: '/designs', newId: () => `n${++n}`, now: () => 50,
+      annotations: { add: vi.fn(), list: vi.fn(async () => ({})) }
     })
     const readDesign = vi.fn(async (key: string, _q: WorldQuery) => (saved.has(key) ? RESULT : null))
     const base = setup()
@@ -560,6 +561,37 @@ describe('world_annotate', () => {
     await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
     annotate.mockRejectedValueOnce('odd')
     await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
+  })
+
+  describe("a design's note goes to main's designer, which writes the design under its lock (DSN D1)", () => {
+    const withDesign = (annotate: ReturnType<typeof vi.fn>) => {
+      const base = setup({ root: ROOT })
+      const deps = { designer: { propose: vi.fn(), annotate }, registry: { get: vi.fn(async () => null), upsert: vi.fn() }, readDesign: vi.fn() }
+      const transport = createWorldGatewayTransport({ read: base.read, hasWorld: base.hasWorld, annotate: base.annotate }, base.rootFor, base.isDir, deps)
+      return { transport, client: base.annotate }
+    }
+
+    it('stores an agent note on a design through the designer, and a project note still through the host', async () => {
+      const annotate = vi.fn(async () => ({}) as WorldDoc)
+      const { transport, client } = withDesign(annotate)
+      const out = JSON.parse(await transport.callTool('world_annotate', { designKey: 'design:n1', id: 'auth', text: 'planned', evidence: [{ kind: 'file', ref: 'src/a.ts' }] }))
+      expect(out).toEqual({ ok: true, id: 'auth', state: 'observed', evidence: 1, dropped: 0 })
+      expect(annotate).toHaveBeenCalledWith('design:n1', 'auth', { text: 'planned', state: 'observed', evidence: [{ kind: 'file', ref: 'src/a.ts' }] })
+      expect(client).not.toHaveBeenCalled()
+      await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })
+      expect(client).toHaveBeenCalledTimes(1)
+      expect(annotate).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      [new DesignFailure(DESIGN_NOT_FOUND), NO_DESIGN_MESSAGE],
+      [new DesignFailure(NO_PART_MESSAGE), NO_PART_MESSAGE],
+      [new DesignFailure(DESIGN_SAVE_FAILED), ANNOTATE_FAILED_MESSAGE],
+      [new Error('disk full: C:/some/path'), ANNOTATE_FAILED_MESSAGE]
+    ])('answers the designer refusal %s with the message the host path gives', async (e, message) => {
+      const { transport } = withDesign(vi.fn(async () => { throw e }))
+      await expect(transport.callTool('world_annotate', { designKey: 'design:n1', id: 'b1', text: 't' })).rejects.toThrow(message)
+    })
   })
 
   it('the tool description is at most 300 characters and is listed only through the gateway', async () => {
