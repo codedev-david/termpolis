@@ -19,6 +19,8 @@
  *      design's removePart) and the folder's world draws that built part fading.
  *   4b. Back in the design, "remove Shop" would take a district with buildings in it away: the pane asks first
  *      (D3), modal, Cancel focused. Esc answers no and the design is left as it was; Remove makes the change.
+ *   4c. The design's file is then marked as saved by a newer Termpolis: opened again, the pane says so (B7) and
+ *      its Change the design box is off, so this version changes nothing (WP3).
  *   5. A folder with nothing to map says why in its own words (WP4b F-R9): an empty one, then (Choose another
  *      folder) one of only notes, with no Try again; Back to Home goes home.
  *   6. The renderer logged no console error and threw no page error.
@@ -379,6 +381,26 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect(question).toHaveCount(0)
     await expect(answer).toContainText('Removed the Shop district.', { timeout: 30_000 })
     await expect.poll(async () => (await wireframes()) ?? [], { timeout: 30_000 }).not.toContain('storefront')
+  })
+
+  test('4c. a design a newer Termpolis saved opens read-only, with the note that says why (WP3)', async () => {
+    const worlds = path.join(userDataDir, 'world')
+    const files = fs.readdirSync(worlds).filter((f) => /^design_[^.]+\.json$/.test(f))
+    expect(files).toHaveLength(1)
+    const file = path.join(worlds, files[0])
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), version: 99 }))
+    const onDisk = fs.readFileSync(file, 'utf8')
+
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: path.basename(buildDir) })
+    await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })
+    await expect(projectName()).toHaveText(DESCRIPTION, { timeout: 30_000 })
+    await expect(page.locator('[data-testid="world-notice"]')).toHaveText(
+      'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.',
+      { timeout: 30_000 }
+    )
+    await expect(page.getByPlaceholder('Change the design…')).toBeDisabled()
+    expect(fs.readFileSync(file, 'utf8')).toBe(onDisk)
   })
 
   test('5. a folder with nothing to map says why, and the person goes on from there', async () => {
