@@ -2564,17 +2564,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     breakChain() // the next frames draw the new shape: not a frame of the old one
     renderer.domElement.style.width = `${width}px`
     renderer.domElement.style.height = `${height}px`
-    armSettle(true)
+    armSettle()
     return false
   }
   /**
-   * Once the size has held for BUFFER_SETTLE_MS: the buffer fitted (`fit`; a new pixel ratio has already fitted it) and
-   * the look checked (settleCheck).
+   * Once the size has held for BUFFER_SETTLE_MS: the buffer fitted, only to a size or ratio it does not have (a new
+   * pixel ratio may have fitted it to this size already, and each fit clears it, a blank frame), and the look checked
+   * (settleCheck) either way.
    */
-  const armSettle = (fit: boolean): void => {
+  const armSettle = (): void => {
     settleTimer = setTimeout(() => {
       settleTimer = null
-      if (fit) fitBuffer()
+      if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) fitBuffer()
       settleCheck()
       wake()
     }, BUFFER_SETTLE_MS)
@@ -2636,11 +2637,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onRatio = (): void => {
     watchRatio()
     // A resize's settle still pending owes the look its check: the settle is put off again, never dropped (the buffer,
-    // fitted here, is not fitted again by it).
+    // fitted here, is not fitted again by it unless the size changes before it).
     const owed = settleTimer !== null
     settleBuffer()
     fitBuffer()
-    if (owed) armSettle(false)
+    if (owed) armSettle()
     wake()
   }
   const dropRatioQuery = (): void => { ratioQuery?.removeEventListener('change', onRatio) }

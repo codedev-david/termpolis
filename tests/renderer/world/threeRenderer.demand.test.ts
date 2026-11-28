@@ -928,13 +928,15 @@ describe('threeRenderer: a 4K canvas is never blank (look spec 5.3)', () => {
     const fits = rendererOf().sizes.length
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
+      resizeHost(h.host, 1920, 1080) // a size the buffer does not have (the same size again is not fitted)
       ro.fire()
       vi.advanceTimersByTime(BUFFER_SETTLE_MS) // the view has drawn: its buffer is fitted once the size holds
     } finally {
       vi.useRealTimers()
     }
     expect(rendererOf().sizes.length).toBe(fits + 1) // the fit was made, and not tested
-    expect(rendererOf().getPixelRatio()).toBe(1)
+    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([1920, 1080])
+    expect(rendererOf().getPixelRatio()).toBe(2) // the whole ratio at 1080p: a tested fit would have stepped it down
     expect(onBufferShrunk).toHaveBeenCalledTimes(1)
     gpu.contextLost = false
     r.dispose()
@@ -1341,6 +1343,43 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
       expect(v.fits()).toBe(gone) // no fit comes after dispose
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('a settle after a new pixel ratio already fitted the buffer to the size fits it only for a size or ratio it does not have: the observer reporting the same size again fits nothing more (each fit clears the buffer)', () => {
+    const queries: Array<() => void> = []
+    vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: (_: string, f: () => void) => { queries.push(f) }, removeEventListener: () => {} }))
+    const v = drawnView()
+    try {
+      const before = v.fits()
+      resizeHost(h.host, 440, 600)
+      v.resized()
+      queries[queries.length - 1]() // the window moved to another display: the buffer fitted to 440x600 at once
+      expect(v.fits()).toBe(before + 1)
+      v.resized() // the observer reports the same size again
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 1) // the buffer has the size and ratio: not fitted (cleared) again
+      // A size it does not have is fitted once the size holds, as before.
+      resizeHost(h.host, 420, 600)
+      v.resized()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 2)
+      expect(lastSize(rendererOf().sizes)).toEqual([420, 600])
+      resizeHost(h.host, 420, 580) // a height alone it does not have
+      v.resized()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 3)
+      expect(lastSize(rendererOf().sizes)).toEqual([420, 580])
+      // The same size at a ratio it does not have (the screen's ratio changed, its media query not yet told): fitted.
+      const ratio = rendererOf().getPixelRatio()
+      vi.stubGlobal('devicePixelRatio', 2)
+      v.resized()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      expect(v.fits()).toBe(before + 4)
+      expect(rendererOf().getPixelRatio()).not.toBe(ratio)
+    } finally {
+      v.done()
+      vi.unstubAllGlobals()
     }
   })
 

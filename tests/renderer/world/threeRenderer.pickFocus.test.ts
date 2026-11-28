@@ -985,6 +985,34 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     }
   })
 
+  it('a pixel ratio change, then the observer reporting the same size again: the settle fits no buffer but still checks the look', async () => {
+    const changes: Array<() => void> = []
+    vi.stubGlobal('matchMedia', (media: string) => ({
+      media,
+      matches: true,
+      addEventListener: (_: string, f: () => void) => { changes.push(f) },
+      removeEventListener: (_: string, f: () => void) => { changes.splice(changes.indexOf(f), 1) },
+    }))
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      changes[0]() // the buffer fitted to 440x600 at once
+      resized(440, 600) // the same size again: the settle is armed anew
+      settle()
+      expect(n.count()).toBe(0)
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0) // the buffer has the size; the look is still checked
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a pane hidden and shown again at another size is checked at once: an end the new size hides searches again', async () => {
     const n = searches()
     const { r, resized } = await dragged(800, 600)
