@@ -309,3 +309,38 @@ describe("David's wrapper restarting Claude in the same shell (CH4-3)", () => {
     expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex' })
   })
 })
+
+// HOLD-C R3, H3-5 (Opus R3-1, accountsIpc.ts:486): a line the agent's own UI at the foot took (a dialog answered with Down and Enter, a
+// picker's entry chosen) is no launch over the agent: the record stays as it was, in a Git Bash that shows no exit.
+describe('a key the agent\'s own UI took, in a terminal that never shows an exit (H3-5)', () => {
+  const DIALOG = ['❯ go', '', '● I will edit the file.', '', RULE, ' Edit file', ' app.ts', ' Do you want to make this edit to app.ts?', ' ❯ 1. Yes', '   2. Yes, allow all edits during this session (shift+tab)', '   3. No, and tell Claude what to do differently (esc)']
+  const PICKER = ['', '  Resume Session', '', '❯ Fix the login bug', '  2 hours ago · 14 messages · main', '  Add tests for the parser', '  1 day ago · 30 messages · main', '', '  ↑↓ to navigate · Enter to select · Esc to exit']
+
+  async function upAndAsked(line: string, screen: string[]): Promise<ReturnType<typeof terminalAgentStart>> {
+    register()
+    data(prompt())
+    type('claude\r'); clock += 100
+    data('claude\r\n' + paint(CLAUDE_UP))
+    await lookNow()
+    clock += 3000
+    type(line + '\r')
+    data(paint(screen))
+    clock += 100
+    await lookNow()
+    return terminalAgentStart('t1')
+  }
+
+  it('Opus R3-1: a permission prompt answered with Down, then Enter, leaves the record unchanged', async () => {
+    const before = await upAndAsked('go', DIALOG)
+    type(`${E}[B`); type('\r')
+    expect(terminalAgentStart('t1')).toBe(before)
+    expect(terminalAgentStart('t1')).not.toHaveProperty('overUnended')
+  })
+
+  it('the /resume picker\'s entry chosen with Down, then Enter, leaves the record unchanged', async () => {
+    const before = await upAndAsked('/resume', PICKER)
+    type(`${E}[B`); type('\r')
+    expect(terminalAgentStart('t1')).toBe(before)
+    expect(terminalAgentStart('t1')).not.toHaveProperty('overUnended')
+  })
+})
