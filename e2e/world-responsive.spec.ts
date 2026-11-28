@@ -1503,10 +1503,12 @@ test.describe.serial('Lumopolis at every screen size', () => {
     console.log(`[world-responsive] divider drag trace: ${dataLoss ? 'events lost' : 'no events lost'}; the marker ${own.marker.held ? 'held' : 'not held'} (${own.marker.from} from, ${own.marker.to} to, on ${own.marker.threads.join(', ') || 'no thread'})`)
     console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}; unpaired: ${doubt}`)
     // The long tasks the trace tags otherwise than the page (its 1 ms), and the worst a fit's measure lies outside every
-    // task the trace holds (the margin FIT_SLACK, 0.25 ms, keeps), Round 7; and the long tasks a fit whose measure the trace
-    // dropped would have been given on the page's number but for a clock the resizes show drifting (fail closed), Round 8.
+    // task the trace holds (the margin FIT_SLACK, 0.25 ms, keeps), Round 7; and (Round 9) the fits with no measure paired
+    // within the window, dropped or unmatched, each giving no long task a fit, the long tasks the page tags a fit's for
+    // one of them (withheld, judged as tasks with none), and whether the resizes settle the clock.
     const retagged = verdict.retagged.map((t) => `${t.start.toFixed(1)}+${t.ms.toFixed(0)} ms (the page: ${t.page ? 'a fit\'s' : 'no fit\'s'})`).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag tags: long tasks the trace tags otherwise ${retagged}; a fit's measure at most ${own.fitSkew.toFixed(3)} ms outside a task the trace holds; long tasks a drifting clock (spread ${own.spread.toFixed(3)} ms) kept from a dropped fit ${own.withheld}`)
+    const withheld = own.withheld.map((t) => `${t.start.toFixed(1)}+${t.ms.toFixed(0)} ms (a fit at ${t.fit.toFixed(2)}, ${t.reason})`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag tags: long tasks the trace tags otherwise ${retagged}; a fit's measure at most ${own.fitSkew.toFixed(3)} ms outside a task the trace holds; fits with no measure in the window ${own.unmeasured.dropped} dropped, ${own.unmeasured.unmatched} unmatched; long tasks withheld from them ${withheld}; the clock ${own.settled ? 'settled' : 'not settled'} (spread ${own.spread.toFixed(3)} ms)`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     for (const c of verdict.checks) softly(c.fails, c.rule).toEqual([])
     await glideDone('the divider dragged')
