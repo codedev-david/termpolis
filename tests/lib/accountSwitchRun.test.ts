@@ -23,6 +23,10 @@ import {
   startSwitch, stepLabels, stepsAt, toastFor, toastMs,
 } from '../../src/renderer/src/lib/accountSwitchRun'
 import type { RunDeps, SwitchRun } from '../../src/renderer/src/lib/accountSwitchRun'
+import { _resetSwitchLocksForTest, runAccountSwitch } from '../../src/main/accountSwitch'
+import type { SwitchIO } from '../../src/main/accountSwitch'
+import type { AgentAccount } from '../../src/shared/agentAccounts'
+import { FakeTerminal } from '../electron/_switchTerminal'
 
 function row(over: Partial<AccountRowView>): AccountRowView {
   return {
@@ -198,6 +202,45 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
     expect(cardFor({ kind: 'no-outcome' }, run, false)).toMatchObject({ what: 'Nothing showed in the terminal within 30 seconds.', now: 'Look at the terminal.' })
     expect(cardFor({ kind: 'refused', why: 'no line for this shell' }, run, false)).toMatchObject({ what: 'Termpolis didn\'t switch: no line for this shell.', now: 'Nothing was typed.' })
     expect(cardFor({ kind: 'unknown-exit' }, { ...run, from: null }, false)?.now).toBe('Claude Code is as you left it, on the account it was on.')
+  })
+
+  // HOLD-C R1 residual (signoff-decisions.md): Codex's fallback typed its resume line, and Codex answered "No saved session
+  // found" with nothing proving it exited. Main's real switch runs here over a terminal whose Codex says so and stays, and the
+  // card it gets says Termpolis typed nothing MORE, never that it typed nothing; where the OS still sees a program, it says so.
+  it.each([
+    [false, 'Codex didn\'t confirm it exited, so Termpolis typed nothing more.'],
+    [true, 'Codex didn\'t confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.'],
+  ])('says Termpolis typed nothing more where Codex answered its resume line that it found no session and stayed up (OS sees it: %s)', async (osTells, what) => {
+    const target: AgentAccount = { id: 'b', agent: 'codex', label: 'codedev', profile: 'C:\\work', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', start: 'idle', exit: 'hint', relaunch: ['box'], ...(osTells ? { reports: false, os: 'tells' as const } : {}) })
+    const base = t.io()
+    let said = false
+    const writesAfter: string[] = []
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        if (said) writesAfter.push(key)
+        base.write(id, key)
+        if (key === '\r' && !said && t.ran.some((line) => line.includes(' resume '))) {
+          said = true
+          t.out += '\r\nNo saved session found with ID 123\r\n'
+        }
+      },
+    }
+    let outcome: SwitchOutcome
+    try {
+      outcome = await runAccountSwitch({ terminalId: 't1', targetId: 'b', shellType: 'powershell' }, {
+        io, agent: 'codex', start: { at: t.launchedAt, commands: [t.launchLine()] }, target, newSessionId: () => 'n', record: () => {},
+      })
+    } finally {
+      _resetSwitchLocksForTest()
+    }
+    expect(said).toBe(true)
+    expect(writesAfter).toEqual([])
+    const card = cardFor(outcome, { ...run, agent: 'codex' }, false)!
+    expect(card.what).toBe(what)
+    expect(card.what).not.toMatch(/typed nothing\./)
+    expect(card.now).toBe(`Codex may still be running here, on personal.${osTells ? ' Say it has exited only if the terminal is at its prompt.' : ''}`)
   })
 
   // SAFETY-R2-4: where the operating system itself still showed a program running, the card says so before it offers the

@@ -560,7 +560,7 @@ describe('restartOn: the restart', () => {
   })
 
   // HOLD-C R1 F1 (signoff-decisions.md): Codex that says "No saved session found" and nothing proves it exited is the switch's
-  // unknown-exit, not resume-not-found, so the restart makes no "it has exited" retry of its own: no key reaches the Codex that
+  // exit-unconfirmed (its resume line typed and nothing more: the R1 residual), not resume-not-found, so the restart makes no "it has exited" retry of its own: no key reaches the Codex that
   // stayed up. Main's real switch runs here, behind the bridge, over a terminal whose Codex answers its resume line so and stays.
   it('types nothing more into a Codex worker that says the target can\'t see its session and stays up, and reassigns its task', async () => {
     const CX = row({ id: 'acx_m', agent: 'codex', label: 'personal', folder: '/h/.codex', lastEmail: 'a@example.test' })
@@ -602,8 +602,10 @@ describe('restartOn: the restart', () => {
     expect(writesAfter).toEqual([])
     expect(messages()[1]).toBe(reassignOf(W, TASK1))
     expect((groups()[0].phase as { lines: string[] }).lines[0]).toBe(
-      'Codex (Build UI): The operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing. The conductor reassigns its task.',
+      'Codex (Build UI): Codex didn\'t confirm it exited, and the operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing more. The conductor reassigns its task.',
     )
+    // Its resume line was typed, so the line never says Termpolis typed nothing (HOLD-C R1 residual).
+    expect((groups()[0].phase as { lines: string[] }).lines[0]).not.toMatch(/typed nothing\./)
   })
 
   it.each([
