@@ -25,7 +25,15 @@ type Pos = [number, number, number]
 /** Given a doc whose layout holds only the positions to keep, returns positions for every district and building. */
 export type DesignPlacer = (doc: WorldDoc) => Record<string, Pos>
 
-export interface DesignPatchResult { doc: WorldDoc; applied: number; skipped: { op: DesignOp; reason: string }[] }
+/** A district a patch removed while it still held buildings, and how many it held then (they go with it). */
+export interface DistrictRemoval { id: string; name: string; buildings: number }
+export interface DesignPatchResult {
+  doc: WorldDoc
+  applied: number
+  skipped: { op: DesignOp; reason: string }[]
+  /** The districts removed with buildings in them, in the order the ops removed them; none when nothing applied (D3). */
+  removed: DistrictRemoval[]
+}
 export interface DesignReply { text: string; ops: DesignOp[]; /** Ops that were malformed or past MAX_DESIGN_OPS. */ dropped: number }
 
 export const DESIGN_PROTOCOL = `Reply in plain language for someone who does not read code. Keep it under 150 words.
@@ -213,7 +221,7 @@ function removeItem(doc: WorldDoc, id: string): string | null {
 }
 
 /** Applies one checked op to `doc` in place; returns why it can't apply, or null once applied. */
-function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>): string | null {
+function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>, removed: DistrictRemoval[]): string | null {
   const claim = (text: string): Claim => ({ text, state: 'proposed', evidence: [{ kind: 'memory', ref }] })
   const district = (id: string) => doc.districts.find((d) => d.id === id)
   const building = (id: string) => doc.buildings.find((b) => b.id === id)
@@ -289,8 +297,12 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
       b.districtId = op.districtId
       return null
     }
-    default:
+    default: {
+      const d = district(op.id)
+      const held = d ? doc.buildings.filter((b) => b.districtId === op.id).length : 0
+      if (d && held > 0) removed.push({ id: d.id, name: d.name, buildings: held })
       return removeItem(doc, op.id)
+    }
   }
 }
 
@@ -304,14 +316,15 @@ export function applyDesignPatch(doc: WorldDoc, ops: DesignOp[], place: DesignPl
   const ref = doc.projectKey.startsWith('design:') ? doc.projectKey : `design:${doc.projectKey}`
   const moved = new Set<string>()
   const skipped: DesignPatchResult['skipped'] = []
+  const removed: DistrictRemoval[] = []
   let applied = 0
   for (const raw of ops) {
     const op = normalizeOp(raw)
-    const reason = op ? applyOne(work, op, ref, moved) : 'not a change Lumopolis understands'
+    const reason = op ? applyOne(work, op, ref, moved, removed) : 'not a change Lumopolis understands'
     if (reason === null) applied++
     else skipped.push({ op: raw, reason })
   }
-  if (applied === 0) return { doc, applied, skipped }
+  if (applied === 0) return { doc, applied, skipped, removed: [] }
   // A line whose reverse is in the design runs both ways; an explicit true an agent wrote is kept.
   work.edges = markTwoWay(work.edges)
 
@@ -321,6 +334,6 @@ export function applyDesignPatch(doc: WorldDoc, ops: DesignOp[], place: DesignPl
   // The round is kept: a design change is no Re-layout, and the viewer must not read one into it.
   work.layout = { ...work.layout, positions: keep }
   work.layout.positions = { ...place(work), ...keep }
-  if (!validateWorld(work).ok) return { doc, applied: 0, skipped: ops.map((op) => ({ op, reason: 'the design would not be valid' })) }
-  return { doc: work, applied, skipped }
+  if (!validateWorld(work).ok) return { doc, applied: 0, skipped: ops.map((op) => ({ op, reason: 'the design would not be valid' })), removed: [] }
+  return { doc: work, applied, skipped, removed }
 }
