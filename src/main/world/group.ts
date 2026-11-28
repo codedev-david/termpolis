@@ -27,13 +27,16 @@
 //    a link at least a third as dense as the module's densest: a weak link into a big family or a
 //    big hub never outweighs a much denser one home. Growth in one district, which only moves the point
 //    where merging stops, then does not cost another district a part that a near rival could spare.
-//    The ceiling (PENDING SIGN-OFF, groupcap review round 4): the plan's own run, passing no link over, goes first,
-//    and its largest building is the ceiling. A link is passed over only into a building that stays at or under it
-//    with the building in; and when the run still ends with a building above it (a pass over changes the sizes that
-//    later merges see), the plan's run stands, for the whole map. So no building is larger than the plan's largest on
-//    the same input. The ruled form, which also let a receiver grow to its size before any pass over plus the building,
-//    left 5 of 1,000 seeded random projects above the plan's largest (by up to 11 files) and Codex's 36-file platform
-//    at 43; this one leaves none of 3,000.
+//    The ceiling (PENDING SIGN-OFF, groupcap review rounds 4 and 5): the plan's own run, passing no link over, goes
+//    first, and its largest building is the ceiling. A link is passed over only into a building that stays at or under
+//    it with the building in, and the map is the run with the passes over, named from that run. No pass over lifts a
+//    building above the ceiling, but it changes the sizes later merges see, so the plan's own rule can still grow a
+//    building past it, a hub up to the map's largest building's size (a known 2.0 limit). Against main's step 4 on
+//    3,000 seeded random projects: the largest building is at most a quarter larger (worst +22%, 62 files against
+//    51); on 12,000 one-file edits no more than twice main's buildings change, and two (mean 1.47 and max 11, as
+//    main's); and Codex's ballastFile14 edit, which lifts the ceiling, changes one building as main does. (Round 4's
+//    whole-map fallback to the plan's run, for a map above the ceiling, replaced 51 of 60 buildings on that edit, and
+//    named the plan's buildings from the other run's sizes.)
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    member reaching most of the building that is no test or type declaration (.d.ts), then most
 //    imported from outside it, skipping names that would pass for the district or a
@@ -94,9 +97,11 @@ export interface Grouping {
 export interface GroupOptions {
   maxDistricts?: number
   maxBuildings?: number
-  /** Cap buildings by the plan's step 4 alone, with no link passed over (the run whose largest building is the ceiling
-   *  on the passes over): for tests that compare the two. */
+  /** @internal Tests only. Cap buildings by the plan's step 4 alone, with no link passed over (the run whose largest
+   *  building is the ceiling on the passes over), and name them from that run. */
   planCap?: boolean
+  /** @internal Tests only. Given the ceiling, and each link passed over: the receiver's size with the building in. */
+  trace?: { ceiling: number; passOvers: number[] }
 }
 
 export const DEFAULT_MAX_DISTRICTS = 12
@@ -1044,8 +1049,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // The links of the building being placed that would dissolve their part (stamped with the pass), for capTarget.
   const cut = new Int32Array(nb)
   let pass = 0
-  // Which run this is: the plan's alone (plan), or with the passes over; and the plan's largest building (ceiling).
-  let plan = false
+  // The plan's largest building, from its own run (0 during that run and with planCap: then no link is passed over).
   let ceiling = 0
   /** Where b goes: the densest link (weight over the neighbour's size, so a hub that imports everything never wins by
    *  bulk), ties in path order, as the plan's step 4 has it; except that when that link is a part b would dissolve and
@@ -1061,10 +1065,11 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const capTarget = (b: number): number => {
     const near = bAdj.of(b)
     const t = densest(near, fixed)
-    if (!plan && t >= 0 && partOf(t) !== '' && !keepsPart(b, t)) {
+    if (ceiling > 0 && t >= 0 && partOf(t) !== '' && !keepsPart(b, t)) {
       // The densest link would dissolve its part: pass it over, and every other such link, for a link that stays a part,
       // but only one at least 1 / PART_LINK_FLOOR as dense. (When the densest link stays a part or has none, passing
-      // over the others could not change the pick, so this test only saves the loop.)
+      // over the others could not change the pick, and with no ceiling yet no building fits under it, as every size is
+      // at least 1: so these tests only save the loop.)
       pass++
       let spare = false
       const wt = near.get(t) as number
@@ -1075,7 +1080,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       })
       if (spare) {
         const r = densest(near, (o) => fixed(o) || cut[o] === pass)
-        if (bSize[r] + bSize[b] <= ceiling) return r
+        if (bSize[r] + bSize[b] <= ceiling) {
+          opts.trace?.passOvers.push(bSize[r] + bSize[b])
+          return r
+        }
       }
     }
     if (t >= 0) return t
@@ -1135,30 +1143,30 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
     return bUf
   }
-  // The plan's own run first, on copies of the state, for the ceiling: its largest building.
-  const saved = { bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey }
-  bSize = bSize.slice()
-  bMin = bMin.slice()
-  bStamp = bStamp.slice()
-  bTop = bTop.slice()
-  bStems = bStems.map((m) => m && new Map(m))
-  bAdj = bAdj.clone()
-  prev = prev.slice()
-  next = next.slice()
-  perDistrict = new Map(perDistrict)
-  pTop = pTop.slice()
-  pSecond = pSecond.slice()
-  pTopKey = pTopKey.slice()
-  pSecondKey = pSecondKey.slice()
-  plan = true
-  const planned = runCap()
-  ceiling = bSize.reduce((a, x) => Math.max(a, x), 0)
-  ;({ bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey } = saved)
-  plan = false
-  // A pass over that stays under the ceiling still changes the sizes later merges see, and the plan's own rule can then
-  // grow a building past the plan's largest. Then the plan's run stands, for the whole map (step 5 reads only bUf).
-  const passed = runCap()
-  const bUf = opts.planCap === true || bSize.reduce((a, x) => Math.max(a, x), 0) > ceiling ? planned : passed
+  // The plan's own run first, on copies of the state, for the ceiling: its largest building. The run that follows is the
+  // one the map is made of, so step 5 reads the sizes and parts it left. (With planCap there is no first run: the ceiling
+  // stays 0 and that one run is the plan's.)
+  if (opts.planCap !== true) {
+    const saved = { bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey }
+    bSize = bSize.slice()
+    bMin = bMin.slice()
+    bStamp = bStamp.slice()
+    bTop = bTop.slice()
+    bStems = bStems.map((m) => m && new Map(m))
+    bAdj = bAdj.clone()
+    prev = prev.slice()
+    next = next.slice()
+    perDistrict = new Map(perDistrict)
+    pTop = pTop.slice()
+    pSecond = pSecond.slice()
+    pTopKey = pTopKey.slice()
+    pSecondKey = pSecondKey.slice()
+    runCap()
+    ceiling = bSize.reduce((a, x) => Math.max(a, x), 0)
+    if (opts.trace) opts.trace.ceiling = ceiling
+    ;({ bSize, bMin, bStamp, bTop, bStems, bAdj, prev, next, perDistrict, pTop, pSecond, pTopKey, pSecondKey } = saved)
+  }
+  const bUf = runCap()
 
   // 5. Ids and names.
   const finalOf = (i: number): number => bUf.find(owner[i])

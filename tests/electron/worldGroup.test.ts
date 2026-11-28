@@ -1593,7 +1593,7 @@ describe('groupProject', () => {
       }
     })
 
-    it('keeps a pass over that fits under the ceiling while another district falls back to the plan', () => {
+    it("keeps a pass over that fits under the ceiling while another district takes the plan's pick", () => {
       // District a as above, and district c with a keeper of nine files (exactly a third as dense as its part): taking the
       // mixed building in, wave makes 11 files and c's keeper 13. With 11 files elsewhere the ceiling is 11, so a's pass
       // over stands and c's mixed building goes to its part, as in the plan.
@@ -1604,8 +1604,11 @@ describe('groupProject', () => {
         Object.fromEntries(Object.entries(r).map(([k, v]) => [k.replace('src/a/', 'src/c/'), v]))
       const s = snap({ ...clique(part), ...clique(wave), ...mixed(), ...toC({ ...clique(part), ...clique(keeper), ...m }), ...clique(bare('src/z', 'za', 11)) })
       expect(groupProject(s, []).buildings).toHaveLength(7)
-      const g = groupProject(s, [], { maxBuildings: 5 })
+      const trace = { ceiling: 0, passOvers: [] as number[] }
+      const g = groupProject(s, [], { maxBuildings: 5, trace })
       checkInvariants(g, s.files)
+      // One link passed over, into wave: 11 files with the mixed building in, exactly the ceiling.
+      expect(trace).toEqual({ ceiling: 11, passOvers: [11] })
       expect(home(g, 'src/a/mixAlpha.ts').members).toEqual(files([...wave, ...small]))
       expect(home(g, 'src/c/mixAlpha.ts').members).toEqual(files([...part, ...small].map((f) => f.replace('src/a/', 'src/c/'))))
     })
@@ -1619,7 +1622,7 @@ describe('groupProject', () => {
     })
   })
 
-  describe("building cap ceiling: never above the plan's largest building (groupcap review round 4)", () => {
+  describe('building cap ceiling, size, churn and names (groupcap review rounds 4 and 5)', () => {
     // Codex's repros (round 3), all in one folder: name families (platformFile0...) and loose names (detail0File...).
     const family = (stem: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${stem}File${i}`)
     const loose = (stem: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${stem}${i}File`)
@@ -1685,9 +1688,10 @@ describe('groupProject', () => {
       })
     }
 
-    it('keeps thirteen modules out of a 16-file service that a 28-file adapter each would outgrow (Codex b)', () => {
+    it('keeps the 16-file service at 23 files, under the 28-file adapters, where it grew to 107 (Codex b)', () => {
       // Each module links its own domain (5), the service (5), an adapter of its own (4) and every module before it (2).
-      // Passing over domains, the service grew from 16 files to 107; the plan's largest is an adapter, 28.
+      // Passing over domains, the service grew from 16 files to 107; the plan's largest is an adapter, 28, and the
+      // service ends at 23 (the plan leaves it at 16).
       const m: Record<string, string[]> = {}
       const hub = loose('service', 16)
       mesh(m, hub)
@@ -1705,6 +1709,7 @@ describe('groupProject', () => {
       }
       extras(m, 33)
       expect(check(m, 77)).toEqual([28, 28])
+      expect(home(groupProject(snap(m), [], { maxBuildings: 60 }), at('service0File')).members).toHaveLength(23)
     })
 
     it('keeps a chain of modules, each linking the one before, out of a 42-file platform', () => {
@@ -1794,31 +1799,144 @@ describe('groupProject', () => {
       return { root: '/repo', files: [...seen].sort(), symbols: [], callEdges: [], fileImports: imports }
     }
 
-    it("keeps the largest building at or under the plan's on seeded random projects", () => {
+    // The plan's run (planCap) is main's step 4: on 3,000 seeded projects its buildings hold the same files as main's.
+    it("keeps the largest building within a quarter of the plan's, and passes over no link above the ceiling (gate a)", () => {
       let passedOver = 0
+      let worst = 0
       for (let seed = 1; seed <= SEEDS; seed++) {
         const s = randomProject(seed)
+        const trace = { ceiling: 0, passOvers: [] as number[] }
+        const g = groupProject(s, [], { maxBuildings: 60, trace })
+        const plan = groupProject(s, [], { maxBuildings: 60, planCap: true })
+        expect(trace.ceiling).toBe(largest(plan))
+        const top = Math.max(0, ...trace.passOvers)
+        if (top > trace.ceiling) throw new Error(`seed ${seed}: a pass over made ${top} files against the ceiling ${trace.ceiling}`)
+        if (largest(g) > 1.25 * largest(plan)) throw new Error(`seed ${seed}: ${largest(g)} files against the plan's ${largest(plan)}`)
+        worst = Math.max(worst, largest(g) / largest(plan))
+        if (trace.passOvers.length) passedOver++
+      }
+      // On a good share of them a link is passed over, and a later merge can still grow a building past the plan's
+      // largest (seed 48: 64 files against 61; seed 507: 62 against 51, the worst of 3,000), never by a quarter.
+      expect(passedOver).toBeGreaterThan(SEEDS / 20)
+      expect(worst).toBeGreaterThan(1)
+    }, SEEDS * 1_000)
+
+    // One-file edits: two additions (a new file near a random one, importing one to three files mostly in its folder,
+    // and imported back half the time) and two removals per seed.
+    const edits = (s: GraphSnapshot, seed: number): GraphSnapshot[] => {
+      const r = rng(seed * 7919 + 13)
+      const int = (n: number): number => Math.floor(r() * n)
+      const spec = (a: string, b: string): string => {
+        const to = posix.relative(posix.dirname(a), b).replace(/(\.d)?\.ts$/, '')
+        return to.startsWith('.') ? to : `./${to}`
+      }
+      return [0, 1, 2, 3].map((e) => {
+        if (e % 2 === 1) {
+          const f = s.files[int(s.files.length)]
+          const fileImports = { ...s.fileImports }
+          delete fileImports[f]
+          return { ...s, files: s.files.filter((x) => x !== f), fileImports }
+        }
+        const dir = posix.dirname(s.files[int(s.files.length)])
+        const f = `${dir}/zq${seed}x${e}${'abcdefghij'[int(10)]}.ts`
+        const near = s.files.filter((x) => posix.dirname(x) === dir)
+        const to = Array.from({ length: 1 + int(3) }, () => (r() < 0.7 ? near[int(near.length)] : s.files[int(s.files.length)]))
+        const fileImports: Record<string, string[]> = { ...s.fileImports, [f]: [...new Set(to.map((b) => spec(f, b)))] }
+        if (r() < 0.5) {
+          const by = near[int(near.length)]
+          fileImports[by] = [...fileImports[by], spec(by, f)]
+        }
+        return { ...s, files: [...s.files, f].sort(), fileImports }
+      })
+    }
+    /** How many of a's buildings no building of b holds exactly the same files as. */
+    const churn = (a: Grouping, b: Grouping): number => {
+      const after = new Set(b.buildings.map((x) => x.members.join()))
+      return a.buildings.filter((x) => !after.has(x.members.join())).length
+    }
+
+    it("changes no more than twice the plan's buildings, and two, on any one-file edit (gate b)", () => {
+      const o = { maxBuildings: 60 }
+      let n = 0
+      let sum = 0
+      let planSum = 0
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const s = randomProject(seed)
+        const g = groupProject(s, [], o)
+        const plan = groupProject(s, [], { ...o, planCap: true })
+        for (const e of edits(s, seed)) {
+          const c = churn(g, groupProject(e, [], o))
+          const p = churn(plan, groupProject(e, [], { ...o, planCap: true }))
+          if (c > 2 * p + 2) throw new Error(`seed ${seed}: ${c} buildings changed against the plan's ${p}`)
+          n++
+          sum += c
+          planSum += p
+        }
+      }
+      expect(n).toBe(SEEDS * 4)
+      // On average no more than the plan's and a quarter.
+      expect(sum).toBeLessThanOrEqual(planSum * 1.25)
+    }, SEEDS * 1_000)
+
+    // Codex's round 4 repro: 25 modules, each a part (code, guard), a wave and a leaf of four (alpha) linking both; nine
+    // extra families; and a 14-file ballast in another district, which an edit grows to 15, the plan's largest.
+    const codexProject = (ballast: number): GraphSnapshot => {
+      const m: Record<string, string[]> = {}
+      const clique = (dir: string, names: string[]): void => {
+        for (const n of names) m[`${dir}/${n}.ts`] = names.filter((x) => x !== n).map((x) => `./${x}`)
+      }
+      for (let i = 0; i < 25; i++) {
+        const part = [0, 1, 2].map((j) => `code${i}File${j}`).concat([0, 1, 2].map((j) => `guard${i}x${j}File`))
+        const wave = [0, 1, 2, 3, 4].map((j) => `wave${i}File${j}`).concat([0, 1].map((j) => `helper${i}x${j}File`))
+        const leaf = [0, 1, 2, 3].map((j) => `alpha${i}x${j}File`)
+        for (const names of [part, wave, leaf]) clique('src/a', names)
+        m[`src/a/${leaf[0]}.ts`].push(`./${part[0]}`, `./${wave[0]}`)
+        m[`src/a/${leaf[1]}.ts`].push(`./${part[1]}`)
+        if (i === 0) {
+          const later = [0, 1, 2, 3].map((j) => `zeta${j}File`)
+          clique('src/a', later)
+          m[`src/a/${later[0]}.ts`].push(`./${wave[0]}`)
+        }
+      }
+      for (let i = 0; i < 9; i++) clique('src/a', Array.from({ length: 8 }, (_, j) => `extra${i}File${j}`))
+      clique('src/z', Array.from({ length: 14 }, (_, j) => `ballastFile${j}`))
+      if (ballast > 14) m['src/z/ballastFile14.ts'] = ['./ballastFile0']
+      return { root: '/repo', files: Object.keys(m).sort(), symbols: [], callEdges: [], fileImports: m }
+    }
+
+    it('changes one building, as the plan does, when ballastFile14 lifts the ceiling from 14 to 15 (Codex round 4, gate b)', () => {
+      const o = { maxBuildings: 60 }
+      const before = codexProject(14)
+      const after = codexProject(15)
+      const [g, g2] = [groupProject(before, [], o), groupProject(after, [], o)]
+      const [p, p2] = [groupProject(before, [], { ...o, planCap: true }), groupProject(after, [], { ...o, planCap: true })]
+      checkInvariants(g2, after.files)
+      expect([largest(p), largest(p2)]).toEqual([14, 15])
+      expect(churn(p, p2)).toBe(1)
+      // The whole-map fallback replaced 51 of the 60 buildings here, and 25 ids.
+      expect(churn(g, g2)).toBe(1)
+      expect(g2.buildings.filter((b) => !g.buildings.some((x) => x.id === b.id))).toHaveLength(0)
+    })
+
+    it('names each building from the run its files came from (gate c)', () => {
+      // The plan's run takes each leaf into its part, so the part no longer dominates the 10-file building, which is
+      // named after its front door (alpha); the passes over keep the 6-file part, named after itself. Named from the
+      // other run's state, the plan's buildings were called after a part they did not keep (code0File0 for 25 of them).
+      for (const s of [codexProject(14), codexProject(15)]) {
         const g = groupProject(s, [], { maxBuildings: 60 })
         const plan = groupProject(s, [], { maxBuildings: 60, planCap: true })
-        if (largest(g) > largest(plan)) throw new Error(`seed ${seed}: ${largest(g)} files against the plan's ${largest(plan)}`)
-        if (g.buildings.some((b, k) => b.members.join() !== plan.buildings[k]?.members.join())) passedOver++
+        for (let i = 0; i < 25; i++) {
+          const f = `src/a/code${i}File0.ts`
+          expect([home(plan, f).members.length, home(plan, f).name]).toEqual([10, `alpha${i}x0File`])
+          expect([home(g, f).members.length, home(g, f).name]).toEqual([6, `code${i}File0`])
+        }
       }
-      // And on a good share of them the passes over still change the map.
-      expect(passedOver).toBeGreaterThan(SEEDS / 20)
-    }, 300_000)
+    })
 
     it("starts the passes over from the state the plan's run started from", () => {
       // Seeds where no pass over applies, so the map is the plan's. The plan's run merges folder and name-stem counts
       // in place; had the second run started from those (the stems shared, not copied), 420 of 1,500 seeds would differ.
       for (const seed of [1, 5, 11, 30]) {
-        const s = randomProject(seed)
-        expect(groupProject(s, [], { maxBuildings: 60 })).toEqual(groupProject(s, [], { maxBuildings: 60, planCap: true }))
-      }
-    })
-
-    it("falls back to the plan's whole map when a pass over, under the ceiling itself, lets a later merge grow past it", () => {
-      // Seeds where the passes over alone made a building of 64 files against the plan's 61, 62 against 51, 57 against 54.
-      for (const seed of [48, 507, 752]) {
         const s = randomProject(seed)
         expect(groupProject(s, [], { maxBuildings: 60 })).toEqual(groupProject(s, [], { maxBuildings: 60, planCap: true }))
       }
