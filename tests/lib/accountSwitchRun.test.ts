@@ -209,9 +209,10 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
   // HOLD-C R1 residual (signoff-decisions.md): Codex's fallback typed its resume line, and Codex answered "No saved session
   // found" with nothing proving it exited. Main's real switch runs here over a terminal whose Codex says so and stays, and the
   // card it gets says Termpolis typed nothing MORE, never that it typed nothing; where the OS still sees a program, it says so.
+  // Since HOLD-C R3 (H3-1) /exit goes into a live agent only on the OS's word that it runs, so a real switch that reaches the
+  // resume line always has the OS seeing Codex: the card without it is the plain exit-unconfirmed one checked above.
   it.each([
-    [false, 'Codex didn\'t confirm it exited, so Termpolis typed nothing more.'],
-    [true, 'Codex didn\'t confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.'],
+    [true,'Codex didn\'t confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.'],
   ])('says Termpolis typed nothing more where Codex answered its resume line that it found no session and stayed up (OS sees it: %s)', async (osTells, what) => {
     const target: AgentAccount = { id: 'b', agent: 'codex', label: 'codedev', profile: 'C:\\work', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
     const t = new FakeTerminal({ agent: 'codex', family: 'powershell', start: 'idle', exit: 'hint', relaunch: ['box'], ...(osTells ? { reports: false, os: 'tells' as const } : {}) })
