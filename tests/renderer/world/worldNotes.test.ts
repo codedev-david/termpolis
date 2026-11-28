@@ -3,7 +3,7 @@ import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFiles
 
 describe('worldNotes: what the pane says about the files a world maps', () => {
   it('WP4a: a listing read in part says every file is shown and how many were read; a first map says it is still reading', () => {
-    expect(readCappedNotice(50000, 20000)).toBe('All 50,000 files are shown, but only 20,000 were read for the lines between them.')
+    expect(readCappedNotice(50000, 20000)).toBe('All 50,000 files are shown, but only 20,000 were read, so some lines between them may be missing.')
     expect(provisionalNotice()).toBe('Still reading the files: lines and details fill in when they are done.')
     expect(filesNotice({ filesRead: 20000, filesListed: 50000 })).toBe(readCappedNotice(50000, 20000))
     // Every file read (or a count that does not say fewer were read): nothing to say.
@@ -25,8 +25,8 @@ describe('worldNotes: what the pane says about the files a world maps', () => {
   })
 
   it('WP3: a world saved by a newer Termpolis says so first, and the note is told apart as a files note', () => {
-    // Placeholder wording until David signs off the proposed line (see the WP3 report).
-    expect(savedByNewerNotice()).toBe('This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.')
+    // The signed-off wording (signoff-decisions.md B7): what happened, then what to do.
+    expect(savedByNewerNotice()).toBe('This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.')
     // export's read-failure line is not a files note
     expect(isFilesNotice("Lumopolis couldn't read that world. Try again.")).toBe(false)
     expect(filesNotice({ savedByNewer: true })).toBe(savedByNewerNotice())

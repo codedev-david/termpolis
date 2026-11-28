@@ -25,7 +25,7 @@ import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS } from './label'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
-/** PENDING SIGN-OFF (M6): what a call says when the world host exited, did not start or did not answer in time. Which of
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (M6): what a call says when the world host exited, did not start or did not answer in time. Which of
  *  them, and the exit code or the call, goes to the log only. */
 export const HOST_STOPPED_MESSAGE = 'Lumopolis stopped responding. Try again.'
 

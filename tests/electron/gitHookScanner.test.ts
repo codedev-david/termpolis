@@ -299,7 +299,7 @@ describe('termpolis-githook — runGit starts git by its full path', () => {
     expect(() => hook.runGit(['rev-parse', '--git-dir'], d)).toThrow('git not found')
     const err = capture()
     expect(hook.main(['pre-commit'], { cwd: d, readSettings: () => ON, stderr: err.stderr })).toBe(0)
-    expect(err.text).toBe('Termpolis Commit Shield skipped: no git outside this repository\n')
+    expect(err.text).toBe('Termpolis Commit Shield skipped: no git was found outside this repository, so this commit was not scanned. Check that git is installed and on PATH.\n')
     // A stderr that cannot be written (a closed pipe) still fails open.
     const broken = (): void => { throw new Error('EPIPE') }
     expect(hook.main(['pre-commit'], { cwd: d, readSettings: () => ON, stderr: broken })).toBe(0)

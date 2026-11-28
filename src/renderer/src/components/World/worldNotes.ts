@@ -11,11 +11,11 @@
 const CAPPED_START = 'Showing the first '
 const NESTED_START = 'The repositories inside this folder hold more than '
 const UNREADABLE = /^[\d,]+ files? (?:was|were) skipped because (?:its|their) names? can't be read\./
-const READ_CAPPED = /^All [\d,]+ files are shown, but only [\d,]+ were read for the lines between them\./
+const READ_CAPPED = /^All [\d,]+ files are shown, but only [\d,]+ were read, so some lines between them may be missing\./
 const PROVISIONAL = 'Still reading the files: '
-// PENDING SIGN-OFF by David (WP3 report): the line he proposed for a world a newer Termpolis saved. main's
+// SIGNED OFF 2026-11-27 (signoff-decisions.md) (WP3 report): the line he proposed for a world a newer Termpolis saved. main's
 // WORLD_SAVED_BY_NEWER (world/worldStore.ts) says the same when an annotate over such a world is refused.
-const SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
+const SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.'
 
 const count = (n: number): string => n.toLocaleString('en-US')
 
@@ -36,7 +36,7 @@ export function unreadableNotice(files: number): string {
 
 /** The note for a world that read only some of its files: how many it shows, and how many were read. */
 export function readCappedNotice(listed: number, read: number): string {
-  return `All ${count(listed)} files are shown, but only ${count(read)} were read for the lines between them.`
+  return `All ${count(listed)} files are shown, but only ${count(read)} were read, so some lines between them may be missing.`
 }
 
 /** The line for the top-level dot-folders the world leaves out as tooling, said after another files note. */

@@ -493,7 +493,7 @@ export function SecuritySettings() {
               return (
                 <div key={r.repo} className="flex items-center gap-2 text-xs p-2 rounded bg-[#1e1e1e]">
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${armed ? 'bg-[#0d3a1a] text-[#7ee2a3] border-[#1f6e3a]' : 'bg-[#3a2a0d] text-[#FFB74D] border-[#6e4d1f]'}`}>
-                    {/* PENDING SIGN-OFF (new wording, HOLD-B): "outdated", its Protect again button and that button's tooltip. */}
+                    {/* SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, HOLD-B): "outdated", its Protect again button and that button's tooltip. */}
                     {armed ? 'armed' : outdated ? 'outdated' : 'not installed'}
                   </span>
                   <span className="font-mono text-[11px] truncate" title={r.repo}>{r.repo}</span>

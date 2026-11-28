@@ -160,5 +160,5 @@ export const tourCard = (t: Tour): string =>
 
 /** A tour's stop as a screen reader hears it: its place among the stops on the map, and its caption (T5). */
 export interface TourStop { n: number; of: number; caption: string }
-// PENDING SIGN-OFF (A11Y #55): the words a screen reader says at each tour stop.
+// SIGNED OFF 2026-11-27 (signoff-decisions.md) (A11Y #55): the words a screen reader says at each tour stop.
 export const tourStopText = (s: TourStop): string => `Stop ${s.n} of ${s.of}: ${s.caption}`

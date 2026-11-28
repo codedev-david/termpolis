@@ -912,7 +912,7 @@ describe('Commit Shield hooks — repo resolution', () => {
 
     const r = await invoke('gitHooks:install', { cwd: REPO })
 
-    expect(r).toEqual({ success: false, error: expect.stringContaining('core.hooksPath') })
+    expect(r).toEqual({ success: false, error: "The Commit Shield was not installed: this repository's settings put its git hooks outside it (core.hooksPath)." })
     expect(H.fs.mkdirSync).not.toHaveBeenCalledWith(OUTSIDE, expect.anything())
     expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBeUndefined()
     expect(wrote(pJoin(OUTSIDE, 'pre-push'))).toBeUndefined()
@@ -1085,7 +1085,7 @@ describe('Commit Shield hooks — repo resolution', () => {
     const r = await invoke('gitHooks:uninstall', { cwd: REPO })
 
     // HOLD-A N2: it says the shield it left is still there.
-    expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath)." } })
+    expect(r).toEqual({ success: true, data: { removed: [], notice: "The Commit Shield was not removed: this repository's settings put its git hooks outside it (core.hooksPath)." } })
     expect(wrote(pJoin(OUTSIDE, 'pre-commit'))).toBe(`#!/bin/sh\n${SENTINEL}\n`)
     expect(H.fs.unlinkSync).not.toHaveBeenCalledWith(pJoin(OUTSIDE, 'pre-commit'))
     // HOLD-A R2-3: its shield is still there, so it stays listed as protected.

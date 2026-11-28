@@ -400,7 +400,7 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     if (withGit) {
       expect(got.length).toBe(50_000)
       await expect(page.locator('[data-testid="world-notice"]', { hasText: 'Showing the first ' })).toHaveCount(0)
-      await expect(page.locator('[data-testid="world-notice"]')).toContainText('All 50,000 files are shown, but only 20,000 were read for the lines between them.', { timeout: 60_000 })
+      await expect(page.locator('[data-testid="world-notice"]')).toContainText('All 50,000 files are shown, but only 20,000 were read, so some lines between them may be missing.', { timeout: 60_000 })
     } else {
       expect(got.length).toBeLessThanOrEqual(20_000)
       await expect(page.locator('[data-testid="world-notice"]')).toContainText('Showing the first ', { timeout: 60_000 })

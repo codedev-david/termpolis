@@ -134,7 +134,7 @@ export interface WorldPerfProbe {
 
 /** How often the frame-rate readout reads the viewer's frame times. */
 const FRAME_RATE_EVERY_MS = 500
-/** The frame-rate readout (look spec §6.1): fps from the median frame, the p95 frame in ms, and the tier. PENDING SIGN-OFF (look A1): the line's format. */
+/** The frame-rate readout (look spec §6.1): fps from the median frame, the p95 frame in ms, and the tier. SIGNED OFF 2026-11-27 (signoff-decisions.md) (look A1): the line's format. */
 const frameRateLine = (p: WorldDrawn['perf']): string =>
   p.frames === 0 ? `-- fps · -- ms · ${p.tier}` : `${Math.round(1000 / p.p50)} fps · ${p.p95.toFixed(1)} ms · ${p.tier}`
 

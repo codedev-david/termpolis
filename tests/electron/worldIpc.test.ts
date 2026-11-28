@@ -586,6 +586,8 @@ describe('world:annotate', () => {
     const s = setup()
     annotated(s).annotate.mockRejectedValueOnce(Object.assign(shownError('the host words'), { code: 'WORLD_SAVED_BY_NEWER' }))
     expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: WORLD_SAVED_BY_NEWER })
+    // The pane's SAVED_BY_NEWER note says the same words (signoff B7).
+    expect(WORLD_SAVED_BY_NEWER).toBe('This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.')
     // The code alone is not enough: an error main never marked fit to show (it did not come from the host) is fixed text.
     annotated(s).annotate.mockRejectedValueOnce(Object.assign(new Error('raw'), { code: 'WORLD_SAVED_BY_NEWER' }))
     expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })

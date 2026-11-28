@@ -50,7 +50,7 @@ export const shellOnly = (p: string): string =>
   `lumopolis: ${p} exists only inside this shell and has no Windows path, so it cannot be mapped. Use a folder on a drive, such as /c/Users.`
 /** The same folder asked again at once: opened nothing, said with the folder for the notice's Open button. The pane
  *  may still show that folder (the person typed the command twice), so the button "brings it to the front", which is
- *  true whether the pane is open or was closed (HOLD-B N5). PENDING SIGN-OFF: "Open brings it to the front." */
+ *  true whether the pane is open or was closed (HOLD-B N5). SIGNED OFF 2026-11-27 (signoff-decisions.md): "Open brings it to the front." */
 export const askedAgain = (folder: string): string => `lumopolis: ${folder} was asked for a moment ago. Open brings it to the front.`
 
 /** The same folder again from the same terminal within this long opens nothing (a repeat). */

@@ -134,7 +134,7 @@ export const NO_ACCESS = "Termpolis can't write to that folder. Choose another o
 export const FILE_IN_USE = 'That file is open in another program. Close it and try again.'
 export { NO_MODEL }
 export const NO_RUNTIME = "This copy of Termpolis is missing the page runtime, so it can't export a world."
-export const NO_PROPOSAL = "That proposal isn't in this world any more."
+export const NO_PROPOSAL = "That proposal isn't in this world anymore."
 export const CANCELLED = 'The export was cancelled.'
 
 /** How many Ask entries are embedded at a time: the cancel is checked, and progress told, between chunks. */

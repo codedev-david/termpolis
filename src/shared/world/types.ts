@@ -138,13 +138,13 @@ export interface WorldUpdatedEvent {
   /** The world changed test status only (CI's late answer, WP4b fix round 1, M6): the pane restyles the parts in place. */
   statusOnly?: true
 }
-/** PENDING SIGN-OFF (WP4b F-R6): what a mapping the person stopped (world:compile-cancel) answers. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (WP4b F-R6): what a mapping the person stopped (world:compile-cancel) answers. */
 export const COMPILE_STOPPED_MESSAGE = 'Lumopolis stopped mapping this project.'
 
 /** Why a folder lists no file to map (WP4b F-R9): it holds no file Lumopolis looks at, only files in languages it does
  *  not map, or it cannot be opened (gone, an unmounted drive, no permission). */
 export type NoFilesReason = 'empty' | 'unsupported' | 'unreadable'
-/** PENDING SIGN-OFF (WP4b F-R9): what the pane says for each, in place of a raw reason. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (WP4b F-R9): what the pane says for each, in place of a raw reason. */
 export const FOLDER_EMPTY_MESSAGE = 'This folder has no files Lumopolis can map yet.'
 export const FOLDER_UNSUPPORTED_MESSAGE = 'Lumopolis found files here, but none in a language it maps yet.'
 export const FOLDER_UNREADABLE_MESSAGE = "Lumopolis can't read this folder. Check that it still exists and that you can open it."

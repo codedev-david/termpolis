@@ -11,10 +11,10 @@ export interface VoiceConfirm {
 
 /** The longest one recording runs before it stops by itself and is transcribed. */
 export const MAX_RECORDING_MS = 5 * 60 * 1000
-/** Shown when the mic's track ends mid-recording (unplugged). Pending David's sign-off. */
+/** Shown when the mic's track ends mid-recording (unplugged). SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const MIC_DISCONNECTED_MESSAGE = 'The microphone was disconnected. Plug it back in, or choose another one in Settings → Voice.'
-/** The notice when a recording reaches MAX_RECORDING_MS. Pending David's sign-off. */
-export const RECORDING_CAP_MESSAGE = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+/** The notice when a recording reaches MAX_RECORDING_MS. SIGNED OFF 2026-11-27 (signoff-decisions.md) (B10). */
+export const RECORDING_CAP_MESSAGE = 'Recording stopped at the 5-minute limit. What you said up to then was transcribed.'
 
 /** What useVoiceInput hands its caller. */
 export interface VoiceInputControls {

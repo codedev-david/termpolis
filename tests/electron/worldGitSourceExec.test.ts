@@ -344,7 +344,7 @@ describe('cloneRepo login modes', () => {
     expect(STILL_NOT_FOUND_MESSAGE).toBe("Lumopolis still couldn't find that repository after signing in. Check the address, and that this account can see it.")
     expect(STILL_NOT_FOUND_TOKEN_MESSAGE).toBe(
       "Lumopolis still couldn't find that repository with this token. Check the address, and that the token can read this repository. " +
-        'A fine-grained token sees only public repositories unless you add this one.'
+        'A GitHub fine-grained token sees only public repositories unless you add this one.'
     )
   })
 

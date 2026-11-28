@@ -796,8 +796,8 @@ describe('WorldView sign in needed', () => {
 
   // R4: a saved repository the host no longer finds says so in main's words; Sign in and Use a token stay, as links, in
   // case the account lost access, and a Sign in that still finds nothing says the sign-in words under it.
-  it('a saved repository that is not found any more says so, with Sign in and Use a token as links', async () => {
-    const GONE = "Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access."
+  it('a saved repository that is not found anymore says so, with Sign in and Use a token as links', async () => {
+    const GONE = "Lumopolis couldn't find this repository anymore. It may have moved or been deleted, or this account lost access."
     const STILL = "Lumopolis still couldn't find that repository after signing in. Check the address, and that this account can see it."
     const api = gitBridge(ok({ needsLogin: { host: 'github.com', helper: true, notFound: true, message: GONE } }))
     await openGit()

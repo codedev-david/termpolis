@@ -79,7 +79,7 @@ export { isMissingCli }
  *  reason: their caller is a script or an agent, which reads the error itself. */
 export const EXEC_ISOLATION_FAILED = "Termpolis couldn't set up a safe read-only run for this agent, so it did not start:"
 
-/** PENDING SIGN-OFF (HOLD-A M4): what a read-only agy run answers when agy says it ran outside plan mode
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (HOLD-A M4): what a read-only agy run answers when agy says it ran outside plan mode
  *  (agyDroppedPlanMode). A Lumopolis map's isolated run gets ISOLATION_SETUP_FAILED, the words it shows for a run
  *  it could not make safe. */
 export const EXEC_PLAN_MODE_DROPPED = "agy ran this read-only task outside its plan mode, so Termpolis did not use its answer."

@@ -40,7 +40,7 @@ import {
 
 export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
 export { DROPPED_ENV, OLD_GIT_MESSAGE, safetyFlags, type LoginRun } from './gitLogin'
-export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped cloning it.'
+export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped downloading it.'
 export const CANCELLED_MESSAGE = 'Cancelled'
 export const CLEAR_MESSAGE = "Lumopolis couldn't clear an earlier partial copy of that repository. Try again in a moment."
 export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try again in a moment."
@@ -51,25 +51,25 @@ export const AUTH_MESSAGE = 'That repository needs you to sign in. Sign in with 
 export const VERSION_FAILED_MESSAGE = "Lumopolis couldn't run git to check its version. Try again in a moment."
 export const SSH_AUTH_MESSAGE =
   "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
-/** Ssh refused the server's host key (unknown or changed): no ssh key or sign-in fixes that. PENDING SIGN-OFF. */
+/** Ssh refused the server's host key (unknown or changed): no ssh key or sign-in fixes that. SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const HOST_KEY_MESSAGE = "This computer doesn't trust that server's ssh host key yet. Connect to it once with ssh in a terminal, then try again."
-/** Any other failure. Git's own line goes in the result's `detail`, never in the headline. PENDING SIGN-OFF. */
+/** Any other failure. Git's own line goes in the result's `detail`, never in the headline. SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const UNREACHABLE_MESSAGE = "Lumopolis couldn't reach that repository. Check the address and your connection, then try again."
 /** A host answered an anonymous https clone with "not found": a wrong address, or a private repository on a host that
- *  answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. PENDING SIGN-OFF. */
+ *  answers 404 rather than 401 (F-R8). The sign-in choices come with it, as the second choice. SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, or sign in if it's private."
 /** The host still said "not found" once a sign-in or a token was used: the address first, then what that access can see
- *  (M2, R1); this is the sign-in's. The sign-in choices stay, for another account. PENDING SIGN-OFF (R1, David). */
+ *  (M2, R1); this is the sign-in's. The sign-in choices stay, for another account. SIGNED OFF 2026-11-27 (signoff-decisions.md) (R1). */
 export const STILL_NOT_FOUND_MESSAGE = "Lumopolis still couldn't find that repository after signing in. Check the address, and that this account can see it."
-/** R1 (PENDING SIGN-OFF, David): the token's words name what a token most often lacks: GitHub's fine-grained tokens see
+/** R1, SIGNED OFF 2026-11-27 (signoff-decisions.md): the token's words name what a token most often lacks: GitHub's fine-grained tokens see
  *  only public repositories until this one is added to them. */
 export const STILL_NOT_FOUND_TOKEN_MESSAGE =
   "Lumopolis still couldn't find that repository with this token. Check the address, and that the token can read this repository. " +
-  'A fine-grained token sees only public repositories unless you add this one.'
-/** R4 (PENDING SIGN-OFF, David): a saved repository, cloned with this computer's login, that the host no longer finds. */
-export const REPO_GONE_MESSAGE = "Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access."
+  'A GitHub fine-grained token sees only public repositories unless you add this one.'
+/** R4, SIGNED OFF 2026-11-27 (signoff-decisions.md): a saved repository, cloned with this computer's login, that the host no longer finds. */
+export const REPO_GONE_MESSAGE = "Lumopolis couldn't find this repository anymore. It may have moved or been deleted, or this account lost access."
 /** An ssh server said "not found": a wrong address, or a repository the ssh key can't see. Ssh logins are the ssh
- *  agent's, so no sign-in is offered. PENDING SIGN-OFF. */
+ *  agent's, so no sign-in is offered. SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const SSH_NOT_FOUND_MESSAGE = "Lumopolis couldn't find that repository. Check the address, and that your ssh key can open it."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'

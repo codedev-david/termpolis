@@ -309,7 +309,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       />
       {tour && (
         // Back and Next at either end say they can go no further (aria-disabled) but are never disabled: the focus
-        // stays on the button pressed. PENDING SIGN-OFF (A11Y Y2): "Stop {n} of {m}", "Back", "Next", "End tour",
+        // stays on the button pressed. SIGNED OFF 2026-11-27 (signoff-decisions.md) (A11Y Y2): "Stop {n} of {m}", "Back", "Next", "End tour",
         // "Tour: {title}".
         <nav className="world-card-tour" aria-label={tour.title !== undefined ? `Tour: ${tour.title}` : 'Tour'} data-testid="world-card-tour">
           <span>Stop {tour.n} of {tour.of}</span>

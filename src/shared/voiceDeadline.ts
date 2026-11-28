@@ -4,5 +4,5 @@
 /** How long one Groq transcription may take, from sending the audio to reading the whole reply. */
 export const GROQ_DEADLINE_MS = 30_000
 
-/** What a transcription that ran past the deadline says. Pending David's sign-off. */
+/** What a transcription that ran past the deadline says. SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const GROQ_TIMEOUT_MESSAGE = 'Groq took too long to reply. Try again.'

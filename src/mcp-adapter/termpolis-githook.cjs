@@ -261,9 +261,9 @@ function main(argv, deps) {
     emit(formatBlock(res, mode) + '\n')
     return 1
   } catch (e) {
-    // PENDING SIGN-OFF (HOLD-A M5): the one line a commit shows when no git outside the repository was found.
+    // SIGNED OFF 2026-11-27 (signoff-decisions.md) (HOLD-A M5): the one line a commit shows when no git outside the repository was found.
     if (e && e.code === NO_GIT) {
-      try { emit('Termpolis Commit Shield skipped: no git outside this repository\n') } catch { /* fail open regardless */ }
+      try { emit('Termpolis Commit Shield skipped: no git was found outside this repository, so this commit was not scanned. Check that git is installed and on PATH.\n') } catch { /* fail open regardless */ }
     }
     return 0 // FAIL OPEN. Only a positive match above may ever reach exit 1.
   }

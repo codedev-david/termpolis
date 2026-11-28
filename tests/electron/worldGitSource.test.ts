@@ -519,6 +519,8 @@ describe('cloneRepo', () => {
   it('size over the cap after git exits: removes the temp folder and gives the size error', async () => {
     const { deps, rm, rename } = mkDeps({ dirSize: async () => 3_000, maxBytes: 2_000 })
     expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: TOO_BIG_MESSAGE })
+    // One verb for a clone and an update alike (signoff B6).
+    expect(TOO_BIG_MESSAGE).toBe('That repository is larger than 2 GB, so Lumopolis stopped downloading it.')
     expect(rm).toHaveBeenLastCalledWith(WORK)
     expect(rename).not.toHaveBeenCalled()
   })

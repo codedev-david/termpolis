@@ -287,7 +287,7 @@ describe('LumopolisSettings', () => {
       api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, showFrameRate: true } })) })
       const a = render(<LumopolisSettings />)
       expect(screen.getByText('Show frame rate')).toBeInTheDocument()
-      expect(rateToggle()).toHaveAttribute('aria-label', 'Toggle the Lumopolis frame rate readout')
+      expect(rateToggle()).toHaveAttribute('aria-label', 'Show frame rate')
       expect(rateToggle()).toHaveAttribute('aria-checked', 'false')
       await settle()
       expect(rateToggle()).toHaveAttribute('aria-checked', 'true')

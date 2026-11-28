@@ -206,13 +206,14 @@ describe('WorldView', () => {
 
     b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 40 })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
-    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('40% · layout')
-    expect(stage()).toHaveTextContent(/^Mapping: layout$/)
+    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('40% · Mapping')
+    expect(stage()).toHaveTextContent(/^Mapping: Mapping$/)
     // A read's twentieth of a point moves the bar itself; the text and the reader keep the whole percent (fix round 3).
     b.progress({ root: '/repo', projectKey: 'k', stage: 'boundaries', pct: 12.35 })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '12')
     expect(screen.getByRole('progressbar').firstElementChild).toHaveStyle({ width: '12.35%' })
-    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('12% · boundaries')
+    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('12% · Reading files')
+    expect(stage()).toHaveTextContent(/^Mapping: Reading files$/)
     b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 40 })
     // Someone else's compile is not ours.
     b.progress({ root: '/other', projectKey: 'other', stage: 'labels', pct: 90 })

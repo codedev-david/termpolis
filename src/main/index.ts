@@ -2169,19 +2169,19 @@ const shieldMayWrite = (repo: string, hooksDir: string): Promise<ShieldHooksVerd
   realpath: async (p) => fsPromises.realpath(p),
 })
 
-/** Why the Commit Shield was not installed, by shieldHooksVerdict's reason. PENDING SIGN-OFF (new wording, #36; N2). */
+/** Why the Commit Shield was not installed, by shieldHooksVerdict's reason. SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, #36; N2). */
 const SHIELD_NOT_INSTALLED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
-  hooksPath: "This repository's own settings put its git hooks outside it (core.hooksPath), so the Commit Shield was not installed.",
+  hooksPath: "The Commit Shield was not installed: this repository's settings put its git hooks outside it (core.hooksPath).",
   gitDirOutside: 'The Commit Shield was not installed: this repository keeps its git folder outside its working folder.',
 }
-/** What Remove protection says when a shield may still be there: one it was refused to touch, or none there. PENDING
- *  SIGN-OFF (new wording, HOLD-A N2). */
+/** What Remove protection says when a shield may still be there: one it was refused to touch, or none there.
+ *  SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, HOLD-A N2; hooksPath in the install refusal's words, B2). */
 const SHIELD_NOT_REMOVED: Record<Exclude<ShieldHooksVerdict, 'allowed'>, string> = {
-  hooksPath: "The Commit Shield was not removed: this repository's own settings put its git hooks outside it (core.hooksPath).",
+  hooksPath: "The Commit Shield was not removed: this repository's settings put its git hooks outside it (core.hooksPath).",
   gitDirOutside: 'The Commit Shield was not removed: this repository keeps its git folder outside its working folder.',
 }
 const SHIELD_NONE_TO_REMOVE = 'There was no Commit Shield to remove in this repository.'
-/** What Remove protection says of a hook file it never reads or writes, which may still carry a shield. PENDING SIGN-OFF
+/** What Remove protection says of a hook file it never reads or writes, which may still carry a shield. SIGNED OFF 2026-11-27 (signoff-decisions.md)
  *  (new wording, HOLD-A R2-3; the install refusal's form). */
 const shieldHookNotRemoved = (u: { name: string; kind: 'link' | 'other' }): string => u.kind === 'link'
   ? `The Commit Shield was not removed: this repository's ${u.name} hook is a link to another file.`
@@ -2212,13 +2212,13 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
     if (!paths) return err('Not a git repository — pick the folder that contains .git')
     const verdict = await shieldMayWrite(repo, paths.hooksDir)
     if (verdict !== 'allowed') return err(SHIELD_NOT_INSTALLED[verdict])
-    // PENDING SIGN-OFF (new wording, M1): the hook runs node by the full path found here, never one on PATH.
+    // SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, M1): the hook runs node by the full path found here, never one on PATH.
     if (paths.nodePath === '') return err('The Commit Shield was not installed: Termpolis could not find node on this computer.')
     mkdirSync(paths.hooksDir, { recursive: true })
     // Again, now that the folder exists: a link in its path that led nowhere before is followed now (I1).
     const again = await shieldMayWrite(repo, paths.hooksDir)
     if (again !== 'allowed') return err(SHIELD_NOT_INSTALLED[again])
-    // PENDING SIGN-OFF (new wording, I1): a hook file that is a link, or not a regular file, refuses the whole install.
+    // SIGNED OFF 2026-11-27 (signoff-decisions.md) (new wording, I1): a hook file that is a link, or not a regular file, refuses the whole install.
     const unsafe = unsafeHook(paths, realHookDeps)
     if (unsafe) {
       return err(unsafe.kind === 'link'

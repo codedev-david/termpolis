@@ -439,7 +439,7 @@ describe('registerWorldIpc sources handlers', () => {
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gone)
     expect(await s.invoke('world:update-source', { key: 'kg' }))
       .toEqual({ success: true, data: { needsLogin: { host: 'github.com', helper: true, notFound: true, message: REPO_GONE_MESSAGE } } })
-    expect(REPO_GONE_MESSAGE).toBe("Lumopolis couldn't find this repository any more. It may have moved or been deleted, or this account lost access.")
+    expect(REPO_GONE_MESSAGE).toBe("Lumopolis couldn't find this repository anymore. It may have moved or been deleted, or this account lost access.")
     // ...and a Sign in or a token that still finds nothing gets the R1 words for that access.
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gone)
     expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'machine' } }))

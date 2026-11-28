@@ -609,11 +609,11 @@ describe('WorldAsk', () => {
     it('shows the hook notice (the 5-minute cap) as a quiet line, said by the status region, not an alert; none without one', () => {
       const view = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
       expect(screen.getByRole('status').textContent).toBe('')
-      vm.notice = 'Recording stopped after 5 minutes.'
+      vm.notice = 'Recording stopped at the 5-minute limit. What you said up to then was transcribed.'
       view.rerender(<WorldAsk viewer={makeViewer() as never} root="r" />)
-      expect(screen.getByRole('status').textContent).toBe('Recording stopped after 5 minutes.')
+      expect(screen.getByRole('status').textContent).toBe('Recording stopped at the 5-minute limit. What you said up to then was transcribed.')
       const line = screen.getByTestId('world-ask-notice')
-      expect(line.textContent).toBe('Recording stopped after 5 minutes.')
+      expect(line.textContent).toBe('Recording stopped at the 5-minute limit. What you said up to then was transcribed.')
       expect(line.getAttribute('aria-hidden')).toBe('true')
       expect(line.className).toContain('text-[#9ca3af]')
       expect(screen.queryByRole('alert')).toBeNull()
@@ -625,7 +625,7 @@ describe('WorldAsk', () => {
 
     it('says Thinking over the notice while a question runs, one region for both (M8)', async () => {
       ask.mockImplementationOnce(() => new Promise(() => undefined))
-      vm.notice = 'Recording stopped after 5 minutes.'
+      vm.notice = 'Recording stopped at the 5-minute limit. What you said up to then was transcribed.'
       try {
         render(<WorldAsk viewer={makeViewer() as never} root="r" />)
         await settle()

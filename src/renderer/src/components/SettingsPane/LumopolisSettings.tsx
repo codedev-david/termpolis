@@ -5,9 +5,9 @@
 import { useEffect, useState } from 'react'
 import { FRAME_RATE_EVENT } from '../World/worldOpen'
 
-/** PENDING SIGN-OFF (M4): the settings could not be read; main's world:settings-get answers the same words. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (M4): the settings could not be read; main's world:settings-get answers the same words. */
 export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
-/** PENDING SIGN-OFF (#65): a change did not go through and was put back; main's world:settings-set answers the same. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (#65): a change did not go through and was put back; main's world:settings-set answers the same. */
 export const SETTINGS_CHANGE_FAILED = "Lumopolis couldn't change that setting. Try again."
 
 type Row = 'agent' | 'labelling' | 'speak' | 'ci' | 'rate'
@@ -231,8 +231,8 @@ export function LumopolisSettings(): JSX.Element {
           onClick={toggleRate}
           role="switch"
           aria-checked={rate}
-          // PENDING SIGN-OFF (look A1): the switch's name for a screen reader.
-          aria-label="Toggle the Lumopolis frame rate readout"
+          // SIGNED OFF 2026-11-27 (signoff-decisions.md) (look A1): the switch's name for a screen reader.
+          aria-label="Show frame rate"
           data-testid="settings-world-frame-rate-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
             rate ? 'bg-[#0078d4]' : 'bg-[#555]'
@@ -247,7 +247,7 @@ export function LumopolisSettings(): JSX.Element {
             <i className="fa-solid fa-gauge-high text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
             Show frame rate
           </span>
-          {/* PENDING SIGN-OFF (look A1): the frame-rate setting's description. */}
+          {/* SIGNED OFF 2026-11-27 (signoff-decisions.md) (look A1): the frame-rate setting's description. */}
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Shows how smoothly the 3D map draws in a corner of the pane: frames per second, the slow-frame time and the
             graphics level. Off by default.

@@ -5,6 +5,7 @@
 
 import { useUiZoom } from './worldPane'
 import { UI_FAILED } from './worldTargets'
+import { stageWord } from '../../world/engine/stageWords'
 import { noFilesReasonOf } from '../../../../shared/world/types'
 
 export type WorldEmptyMode = 'loading' | 'mapping' | 'error'
@@ -88,11 +89,11 @@ function MappingProgress({ progress }: { progress: { stage: string; pct: number 
         <div className="h-full bg-[#4fc1ff] transition-[width] duration-300" style={{ width: `${exact}%` }} />
       </div>
       <p className="text-xs text-[#9ca3af]" data-testid="world-progress-text">
-        {progress ? `${pct}% · ${progress.stage}` : 'Starting…'}
+        {progress ? `${pct}% · ${stageWord(progress.stage)}` : 'Starting…'}
       </p>
       {/* A screen reader hears each stage once as it starts, not every percent (the bar has the number) (A11Y Y5).
-          PENDING SIGN-OFF: the wording. */}
-      <p role="status" className="sr-only" data-testid="world-progress-stage">{progress ? `Mapping: ${progress.stage}` : 'Mapping started'}</p>
+          SIGNED OFF 2026-11-27 (signoff-decisions.md): the wording; the stage in words (world/engine/stageWords.ts, B11). */}
+      <p role="status" className="sr-only" data-testid="world-progress-stage">{progress ? `Mapping: ${stageWord(progress.stage)}` : 'Mapping started'}</p>
     </div>
   )
 }

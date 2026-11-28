@@ -18,7 +18,7 @@ export const MISSING_DESIGN_NOTE = "Lumopolis can't find this design's saved fil
 export const missingNote = (s: WorldSource): string => s.kind === 'git' ? MISSING_REPO_NOTE : s.kind === 'design' ? MISSING_DESIGN_NOTE : MISSING_FOLDER_NOTE
 
 // M3: each action that can fail says, in one sentence of its own, what did not happen; never "Couldn't X:" before a
-// second sentence of main's. PENDING SIGN-OFF by David.
+// second sentence of main's. SIGNED OFF 2026-11-27 (signoff-decisions.md).
 /** A card's Confirm was not saved. */
 export const CONFIRM_FAILED = "Lumopolis couldn't save your confirmation. Try again."
 /** A card's service names were not saved. */

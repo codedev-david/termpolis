@@ -57,7 +57,7 @@ export interface WorldStoreDeps {
 /** What a stored world that cannot be read says: the raw error (its code and full path) goes to the log only. */
 export const WORLD_READ_FAILED = "Lumopolis couldn't read this world's saved map. Try again in a moment."
 
-/** PENDING SIGN-OFF (M5): what the list of recent worlds that cannot be read says; the raw error goes to the log only. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (M5): what the list of recent worlds that cannot be read says; the raw error goes to the log only. */
 export const SOURCES_READ_FAILED_MESSAGE = "Lumopolis couldn't read your recent worlds. Try again in a moment."
 
 /** Which stored file could not be read: a world, its annotations, or the list of worlds. */
@@ -74,13 +74,13 @@ export class WorldReadError extends Error {
   }
 }
 
-/** PENDING SIGN-OFF by David (WP3 round 2): what the window shows for a file operation that failed in the world host (a
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (WP3 round 2): what the window shows for a file operation that failed in the world host (a
  *  world, notes or cache that could not be written). The raw error names folders on this computer, so it goes to the log only. */
 export const WORLD_SAVE_FAILED = "Lumopolis couldn't save this world's map. Try again in a moment."
 
-/** PENDING SIGN-OFF by David (the M8 line, the same text as the pane's SAVED_BY_NEWER note): what refusing to change a
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (the M8 line, the same text as the pane's SAVED_BY_NEWER note): what refusing to change a
  *  world a newer Termpolis saved answers. */
-export const WORLD_SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is.'
+export const WORLD_SAVED_BY_NEWER = 'This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.'
 
 /** A change this version will not make to a world a newer version saved (annotating it would rewrite its notes file). */
 export class WorldSavedByNewerError extends Error {

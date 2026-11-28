@@ -177,6 +177,7 @@ The interactions match the v2 prototype (decided by David's approval of that ver
   - `draftProposal(…)`
 
   The pane carries them out as the text appears, so the camera moves and parts light up while the answer is read. The headless run returns the whole answer at once, so the pane reveals it one sentence at a time at reading pace and plays each sentence's actions as it appears (with reduced motion, all at once). Each claim in an answer links to evidence and to world items.
+- **Memory evidence:** Memory hits retrieved for the question are evidence of kind memory: an answer can cite a decision found only in saved memory, and the citation is labeled as memory.
 - **Honesty rule:** when the evidence doesn't support an answer (for example, nothing recorded why something was designed a certain way), the agent says so explicitly, and the related items stay fogged.
 - **Changes from conversation:** "make this faster" or "add team sharing" produces `draftProposal`, which shows up as wireframes. Follow-up messages edit the proposal. Saying or clicking "approve" moves it to Build (5.4). The conversation never edits code itself.
 - **Spoken answers (optional, off by default):** Termpolis can listen but not speak today (verified: there is no speech output in `src/`). Answers can be read aloud through Chromium's `speechSynthesis`, which uses the operating system's voices locally at no cost. Text is always shown.

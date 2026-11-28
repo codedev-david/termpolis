@@ -6,7 +6,7 @@
  */
 const shown = new WeakSet<Error>()
 
-/** PENDING SIGN-OFF (WP3 round 3): what the window shows for a world call that failed in main before the host call. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (WP3 round 3): what the window shows for a world call that failed in main before the host call. */
 export const WORLD_CALL_FAILED = "Lumopolis couldn't read this project. Try again in a moment."
 
 /** Marks `e` as fit to show in the window as it is, and returns it. */

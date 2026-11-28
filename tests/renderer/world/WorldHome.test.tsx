@@ -701,11 +701,11 @@ describe('DesignStart', () => {
   it('shows the 5-minute cap note quietly, as a status and not an alert, and drops it once the hook clears it', () => {
     bridge()
     ;(navigator as any).mediaDevices = { getUserMedia: vi.fn() }
-    vm.notice = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+    vm.notice = 'Recording stopped at the 5-minute limit. What you said up to then was transcribed.'
     mount()
     // Said by the dialog's one status region (A11Y M8); the quiet line under the box is for the eye.
-    expect(screen.getByRole('status').textContent).toBe('Recording stopped after 5 minutes. Ask a shorter question, or type it.')
-    const line = screen.getAllByText('Recording stopped after 5 minutes. Ask a shorter question, or type it.').find((e) => e.getAttribute('role') !== 'status') as HTMLElement
+    expect(screen.getByRole('status').textContent).toBe('Recording stopped at the 5-minute limit. What you said up to then was transcribed.')
+    const line = screen.getAllByText('Recording stopped at the 5-minute limit. What you said up to then was transcribed.').find((e) => e.getAttribute('role') !== 'status') as HTMLElement
     expect(line.getAttribute('aria-hidden')).toBe('true')
     expect(line.className).not.toContain('f14c4c')
     expect(screen.queryByRole('alert')).toBeNull()
@@ -758,7 +758,7 @@ describe('DesignStart', () => {
   })
 
   it('says the draft under way over the cap notice, in one status region (A11Y M8)', async () => {
-    vm.notice = 'Recording stopped after 5 minutes. Ask a shorter question, or type it.'
+    vm.notice = 'Recording stopped at the 5-minute limit. What you said up to then was transcribed.'
     try {
       bridge({ worldDesignDraft: vi.fn(() => new Promise(() => undefined)) })
       mount()

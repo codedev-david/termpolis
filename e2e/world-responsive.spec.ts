@@ -1187,7 +1187,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // The memory process's switch (e2e/mocks/memory-host-lockable.mjs): `locked` says the store is locked; `empty` (WPA2 M8)
     // answers every search and listing with no notes, a healthy store with nothing saved for the question.
     const NOTES = [
-      { word: 'locked', text: 'Answered without project memory (memory is locked).', name: 'locked' },
+      { word: 'locked', text: 'Answered without project memory (memory is locked: open the Memory panel to see why).', name: 'locked' },
       { word: 'empty', text: 'No saved notes matched this question, so this answer comes from the code alone.', name: 'empty' },
     ]
     for (const n of NOTES) {

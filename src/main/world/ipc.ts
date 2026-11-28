@@ -69,14 +69,14 @@ export interface WorldIpcWindow {
   webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
-/** PENDING SIGN-OFF (#65): why a confirmation or the service names were not saved, in place of the raw error. The pane
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (#65): why a confirmation or the service names were not saved, in place of the raw error. The pane
  *  shows its own sentence for the action instead (M3), so this never reaches a person there; it keeps internals off the
  *  wire. */
 export const ANNOTATE_FAILED = "Lumopolis couldn't save it just now. Try again."
 
-/** PENDING SIGN-OFF (#65): what a settings change that failed answers; the reason goes to the log. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (#65): what a settings change that failed answers; the reason goes to the log. */
 export const SETTINGS_FAILED = "Lumopolis couldn't change that setting. Try again."
-/** PENDING SIGN-OFF (M4): what a settings read that failed answers; the reason goes to the log. */
+/** SIGNED OFF 2026-11-27 (signoff-decisions.md) (M4): what a settings read that failed answers; the reason goes to the log. */
 export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
 
 /** The host's coded refusals of annotate the window is told by name, because a Try again would not help. */

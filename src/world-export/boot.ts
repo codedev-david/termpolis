@@ -21,7 +21,7 @@ export const BROKEN_PAGE = "This Lumopolis page's data is missing or damaged, so
 /**
  * Shown instead of BROKEN_PAGE in a browser without DecompressionStream, which every data block needs: the page's
  * floor is Chrome and Edge 80, Firefox 113 and Safari 16.4 (the export documentation's Limits say the same).
- * Wording pending David's sign-off.
+ * SIGNED OFF 2026-11-27 (signoff-decisions.md).
  */
 export const OLD_BROWSER = 'This browser is too old to open this Lumopolis page. Open it in Chrome or Edge 80 or later, Firefox 113 or later, or Safari 16.4 or later.'
 

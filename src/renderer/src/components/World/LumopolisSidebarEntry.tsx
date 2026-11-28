@@ -13,7 +13,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { LUMOPOLIS_READY_EVENT, openLumopolis, WORLD_OPENED_EVENT } from './worldOpen'
 
 export const LUMOPOLIS_HINT = 'Lumopolis: see any project as a 3D city. Open it here, click the globe on a terminal, or type lumopolis.'
-/** The hint for an active terminal where typing lumopolis does not work (#29). PENDING SIGN-OFF. */
+/** The hint for an active terminal where typing lumopolis does not work (#29). SIGNED OFF 2026-11-27 (signoff-decisions.md). */
 export const LUMOPOLIS_HINT_UNTYPED = 'Lumopolis: see any project as a 3D city. Open it here, or click the globe on a terminal.'
 
 interface Flags { opened: boolean; dismissed: boolean }
