@@ -1359,6 +1359,32 @@ describe('WorldAsk on a design', () => {
     await settle()
     expect(input()).toBeDisabled()
   })
+  it('a design a newer Termpolis saved is read-only: its box is off, so no change is made and then refused (WP3)', async () => {
+    const doc = { ...minimal(), projectKey: 'design:d1', savedByNewer: true }
+    ;(window as any).termpolis = { worldDesignRefine: vi.fn(), worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" />)
+    await settle()
+    expect(screen.getByPlaceholderText('Change the design…')).toBeDisabled()
+  })
+
+  it("asks the pane before a change that removes a district with buildings in it, through the link's confirmRemoval (D3)", async () => {
+    const doc = { ...minimal(), projectKey: 'design:d1' }
+    const removals = [{ id: 'core', name: 'Core', buildings: 2 }]
+    const refine = vi.fn(async () => ({ success: true, data: { doc, text: 'Removed Core.', applied: 1, skipped: 0, summary: 's1', tokens: 1, confirm: { removals } } }))
+    const confirm = vi.fn(async () => ({ success: true, data: { doc, text: 'Removed Core.', applied: 1, skipped: 0, summary: 's1', tokens: 0 } }))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignConfirm: confirm, worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    const confirmRemoval = vi.fn(async () => true)
+    const setDoc = vi.fn()
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" link={{ onEscape: vi.fn(), setBusy: vi.fn(), setDoc, confirmRemoval }} />)
+    await settle()
+    const box = screen.getByPlaceholderText('Change the design…')
+    fireEvent.change(box, { target: { value: 'remove Core' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    expect(confirmRemoval).toHaveBeenCalledWith(removals)
+    expect(confirm).toHaveBeenCalledWith('design:d1')
+    expect(setDoc).toHaveBeenCalledWith(doc)
+  })
 })
 
 describe('WorldAsk: the field, its keys and what a screen reader hears (U2, U7, U9, U10, U11, U12)', () => {
