@@ -14,10 +14,14 @@
 // steps wait for the sentence before to finish playing, so two sentences' tours never fly at once (T4).
 // An answer is computed from the complete world; asked on a first map, its tour waits for `whenComplete`, which
 // resolves once the pane shows the complete world (fix round 2, R1).
+// A design change that removes a district with buildings in it comes back held (its result carries `confirm`): the
+// pane asks the user through `confirmRemoval`, and a yes makes it (world:design-confirm), a no, or no one to ask, lets
+// main drop it (world:design-cancel). The box stays thinking meanwhile, so a cancel or a newer change drops it too (D3).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
 import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
-import type { AskNoMemory, CitedEvidence, WorldDoc } from '../../../../shared/world/types'
+import type { DistrictRemoval } from '../../../../shared/world/designPatch'
+import type { AskNoMemory, CitedEvidence, DesignRefineResult, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 
 /**
@@ -62,6 +66,12 @@ export const ASK_UNREACHABLE = "Lumopolis couldn't answer that question. Try aga
 /** Shown when a design change could not even reach main. */
 export const REFINE_UNREACHABLE = "Lumopolis couldn't change the design. Try again."
 
+/** The answer when the user said no to a change that removes a district with buildings in it (D3). */
+export const DESIGN_LEFT_AS_IT_WAS = 'Lumopolis left the design as it was.'
+
+/** Asks the user whether to remove these districts and their buildings; true for a yes. */
+export type ConfirmRemoval = (removals: DistrictRemoval[]) => Promise<boolean>
+
 const noop = (): void => undefined
 
 function reducedMotion(): boolean {
@@ -75,7 +85,7 @@ function reducedMotion(): boolean {
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>): UseWorldAsk {
+export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>, confirmRemoval?: ConfirmRemoval): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
@@ -92,6 +102,8 @@ export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (
   onDesignRef.current = onDesign
   const whenCompleteRef = useRef(whenComplete)
   whenCompleteRef.current = whenComplete
+  const confirmRemovalRef = useRef(confirmRemoval)
+  confirmRemovalRef.current = confirmRemoval
   /** Bumped by every question, a dismissal and a root change: an answer whose tour waited plays only if none came since. */
   const answerGen = useRef(0)
   /** The design proposal on show; read when a question is sent, so a change of proposal never recreates `ask`. */
@@ -187,22 +199,41 @@ export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (
     }
     if (design) {
       const said = summary.current
+      const show = (text: string): void => {
+        current.current = null
+        setAnswer({ text, sentences: [{ text, actions: [], sep: '' }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+        setCited({})
+        setRevealed(1)
+        setState('answered')
+      }
+      const made = (data: DesignRefineResult): void => {
+        summary.current = data.summary
+        onDesignRef.current?.(data.doc)
+        show(data.text)
+      }
       // Checked again once the model is known: a change cancelled or replaced meanwhile is never sent (U3).
       lumopolisModel().then((model) => (current.current === askId ? window.termpolis.worldDesignRefine(root, q, said, model) : null)).then(
-        (res) => {
+        async (res) => {
           if (current.current !== askId || res === null) return
           if (!res.success) return fail(res.error)
-          current.current = null
-          summary.current = res.data.summary
+          // The agent ran either way: its tokens count once, whatever the user says to a held change.
           spend(res.data.tokens)
-          onDesignRef.current?.(res.data.doc)
-          setAnswer({ text: res.data.text, sentences: [{ text: res.data.text, actions: [], sep: '' }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
-          setCited({})
-          setRevealed(1)
-          setState('answered')
+          const held = res.data.confirm
+          if (held === undefined) return made(res.data)
+          const confirmIt = confirmRemovalRef.current
+          const yes = confirmIt ? await confirmIt(held.removals) : false
+          // Cancelled or replaced while the question was up: its own cancel already let main drop the change.
+          if (current.current !== askId) return
+          if (!yes) {
+            void Promise.resolve(window.termpolis.worldDesignCancel(root)).catch(noop)
+            return show(DESIGN_LEFT_AS_IT_WAS)
+          }
+          const done = await window.termpolis.worldDesignConfirm(root)
+          if (current.current !== askId) return
+          if (!done.success) return fail(done.error)
+          made(done.data)
         },
-        () => fail(REFINE_UNREACHABLE),
-      )
+      ).catch(() => fail(REFINE_UNREACHABLE))
       return true
     }
     const v = viewer as AskPlayer
