@@ -3,7 +3,9 @@
 // sha256 of the world key (any key is safe as a file name), written atomically with async fs under a lock file
 // that holds across processes. A display read shows nothing when the file cannot be read; a writer never writes after a
 // failed read: a held file is read again, any other read error refuses the add (a fixed, path-free WorldReadError), and a
-// file that does not parse is moved aside to a numbered .bad backup before the add starts it fresh.
+// file that does not parse reads as none and is moved aside to a numbered .bad backup by the next write (DSN R5, T5).
+// Every write runs in one transaction under both locks, fenced just before its rename (DSN R5, T1).
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -13,7 +15,7 @@ import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/wor
 import { createKeyedLock } from './keyedLock'
 import { copyClaims } from './idMigration'
 import { copyAside, moveAside, retryLocked, type Sleep } from './storeFiles'
-import { WorldReadError, type WorldStore } from './worldStore'
+import { WorldReadError, worldFileName, type StoreTx, type WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
 export const MAX_ANNOTATION_EVIDENCE = 8
@@ -29,8 +31,10 @@ export interface AnnotationStore {
   /** Item id → its annotations, oldest first. Empty when none were stored or the file is unreadable. */
   list(key: string): Promise<Record<string, Claim[]>>
   /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM.
-   *  Rejects with WorldReadError (code ANNOTATIONS_READ_FAILED) when the stored annotations cannot be read, writing nothing. */
-  add(key: string, itemId: string, claim: Claim): Promise<void>
+   *  Rejects with WorldReadError (code ANNOTATIONS_READ_FAILED) when the stored annotations cannot be read, writing nothing.
+   *  DSN R5 (T2): answers its undo, which takes back only this claim (and puts back the runtime-names claim it replaced),
+   *  never a note the cap took; an add that changed nothing answers one that changes nothing. */
+  add(key: string, itemId: string, claim: Claim): Promise<AnnotationUndo | void>
   /**
    * Copies each renamed item's annotations (old id -> new id) to its new id, after any it already has, a claim held under
    * both kept once and the item capped as an add caps it (idMigration.ts). The old ids keep theirs (WP5 fix I2) but no longer
@@ -43,8 +47,8 @@ export interface AnnotationStore {
    * DSN R3-2 carried its notes, and a load moves the ones the store lacks into it. A claim the part holds, or one copied
    * away from it (MOVED_SUFFIX), is left out, so two loads at once add each once. The part is capped as an add caps it.
    * DSN R4 (D4-4): the same write marks the key as moved (listStrict's `migrated`), so a design's notes move once, across
-   * restarts: it writes when a claim was added or the key was not marked yet, and rejects, writing nothing and marking
-   * nothing, when the stored annotations cannot be read.
+   * restarts. DSN R5 (T2): a key marked already is skipped, writing nothing; it rejects, writing nothing and marking
+   * nothing, when the stored annotations cannot be read. A runtime-names claim is added only to a part that holds none.
    */
   addMissing(key: string, byItem: Record<string, Claim[]>): Promise<void>
   /**
@@ -52,8 +56,13 @@ export interface AnnotationStore {
    * it, in the same write). Unlike list it rejects with WorldReadError (code ANNOTATIONS_READ_FAILED) when the stored
    * annotations cannot be read, held through the retries or not parsing, so a caller can tell none from unread.
    */
-  listStrict(key: string): Promise<{ byItem: Record<string, Claim[]>; migrated: boolean }>
+  listStrict(key: string, missing?: Record<string, Claim[]>): Promise<{ byItem: Record<string, Claim[]>; migrated: boolean }>
+  /** DSN R5: runs `work` as one transaction on the key's annotations (createAnnotationStore says how). */
+  transact<T>(key: string, work: (tx: StoreTx) => Promise<T>): Promise<T>
 }
+
+/** Takes back what one add added (AnnotationStore.add). */
+export type AnnotationUndo = () => Promise<void>
 
 const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
 export const EVIDENCE_KINDS = new Set<string>(['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person'])
@@ -109,7 +118,7 @@ const annotationsFileOf = (dir: string, key: string): string => join(annotations
 /** The annotation lock's timings. A writer that finds another's lock looks again after ANNOTATION_LOCK_RETRY_MS, each pause
  *  twice the last, up to ANNOTATION_LOCK_RETRY_MAX_MS. A lock older than ANNOTATION_LOCK_STALE_MS is taken over (its holder died
  *  mid-write: every write under it is a read, a small write and a rename). Past ANNOTATION_LOCK_DEADLINE_MS a writer stops
- *  waiting and goes on without the lock, so a world open or an add always ends. */
+ *  waiting and fails, writing nothing (DSN R5, T1), so a world open or an add always ends. */
 export const ANNOTATION_LOCK_RETRY_MS = 25
 export const ANNOTATION_LOCK_RETRY_MAX_MS = 200
 export const ANNOTATION_LOCK_STALE_MS = 5_000
@@ -117,16 +126,43 @@ export const ANNOTATION_LOCK_DEADLINE_MS = 2_000
 const pause = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, ms) })
 const codeOf = (e: unknown): string => String((e as { code?: unknown } | null)?.code ?? '')
 
+/** DSN R5 (T1): no lock could be had on a world's annotations, after the wait or at all, so nothing was written. */
+export class AnnotationLockError extends Error {
+  constructor() {
+    super('the annotations lock could not be had')
+    this.name = 'AnnotationLockError'
+  }
+}
+
+/** DSN R5 (T1): a transaction's lock was broken and taken, or a file it holds changed under it. It writes nothing more, and
+ *  the transaction starts again from a fresh read (AnnotationStore.transact). */
+export class AnnotationFenceLost extends Error {
+  constructor() {
+    super('the annotations lock was lost')
+    this.name = 'AnnotationFenceLost'
+  }
+}
+
+/** The lock a writer holds on one annotations file: its lock file and the nonce written in it. */
+export interface AnnotationLockHold {
+  lockFile: string
+  nonce: string
+}
+
+/** Whether the lock file still holds the writer's nonce (nobody broke the lock and took it). */
+const stillHeld = async (hold: AnnotationLockHold): Promise<boolean> => (await readFile(hold.lockFile, 'utf8').catch(() => null)) === hold.nonce
+
 /**
  * WPA fix round 2 (R-M2): the annotation store's lock on one file, across processes. The world host adds annotations through
  * its own store and main adopts older keys' files, so the in-process keyed lock alone cannot keep them apart: each takes this
  * one too, a `<file>.lock` made with O_EXCL (`wx`) that holds a nonce of its own.
  * Fix round 3 (R2-I1): it always ends. Only EEXIST is another holder: it is looked at again after a pause that doubles each
- * time, and past ANNOTATION_LOCK_DEADLINE_MS the work goes on without the lock. Any other error making the lock (EPERM and
- * EACCES are what Windows answers for a folder it will not let us write in), and a stale lock that cannot be removed, mean no
- * lock can be had here: the work runs without one, as every write did before, and fails on its own if it must.
+ * time. DSN R5 (T1): never a write without the lock. Past ANNOTATION_LOCK_DEADLINE_MS, on any other error making the lock
+ * (EPERM and EACCES are what Windows answers for a folder it will not let us write in), and for a stale lock that cannot be
+ * removed, it rejects with AnnotationLockError and the work never runs.
  * Fix round 3 (R2-M2): the holder removes the lock only while it still holds its nonce, so a holder slower than
- * ANNOTATION_LOCK_STALE_MS never removes the lock of the one that broke its own.
+ * ANNOTATION_LOCK_STALE_MS never removes the lock of the one that broke its own. DSN R5 (T1): such a holder learns it
+ * through its fence (the nonce checked again just before each rename) and writes nothing more.
  * Final minors (R3-M2): two writers that break the same stale lock both try again, since the one whose delete finds it gone
  * (ENOENT) lost only the race to delete it. A lock made whose nonce cannot be written (a full disk) is ours and empty: it is
  * removed, so nobody waits on it, and the take is tried once more; a second such failure means no lock here.
@@ -137,53 +173,51 @@ export interface AnnotationLockDeps {
   now?: () => number
 }
 
-export async function withAnnotationFileLock<T>(file: string, work: () => Promise<T>, deps: AnnotationLockDeps = {}): Promise<T> {
+export async function withAnnotationFileLock<T>(file: string, work: (hold: AnnotationLockHold) => Promise<T>, deps: AnnotationLockDeps = {}): Promise<T> {
   const sleep = deps.sleep ?? pause
   const now = deps.now ?? Date.now
   const lockFile = `${file}.lock`
   const nonce = `${process.pid}:${randomUUID()}`
   const deadline = now() + ANNOTATION_LOCK_DEADLINE_MS
   let wait = ANNOTATION_LOCK_RETRY_MS
-  let held = false
   let unwritten = false
   for (;;) {
     let made: FileHandle | null = null
     try {
       made = await open(lockFile, 'wx')
     } catch (err) {
-      if (codeOf(err) !== 'EEXIST') break // no lock can be made here
+      if (codeOf(err) !== 'EEXIST') throw new AnnotationLockError() // no lock can be made here
     }
     if (made) {
       let wrote = false
       try { await made.writeFile(nonce, 'utf8'); wrote = true } catch { /* a full disk: made, but empty */ }
       try { await made.close() } catch { /* the lock file stands, written or not */ }
-      if (wrote) { held = true; break }
+      if (wrote) break
       // Made but not written: the empty lock is ours. Remove it either way, so nobody waits on it.
       let removed = true
       try { await rm(lockFile, { force: true }) } catch { removed = false }
-      if (unwritten || !removed) break // the second time, or it cannot be removed: no lock here
+      if (unwritten || !removed) throw new AnnotationLockError() // the second time, or it cannot be removed: no lock here
       unwritten = true
     } else {
       let age = -1
       try { age = now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
       if (age >= ANNOTATION_LOCK_STALE_MS) {
         try { await rm(lockFile) } catch (err) {
-          if (codeOf(err) !== 'ENOENT') break // a stale lock that cannot be removed: no lock can be had here
+          if (codeOf(err) !== 'ENOENT') throw new AnnotationLockError() // a stale lock that cannot be removed
         } // ENOENT: another writer broke it first; try again
       }
     }
-    if (now() >= deadline) break
+    if (now() >= deadline) throw new AnnotationLockError()
     await sleep(wait)
     wait = Math.min(wait * 2, ANNOTATION_LOCK_RETRY_MAX_MS)
   }
+  const hold = { lockFile, nonce }
   try {
-    return await work()
+    return await work(hold)
   } finally {
-    if (held) {
-      try {
-        if ((await readFile(lockFile, 'utf8')) === nonce) await rm(lockFile, { force: true })
-      } catch { /* gone already: broken by another and let go */ }
-    }
+    try {
+      if (await stillHeld(hold)) await rm(lockFile, { force: true })
+    } catch { /* gone already: broken by another and let go */ }
   }
 }
 
@@ -194,8 +228,10 @@ export const ANNOTATION_RENAME_RETRY_CODES: readonly string[] = ['EPERM', 'EACCE
 const ANNOTATION_RENAME_ATTEMPTS = 5
 export const ANNOTATION_RENAME_RETRY_TOTAL_MS = 100 * ((ANNOTATION_RENAME_ATTEMPTS - 1) * ANNOTATION_RENAME_ATTEMPTS) / 2
 
-async function renameRetrying(from: string, to: string): Promise<void> {
+async function renameRetrying(from: string, to: string, before?: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
+    // DSN R5 (T1): asked again before each try, so a rename that waited out a held file never lands after its lock was lost.
+    await before?.()
     try {
       return await rename(from, to)
     } catch (err) {
@@ -206,12 +242,14 @@ async function renameRetrying(from: string, to: string): Promise<void> {
 }
 
 /** Write `text` to `target` whole or not at all: a temp file beside it, then a rename (tried again while Windows refuses it
- *  for a moment). The temp file never outlives a failure. */
-async function writeAtomic(target: string, text: string): Promise<void> {
+ *  for a moment). The temp file never outlives a failure, and `fence`, when given, rejects to stop it before the rename. */
+async function writeAtomic(target: string, text: string, fence?: () => Promise<void>): Promise<void> {
   const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   try {
     await writeFile(tmp, text, 'utf8')
-    await renameRetrying(tmp, target)
+    // DSN R5 (T1): a writer under a lock checks it still holds it just before each try of the rename, and writes nothing
+    // when not.
+    await renameRetrying(tmp, target, fence)
   } catch (err) {
     await rm(tmp, { force: true })
     throw err
@@ -362,7 +400,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
   }
   if (!had && !pending && found.length === 0 && unread.length === 0) return []
   try {
-    return await withAnnotationFileLock(target, async () => {
+    return await withAnnotationFileLock(target, async (hold) => {
       let own: Record<string, Claim[]> | null = null
       if (await exists(target)) {
         // The new key's own claims, newer than any older key's; when `had` is false, the world host saved them while we read.
@@ -389,7 +427,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
           }
         }
         for (const id of Object.keys(merged)) merged[id] = capClaims(merged[id])
-        await writeAtomic(target, JSON.stringify(merged))
+        await writeAtomic(target, JSON.stringify(merged), async () => { if (!(await stillHeld(hold))) throw new AnnotationFenceLost() })
       }
       if (!first) await keepPending(pendingFile, record) // no key added: after the merged file
       return found.map(([old]) => old)
@@ -502,159 +540,386 @@ interface Stored {
   migrated: boolean
 }
 
-/** Seams for tests: the file read, the wait between reads of a held file, and the clock that stamps a backup. */
+/** What a transaction read, and the backup its next write of the file needs first: none, the file moved aside (it does not
+ *  parse), or a copy kept (it holds what this version cannot read). */
+interface StoredForWrite extends Stored {
+  backup: 'move' | 'copy' | null
+}
+
+/** Seams for tests: the file read, the wait between reads of a held file, the clock that stamps a backup and times the lock,
+ *  and the write of the annotations file (handed the real write, to make it or fail it). */
 export interface AnnotationStoreDeps {
   readFile?: (file: string, encoding: 'utf8') => Promise<string>
   sleep?: Sleep
   now?: () => number
+  writeFileAtomic?: (file: string, text: string, write: (file: string, text: string) => Promise<void>) => Promise<void>
 }
+
+/** DSN R5 (T1): how many times a transaction that lost its lock, or found a file it holds changed, starts again from a fresh
+ *  read before it fails with AnnotationLockError. */
+export const ANNOTATION_TX_TRIES = 3
+
+/** One transaction on a world's annotations: the files it read and holds, and how to take back what it wrote. */
+interface Tx {
+  file: string
+  /** The design's world file, read with the annotations and fenced with them; null for any other key. */
+  design: string | null
+  hold: AnnotationLockHold
+  text: string | null
+  designText: string | null
+  lost: boolean
+  closed: boolean
+  undos: Array<{ done: boolean; run: AnnotationUndo }>
+}
+
+/** The transaction running in this async context. Shared by every store in the process, so a store made on the same
+ *  folder joins a transaction another began on the same file instead of waiting for its lock (tx.file is the path). */
+const transactions = new AsyncLocalStorage<Tx>()
+
+/** No such file: a missing file reads as none. */
+const isMissing = (err: unknown): boolean => codeOf(err) === 'ENOENT'
 
 export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {}): AnnotationStore {
   const folder = annotationsFolder(dir)
   const lock = createKeyedLock()
   const fileOf = (key: string): string => annotationsFileOf(dir, key)
   const movedOf = (key: string): string => `${fileOf(key)}${MOVED_SUFFIX}`
+  const designOf = (key: string): string | null => (key.startsWith('design:') ? join(dir, 'world', worldFileName(key)) : null)
   const readText = deps.readFile ?? readFile
   const sleep = deps.sleep ?? pause
   const now = deps.now ?? Date.now
+  const writeFileAtomic = deps.writeFileAtomic ?? ((file, text, write) => write(file, text))
 
-  /** The stored file: its claims and mark, none for a missing file; it throws when the file cannot be read or parsed. */
-  const readStrict = async (key: string): Promise<Stored> => {
-    let text: string
+  /** A file's text, null when it is missing; it throws when the file cannot be read (a held one is read again first). */
+  const readRaw = async (file: string): Promise<string | null> => {
     try {
-      text = await retryLocked(() => readText(fileOf(key), 'utf8'), sleep)
+      return await retryLocked(() => readText(file, 'utf8'), sleep)
     } catch (err) {
-      if (codeOf(err) === 'ENOENT') return { all: cleanFile(undefined), migrated: false }
+      if (isMissing(err)) return null
       throw err
     }
-    const parsed: unknown = JSON.parse(text)
-    return { all: cleanFile(parsed), migrated: markedIn(parsed) }
   }
 
-  /** For display: what can be read, nothing when the file is missing, unreadable or broken. */
-  const read = (key: string): Promise<Stored> => readStrict(key).catch(() => ({ all: cleanFile(undefined), migrated: false }))
-
-  /** For a writer: the stored annotations, empty only for a missing file or one just moved aside; otherwise it throws. */
-  const readForWrite = async (key: string): Promise<Stored> => {
-    const file = fileOf(key)
-    const none = (): Stored => ({ all: cleanFile(undefined), migrated: false })
-    let text: string
-    try {
-      text = await retryLocked(() => readText(file, 'utf8'), sleep)
-    } catch (err) {
-      if (codeOf(err) === 'ENOENT') return none()
-      console.warn(`[world annotations] a world's annotations could not be read, so nothing was added: ${String(err)}`)
-      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
-    }
+  /** What a file's text holds: none for no file, and for one that does not parse (DSN R5, T5: read as empty, and moved
+   *  aside by the next write), which `backup` says. */
+  const parse = (text: string | null): StoredForWrite => {
+    const none = (backup: StoredForWrite['backup']): StoredForWrite => ({ all: cleanFile(undefined), migrated: false, backup })
+    if (text === null) return none(null)
     let parsed: unknown
     try {
       parsed = JSON.parse(text)
     } catch {
-      // Kept for inspection, never written over: without the backup the add is refused.
-      if (await moveAside(file, { now, sleep })) return none()
-      console.warn("[world annotations] a world's annotations do not parse and could not be moved aside, so nothing was added")
-      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
+      return none('move')
     }
     const cleaned = cleanFile(parsed)
-    // N1: the write after this keeps only what this version reads. A file holding more (an evidence kind or claim state it
-    // does not know, a field or shape of a later version, past a cap) goes into the backups first, untouched (once per
-    // distinct content); without that backup the add is refused. A file this version wrote reads back the same.
-    if (loses(cleaned, parsed) && !(await copyAside(file, { now, sleep }))) {
+    // N1: a write keeps only what this version reads. A file holding more (an evidence kind or claim state it does not
+    // know, a field or shape of a later version, past a cap) goes into the backups first, untouched.
+    return { all: cleaned, migrated: markedIn(parsed), backup: loses(cleaned, parsed) ? 'copy' : null }
+  }
+
+  /** For display: what can be read, nothing when the file is missing, unreadable or broken. */
+  const read = async (key: string): Promise<Stored> => {
+    try {
+      return parse(await readRaw(fileOf(key)))
+    } catch {
+      return { all: cleanFile(undefined), migrated: false }
+    }
+  }
+
+  /** The transaction running here on the key's file, if any (one begun by any store on the same folder). */
+  const current = (key: string): Tx | undefined => {
+    const tx = transactions.getStore()
+    return tx && !tx.closed && tx.file === fileOf(key) ? tx : undefined
+  }
+
+  /** Marks the transaction lost: it writes nothing more, and starts again. */
+  const lose = (tx: Tx): never => {
+    tx.lost = true
+    throw new AnnotationFenceLost()
+  }
+
+  /** DSN R5 (T1): the fence, just before each write. The lock still holds this transaction's nonce, and the files it read
+   *  are as it last read or wrote them; otherwise it is lost. */
+  const fenceTx = async (tx: Tx): Promise<void> => {
+    if (tx.lost) lose(tx)
+    const textOf = async (file: string): Promise<string | null | undefined> => readRaw(file).catch(() => undefined)
+    if ((await textOf(tx.file)) !== tx.text) lose(tx)
+    if (tx.design !== null && (await textOf(tx.design)) !== tx.designText) lose(tx)
+    // The lock last, read straight from the disk, so nothing waits between it and the rename: a lock taken over while
+    // the files were read is still seen.
+    if (!(await stillHeld(tx.hold))) lose(tx)
+  }
+
+  /** The stored annotations as the transaction holds them, read again: a file changed since loses the transaction. */
+  const readTx = async (tx: Tx): Promise<StoredForWrite> => {
+    if (tx.lost) lose(tx)
+    let text: string | null
+    try {
+      text = await readRaw(tx.file)
+    } catch (err) {
+      console.warn(`[world annotations] a world's annotations could not be read, so nothing was added: ${String(err)}`)
+      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
+    }
+    if (text !== tx.text) lose(tx)
+    return parse(text)
+  }
+
+  /** Writes the claims under the transaction's lock, fenced, after the backup the read asked for. Without that backup it
+   *  writes nothing. */
+  const writeTx = async (tx: Tx, all: Record<string, Claim[]>, migrated: boolean, backup: StoredForWrite['backup']): Promise<void> => {
+    await fenceTx(tx)
+    if (backup === 'move') {
+      // Kept for inspection, never written over: without the backup nothing is written.
+      if (!(await moveAside(tx.file, { now, sleep }))) {
+        console.warn("[world annotations] a world's annotations do not parse and could not be moved aside, so nothing was added")
+        throw new WorldReadError('ANNOTATIONS_READ_FAILED')
+      }
+      tx.text = null
+    } else if (backup === 'copy' && !(await copyAside(tx.file, { now, sleep }))) {
       console.warn("[world annotations] a world's annotations hold notes this version cannot read and could not be backed up, so nothing was added")
       throw new WorldReadError('ANNOTATIONS_READ_FAILED')
     }
-    return { all: cleaned, migrated: markedIn(parsed) }
+    const text = fileText(all, migrated)
+    await writeFileAtomic(tx.file, text, (file, t) => writeAtomic(file, t, () => fenceTx(tx)))
+    tx.text = text
+  }
+
+  /** The record of claims copied away, written under the transaction's lock once its fence holds. */
+  const writeMovedTx = async (tx: Tx, key: string, moved: Moved): Promise<void> => {
+    await fenceTx(tx)
+    await writeMoved(movedOf(key), moved)
+  }
+
+  /** The transaction's first read, under the lock: the annotations, and a design's world file. Rejects, writing nothing,
+   *  when either cannot be read. */
+  const begin = async (key: string, hold: AnnotationLockHold, undos: Tx['undos']): Promise<Tx> => {
+    const file = fileOf(key)
+    const design = designOf(key)
+    let text: string | null
+    try {
+      text = await readRaw(file)
+    } catch (err) {
+      console.warn(`[world annotations] a world's annotations could not be read, so nothing was added: ${String(err)}`)
+      throw new WorldReadError('ANNOTATIONS_READ_FAILED')
+    }
+    let designText: string | null = null
+    if (design !== null) {
+      try {
+        designText = await readRaw(design)
+      } catch (err) {
+        console.warn(`[world annotations] a design could not be read, so nothing was changed: ${String(err)}`)
+        throw new WorldReadError('WORLD_READ_FAILED')
+      }
+    }
+    return { file, design, hold, text, designText, lost: false, closed: false, undos }
+  }
+
+  /**
+   * DSN R5: the one transaction for every change to a world's notes, claims or names. Under the keyed lock and the file
+   * lock, it reads the annotations (and a design's world file) and runs `work`, whose reads and writes in this store go
+   * through it. Each write is fenced (fenceTx): a lost lock or a file changed under it stops the write, and the whole
+   * transaction starts again from a fresh read, after taking back what its writes so far added, up to ANNOTATION_TX_TRIES
+   * times; then it fails with AnnotationLockError. Any other failure of `work` takes back what it added and rejects.
+   * A call from inside a transaction on the same key joins it.
+   */
+  const transact = <T>(key: string, work: (tx: StoreTx) => Promise<T>): Promise<T> => {
+    const joined = current(key)
+    const handle = (tx: Tx): StoreTx => ({
+      fence: () => fenceTx(tx),
+      track: async () => {
+        // The design's world file as this transaction just wrote it; one that cannot be read loses it.
+        try {
+          tx.designText = tx.design === null ? null : await readRaw(tx.design)
+        } catch {
+          tx.lost = true
+        }
+      }
+    })
+    if (joined) return work(handle(joined))
+    const takeBack = async (undos: Tx['undos']): Promise<void> => {
+      for (const undo of [...undos].reverse()) if (!undo.done) await undo.run()
+    }
+    return lock(key, async () => {
+      await mkdir(folder, { recursive: true })
+      let carried: Tx['undos'] = []
+      for (let attempt = 1; ; attempt++) {
+        let tx: Tx | null = null
+        try {
+          return await withAnnotationFileLock(fileOf(key), async (hold) => {
+            const started = await begin(key, hold, carried)
+            tx = started
+            try {
+              return await transactions.run(started, async () => {
+                // What a lost try added is taken back first, under this try's lock.
+                await takeBack(started.undos)
+                if (attempt > ANNOTATION_TX_TRIES) throw new AnnotationLockError()
+                try {
+                  return await work(handle(started))
+                } catch (err) {
+                  if (!started.lost && !(err instanceof AnnotationFenceLost)) await takeBack(started.undos).catch(() => undefined)
+                  throw err
+                }
+              })
+            } finally {
+              started.closed = true
+            }
+          }, { sleep, now })
+        } catch (err) {
+          // Only a fence loses a transaction, and only one begun: anything else, a failed first read included, rejects.
+          const lostTx = tx as Tx | null
+          if (lostTx === null || (!(err instanceof AnnotationFenceLost) && !lostTx.lost)) throw err
+          carried = lostTx.undos
+          const pending = carried.some((u) => !u.done)
+          if (attempt >= ANNOTATION_TX_TRIES && (!pending || attempt >= 2 * ANNOTATION_TX_TRIES)) throw new AnnotationLockError()
+        }
+      }
+    })
+  }
+
+  /** Adds each claim of `byItem` a part does not hold yet, after its own, in the order given: one held, or copied away from
+   *  the part (`moved`), is left out, and a runtime-names claim only when the part holds none (the store's is newer). The
+   *  part is capped as an add caps it. True when one was added. */
+  const addInto = (all: Record<string, Claim[]>, moved: Moved, byItem: Record<string, Claim[]>): boolean => {
+    let added = false
+    for (const [id, list] of Object.entries(byItem)) {
+      const have = all[id] ?? []
+      const held = new Set([...have.map(claimKey), ...(moved[id] ?? [])])
+      let named = have.some(isRuntime)
+      const more: Claim[] = []
+      for (const claim of list.map(cleanClaim)) {
+        if (claim === null || held.has(claimKey(claim))) continue
+        if (isRuntime(claim)) {
+          if (named) continue
+          named = true
+        }
+        held.add(claimKey(claim))
+        more.push(claim)
+      }
+      if (more.length === 0) continue
+      all[id] = capClaims([...have, ...more])
+      added = true
+    }
+    return added
+  }
+
+  /** The undo of one add: it takes back only that claim, puts back the runtime-names claim it replaced when the part holds
+   *  none, and never a note the cap took (DSN R5, T2). Run again, it changes nothing. */
+  const undoOf = (key: string, itemId: string, clean: Claim, replaced: Claim | undefined, wasMoved: boolean): Tx['undos'][number] => {
+    const entry: Tx['undos'][number] = {
+      done: false,
+      run: () => transact(key, async () => {
+        if (entry.done) return
+        const tx = current(key) as Tx
+        const { all, migrated, backup } = await readTx(tx)
+        const mine = claimKey(clean)
+        const have = all[itemId] ?? []
+        if (!have.some((c) => claimKey(c) === mine)) {
+          entry.done = true
+          return
+        }
+        if (wasMoved) {
+          // The add showed again a claim copied away from the id: copied away again, and the file keeps it, as before.
+          const moved = await readMoved(movedOf(key))
+          if (!moved[itemId]?.includes(mine)) await writeMovedTx(tx, key, { ...moved, [itemId]: [...(moved[itemId] ?? []), mine] })
+          entry.done = true
+          return
+        }
+        let next = have.filter((c) => claimKey(c) !== mine)
+        if (replaced && !next.some(isRuntime)) next = capClaims([...next, replaced])
+        if (next.length > 0) all[itemId] = next
+        else delete all[itemId]
+        await writeTx(tx, all, migrated, backup)
+        entry.done = true
+      })
+    }
+    return entry
   }
 
   return {
     list: async (key) => shownClaims((await read(key)).all, await readMoved(movedOf(key))),
-    listStrict: async (key) => {
+    listStrict: async (key, missing) => {
+      const tx = current(key)
       let stored: Stored
-      try {
-        stored = await readStrict(key)
-      } catch (err) {
-        console.warn(`[world annotations] a world's annotations could not be read: ${String(err)}`)
-        throw new WorldReadError('ANNOTATIONS_READ_FAILED')
-      }
-      return { byItem: shownClaims(stored.all, await readMoved(movedOf(key))), migrated: stored.migrated }
-    },
-    add: (key, itemId, claim) =>
-      lock(key, async () => {
-        const clean = cleanClaim(claim)
-        if (clean === null) throw new Error('annotation needs text, a state and evidence')
-        await mkdir(folder, { recursive: true })
-        // The file lock as well as the keyed one: an adoption in main writes this file too (adoptAnnotationAliases).
-        await withAnnotationFileLock(fileOf(key), async () => {
-          const { all, migrated } = await readForWrite(key)
-          let have = all[itemId] ?? []
-          const moved = await readMoved(movedOf(key))
-          const mine = claimKey(clean)
-          // DSN R4 (D4-6): the same note on the part already, shown there, is not added again: no second slot under the cap.
-          if (have.some((c) => claimKey(c) === mine) && !moved[itemId]?.includes(mine)) return
-          if (moved[itemId]?.includes(mine)) {
-            // HOLD-B #37: a note copied away from this id and added here again is this part's now: shown, once, as the newest.
-            // The record goes first: when it cannot be written, nothing is. On purpose the other way round is not covered: when
-            // the record lands and the file write below fails, the add rejects, yet the note shows under the id at its old place
-            // (holdb-review M5). It is the note the person just added there, so that loses nothing, and the add can be retried.
-            const left = moved[itemId].filter((k) => k !== mine)
-            if (left.length > 0) moved[itemId] = left
-            else delete moved[itemId]
-            await writeMoved(movedOf(key), moved)
-            have = have.filter((c) => claimKey(c) !== mine)
-          }
-          all[itemId] = capClaims([...have, clean])
-          await writeAtomic(fileOf(key), fileText(all, migrated))
-        })
-      }),
-    addMissing: (key, byItem) =>
-      lock(key, async () => {
-        await mkdir(folder, { recursive: true })
-        await withAnnotationFileLock(fileOf(key), async () => {
-          const { all, migrated } = await readForWrite(key)
-          const moved = await readMoved(movedOf(key))
-          let added = false
-          for (const [id, list] of Object.entries(byItem)) {
-            const have = all[id] ?? []
-            const held = new Set([...have.map(claimKey), ...(moved[id] ?? [])])
-            const more: Claim[] = []
-            for (const claim of list.map(cleanClaim)) {
-              if (claim === null || held.has(claimKey(claim))) continue
-              held.add(claimKey(claim))
-              more.push(claim)
-            }
-            if (more.length === 0) continue
-            all[id] = capClaims([...have, ...more])
-            added = true
-          }
-          if (added || !migrated) await writeAtomic(fileOf(key), fileText(all, true))
-        })
-      }),
-    copyRenamed: (key, renames) =>
-      lock(key, async () => {
-        const map = new Map(Object.entries(renames))
-        // holdb-codex-review: an id copies only the claims it shows. Those the record hides under it were copied away from it
-        // by an earlier rename and are another part's; the file keeps them under the old id all the same.
-        const plan = async (): Promise<{ next: Record<string, Claim[]> | null; moved: Moved | null; migrated: boolean }> => {
-          const { all, migrated } = await read(key)
-          const record = await readMoved(movedOf(key))
-          const shown = shownClaims(all, record)
-          const next = copyClaims(all, map, shown)
-          return { next: next === all ? null : next, moved: movedAfter(shown, map, record), migrated }
+      if (tx) stored = await readTx(tx)
+      else {
+        try {
+          stored = parse(await readRaw(fileOf(key)))
+        } catch (err) {
+          console.warn(`[world annotations] a world's annotations could not be read: ${String(err)}`)
+          throw new WorldReadError('ANNOTATIONS_READ_FAILED')
         }
-        const first = await plan()
-        // The common case: nothing to copy and nothing to record, no lock file taken.
-        if (first.next === null && first.moved === null) return
-        await withAnnotationFileLock(fileOf(key), async () => {
-          const { next, moved, migrated } = await plan()
-          if (next !== null) {
-            for (const id of Object.keys(next)) next[id] = capClaims(next[id])
-            await writeAtomic(fileOf(key), fileText(next, migrated))
-          }
-          // HOLD-B #37: after the copy, so a failure between the two leaves the old id's claims shown, as before the record.
-          // A record that cannot be written rejects, so the compile saves nothing and the next one copies and records again.
-          if (moved !== null) await writeMoved(movedOf(key), moved)
-        })
+      }
+      const moved = await readMoved(movedOf(key))
+      // DSN R5 (T3): an unmarked key shows, in memory, what moving `missing` into it would hold. Nothing is written.
+      if (missing && !stored.migrated) addInto(stored.all, moved, missing)
+      return { byItem: shownClaims(stored.all, moved), migrated: stored.migrated }
+    },
+    transact,
+    add: async (key, itemId, claim) => {
+      const clean = cleanClaim(claim)
+      if (clean === null) throw new Error('annotation needs text, a state and evidence')
+      return transact(key, async () => {
+        const tx = current(key) as Tx
+        const { all, migrated, backup } = await readTx(tx)
+        let have = all[itemId] ?? []
+        const moved = await readMoved(movedOf(key))
+        const mine = claimKey(clean)
+        const wasMoved = moved[itemId]?.includes(mine) ?? false
+        // DSN R4 (D4-6): the same note on the part already, shown there, is not added again: no second slot under the cap.
+        if (!wasMoved && have.some((c) => claimKey(c) === mine)) return async () => undefined
+        if (wasMoved) {
+          // HOLD-B #37: a note copied away from this id and added here again is this part's now: shown, once, as the newest.
+          // The record goes first: when it cannot be written, nothing is. On purpose the other way round is not covered: when
+          // the record lands and the file write below fails, the add rejects, yet the note shows under the id at its old place
+          // (holdb-review M5). It is the note the person just added there, so that loses nothing, and the add can be retried.
+          const left = moved[itemId].filter((k) => k !== mine)
+          if (left.length > 0) moved[itemId] = left
+          else delete moved[itemId]
+          await writeMovedTx(tx, key, moved)
+          have = have.filter((c) => claimKey(c) !== mine)
+        }
+        const replaced = isRuntime(clean) ? have.filter(isRuntime).slice(-1)[0] : undefined
+        all[itemId] = capClaims([...have, clean])
+        await writeTx(tx, all, migrated, backup)
+        const undo = undoOf(key, itemId, clean, replaced, wasMoved)
+        tx.undos.push(undo)
+        return undo.run
       })
+    },
+    addMissing: (key, byItem) =>
+      transact(key, async () => {
+        const tx = current(key) as Tx
+        const { all, migrated, backup } = await readTx(tx)
+        // DSN R5 (T2): computed in the transaction, from the store as it is now, and skipped once the key is marked.
+        if (migrated) return
+        addInto(all, await readMoved(movedOf(key)), byItem)
+        await writeTx(tx, all, true, backup)
+      }),
+    copyRenamed: async (key, renames) => {
+      const map = new Map(Object.entries(renames))
+      // holdb-codex-review: an id copies only the claims it shows. Those the record hides under it were copied away from it
+      // by an earlier rename and are another part's; the file keeps them under the old id all the same.
+      const plan = (all: Record<string, Claim[]>, record: Moved): { next: Record<string, Claim[]> | null; moved: Moved | null } => {
+        const shown = shownClaims(all, record)
+        const next = copyClaims(all, map, shown)
+        return { next: next === all ? null : next, moved: movedAfter(shown, map, record) }
+      }
+      const first = plan((await read(key)).all, await readMoved(movedOf(key)))
+      // The common case: nothing to copy and nothing to record, no lock taken.
+      if (first.next === null && first.moved === null) return
+      await transact(key, async () => {
+        const tx = current(key) as Tx
+        const { all, migrated, backup } = await readTx(tx)
+        const { next, moved } = plan(all, await readMoved(movedOf(key)))
+        if (next !== null) {
+          for (const id of Object.keys(next)) next[id] = capClaims(next[id])
+          await writeTx(tx, next, migrated, backup)
+        }
+        // HOLD-B #37: after the copy, so a failure between the two leaves the old id's claims shown, as before the record.
+        // A record that cannot be written rejects, so the compile saves nothing and the next one copies and records again.
+        if (moved !== null) await writeMovedTx(tx, key, moved)
+      })
+    }
   }
 }
 
@@ -783,43 +1048,44 @@ export function withoutStored(doc: WorldDoc, byItem: Record<string, Claim[]>): W
 /**
  * A design file shown with the claims the store holds (DSN R4, D4-5): mergeAnnotations, except that service names the
  * file sets for a part (withoutStored keeps them only when they differ from the stored claim's) are the design's newer
- * edit and win over that claim; an empty list there means the design cleared them. With `keepFileHandSet`, for a key
- * whose notes have not moved into the store yet, the file's hand-set parts the store gives no runtime-names claim stay
- * hand-set, so a file saved before DSN R3-2 never loses the mark.
+ * edit and win over that claim; an empty list there means the design cleared them, except for a part in `legacyHandSet`,
+ * the parts a file from before DSN R3-2 marks hand-set, whose names are older than the store's (NIT R5-4). With
+ * `keepFileHandSet`, for a key whose notes have not moved into the store yet, those of its parts the store gives no
+ * runtime-names claim stay hand-set, so such a file never loses the mark.
  */
-export function mergeDesign(doc: WorldDoc, byItem: Record<string, Claim[]>, keepFileHandSet = false): WorldDoc {
+export function mergeDesign(doc: WorldDoc, byItem: Record<string, Claim[]>, legacyHandSet: readonly string[] = [], keepFileHandSet = false): WorldDoc {
   const names: Record<string, string[]> = doc.runtimeNames ?? {}
   const shown: Record<string, Claim[]> = Object.create(null)
   for (const [id, list] of Object.entries(byItem)) {
     const claim = runtimeOf(byItem, id)
-    const fileWins = claim !== undefined && ownKey(names, id) && !isDeepStrictEqual(names[id], namesOfRuntimeText(claim.text))
+    // NIT R5-4: names a file from before DSN R3-2 marks set by hand are older than any claim the store holds for the part.
+    const fileWins = claim !== undefined && ownKey(names, id) && !legacyHandSet.includes(id) && !isDeepStrictEqual(names[id], namesOfRuntimeText(claim.text))
     shown[id] = fileWins ? list.filter((c) => !isRuntime(c)) : list
   }
   const merged = mergeAnnotations(doc, shown)
   const runtimeNames: Record<string, string[]> = {}
   for (const [id, list] of Object.entries(merged.runtimeNames)) if (list.length > 0) runtimeNames[id] = list
   const handSet = new Set(merged.runtimeHandSet ?? [])
-  if (keepFileHandSet) for (const id of doc.runtimeHandSet ?? []) if (!runtimeOf(byItem, id)) handSet.add(id)
+  if (keepFileHandSet) for (const id of legacyHandSet) if (hasPart(doc, id) && !runtimeOf(byItem, id)) handSet.add(id)
   const out: WorldDoc = { ...merged, runtimeNames }
   delete out.runtimeHandSet
   return { ...out, ...(handSet.size > 0 ? { runtimeHandSet: [...handSet].sort() } : {}) }
 }
 
 /**
- * Each part's notes in a design file (claims neither a person's nor runtime names), each once, as `notes`, and those
- * before the last MAX_ANNOTATIONS_PER_ITEM, past the store's cap already, as `past` (an empty list when none is).
+ * Each part's newest MAX_ANNOTATIONS_PER_ITEM notes in a design file (claims neither a person's nor runtime names), each
+ * once (older ones were past the store's cap already), and, for each part the file marks hand-set, the claim that makes its
+ * names again (D4-5; added only where the store holds no runtime-names claim): what moving the file's notes adds.
  */
-function fileNotes(doc: WorldDoc): { notes: Record<string, Claim[]>; past: Record<string, Claim[]> } {
+function fileNotes(doc: WorldDoc): Record<string, Claim[]> {
   const all: Record<string, Claim[]> = Object.create(null)
-  const past: Record<string, Claim[]> = Object.create(null)
   for (const item of [...doc.buildings, ...doc.edges]) {
     const notes: Claim[] = []
     for (const c of item.claims) if (!isPerson(c) && !isRuntime(c) && !notes.some((n) => isDeepStrictEqual(n, c))) notes.push(c)
-    if (notes.length === 0) continue
-    all[item.id] = notes
-    past[item.id] = notes.slice(0, -MAX_ANNOTATIONS_PER_ITEM)
+    if (notes.length > 0) all[item.id] = notes.slice(-MAX_ANNOTATIONS_PER_ITEM)
   }
-  return { notes: all, past }
+  for (const id of doc.runtimeHandSet ?? []) if (hasPart(doc, id)) all[id] = [...claimsOf(all, id), handMade(doc.runtimeNames[id] ?? [])]
+  return all
 }
 
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */
@@ -828,94 +1094,52 @@ export const hasPart = (doc: WorldDoc, id: string): boolean => doc.buildings.som
 /**
  * A store whose design worlds (keys `design:<id>`) show the annotations the annotation store holds, and only those: a
  * load merges them in, and a save leaves them out of the file (DSN R3-2), so the store's cap and a failed store write
- * decide what shows, whatever order a designer run's save and an annotation landed in. A design file saved before that
- * carried its notes: a load moves the ones the store lacks into it (of each part's newest MAX_ANNOTATIONS_PER_ITEM; older
- * ones were past its cap already), with the parts the file marks hand-set, and the next save leaves them out.
- * DSN R4 (D4-4): that move happens once per key, across restarts: the store marks the key in the same write
- * (listStrict's `migrated`), and from then on a load moves nothing and shows no claim of the file's, the store being the
- * only source of notes. A move that fails marks nothing: the notes are shown from the file and the next load tries again.
- * Until then, a note this wrapper once saw stored is left out for good, so a doc loaded before the store dropped it (its
- * cap) never writes it back or moves it back into the store.
- * DSN R4 (D4-3): a design a newer Termpolis saved is shown, never moved: its load writes nothing.
+ * decide what shows. A design file saved before that carried its notes; they move into the store once per key, across
+ * restarts, the key marked in the same write (DSN R4, D4-4).
+ * DSN R5: every change goes through one transaction (AnnotationStore.transact, `transact` here). A load only reads (T3): a
+ * key not marked yet shows, in memory, the store's notes and what the move would add, and writes nothing, and a store that
+ * cannot be read fails the load (T4), whether the key is marked or not. The move happens in a write's transaction, computed
+ * there from the design and the store as they are then, and is skipped once the key is marked (T2); a design a newer
+ * Termpolis saved is never moved (D4-3). Once a key is marked the file's own hand-set mark is ignored (R5-4).
  * Other keys pass through (a project world is recompiled, which merges them).
  */
-export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationStore, 'listStrict' | 'addMissing'>): WorldStore {
-  /** Per design key and part, every note (a claim not of runtime names) seen stored, or past the cap in a design file. */
-  const seen = new Map<string, Record<string, Claim[]>>()
-  const held = (key: string, byItem: Record<string, Claim[]>): Record<string, Claim[]> => {
-    const all = seen.get(key) ?? Object.create(null)
-    for (const [id, list] of Object.entries(byItem)) {
-      const have: Claim[] = all[id] ?? []
-      all[id] = [...have, ...list.filter((c) => !isRuntime(c) && !have.some((h) => isDeepStrictEqual(h, c)))]
-    }
-    seen.set(key, all)
-    return all
-  }
-  /**
-   * What a save leaves out: every note seen, and the runtime-names claims the store holds now. Service names are left out
-   * only while the store holds a claim to make them again, never because it once did.
-   */
-  const leftOut = (key: string, now: Record<string, Claim[]>): Record<string, Claim[]> => {
-    // held(key, now) gave every part `now` names an entry.
-    const out: Record<string, Claim[]> = Object.assign(Object.create(null), held(key, now))
-    for (const [id, list] of Object.entries(now)) out[id] = [...out[id], ...list.filter(isRuntime)]
-    return out
-  }
-  /** Design keys whose notes the store holds (D4-4), as this wrapper last read or made them. */
-  const marked = new Set<string>()
-  /** What the store holds for the key, null when it cannot be read (nothing is moved then). */
-  const stored = async (key: string): Promise<Record<string, Claim[]> | null> => {
-    try {
-      const { byItem, migrated } = await annotations.listStrict(key)
-      if (migrated) marked.add(key)
-      return byItem
-    } catch {
-      return null
-    }
-  }
+export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationStore, 'listStrict' | 'addMissing' | 'transact'>): WorldStore {
   const isDesign = (key: string): boolean => key.startsWith('design:')
+  const loadMerged = async (key: string, forWrite: boolean): Promise<WorldDoc | null> => {
+    const doc = await (forWrite && store.loadForWrite ? store.loadForWrite(key) : store.load(key))
+    if (!doc || !isDesign(key)) return doc
+    const { byItem, migrated } = await annotations.listStrict(key, fileNotes(doc))
+    return mergeDesign(withoutNotes(doc), byItem, doc.runtimeHandSet, !migrated)
+  }
+  /** The move of a design's notes into the store (D4-4), inside a write's transaction: once per key, never for a newer
+   *  Termpolis's design, and from the design and store as they are now. */
+  const migrate = async (key: string): Promise<void> => {
+    const doc = await (store.loadForWrite ?? store.load)(key)
+    if (!doc || doc.savedByNewer) return
+    if ((await annotations.listStrict(key)).migrated) return
+    await annotations.addMissing(key, fileNotes(doc))
+  }
+  const transact = <T>(key: string, work: (tx: StoreTx) => Promise<T>): Promise<T> =>
+    annotations.transact(key, async (tx) => {
+      if (isDesign(key)) await migrate(key)
+      return work(tx)
+    })
   return {
     ...store,
-    load: async (key) => {
-      const doc = await store.load(key)
-      if (!doc || !isDesign(key)) return doc
-      const now = await stored(key)
-      // A marked key's notes are the store's alone, even while it cannot be read.
-      if (marked.has(key)) return mergeDesign(withoutNotes(doc), now ?? {})
-      const byItem = now ?? {}
-      const { notes, past } = fileNotes(doc)
-      // Notes past the cap are held as seen, so only the newest MAX_ANNOTATIONS_PER_ITEM can be missing.
-      held(key, past)
-      const known = held(key, byItem)
-      const missing: Record<string, Claim[]> = Object.create(null)
-      for (const [id, list] of Object.entries(notes)) {
-        // held(key, past) gave every part with notes in the file an entry, an empty one when none is past the cap.
-        const lacking = list.filter((c) => !known[id].some((h) => isDeepStrictEqual(h, c)))
-        if (lacking.length > 0) missing[id] = lacking
-      }
-      // D4-5: a part the file marks hand-set, with no runtime-names claim stored, moves as the claim that makes it again.
-      const handSet = (doc.runtimeHandSet ?? []).filter((id) => hasPart(doc, id) && !runtimeOf(byItem, id))
-      for (const id of handSet) missing[id] = [...claimsOf(missing, id), handMade(doc.runtimeNames[id] ?? [])]
-      if (now !== null && !doc.savedByNewer && (Object.keys(notes).length > 0 || handSet.length > 0)) {
-        try {
-          // Written even when nothing is missing: the write marks the key, so no later load moves its notes again.
-          await annotations.addMissing(key, missing)
-          marked.add(key)
-          return mergeDesign(withoutNotes(doc), (await annotations.listStrict(key)).byItem)
-        } catch {
-          // Left in the file and shown from there: the next load tries again.
-        }
-      }
-      return mergeDesign(stripNotes(doc, leftOut(key, byItem)), byItem, true)
-    },
+    load: (key) => loadMerged(key, false),
+    loadForWrite: (key) => loadMerged(key, true),
+    transact,
     save: async (doc, opts) => {
       if (!isDesign(doc.projectKey)) return store.save(doc, opts)
       const key = doc.projectKey
-      const now = (await stored(key)) ?? {}
-      const out = withoutStored(marked.has(key) ? withoutNotes(doc) : doc, leftOut(key, now))
-      await store.save(out, opts)
-      // A design key saves a copy: the newer-world mark the store puts on it belongs to the caller's doc too.
-      if (out.savedByNewer) doc.savedByNewer = true
+      await transact(key, async (tx) => {
+        const { byItem } = await annotations.listStrict(key)
+        const out = withoutStored(withoutNotes(doc), byItem)
+        await store.save(out, { ...opts, fence: tx.fence })
+        await tx.track()
+        // A design key saves a copy: the newer-world mark the store puts on it belongs to the caller's doc too.
+        if (out.savedByNewer) doc.savedByNewer = true
+      })
     }
   }
 }

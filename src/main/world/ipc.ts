@@ -46,7 +46,7 @@
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import { NO_PART } from './annotations'
-import { WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER } from './worldStore'
+import { WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError } from './worldStore'
 import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
@@ -187,7 +187,7 @@ const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : D
 /** A designer refusal of a confirmation as the pane reads it: the lines the host's refusals use, else ANNOTATE_FAILED. */
 const designAnnotateErr = (e: unknown) => {
   const m = e instanceof DesignFailure ? e.message : ''
-  if (m === NO_PART || m === WORLD_SAVED_BY_NEWER) return err(m)
+  if (m === NO_PART || m === WORLD_SAVED_BY_NEWER || m === WORLD_READ_FAILED) return err(m)
   return err(m === DESIGN_NOT_FOUND ? 'No world with that key.' : ANNOTATE_FAILED)
 }
 
@@ -660,8 +660,9 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     try {
       const doc = await deps.designs.load(key)
       return doc ? ok(doc) : err(DESIGN_NOT_FOUND)
-    } catch {
-      return err(DESIGN_NOT_FOUND)
+    } catch (e) {
+      // DSN R5 (T4, T5): a design or its notes that cannot be read say so, never that there is no such design.
+      return err(e instanceof WorldReadError ? e.message : DESIGN_NOT_FOUND)
     }
   })
 

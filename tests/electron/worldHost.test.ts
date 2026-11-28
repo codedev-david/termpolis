@@ -2312,7 +2312,7 @@ describe('annotate', () => {
     await h.send({ kind: 'init', userDataPath: dir, labelling: false })
     await mkdir(join(dir, 'world', 'design_d4.json'), { recursive: true })
     await writeFile(join(dir, 'world', 'design_d1.json'), JSON.stringify({ ...doc(), projectKey: 'design:d1', version: 99 }))
-    await writeFile(join(dir, 'world', 'design_d2.json'), JSON.stringify({ ...doc(), projectKey: 'design:d2' }))
+    await writeFile(join(dir, 'world', 'design_d2.json'), JSON.stringify(emptyDesignDoc('design:d2', 1)))
     await writeFile(join(dir, 'world', 'design_d3.json'), '{ not json')
     await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
     expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
@@ -2385,7 +2385,7 @@ describe('annotate', () => {
       await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
       expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
       // A world of this version's shape still has no such part here: that one stays "No world with that key."
-      const h2 = harness({ createAnnotations: () => memAnnotations(), readWorldText: async () => JSON.stringify({ ...doc(), projectKey: 'design:d1' }) }, memStore({}))
+      const h2 = harness({ createAnnotations: () => memAnnotations(), readWorldText: async () => JSON.stringify(emptyDesignDoc('design:d1', 1)) }, memStore({}))
       await h2.send({ kind: 'init', userDataPath: dir, labelling: false })
       await h2.send({ kind: 'call', id: 2, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
       expect(h2.last()).toMatchObject({ kind: 'result', id: 2, ok: false, error: { message: 'No world with that key.' } })

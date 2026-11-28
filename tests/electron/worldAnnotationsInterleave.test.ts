@@ -117,10 +117,12 @@ async function third(dir: string, random: () => number): Promise<void> {
   const mine = `third holder ${random()}`
   await mkdir(join(dir, 'world', 'annotations'), { recursive: true })
   // Takes the lock over a holder (as one that broke it would), or makes it, or leaves one a dead holder left.
-  await writeFile(lockFile, mine)
+  // Windows refuses a write over a lock a holder is deleting just then (EPERM): this take-over then did not happen.
+  if (!(await writeFile(lockFile, mine).then(() => true, () => false))) return
   if (random() < 0.3) {
     const old = new Date(Date.now() - 60_000)
-    await utimes(lockFile, old, old)
+    // A holder releasing just then may have removed it: there is then no dead holder to leave.
+    await utimes(lockFile, old, old).catch(() => undefined)
     return
   }
   for (let i = 1 + Math.floor(random() * 6); i > 0; i--) await turn()

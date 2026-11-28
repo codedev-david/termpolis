@@ -10,14 +10,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
 // that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once); a file
 // another program holds (`busy`: reads of a path ending so refused with EBUSY, `busyReads` times); a rename onto a path ending
-// in `refuseTo` (EIO). `renames` counts every rename tried, so a retry test asserts attempts, never the wall clock, and
+// in `refuseTo` (EIO); a lock another process took over (`lockTaken`: every read of a lock file answers another's nonce; `takeOnRefuse`: taken over
+// while a refused rename waits). `renames` counts every rename tried, so a retry test asserts attempts, never the wall clock, and
 // `renamedTo` lists where each rename that landed went, in order.
 const faults = vi.hoisted(() => ({
   rename: false, renameOnce: null as string[] | null, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
-  busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [] as string[],
+  busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [] as string[], lockTaken: false, takeOnRefuse: false,
 }))
 const resetFaults = (): void => {
-  Object.assign(faults, { rename: false, renameOnce: null, lock: null, lockAlways: null, lockWrite: 0, rmLock: null, busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [] })
+  Object.assign(faults, { rename: false, renameOnce: null, lock: null, lockAlways: null, lockWrite: 0, rmLock: null, busy: '', busyReads: 0, renames: 0, refuseTo: '', renamedTo: [], lockTaken: false, takeOnRefuse: false })
 }
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
@@ -26,6 +27,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...real,
     readFile: async (...a: Parameters<typeof real.readFile>) => {
+      if (faults.lockTaken && isLock(a[0])) return 'taken over by another process'
       if (faults.busy && String(a[0]).endsWith(faults.busy) && faults.busyReads > 0) {
         faults.busyReads--
         throw fail('EBUSY')
@@ -35,6 +37,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     rename: async (from: string, to: string) => {
       faults.renames++
       const once = faults.renameOnce?.shift()
+      if (once && faults.takeOnRefuse) faults.lockTaken = true
       if (once || faults.rename) throw fail(once ?? 'EBUSY')
       if (faults.refuseTo && to.endsWith(faults.refuseTo)) throw fail('EIO')
       await real.rename(from, to)
@@ -62,7 +65,7 @@ import {
   adoptAnnotationAliases, createAnnotationStore, withAnnotationFileLock, ANNOTATION_LOCK_DEADLINE_MS, ANNOTATION_LOCK_RETRY_MS,
   ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
   ANNOTATION_RENAME_RETRY_TOTAL_MS, ADOPT_PENDING_SUFFIX, ADOPT_RETRY_BACKOFF_MS, ADOPT_RETRY_OPENS, ADOPT_GIVEN_UP, type PendingKey,
-  pendingAdoptionKeys,
+  pendingAdoptionKeys, AnnotationLockError,
 } from '../../src/main/world/annotations'
 import { CLAIM_TRIES, LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
 import { writeFileSync } from 'node:fs'
@@ -576,26 +579,56 @@ describe('adoptAnnotationAliases', () => {
       expect(pauses).toEqual([ANNOTATION_LOCK_RETRY_MS, ANNOTATION_LOCK_RETRY_MS * 2]) // 25 ms, then 50 ms
       expect(ANNOTATION_LOCK_RETRY_MAX_MS).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
     })
-    it('EPERM or EACCES on making the lock (what Windows answers for a folder it will not let us write in) means no lock here: the work runs at once, without one (R2-I1)', async () => {
+    it('EPERM or EACCES on making the lock (what Windows answers for a folder it will not let us write in) means no lock here: the copy and an add write nothing (DSN R5, T1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       for (const code of ['EPERM', 'EACCES']) {
         faults.lockAlways = code
         const pauses: number[] = []
-        await rm(fileFor('new-key'), { force: true })
-        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual(['old-key'])
-        expect(pauses).toEqual([]) // no wait for a lock: the work ran on the first try
-        await createAnnotationStore(dir).add('new-key', 'b2', claim(`an add with ${code}`)) // an add ends too
+        expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual([])
+        expect(pauses).toEqual([]) // no wait for a lock: refused on the first try
+        await expect(createAnnotationStore(dir).add('new-key', 'b2', claim(`an add with ${code}`))).rejects.toBeInstanceOf(AnnotationLockError)
+        // The work itself never runs: no lock, no work, not one left for the fence to catch.
+        let ran = false
+        await expect(withAnnotationFileLock(fileFor('new-key'), async () => { ran = true })).rejects.toBeInstanceOf(AnnotationLockError)
+        expect(ran).toBe(false)
       }
+      faults.lockAlways = null
       expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([])
-      expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2'])
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
+      // The older key is tried again later, and copied once a lock can be made.
+      expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual(['old-key'])
     })
-    it('an error with no code at all is read the same way: the work runs without a lock', async () => {
+    it('an error with no code at all is read the same way: no lock, and the copy writes nothing', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       faults.lock = ['none']
-      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
       expect(faults.lock).toEqual([])
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
     })
-    it('a stale lock that cannot be removed means no lock here: the work runs without one, and the lock is left as found (R2-I1)', async () => {
+    it('a lock taken over by another process before the merged file lands: the copy writes nothing, leaves the lock, and is tried again later (DSN R5, T1 fence)', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      faults.lockTaken = true
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
+      faults.lockTaken = false
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
+      // Not ours, so not removed: the holder lets go of it itself.
+      expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([`${sha256('new-key')}.json.lock`])
+      expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual(['old-key'])
+    })
+    it('a lock taken over while a refused rename waits: the next try is fenced too, and the copy writes nothing (DSN R5, T1 fence)', async () => {
+      await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
+      faults.renamedTo = []
+      faults.renameOnce = ['EPERM']
+      faults.takeOnRefuse = true
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
+      faults.lockTaken = false
+      // Refused once, then never tried again: the lock was no longer ours (the one rename that landed is the pending note's).
+      expect(faults.renamedTo.map((t) => t.endsWith(ADOPT_PENDING_SUFFIX))).toEqual([true])
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
+      expect((await readdir(folder())).filter((f) => f.endsWith('.tmp'))).toEqual([])
+      expect(await pendingAdoptionKeys(dir, 'new-key')).toEqual(['old-key'])
+    })
+    it('a stale lock that cannot be removed means no lock here: the copy writes nothing, and the lock is left as found (R2-I1, DSN R5 T1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       const lock = `${fileFor('new-key')}.lock`
       await writeFile(lock, 'a dead holder', 'utf8')
@@ -603,11 +636,12 @@ describe('adoptAnnotationAliases', () => {
       await utimes(lock, past, past)
       faults.rmLock = 'EPERM'
       const pauses: number[] = []
-      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual(['old-key'])
-      expect(pauses).toEqual([]) // no wait: the work ran on the first try
+      expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: { sleep: async (ms) => { pauses.push(ms) } } })).toEqual([])
+      expect(pauses).toEqual([]) // no wait: refused on the first try
       expect(await readFile(lock, 'utf8')).toBe('a dead holder')
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
     })
-    it('a lock held past ANNOTATION_LOCK_DEADLINE_MS: the world open and an add both go on without it, and leave the holder its lock (R2-I1)', async () => {
+    it('a lock held past ANNOTATION_LOCK_DEADLINE_MS: the world open and an add both give up without writing, and leave the holder its lock (R2-I1, DSN R5 T1)', async () => {
       await createAnnotationStore(dir).add('old-key', 'b1', claim('older'))
       const lock = `${fileFor('new-key')}.lock`
       await writeFile(lock, 'a live holder that never lets go', 'utf8') // fresh: not stale for another 5 s
@@ -617,17 +651,19 @@ describe('adoptAnnotationAliases', () => {
       const order: string[] = []
       const clock = { now: () => at, sleep: async (ms: number) => { order.push(`pause ${ms}`); at += ms } }
       const [adopted] = await Promise.all([
-        adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: clock }).then((r) => { order.push('adopted'); return r }),
+        adoptAnnotationAliases(dir, 'new-key', ['old-key'], { lock: clock }).then((r) => { order.push('given up'); return r }),
         createAnnotationStore(dir).add('other-key', 'b9', claim('unrelated')), // another file's lock: never waits
       ])
-      expect(adopted).toEqual(['old-key'])
-      // 25, 50 and 100 ms, then 200 ms each until the deadline has passed, and only then the work, without the lock.
+      expect(adopted).toEqual([])
+      // 25, 50 and 100 ms, then 200 ms each until the deadline has passed, and only then it gives up, writing nothing.
       const expected = [ANNOTATION_LOCK_RETRY_MS, ANNOTATION_LOCK_RETRY_MS * 2, ANNOTATION_LOCK_RETRY_MS * 4, ...Array<number>(10).fill(ANNOTATION_LOCK_RETRY_MAX_MS)]
-      expect(order).toEqual([...expected.map((ms) => `pause ${ms}`), 'adopted'])
+      expect(order).toEqual([...expected.map((ms) => `pause ${ms}`), 'given up'])
       expect(at - start).toBeGreaterThanOrEqual(ANNOTATION_LOCK_DEADLINE_MS)
       expect(at - start - ANNOTATION_LOCK_RETRY_MAX_MS).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS) // the last pause was the first past it
-      await createAnnotationStore(dir).add('new-key', 'b2', claim('newer'))
-      expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2'])
+      let addAt = Date.now()
+      const addClock = { now: () => addAt, sleep: async (ms: number) => { addAt += ms } }
+      await expect(createAnnotationStore(dir, addClock).add('new-key', 'b2', claim('newer'))).rejects.toBeInstanceOf(AnnotationLockError)
+      await expect(readFile(fileFor('new-key'), 'utf8')).rejects.toThrow()
       expect(await readFile(lock, 'utf8')).toBe('a live holder that never lets go')
     }, 15_000)
     it('two writers break the same stale lock: the one whose delete finds it already gone (ENOENT) takes the lock after all, never runs without it (R3-M2)', async () => {
@@ -644,7 +680,7 @@ describe('adoptAnnotationAliases', () => {
       expect(inside).toMatch(/^\d+:\S{8,}$/) // held, with its nonce
       await expect(readFile(lock, 'utf8')).rejects.toThrow()
     })
-    it('a lock made but never written (a full disk) is removed and the take tried once more; failing twice, the work runs without one and leaves no empty lock behind (R3-M2)', async () => {
+    it('a lock made but never written (a full disk) is removed and the take tried once more; failing twice, the work never runs and no empty lock is left behind (R3-M2, DSN R5 T1)', async () => {
       await mkdir(folder(), { recursive: true })
       const file = fileFor('k')
       const lock = `${file}.lock`
@@ -657,7 +693,9 @@ describe('adoptAnnotationAliases', () => {
 
       faults.lockWrite = 2
       const pauses: number[] = []
-      expect(await withAnnotationFileLock(file, async () => { await expect(readFile(lock, 'utf8')).rejects.toThrow(); return 5 }, { sleep: async (ms) => { pauses.push(ms) } })).toBe(5)
+      let ran = false
+      await expect(withAnnotationFileLock(file, async () => { ran = true; return 5 }, { sleep: async (ms) => { pauses.push(ms) } })).rejects.toBeInstanceOf(AnnotationLockError)
+      expect(ran).toBe(false)
       expect(faults.lockWrite).toBe(0)
       expect(pauses).toEqual([ANNOTATION_LOCK_RETRY_MS]) // one pause, the take tried once more, then no lock: not a wait to the deadline
       expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([]) // no orphan for others to wait 2 s on
@@ -665,7 +703,7 @@ describe('adoptAnnotationAliases', () => {
       // An empty lock of ours that cannot be removed either: no lock here, at once (not tried again on top of it).
       faults.lockWrite = 1
       faults.rmLock = 'EPERM'
-      expect(await withAnnotationFileLock(file, async () => 6)).toBe(6)
+      await expect(withAnnotationFileLock(file, async () => 6)).rejects.toBeInstanceOf(AnnotationLockError)
       expect(faults.lockWrite).toBe(0)
       expect(await readFile(lock, 'utf8')).toBe('')
     })

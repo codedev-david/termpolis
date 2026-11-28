@@ -47,7 +47,7 @@ import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
 import { createWorldStore, WORLD_SAVE_FAILED, WorldReadError, WorldSavedByNewerError, worldFileName, type WorldStore } from './worldStore'
 import { retryLocked, sleepMs } from './storeFiles'
-import { isNewerWorld, validateWorld } from '../../shared/world/validate'
+import { isNewerWorld, migrateWorld, validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 
@@ -1140,7 +1140,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    * A file another program holds for a moment (Defender, the indexer, a sync client) is read again, as the store reads it
    * (DSN R3-5). Only a missing file says there is no such world (DSN R4, D4-8): one still held after the retries, that
    * cannot be read or does not parse says it could not be read (WorldReadError, the store's words), the raw error going
-   * to the log; a newer Termpolis's says so.
+   * to the log, and so does valid JSON that is not a world (DSN R5, T5); a newer Termpolis's says so.
    */
   const designRefusal = async (userDataPath: string, key: string): Promise<Error> => {
     const file = join(userDataPath, 'world', worldFileName(key))
@@ -1152,7 +1152,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       console.warn(`[world host] a design's world could not be read: ${String(err)}`)
       return new WorldReadError()
     }
-    return isNewerWorld(parsed) ? new WorldSavedByNewerError() : new Error('No world with that key.')
+    if (isNewerWorld(parsed)) return new WorldSavedByNewerError()
+    if (!validateWorld(migrateWorld(parsed), { dropBadItems: true }).ok) {
+      console.warn("[world host] a design's world is not a world")
+      return new WorldReadError()
+    }
+    return new Error('No world with that key.')
   }
 
   const handlers = (st: HostState): Record<string, Handler> => ({

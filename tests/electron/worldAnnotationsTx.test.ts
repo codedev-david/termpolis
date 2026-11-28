@@ -186,6 +186,40 @@ describe('T1: never a write without the lock', () => {
     expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0', 'mine'])
   })
 
+  it('a lock taken over while the fence reads the files is seen: the lock is checked last, and the write waits for a lock again (interleave seed 199)', async () => {
+    const lockFile = `${annotationsFile('k')}.lock`
+    await createAnnotationStore(dir).add('k', 'b1', person('note0'))
+    let writing = false
+    let taken = false
+    let underForeign: string | null = null
+    const store = createAnnotationStore(dir, {
+      readFile: async (file, enc) => {
+        const text = await readFile(file, enc)
+        // The fence's read of the file: another process breaks the lock and takes it just then.
+        if (writing && !taken && file === annotationsFile('k')) {
+          taken = true
+          await writeFile(lockFile, 'broken and taken by another')
+        }
+        return text
+      },
+      writeFileAtomic: async (file, text, write) => {
+        writing = true
+        try { await write(file, text) } finally { writing = false }
+      },
+      // The other holder lets go at the first pause; what the file holds then is what was written under its lock.
+      sleep: async () => {
+        if ((await readFile(lockFile, 'utf8').catch(() => '')) === 'broken and taken by another') {
+          underForeign = await readFile(annotationsFile('k'), 'utf8')
+          await rm(lockFile, { force: true })
+        }
+      }
+    })
+    await store.add('k', 'b1', person('mine'))
+    expect(taken).toBe(true)
+    expect(JSON.parse(underForeign!).b1.map((c: Claim) => c.text)).toEqual(['note0'])
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0', 'mine'])
+  })
+
   it('a transaction that cannot keep its lock after every try fails with the lock error, its added note taken back', async () => {
     const store = createAnnotationStore(dir)
     await store.add('k', 'b1', person('note0'))
@@ -277,7 +311,7 @@ describe('NIT R5-4: a marked key ignores the hand-set mark of a file from before
 })
 
 describe('the undo an add answers', () => {
-  it('takes back only the note it added, and puts back what the add evicted, the old runtime-names claim included', async () => {
+  it('takes back only the note it added and puts back the runtime-names claim it replaced, never a note the cap evicted (DSN R5, T2)', async () => {
     const store = createAnnotationStore(dir)
     for (const t of notes(1, 20)) await store.add('k', 'b1', person(t))
     await store.add('k', 'b1', person(runtimeText(['old'])))
@@ -287,7 +321,8 @@ describe('the undo an add answers', () => {
     expect(typeof undoNote).toBe('function')
     await undoNames!()
     await undoNote!()
-    expect((await store.list('k')).b1.map((c) => c.text)).toEqual([...notes(1, 20), runtimeText(['old'])])
+    // note1 went past the cap when note21 was added; the undo never brings it back (a compensating intent, no snapshot).
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual([...notes(2, 20), runtimeText(['old'])])
     expect((await store.list('k')).b2).toEqual([person('another')])
     // Run again, it changes nothing.
     const before = await readFile(annotationsFile('k'), 'utf8')
@@ -301,5 +336,247 @@ describe('the undo an add answers', () => {
     const undo = await store.add('k', 'b1', person('once'))
     await undo!()
     expect(await store.list('k')).toEqual({ b1: [person('once')] })
+  })
+})
+
+describe('the fence, each way a transaction is lost', () => {
+  it('a file another writer changed between the first fence and the rename loses the write, and the redo keeps both notes', async () => {
+    await createAnnotationStore(dir).add('k', 'b1', person('note0'))
+    let changed = false
+    const store = createAnnotationStore(dir, {
+      writeFileAtomic: async (file, text, write) => {
+        if (!changed) {
+          changed = true
+          await writeFile(file, JSON.stringify({ b1: [person('note0'), person('foreign')] }))
+        }
+        await write(file, text)
+      }
+    })
+    await store.add('k', 'b1', person('mine'))
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0', 'foreign', 'mine'])
+  })
+
+  it('a file the fence cannot read loses the write, and the redo lands once it reads again', async () => {
+    await createAnnotationStore(dir).add('k', 'b1', person('note0'))
+    let writing = false
+    let failed = 0
+    const store = createAnnotationStore(dir, {
+      readFile: async (file, enc) => {
+        if (writing && failed === 0 && file === annotationsFile('k')) {
+          failed++
+          throw Object.assign(new Error('EIO'), { code: 'EIO' })
+        }
+        return readFile(file, enc)
+      },
+      writeFileAtomic: async (file, text, write) => {
+        writing = true
+        try { await write(file, text) } finally { writing = false }
+      }
+    })
+    await store.add('k', 'b1', person('mine'))
+    expect(failed).toBe(1)
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0', 'mine'])
+  })
+
+  it("a design's world file another writer changed before the save's rename loses the save, and the redo saves the design again", async () => {
+    await createWorldStore(dir).save(design({}))
+    const annotations = createAnnotationStore(dir)
+    const inner = createWorldStore(dir)
+    let saves = 0
+    const store = withAnnotations({
+      ...inner,
+      save: async (doc, opts) => {
+        if (++saves === 1) await writeFile(worldFile(), JSON.stringify(design({}, { title: 'written by another process' })))
+        return inner.save(doc, opts)
+      }
+    }, annotations)
+    await store.save(design({}, { title: 'mine' }))
+    expect(saves).toBe(2)
+    expect((await raw()).title).toBe('mine')
+  })
+
+  it("a design's world file that cannot be read back after its write loses the transaction: the next fence starts it again", async () => {
+    await createWorldStore(dir).save(design({}))
+    let failDesign = false
+    const annotations = createAnnotationStore(dir, {
+      readFile: async (file, enc) => {
+        if (failDesign && file === worldFile()) throw Object.assign(new Error('EIO'), { code: 'EIO' })
+        return readFile(file, enc)
+      }
+    })
+    let runs = 0
+    await annotations.transact('design:x', async (tx) => {
+      runs++
+      failDesign = runs === 1
+      await tx.track()
+      failDesign = false
+      await tx.fence()
+    })
+    expect(runs).toBe(2)
+    // One that cannot be read back and is then gone is lost all the same: an unread file is not a missing one.
+    let goneRuns = 0
+    await annotations.transact('design:x', async (tx) => {
+      goneRuns++
+      if (goneRuns === 1) {
+        failDesign = true
+        await tx.track()
+        failDesign = false
+        await rm(worldFile(), { force: true })
+      }
+      await tx.fence()
+    })
+    expect(goneRuns).toBe(2)
+    // Any other key has no world file to follow: nothing is read, and nothing lost.
+    await annotations.transact('k', async (tx) => {
+      await tx.track()
+      await tx.fence()
+    })
+  })
+
+  it("two saves of a design in one transaction: the first save's own write does not lose the second", async () => {
+    await createWorldStore(dir).save(design({}))
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(createWorldStore(dir), annotations)
+    let runs = 0
+    await store.transact!('design:x', async () => {
+      runs++
+      await store.save(design({}, { title: 'first' }))
+      await store.save(design({}, { title: 'second' }))
+    })
+    expect(runs).toBe(1)
+    expect((await raw()).title).toBe('second')
+  })
+
+  it("a design's world file that cannot be read when the transaction begins refuses it with the read-failure words, writing nothing", async () => {
+    await createWorldStore(dir).save(design({}))
+    const annotations = createAnnotationStore(dir, {
+      readFile: async (file, enc) => {
+        if (file === worldFile()) throw Object.assign(new Error('EIO'), { code: 'EIO' })
+        return readFile(file, enc)
+      }
+    })
+    const warn = quiet()
+    await expect(annotations.add('design:x', 'b1', person('mine'))).rejects.toMatchObject({ name: 'WorldReadError', message: WORLD_READ_FAILED })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('a design could not be read, so nothing was changed'))
+    warn.mockRestore()
+    expect(await exists(annotationsFile())).toBe(false)
+  })
+
+  it('a work that fails after an add takes the add back, and a take-back that fails too leaves the work its own error', async () => {
+    await createAnnotationStore(dir).add('k', 'b1', person('note0'))
+    let fail = false
+    const store = createAnnotationStore(dir, {
+      readFile: async (file, enc) => {
+        if (fail && file === annotationsFile('k')) throw Object.assign(new Error('EIO'), { code: 'EIO' })
+        return readFile(file, enc)
+      }
+    })
+    const warn = quiet()
+    await expect(store.transact('k', async () => {
+      await store.add('k', 'b1', person('mine'))
+      fail = true
+      throw new Error('the work failed')
+    })).rejects.toThrow('the work failed')
+    warn.mockRestore()
+    fail = false
+    // Best effort: the take-back could not read the file, so the add stays.
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0', 'mine'])
+  })
+
+  it('a lock taken over at every write fails with the lock error after every try, writing nothing, when nothing was added to take back', async () => {
+    await createAnnotationStore(dir).add('k', 'b1', person('note0'))
+    const lockFile = `${annotationsFile('k')}.lock`
+    let writes = 0
+    const store = createAnnotationStore(dir, {
+      writeFileAtomic: async (file, text, write) => {
+        writes++
+        await writeFile(lockFile, 'taken over by another')
+        await write(file, text)
+      },
+      // The other holder lets go at the next pause, so each try gets the lock again, and loses it again at its write.
+      sleep: async () => {
+        if ((await readFile(lockFile, 'utf8').catch(() => '')) === 'taken over by another') await rm(lockFile, { force: true })
+      }
+    })
+    await expect(store.add('k', 'b1', person('mine'))).rejects.toBeInstanceOf(AnnotationLockError)
+    expect(writes).toBe(3)
+    expect((await store.list('k')).b1.map((c) => c.text)).toEqual(['note0'])
+  })
+})
+
+describe('the undo, when the store moved on', () => {
+  it('an undo runs once: called again after the same note was added once more, it leaves that add alone', async () => {
+    const store = createAnnotationStore(dir)
+    const undo = await store.add('k', 'b1', person('mine'))
+    await undo!()
+    await store.add('k', 'b1', person('mine'))
+    await undo!()
+    expect(await store.list('k')).toEqual({ b1: [person('mine')] })
+  })
+
+  it('an undo whose claim is gone from the store writes nothing, and is done', async () => {
+    const store = createAnnotationStore(dir)
+    const undo = await store.add('k', 'b1', person('mine'))
+    await store.add('k', 'b2', person('other'))
+    await writeFile(annotationsFile('k'), JSON.stringify({ b2: [person('other')] }))
+    const before = await readFile(annotationsFile('k'), 'utf8')
+    await undo!()
+    expect(await readFile(annotationsFile('k'), 'utf8')).toBe(before)
+  })
+
+  it('an undo of a note added again to the part it was copied away from hides it there again, keeping the copy', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'a', person('X'))
+    await store.add('k', 'a', person('Y'))
+    await store.copyRenamed('k', { a: 'b' })
+    expect(await store.list('k')).toEqual({ b: [person('X'), person('Y')] })
+    const undoX = await store.add('k', 'a', person('X'))
+    expect(await store.list('k')).toEqual({ a: [person('X')], b: [person('X'), person('Y')] })
+    await undoX!()
+    expect(await store.list('k')).toEqual({ b: [person('X'), person('Y')] })
+    // Hidden again, not dropped: the file keeps it under the old id, as the rename left it.
+    expect((JSON.parse(await readFile(annotationsFile('k'), 'utf8')) as Record<string, Claim[]>).a.map((c) => c.text).sort()).toEqual(['X', 'Y'])
+    // A part whose every claim was copied away: the undo starts its record again.
+    await store.add('k', 'c', person('Z'))
+    await store.copyRenamed('k', { c: 'd' })
+    const undoZ = await store.add('k', 'c', person('Z'))
+    expect((await store.list('k')).c).toEqual([person('Z')])
+    await undoZ!()
+    expect((await store.list('k')).c).toBeUndefined()
+    expect((await store.list('k')).d).toEqual([person('Z')])
+    // Hidden again by a rename before the undo runs: nothing to write.
+    const undoAgain = await store.add('k', 'a', person('X'))
+    await store.copyRenamed('k', { a: 'b' })
+    const before = await readFile(`${annotationsFile('k')}.moved`, 'utf8')
+    await undoAgain!()
+    expect(await readFile(`${annotationsFile('k')}.moved`, 'utf8')).toBe(before)
+    expect(await store.list('k')).toEqual({ b: [person('X'), person('Y')], d: [person('Z')] })
+  })
+})
+
+describe('the move adds a service-names claim only to a part that holds none', () => {
+  it("a design's names for a part the store names already are not added", async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('design:x', 'b1', person(runtimeText(['stored'])))
+    await store.addMissing('design:x', { b1: [person(runtimeText(['from the file'])), agent('a note')] })
+    expect(await store.listStrict('design:x')).toEqual({ byItem: { b1: [agent('a note'), person(runtimeText(['stored']))] }, migrated: true })
+  })
+})
+
+describe('loadForWrite through the design wrapper', () => {
+  it("shows the store's notes as load does, from the store's own loadForWrite, and a store without one is read with load", async () => {
+    await createWorldStore(dir).save(design({ b1: [agent('in the file')] }))
+    const annotations = createAnnotationStore(dir)
+    const inner = createWorldStore(dir)
+    const loadForWrite = vi.fn(inner.loadForWrite!)
+    const store = withAnnotations({ ...inner, loadForWrite }, annotations)
+    expect(on((await store.loadForWrite!('design:x'))!, 'b1')).toEqual(['in the file'])
+    expect(loadForWrite).toHaveBeenCalledWith('design:x')
+    const load = vi.fn(inner.load)
+    const plain = withAnnotations({ ...inner, load, loadForWrite: undefined }, annotations)
+    expect(on((await plain.loadForWrite!('design:x'))!, 'b1')).toEqual(['in the file'])
+    await plain.save((await plain.load('design:x'))!)
+    expect(await annotations.listStrict('design:x')).toEqual({ byItem: { b1: [agent('in the file')] }, migrated: true })
+    expect(load.mock.calls.length).toBeGreaterThanOrEqual(3)
   })
 })

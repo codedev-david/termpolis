@@ -11,7 +11,7 @@ import type { Claim, WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { districtRadius } from '../../src/main/world/layout'
 import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/sources'
-import { createAnnotationStore, NO_PART, withAnnotations, type AnnotationStore } from '../../src/main/world/annotations'
+import { AnnotationFenceLost, createAnnotationStore, NO_PART, withAnnotations, type AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
 import { runtimeText } from '../../src/shared/world/runtimeNames'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
@@ -1030,7 +1030,7 @@ describe('a design file leaves out the notes the annotation store holds, so the 
     expect(await annotations.list('design:id1')).toEqual({})
   })
 
-  it('a design file from before, carrying 3 agent notes, 1 of them not in the store, moves that one into the store, and the next save leaves all 3 out', async () => {
+  it('a design file from before, carrying 3 agent notes, 1 of them not in the store, shows all 3, and the next design change moves that one into the store and leaves all 3 out', async () => {
     const real = createWorldStore(dir)
     const base = await stored(real)
     const annotations = createAnnotationStore(dir)
@@ -1041,8 +1041,10 @@ describe('a design file leaves out the notes the annotation store holds, so the 
     const store = withAnnotations(real, annotations)
     const { designer } = setup(noRun, { store, annotations })
     expect(notesOn((await store.load('design:id1')) as WorldDoc, 'api')).toEqual(['Calls the bank.', 'Retries twice.', 'Logs each order.'])
-    expect((await annotations.list('design:id1')).api).toEqual([a, b, c])
+    // A load writes nothing (DSN R5, T3): the move happens in the next write's transaction.
+    expect((await annotations.list('design:id1')).api).toEqual([a, b])
     await designer.propose({ key: 'design:id1' }, [{ op: 'rename', id: 'db', name: 'Ledger' }])
+    expect((await annotations.list('design:id1')).api).toEqual([a, b, c])
     expect(notesOn(await designFile(), 'api')).toEqual([])
     const again = (await withAnnotations(createWorldStore(dir), createAnnotationStore(dir)).load('design:id1')) as WorldDoc
     expect(notesOn(again, 'api')).toEqual(['Calls the bank.', 'Retries twice.', 'Logs each order.'])
@@ -1161,27 +1163,75 @@ describe('a person\'s service names, a note added twice and a note read back aft
     expect((await designFile()).runtimeNames.api).toBeUndefined()
   })
 
-  it("a person's service names whose store write and restoring save both fail give the save-failed words, not the restore's error", async () => {
+  it("a person's service names whose design save fails take back only the claim they added, and a take-back that fails too still gives the save-failed words (DSN R5, T2)", async () => {
     const { store, annotations } = await app()
-    const save = vi.fn(store.save).mockImplementationOnce(store.save).mockRejectedValueOnce(new Error('EIO on restore'))
-    const failing = setup(noRun, { store: { ...store, save }, annotations: { add: async () => { throw new Error('EIO') }, listStrict: annotations.listStrict } })
+    await annotations.add('design:id1', 'api', agentNote('Calls the bank.'))
+    const save = vi.fn(store.save).mockRejectedValue(new Error('EIO'))
+    const failing = setup(noRun, { store: { ...store, save }, annotations })
     expect(await failure(failing.designer.annotate('design:id1', 'api', names('other')))).toBe(DESIGN_SAVE_FAILED)
-    expect(save).toHaveBeenCalledTimes(2)
-    expect(await annotations.list('design:id1')).toEqual({})
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(await annotations.list('design:id1')).toEqual({ api: [agentNote('Calls the bank.')] })
+    // A store with no transaction of its own: annotate's own take-back removes the claim.
+    const plain = setup(noRun, { store: { ...store, save, transact: undefined }, annotations })
+    expect(await failure(plain.designer.annotate('design:id1', 'api', names('other')))).toBe(DESIGN_SAVE_FAILED)
+    expect(await annotations.list('design:id1')).toEqual({ api: [agentNote('Calls the bank.')] })
+    // An add that hands back no undo: annotate has nothing to take back itself, and the store's transaction still does.
+    const noUndo: typeof annotations.add = async (key, itemId, claim) => { await annotations.add(key, itemId, claim) }
+    const bare = setup(noRun, { store: { ...store, save }, annotations: { ...annotations, add: noUndo } })
+    expect(await failure(bare.designer.annotate('design:id1', 'api', agentNote('Taken back by the store.')))).toBe(DESIGN_SAVE_FAILED)
+    expect(await annotations.list('design:id1')).toEqual({ api: [agentNote('Calls the bank.')] })
+    const add: typeof annotations.add = async (key, itemId, claim) => {
+      await annotations.add(key, itemId, claim)
+      return async () => {
+        throw new Error('EIO on the take-back')
+      }
+    }
+    const both = setup(noRun, { store: { ...store, save }, annotations: { ...annotations, add } })
+    expect(await failure(both.designer.annotate('design:id1', 'api', names('other')))).toBe(DESIGN_SAVE_FAILED)
   })
 
-  it('a tidying save that fails after the names are stored still answers them, and they show from the file or the store', async () => {
+  it("a person's service names are saved by one design save after the store's claim, shown from the store, and left out of the file", async () => {
     const real = createWorldStore(dir)
     await stored(real)
     const annotations = createAnnotationStore(dir)
     const inner = withAnnotations(real, annotations)
-    const save = vi.fn(inner.save).mockImplementationOnce(inner.save).mockRejectedValueOnce(new Error('EIO'))
+    const save = vi.fn(inner.save)
     const { designer } = setup(noRun, { store: { ...inner, save }, annotations })
     const named = await designer.annotate('design:id1', 'api', names('orders-api'))
-    expect(save).toHaveBeenCalledTimes(2)
+    expect(save).toHaveBeenCalledTimes(1)
     expect(named.runtimeNames.api).toEqual(['orders-api'])
-    expect((await designFile()).runtimeNames.api).toEqual(['orders-api'])
+    expect((await designFile()).runtimeNames.api).toBeUndefined()
     expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+  })
+
+  it("an annotate whose design or notes read finds its transaction lost starts again from a fresh read, never reports it as failed words (DSN R5, T1)", async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const inner = withAnnotations(real, annotations)
+    const load = vi.fn(inner.load).mockRejectedValueOnce(new AnnotationFenceLost())
+    const listStrict = vi.fn(annotations.listStrict).mockRejectedValueOnce(new AnnotationFenceLost())
+    const { designer } = setup(noRun, { store: { ...inner, load }, annotations: { ...annotations, listStrict } })
+    const named = await designer.annotate('design:id1', 'api', names('orders-api'))
+    expect(named.runtimeNames.api).toEqual(['orders-api'])
+    // The load lost once, then the store read lost once: the work ran three times, the last one whole.
+    expect(load.mock.calls.filter(([k]) => k === 'design:id1').length).toBeGreaterThanOrEqual(3)
+    expect((await annotations.list('design:id1')).api).toEqual([names('orders-api')])
+    expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+  })
+
+  it('an annotate whose design or notes cannot be read gives the read-failure words (DSN R5, T4)', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const inner = withAnnotations(real, annotations)
+    const load = vi.fn(inner.load).mockRejectedValueOnce(new WorldReadError('WORLD_READ_FAILED'))
+    const listStrict = vi.fn(annotations.listStrict).mockRejectedValueOnce(new WorldReadError('ANNOTATIONS_READ_FAILED'))
+    const unreadDesign = setup(noRun, { store: { ...inner, load }, annotations })
+    expect(await failure(unreadDesign.designer.annotate('design:id1', 'api', names('orders-api')))).toBe(WORLD_READ_FAILED)
+    const unreadNotes = setup(noRun, { store: inner, annotations: { ...annotations, listStrict } })
+    expect(await failure(unreadNotes.designer.annotate('design:id1', 'api', names('orders-api')))).toBe(WORLD_READ_FAILED)
+    expect(await annotations.list('design:id1')).toEqual({})
   })
 
   it('the same note annotated twice is stored and shown once, and takes no second slot under the cap (probe :125)', async () => {

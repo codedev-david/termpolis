@@ -7,6 +7,7 @@ import {
   type WorldDesigner, type WorldIpcClient, type WorldSourcesDeps
 } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
+import { WORLD_READ_FAILED, WorldReadError } from '../../src/main/world/worldStore'
 import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
@@ -476,7 +477,7 @@ describe('registerWorldIpc sources handlers', () => {
     }
   })
 
-  it('world:design-get answers the stored design; an unknown, bad or unreadable key is not found', async () => {
+  it('world:design-get answers the stored design; an unknown or bad key, or a failed open, is not found, and one that cannot be read says so (DSN R5, T4)', async () => {
     const s = setup()
     expect(await s.invoke('world:design-get', { key: 'design:d1' })).toEqual({ success: true, data: DOC })
     expect(await s.invoke('world:design-get', { key: 'design:zz' })).toEqual({ success: false, error: DESIGN_NOT_FOUND })
@@ -485,6 +486,8 @@ describe('registerWorldIpc sources handlers', () => {
     }
     ;(s.deps.designs.load as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:design-get', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_NOT_FOUND })
+    ;(s.deps.designs.load as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new WorldReadError('ANNOTATIONS_READ_FAILED'))
+    expect(await s.invoke('world:design-get', { key: 'design:d1' })).toEqual({ success: false, error: WORLD_READ_FAILED })
   })
 })
 

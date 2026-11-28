@@ -37,9 +37,14 @@ export interface WorldStore {
   load(projectKey: string): Promise<WorldDoc | null>
   /** Stores a world. Over a newer Termpolis's world it writes nothing and marks the doc savedByNewer: a compile's world
    *  (`compiled`) is kept in memory, what a load then shows, so the world is compiled once per run (sign-off #16); any
-   *  other save is refused and drops that copy, so the next load shows the newer file (DSN R4, D4-2). A file this store
+   *  other save is refused and leaves that copy as it was (DSN R4 D4-2, DSN R5 T6). A file this store
    *  has not loaded is loaded first, so a save rejects (WorldReadError) wherever that load would. */
   save(doc: WorldDoc, opts?: WorldSaveOptions): Promise<void>
+  /** DSN R5 (T3): load for a write about to happen. A design's load only reads; this one may also make the backup or the
+   *  move-aside a save would make first. Elsewhere it is load. */
+  loadForWrite?(projectKey: string): Promise<WorldDoc | null>
+  /** DSN R5: runs `work` as the one transaction on the world's notes, claims and names (withAnnotations). */
+  transact?<T>(projectKey: string, work: (tx: StoreTx) => Promise<T>): Promise<T>
   labelCache: LabelCache
   /** The project's stage cache; null when there is none or it has the wrong shape. Never rejects. */
   loadStages?(projectKey: string): Promise<StageCache | null>
@@ -47,9 +52,19 @@ export interface WorldStore {
   saveStages?(projectKey: string, cache: StageCache): Promise<void>
 }
 
-/** How a world is saved: `compiled` for the world a compile made (WorldStore.save). */
+/** How a world is saved: `compiled` for the world a compile made (WorldStore.save), and `fence`, asked just before the
+ *  rename (after the look for a newer world), which rejects to stop the write: a transaction's check that it still holds
+ *  its lock and the files it read (DSN R5, T1). */
 export interface WorldSaveOptions {
   compiled?: boolean
+  fence?: () => Promise<void>
+}
+
+/** DSN R5: a transaction's hold on the files it read. `fence` rejects (AnnotationFenceLost) once its lock was lost or a file
+ *  changed under it; `track` takes the design's world file as the transaction just wrote it. */
+export interface StoreTx {
+  fence(): Promise<void>
+  track(): Promise<void>
 }
 
 export interface WorldStoreDeps {
@@ -253,7 +268,7 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     const before = loading.get(name)
     const run = (async () => {
       if (before) await before.catch(ignore)
-      return loadNow(name, beforeSave)
+      return loadNow(name, beforeSave, projectKey.startsWith('design:'))
     })()
     loading.set(name, run)
     try {
@@ -263,8 +278,12 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     }
   }
 
-  async function loadNow(name: string, beforeSave: boolean): Promise<WorldDoc | null> {
+  async function loadNow(name: string, beforeSave: boolean, design: boolean): Promise<WorldDoc | null> {
     const file = join(folder, name)
+    // DSN R5 (T3, T5): a design's load that is not a save's only reads. A backup or a move-aside is a write's, so a design
+    // that leaves items out is handed out unmarked (the save's own load backs it up first), and one that does not read is
+    // reported, never moved aside.
+    const readOnly = design && !beforeSave
     // Looked up before the read: a file changed in between is read again by the next save, never taken as unchanged.
     const at = await look(file)
     let text: string
@@ -298,6 +317,10 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     if (view) {
       // A later save writes the doc without the items left out, so the file as it is goes into the backups first,
       // untouched (once per distinct content). Without that backup the world is not handed out to be saved over.
+      if (view.dropped && readOnly) {
+        newerOnDisk.delete(name)
+        return upgradeSavedWords(view.doc)
+      }
       if (view.dropped && !(await copyAside(file, { now, sleep }))) refuse(name, 'left items out and could not be backed up first')
       ours()
       // A word an older compiler gave wrongly (TCP for a message port) is brought up to date as the world loads.
@@ -305,6 +328,7 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
     }
     // Kept for inspection. A broken file that cannot be moved aside is not read as absent: a compile would then save
     // over it. Until it can be moved aside (each load and save tries again) or reads, loads and saves are refused.
+    if (readOnly) refuse(name, 'does not read; a save moves it aside')
     if (!(await moveAside(file, { now, rename, sleep }))) refuse(name, 'does not read and could not be moved aside, so nothing is saved over it')
     ours()
     return null
@@ -312,6 +336,7 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
 
   return {
     load: (projectKey) => load(projectKey),
+    loadForWrite: (projectKey) => load(projectKey, true),
 
     async save(doc, opts) {
       const name = worldFileName(doc.projectKey)
@@ -320,10 +345,9 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       await loading.get(name)?.catch(ignore)
       if (!newerOnDisk.has(name)) await load(doc.projectKey, true)
       if (newerOnDisk.get(name) === true) {
-        // A compile's world is what a load shows until the next restart (#16). Any other save is refused, and drops that
-        // copy too (DSN R4, D4-2): the newer-file rule drops the copy in memory, so the next load shows what is on disk.
+        // A compile's world is what a load shows until the next restart (#16). Any other save is refused (DSN R4, D4-2).
+        // DSN R5 (T6): a refused save leaves that copy as it was.
         if (opts?.compiled === true) shadow.set(name, structuredClone(clean))
-        else shadow.delete(name)
         // The caller's doc is marked as well, so a compile that hands it on says what load would.
         doc.savedByNewer = true
         return
@@ -333,8 +357,8 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       // DSN Round 1, item 4: another Termpolis, a newer one, may have saved this world since this store last read or wrote
       // it. Once the temp copy is written, just before the rename, the file is looked at again: read only when its size or
       // modified time changed since then (DSN R2, F4). A newer world found there is kept as it is, and this copy is not
-      // kept in memory either (DSN R2, F2): a change refused there never shows later in the session, and the next load
-      // shows the newer file, as opening it afresh would. DSN R4 (D4-1): that look comes before every try of the rename,
+      // kept in memory either (DSN R2, F2): a change refused there never shows later in the session. A compile's copy kept
+      // before stays as it was (DSN R5, T6). Then the caller's fence, if any, is asked (DSN R5, T1). DSN R4 (D4-1): that look comes before every try of the rename,
       // a try after a held file's wait included, and a load that found a newer file meanwhile (during the temp copy's
       // look, the file's, its read, or the wait) refuses the save too, asked last with no wait before the rename.
       // Two gaps are accepted. A newer file of the same size and modified time as this store last saw is not read, so it
@@ -344,7 +368,6 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       let wrote = null as FileSeen | null
       const refused = (): false => {
         newerOnDisk.set(name, true)
-        shadow.delete(name)
         doc.savedByNewer = true
         wrote = null
         return false
@@ -352,14 +375,19 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       await writeAtomic(file, JSON.stringify(clean), async (tmp) => {
         // The rename keeps the temp copy's size and modified time: what the file will have once it is in place.
         wrote = await look(tmp)
-        if (same(await look(file), seen.get(name))) return true
+        if (same(await look(file), seen.get(name))) {
+          await opts?.fence?.()
+          return true
+        }
         let text: string | null = null
         try {
           text = await readText(file)
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
         }
-        return text !== null && isNewerWorld(parseOrUndefined(text)) ? refused() : true
+        if (text !== null && isNewerWorld(parseOrUndefined(text))) return refused()
+        await opts?.fence?.()
+        return true
       }, () => newerOnDisk.get(name) !== true || refused())
       if (wrote) seen.set(name, wrote)
       else seen.delete(name)

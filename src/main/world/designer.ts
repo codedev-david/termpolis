@@ -14,13 +14,13 @@ import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessEx
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
-import { cleanClaim, hasPart, mergeDesign, NO_PART, stripNotes, withClaim, type AnnotationStore } from './annotations'
+import { AnnotationFenceLost, cleanClaim, hasPart, mergeDesign, NO_PART, stripNotes, withClaim, type AnnotationStore } from './annotations'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
 import { districtRadius, layoutWorld, placeBuilding } from './layout'
 import type { SourceRegistry, WorldSource } from './sources'
-import { WORLD_SAVED_BY_NEWER, type WorldStore } from './worldStore'
+import { WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from './worldStore'
 
 export interface DesignerDeps {
   exec: (req: ExecRequest, deps: ExecDeps) => Promise<ExecResult>
@@ -35,7 +35,7 @@ export interface DesignerDeps {
   runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
   newId(): string
   /** Where a design's confirmations live: the designer adds them, so every write to a design is made under its lock (D1). */
-  annotations: Pick<AnnotationStore, 'add' | 'listStrict'>
+  annotations: Pick<AnnotationStore, 'add' | 'listStrict'> & Partial<Pick<AnnotationStore, 'transact'>>
   now?(): number
   timeoutMs?: number
 }
@@ -320,29 +320,49 @@ export function createDesigner(deps: DesignerDeps): Designer {
   const save = async (doc: WorldDoc): Promise<void> => {
     try {
       await deps.store.save(doc)
-    } catch {
+    } catch (err) {
+      // A transaction that lost its hold starts again (DSN R5, T1): the fence's error goes to it as it is.
+      if (err instanceof AnnotationFenceLost) throw err
       throw new DesignFailure(DESIGN_SAVE_FAILED)
     }
     if (doc.savedByNewer) throw new DesignFailure(WORLD_SAVED_BY_NEWER)
   }
 
-  /** The stored design for a key, or a DesignFailure (bad key or none stored: not found; a read error: open failed). */
+  /** The stored design for a key, or a DesignFailure (bad key or none stored: not found; a design or its notes that cannot
+   *  be read: the read-failure words, DSN R5 T4; any other error: open failed). */
   const open = async (key: string): Promise<{ id: string; doc: WorldDoc }> => {
     const m = DESIGN_KEY_RE.exec(key)
     if (!m) throw new DesignFailure(DESIGN_NOT_FOUND)
     let doc: WorldDoc | null
     try {
       doc = await deps.store.load(key)
-    } catch {
-      throw new DesignFailure(DESIGN_OPEN_FAILED)
+    } catch (err) {
+      if (err instanceof AnnotationFenceLost) throw err
+      throw new DesignFailure(err instanceof WorldReadError ? WORLD_READ_FAILED : DESIGN_OPEN_FAILED)
     }
     if (!doc) throw new DesignFailure(DESIGN_NOT_FOUND)
     return { id: m[1], doc }
   }
 
   /**
+   * DSN R5: runs `work` as the one transaction on the design's notes, claims and names, when the store has one: its writes
+   * are fenced, and a lost hold starts it again from a fresh read. A failure outside a DesignFailure is the save's (the
+   * lock that could not be had included), or, for a design or notes that cannot be read, the read-failure words.
+   */
+  const inTx = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    if (!deps.store.transact) return work()
+    try {
+      return await deps.store.transact(key, work)
+    } catch (err) {
+      if (err instanceof DesignFailure) throw err
+      throw new DesignFailure(err instanceof WorldReadError ? WORLD_READ_FAILED : DESIGN_SAVE_FAILED)
+    }
+  }
+
+  /**
    * Load, patch and (when anything applied) save one stored design. Callers run it under the design's
-   * lock (designLock), so two writers never patch the same stale copy and the last save never drops one.
+   * lock (designLock) and in its transaction (inTx), so two writers never patch the same stale copy and the last save
+   * never drops one.
    * `hold` sees the patch first: true leaves the design as it is, and out is the stored design (D3).
    */
   const mutate = async (
@@ -402,7 +422,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
         stillMine(key, mine)
         unchangedSince(doc, current, reply.ops)
       }
-      const { patch, out } = await designLock(key, () => mutate(key, reply.ops, check, (p) => p.removed.length > 0))
+      const { patch, out } = await designLock(key, () => inTx(key, () => mutate(key, reply.ops, check, (p) => p.removed.length > 0)))
       const next = summarize(summary, message, reply.text)
       const skipped = patch.skipped.length + reply.dropped
       const result: DesignRefineResult = { doc: out, text: reply.text, applied: patch.applied, skipped, summary: next, tokens: reply.tokens }
@@ -422,53 +442,61 @@ export function createDesigner(deps: DesignerDeps): Designer {
         stillMine(key, h.mine)
         unchangedSince(h.read, current, h.ops)
       }
-      const { patch, out } = await designLock(key, () => mutate(key, h.ops, check))
+      const { patch, out } = await designLock(key, () => inTx(key, () => mutate(key, h.ops, check)))
       // tokens 0: the agent's run was counted when the refine answered.
       return { doc: out, text: h.text, applied: patch.applied, skipped: patch.skipped.length + h.dropped, summary: h.summary, tokens: 0 }
     },
 
     annotate(key, itemId, claim) {
       return designLock(key, async () => {
-        const doc = writable((await open(key)).doc)
-        if (!hasPart(doc, itemId)) throw new DesignFailure(NO_PART)
         const clean = cleanClaim(claim)
-        if (clean === null) throw new DesignFailure(DESIGN_SAVE_FAILED)
-        // The design file holds none of the notes the store holds, the new one included (DSN R3-2): the store's cap and
-        // a failed store write decide what shows. What it holds now is left out of the answer's base too, so a note the
-        // add below drops past the cap is not answered. Read strictly (DSN R4, D4-7): notes that cannot be read are not
-        // taken for none.
-        let before: Record<string, Claim[]>
-        try {
-          before = (await deps.annotations.listStrict(key)).byItem
-        } catch {
-          throw new DesignFailure(DESIGN_SAVE_FAILED)
-        }
-        // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
-        const generatedAt = Math.max(now(), doc.generatedAt + 1)
-        // A person's service names go in the file first, as a design edit's would (DSN R4, D4-5), so names the design set
-        // since never win over them; once the claim below is stored with the same names, a save leaves them out again.
-        const runtime = isRuntimeText(clean.text)
-        const saved = { ...(runtime ? { ...doc, runtimeNames: { ...doc.runtimeNames, [itemId]: namesOfRuntimeText(clean.text) } } : doc), generatedAt }
-        // The design is saved first, the note stored after (DSN Round 1, item 9): a save that fails, or that finds a
-        // newer Termpolis saved the design, stores no note, so none turns up on the next load after a failure was shown.
-        await save(saved)
-        try {
-          await deps.annotations.add(key, itemId, clean)
-        } catch {
-          // The names saved above were never stored: the design goes back to the ones it showed.
-          if (runtime) await save({ ...doc, generatedAt: generatedAt + 1 }).catch(() => undefined)
-          throw new DesignFailure(DESIGN_SAVE_FAILED)
-        }
-        // The store holds the names now: the file leaves them out (DSN R3-2). Best effort: a file that keeps them shows them
-        // all the same, for they equal the stored claim's.
-        if (runtime) await save(saved).catch(() => undefined)
-        const base = stripNotes(saved, before)
+        // One transaction (DSN R5, T2): the store's claim first, the design file second. A save that fails, or that finds
+        // a newer Termpolis saved the design, takes back only what the add added (its undo), never a snapshot, so another
+        // process's edit stays and nothing reported failed shows after a reload.
+        const done = await inTx(key, async () => {
+          const doc = writable((await open(key)).doc)
+          if (!hasPart(doc, itemId)) throw new DesignFailure(NO_PART)
+          if (clean === null) throw new DesignFailure(DESIGN_SAVE_FAILED)
+          // The design file holds none of the notes the store holds, the new one included (DSN R3-2). What it holds now is
+          // left out of the answer's base too, so a note the add drops past the cap is not answered. Read strictly (DSN R4,
+          // D4-7): notes that cannot be read are not taken for none.
+          let before: Record<string, Claim[]>
+          try {
+            before = (await deps.annotations.listStrict(key)).byItem
+          } catch (err) {
+            if (err instanceof AnnotationFenceLost) throw err
+            throw new DesignFailure(err instanceof WorldReadError ? WORLD_READ_FAILED : DESIGN_SAVE_FAILED)
+          }
+          // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
+          const generatedAt = Math.max(now(), doc.generatedAt + 1)
+          // A person's service names go in the file too, as a design edit's would (DSN R4, D4-5); the save leaves them out
+          // when they equal the claim the store now holds, and keeps them when the store does not.
+          const saved = isRuntimeText(clean.text)
+            ? { ...doc, runtimeNames: { ...doc.runtimeNames, [itemId]: namesOfRuntimeText(clean.text) }, generatedAt }
+            : { ...doc, generatedAt }
+          let undo: (() => Promise<void>) | void
+          try {
+            undo = await deps.annotations.add(key, itemId, clean)
+          } catch (err) {
+            if (err instanceof AnnotationFenceLost) throw err
+            throw new DesignFailure(DESIGN_SAVE_FAILED)
+          }
+          try {
+            await save(saved)
+          } catch (err) {
+            if (undo) await undo().catch(() => undefined)
+            throw err
+          }
+          return { saved, before, clean }
+        })
+        // The answer is read last, after the transaction: what the store holds then.
+        const base = stripNotes(done.saved, done.before)
         try {
           return mergeDesign(base, (await deps.annotations.listStrict(key)).byItem)
         } catch {
           // The note is stored: notes that cannot be read back answer with the ones read before and this one, as the
           // store keeps them (once, newest MAX_ANNOTATIONS_PER_ITEM).
-          return mergeDesign(base, withClaim(before, itemId, clean))
+          return mergeDesign(base, withClaim(done.before, itemId, done.clean))
         }
       })
     },
@@ -477,7 +505,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       const list = ops as DesignOp[]
       if ('key' in target) {
         const key = target.key
-        const { patch } = await designLock(key, () => mutate(key, list, undefined, refuseRemovals))
+        const { patch } = await designLock(key, () => inTx(key, () => mutate(key, list, undefined, refuseRemovals)))
         return { key, applied: patch.applied, skipped: patch.skipped.length }
       }
       const id = deps.newId()
