@@ -63,11 +63,12 @@ describe('exit: agy out of the terminal, by its own /exit', () => {
   })
 
   it('asks the user when it can\'t tell whether agy runs, and takes their word with its hint', async () => {
-    const t = new FakeTerminal(agy({ start: 'blank' }))
+    // No word from the OS (HOLD-C R3: with it, the OS's word decides, not the user's).
+    const t = new FakeTerminal(agy({ start: 'blank', os: 'none' }))
     expect(await step(t, {}).p).toEqual({ kind: 'unknown-exit' })
     expect(t.writes).toEqual([])
     expect(await step(t, { assumeExited: true }).p).toEqual({ kind: 'exited', conversationId: null })
-    const hinted = new FakeTerminal(agy({ start: 'gone-hint' }))
+    const hinted = new FakeTerminal(agy({ start: 'gone-hint', os: 'none' }))
     expect(await step(hinted, { assumeExited: true }).p).toEqual({ kind: 'exited', conversationId: ID })
   })
 
@@ -171,9 +172,10 @@ describe('exit: the OS has the last word on whether agy is gone', () => {
   it('waits on past the screen\'s 8 s for a goodbye that comes only at the end of a slow teardown', async () => {
     const t = new FakeTerminal(agy({ reports: false, os: 'tells', teardownMs: 12_000, hintAfterTeardown: true }))
     expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID })
-    // ...where without the OS the same screen confirms nothing.
-    const blind = new FakeTerminal(agy({ reports: false, teardownMs: 12_000, hintAfterTeardown: true }))
-    expect(await step(blind, {}).p).toMatchObject({ kind: 'not-exited' })
+    // ...where without the OS nothing is typed at all: agy's box on the screen authorizes no /exit (HOLD-C R3, H3-1).
+    const blind = new FakeTerminal(agy({ reports: false, os: 'none', teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(await step(blind, {}).p).toEqual({ kind: 'unknown-exit' })
+    expect(blind.writes).toEqual([])
   })
 
   it('types no /exit to an agy the OS says is gone, though its last frame is still on the screen', async () => {
@@ -182,10 +184,10 @@ describe('exit: the OS has the last word on whether agy is gone', () => {
     expect(t.writes).toEqual([])
   })
 
-  it('does not take the user\'s word to the OS: assumeExited asks nothing', async () => {
+  it('asks the OS before it takes the user\'s word: a program the OS sees vetoes assumeExited (HOLD-C R3, H3-3)', async () => {
     const t = new FakeTerminal(agy({ start: 'gone-hint', os: 'tells' }))
     expect(await step(t, { assumeExited: true }).p).toEqual({ kind: 'exited', conversationId: ID })
-    expect(t.osAsked).toBe(0)
+    expect(t.osAsked).toBeGreaterThan(0)
   })
 })
 describe('shownEmail: what agy\'s header shows, for display only', () => {

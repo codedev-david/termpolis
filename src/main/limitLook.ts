@@ -14,13 +14,13 @@
 // An exit hint, a footer or a closing rule not drawn yet, a quiet screen are never an exit (HOLD-C).
 // In a terminal that shows none of these, an agent typed later is recorded over the one before,
 // never seen ended, with its options unknown (noteEnteredLine, HOLD-C R1).
-import { boxAtFoot, detectAgentStatus, inputBoxRows, limitWords, stopKind } from '../shared/agentStatusDetector'
+import { boxAtFoot, detectAgentStatus, inputBoxRow, inputBoxRows, limitWords, stopKind } from '../shared/agentStatusDetector'
 import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
-import { CODEX_STARTING } from '../shared/accountSwitch'
-import { PROMPT_REPORT, sinceStarted } from './mcpServer'
+import { CODEX_STARTING, PROMPT_REPORT } from '../shared/accountSwitch'
+import { sinceStarted } from './mcpServer'
 import { indexOf, look, plain, shellBackSince } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 
@@ -199,5 +199,9 @@ export function noteEnteredLine(
  *  in the last frame an exited agent left above the shell's prompt: a draft there is no line typed into an agent (HOLD-C R2, C3). */
 function inBox(l: Look, line: string): boolean {
   const box = boxAtFoot(l.lines, l.cols) ? inputBoxRows(l.lines) : null
-  return box !== null && bareText(box.join('')).includes(bareText(line.slice(0, 40)))
+  if (box === null) return false
+  // The same line echoed again under the box (a shell's prompt drawn below an exited agent's last frame) is the shell's, not the box's
+  // (HOLD-C R3, Codex R2 probe :132).
+  const key = bareText(line.slice(0, 40))
+  return bareText(box.join('')).includes(key) && !bareText(l.lines.slice(inputBoxRow(l.lines) + box.length).join('')).includes(key)
 }

@@ -16,14 +16,13 @@ import { ptyHostReady, spawnInPtyHost } from './ptyHostClient'
 import { endProcessTree, killProcessTree } from './processTree'
 import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
-import { holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
+import { agentAtFoot, holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { agentGone, agentOfLaunch, lookForLimit, noteEnteredLine, showsExit } from './limitLook'
 import { setExtraTranscriptRoots } from './conversationIngest'
 import type { ConversationSource } from './conversationIngest'
 import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
-import { boxAtFoot } from '../shared/agentStatusDetector'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
   cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInArgs, slugOf, tildifyPath,
@@ -482,8 +481,9 @@ function noteUnseenLaunch(terminalId: string, end: number, now: number, lookNow:
   if (!agentGone(io, terminalId, prev, now, l)) {
     // In a terminal that can't show the agent's exit, an edited line (Up and Enter) not into its live box at the screen's foot may have
     // run it again, or gone into it: recorded as round 1's typed launch over a record never seen ended, whose switch types nothing
-    // (HOLD-C R2-4). The record before is not read as ended: nothing said so.
-    if (showsExit(io, terminalId, prev, l) || boxAtFoot(l.lines, l.cols)) return
+    // (HOLD-C R2-4). The record before is not read as ended: nothing said so. Nor is any line the agent's own UI at the foot took: a
+    // dialog answered with Down and Enter, a picker's entry chosen, a busy line's Esc, its box (HOLD-C R3, H3-5).
+    if (showsExit(io, terminalId, prev, l) || agentAtFoot(l, prev.agent)) return
     setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true, overUnended: true })
     noteTerminalSession(terminalId, null)
     return

@@ -11,7 +11,7 @@ import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, stopKind, type AgentStatusResult } from '../shared/agentStatusDetector'
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 import { traceMcpTool } from './typingTrace'
-import { RELAUNCH_HELD } from '../shared/accountSwitch'
+import { PROMPT_REPORT, RELAUNCH_HELD } from '../shared/accountSwitch'
 import { LINKED_WINDOW_REFUSAL, LINKED_WINDOW_TOOLS, callerOf, issueMcpSession, limitedNow } from './mcpLinkedWindow'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
@@ -829,10 +829,9 @@ interface Seen {
   shell: boolean
 }
 
-/** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
- *  9;9 from PowerShell and cmd, OSC 7 from bash, zsh and fish); an agent's own output has none (its
- *  OSC 7501 query is another code). */
-export const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+/** What a shell writes at each prompt it prints (shared/accountSwitch.ts, the one matcher): Termpolis's folder report, or a semantic
+ *  prompt mark; an agent's own output has none (its OSC 7501 query is another code). */
+export { PROMPT_REPORT }
 /** Where ConPTY paints the whole screen again when the PTY is resized: from its top left, with or
  *  without its report of the new size before (terminalScreen.ts resizeReportOf; on the live runs only
  *  a PTY's first resize had one). It paints an exited agent's last frame, box and all, again. */
@@ -955,6 +954,29 @@ export function sinceStarted(raw: string, from: number, whole: boolean, size: Sc
   const shown = upTo(WIPE)
   const reported = !showsCommand(shown, commands) && !echoing(shown, commands)
   return { shell: reported && !onAlt && inputBoxRow(upTo(REPAINT)) < 0, started, reported }
+}
+
+/** How many rows a prompt the shell draws after its report can take: a two-line one (Git Bash's), with a row to spare. */
+const PROMPT_ROWS = 3
+
+/**
+ * Whether the shell's last prompt report in `raw` from `from` on is the latest thing there (HOLD-C R3, H3-1): a prompt drawn after it
+ * (a bare report is none, C1) that leaves the cursor on its row (no line break at its end), on PROMPT_ROWS rows at most, and nothing an
+ * agent draws after it: no input box, no busy line, no switch to the alternate screen. A cwd report followed by an agent's output
+ * ("Still working…", a frame) is void: something runs after the prompt it reported.
+ */
+export function promptLatest(raw: string, from: number, size: ScreenSize | null): boolean {
+  const since = raw.slice(from)
+  const prompts = promptsIn(since)
+  if (prompts.length === 0) return false
+  const after = since.slice(prompts[prompts.length - 1])
+  const text = after.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]/g, '')
+  if (text.trim() === '' || /\n[ \t\r]*$/.test(text)) return false
+  const switches = [...after.matchAll(ALT_SCREEN)]
+  if (switches.length > 0 && switches[switches.length - 1][1] === 'h') return false
+  const { lines, title } = drawn(after, size)
+  const shown = lines.filter((row) => row.trim() !== '')
+  return shown.length <= PROMPT_ROWS && inputBoxRow(shown) < 0 && !isBusyOnScreen(shown, title)
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.

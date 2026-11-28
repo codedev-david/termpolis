@@ -21,7 +21,7 @@ import { accountEnv, accountLine } from '../../src/shared/agentAccounts'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
 import { atIdleBox, relaunchLockReason, runAccountSwitch } from '../../src/main/accountSwitch'
 import { RELAUNCH_HELD } from '../../src/shared/accountSwitch'
-import type { AgentStartRecord } from '../../src/main/accountSwitch'
+import type { AgentStartRecord, SwitchIO } from '../../src/main/accountSwitch'
 import { lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import { runAgyStep } from '../../src/main/agySwitch'
@@ -112,6 +112,22 @@ async function untilLimit(t: RealTerminal, start: LiveStart): Promise<ReturnType
 const debug = (t: RealTerminal): string => `${t.screen()}\n---- raw tail ----\n${JSON.stringify(t.raw.slice(-600))}\n---- trace ----\n${t.trace.slice(-40).join('\n')}`
 
 const eventsOf = (h: ChooserHome, agent: MockEvent['agent']): MockEvent[] => readMockLog(h).filter((e) => e.agent === agent)
+
+/** Whether the process `pid` still runs: a signal 0 to that one process, no listing of any other. */
+const running = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
+}
+
+/** The switch engine's view of the terminal, with the OS's word on it (shellAlone.ts) given from the mock agents' own process
+ *  ids: the shell is alone once no mock agent started in this home still runs. The engine types /exit into a live agent only
+ *  when the OS sees it running (H3-1), and the console helper the product asks cannot run under vitest (it needs the app's own
+ *  Node), so it answers "cannot tell" here: the SW2-10 case below keeps that real answer. */
+function ioOf(t: RealTerminal, h: ChooserHome, writes: string[] = []): SwitchIO {
+  return {
+    ...t.io(writes),
+    shellAlone: async () => !readMockLog(h).some((e) => e.event === 'start' && typeof e.pid === 'number' && running(e.pid)),
+  }
+}
 
 describe('the e2e fixture', () => {
   it('seeds a registry the real parser reads whole, and every profile it names exists', () => {
@@ -215,7 +231,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         const projectsB = join(h.claudeSide, 'projects')
         let recorded: { accountId: string; start: AgentStartRecord; sessionId: string | null } | null = null
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: B.id, shellType: shell.shellType }, {
-          io: t.io(writes),
+          io: ioOf(t, h, writes),
           target: B,
           agent: 'claude',
           source: A,
@@ -293,10 +309,17 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
           newSessionId: () => randomUUID(),
           record: () => undefined,
         })
-        expect(outcome, `${debug(t)}\nOS answers: ${JSON.stringify(answers)}`).toMatchObject({ kind: 'switched', resumed: true, sessionId: SESSION })
-        // The OS was asked at the exit. What it answered (still running, gone, or that it cannot tell, on a runner with no console to
-        // list) is the machine's: the switch ends the same whichever it was, and the answers are in the message of a failure above.
+        // The OS was asked before anything was typed. What it answered is the machine's: a console it can list (still running, then
+        // gone), or that it cannot tell (a runner with no console to list, or vitest, where the helper cannot load). The switch types
+        // /exit into the live agent only on the OS's word that it runs (H3-1); with none it types nothing and says it couldn't tell.
         expect(answers.length).toBeGreaterThan(0)
+        const why = `${debug(t)}\nOS answers: ${JSON.stringify(answers)}`
+        if (answers[0] === null) {
+          expect(outcome, why).toEqual({ kind: 'unknown-exit' })
+          expect(writes, why).toEqual([])
+          return
+        }
+        expect(outcome, why).toMatchObject({ kind: 'switched', resumed: true, sessionId: SESSION })
         expect(eventsOf(h, 'claude').find((e) => e.event === 'resume')).toMatchObject({ session: SESSION, profile: '.claude-b' })
         expect(writes.join('')).not.toMatch(/[\u0003\u0004]/)
       }, 120_000)
@@ -317,7 +340,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         const projectsB = join(h.claudeSide, 'projects')
         const writes: string[] = []
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
-          io: t.io(writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
+          io: ioOf(t, h, writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
           hasTranscript: (id) => findTranscript([projectsA, projectsB], id) !== null,
           carry: (id) => ({ carried: carryTranscript([projectsA], projectsB, id, Date.now()).kind === 'carried' }),
         })
@@ -346,7 +369,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         let outcome
         try {
           outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
-            io: t.io(), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, lockKind: 'worker', newSessionId: () => randomUUID(), record: () => undefined,
+            io: ioOf(t, h), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, lockKind: 'worker', newSessionId: () => randomUUID(), record: () => undefined,
             hasTranscript: (id) => findTranscript([projectsA, projectsB], id) !== null,
             carry: (id) => ({ carried: carryTranscript([projectsA], projectsB, id, Date.now()).kind === 'carried' }),
           })
@@ -374,7 +397,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         setMockControl(h, { ignoreExit: true })
         const writes: string[] = []
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
-          io: t.io(writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
+          io: ioOf(t, h, writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
         })
         expect(outcome.kind, debug(t)).toBe('exit-unconfirmed')
         const log = eventsOf(h, 'claude')
@@ -401,7 +424,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         const projectsA = join(h.home, '.claude', 'projects')
         const projectsB = join(h.claudeSide, 'projects')
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
-          io: t.io(writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
+          io: ioOf(t, h, writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
           hasTranscript: (id) => findTranscript([projectsA, projectsB], id) !== null,
           carry: (id) => ({ carried: carryTranscript([projectsA], projectsB, id, Date.now()).kind === 'carried' }),
         })
@@ -476,7 +499,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
 
         const writes: string[] = []
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: Y.id, shellType: shell.shellType }, {
-          io: t.io(writes), target: Y, agent: 'codex', source: X, start, newSessionId: () => randomUUID(), record: () => undefined,
+          io: ioOf(t, h, writes), target: Y, agent: 'codex', source: X, start, newSessionId: () => randomUUID(), record: () => undefined,
         })
         expect(outcome, debug(t)).toMatchObject({ kind: 'switched', resumed: true })
         const log = eventsOf(h, 'codex')
@@ -504,7 +527,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         prompt(t, start, 'a first turn')
         await sleep(2500)
         const outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.codexSide.id, shellType: shell.shellType }, {
-          io: t.io(), target: accounts.codexSide, agent: 'codex', source: accounts.codexMain, start, newSessionId: () => randomUUID(), record: () => undefined,
+          io: ioOf(t, h), target: accounts.codexSide, agent: 'codex', source: accounts.codexMain, start, newSessionId: () => randomUUID(), record: () => undefined,
         })
         expect(outcome.kind, debug(t)).toBe('fresh')
         expect(eventsOf(h, 'codex').filter((e) => e.event === 'resume-missing')).toHaveLength(1)
@@ -522,7 +545,7 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         expect(seen).toMatchObject({ agent: 'agy', live: true, turned: true })
         expect(seen.words).toMatch(/exhausted your quota on this model/)
 
-        const ctx = { io: t.io(), start, env: {}, record: () => undefined }
+        const ctx = { io: ioOf(t, h), start, env: {}, record: () => undefined }
         const exited = await runAgyStep({ terminalId: ID, targetId: ACCOUNT_IDS.agyTwo, shellType: shell.shellType, step: 'exit' }, ctx)
         expect(exited).toMatchObject({ kind: 'exited' })
         const conversation = exited.kind === 'exited' ? exited.conversationId : null

@@ -462,6 +462,19 @@ export interface SwitchProgress {
   step: 'exiting' | 'confirming' | 'carrying' | 'typing' | 'waiting'
 }
 
+/** A shell's report that it shows its prompt, of any kind: Termpolis's own (shellIntegration.ts: OSC 7 from bash, zsh and fish,
+ *  OSC 9;9 from PowerShell and cmd), and the semantic prompt marks a shell's own integration writes (OSC 133, and VS Code's OSC 633):
+ *  the prompt's start (A), its end (B) and the last command's end (D). Not C or E, which a shell writes as a command starts. The one
+ *  matcher the switch, the limit look, submit and the renderer read prompts with (HOLD-C R3, H3-4). */
+export const PROMPT_REPORT = /\x1b\](?:9;9;|7;|(?:133|633);[ABD](?=[;\x07\x1b]))/g
+
+/** Where the last prompt report in `text` starts, or -1. */
+export function lastPromptReport(text: string): number {
+  let last = -1
+  for (const m of text.matchAll(PROMPT_REPORT)) last = m.index!
+  return last
+}
+
 /** The prompt reports Termpolis's shells write (shellIntegration.ts): OSC 7 from bash, zsh and fish,
  *  OSC 9;9 from PowerShell and cmd. */
 const POSIX_REPORT = /\x1b\]7;/

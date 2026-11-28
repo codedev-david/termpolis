@@ -586,7 +586,10 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
       expect((await livenessNow(io(BEFORE + half, clock), 't', agent, { at: BEFORE.length, commands: [LINE] }, { known: false })).state).not.toBe('gone')
       expect(clock.t).toBe(0)
     }
-    expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('live')
+    // The drawn box is live only on the OS's word that a program runs; with no word it is unknown, as a key typed there needs the OS
+    // (HOLD-C R3, H3-1).
+    expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('unknown')
+    expect((await livenessNow({ ...io(BEFORE + RULED), shellAlone: async () => false }, 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('live')
   })
 
   // agy is started by its name alone, and no echo of a name can be told from a prompt that shows it: the box agy draws after that

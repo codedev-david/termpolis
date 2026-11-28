@@ -18,7 +18,7 @@ import { EXIT_COMMAND, carryForSwitch, relaunchCommand } from '../shared/account
 import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
 import {
-  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, hintAtFoot, livenessNow, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
+  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, exitVetoed, hintAtFoot, livenessNow, locks, look, relaunchLockReason, stillRunning, typeAtPrompt, typeIntoBox, watchOutcome,
 } from './accountSwitch'
 import type { AgentStartRecord, OsMemo, SwitchIO } from './accountSwitch'
 
@@ -69,9 +69,13 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
   // Typed over an agent never seen gone, where nothing can show its exit: the line may have gone into that agent, so nothing is typed
   // without the user's word, and a hint on screen may be that agent's, so it names no conversation (HOLD-C R1).
   const over = start?.overUnended === true
-  if (assumeExited) return { kind: 'exited', conversationId: over ? null : hintAtFoot(look(io, id), 'agy')?.id ?? null }
-  if (over) return { kind: 'unknown-exit' }
   const os: OsMemo = { known: false }
+  if (assumeExited) {
+    // The user's word, vetoed by the OS seeing a program, or, without its "alone", by agy's own UI at the foot (HOLD-C R3, H3-3).
+    if (await exitVetoed(io, id, 'agy', os)) return { kind: 'not-exited', why: 'agy didn\'t confirm it exited, so Termpolis typed nothing more' }
+    return { kind: 'exited', conversationId: over ? null : hintAtFoot(look(io, id), 'agy')?.id ?? null }
+  }
+  if (over) return { kind: 'unknown-exit' }
   const alive = await livenessNow(io, id, 'agy', start, os)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }
   // Gone before Termpolis typed anything: the user quit it. The conversation its hint names is still told, but nothing
@@ -81,7 +85,7 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
   const idle = atIdleBox(io, id)
   if (!idle) return { kind: 'busy' }
   const mark = io.end(id)
-  const typed = await typeIntoBox(io, id, EXIT_COMMAND.agy, idle)
+  const typed = await typeIntoBox(io, id, EXIT_COMMAND.agy, idle, stillRunning(io, id, mark))
   if (typed !== 'entered') return { kind: 'not-exited', why: 'Termpolis couldn\'t type /exit into agy\'s input, so it typed nothing more' }
   const shown = await exitConfirmed(io, id, 'agy', mark, os)
   if (!shown) return { kind: 'not-exited', why: 'agy didn\'t confirm it exited, so Termpolis typed nothing more' }

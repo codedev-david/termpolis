@@ -25,18 +25,18 @@
 // Anything it can't confirm ends the switch with nothing more typed, and its outcome says so; the
 // dialog asks the user, and runs it again with their answer (assumeExited, stopBusy, fresh).
 import { randomUUID } from 'crypto'
-import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind, boxAtFoot } from '../shared/agentStatusDetector'
+import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind, boxAtFoot, agentUiAtFoot } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
   ASKS_USER, CLEAR_BOX_KEYS, CODEX_STARTING, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
-  nestedShellReported, ownReport, relaunchCommand,
+  PROMPT_REPORT, nestedShellReported, ownReport, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
 import { PROMPT_SETTLE_MS, aloneNow, waitForExit } from '../shared/agentExit'
 import type { ExitWatch } from '../shared/agentExit'
 import { ACCOUNT_AGENT_LABEL, accountEnv, accountLine, familyOf } from '../shared/agentAccounts'
 import type { AccountAgent, AgentAccount, ShellFamily } from '../shared/agentAccounts'
-import { PROMPT_REPORT, drawn, promptsIn, sinceStarted } from './mcpServer'
+import { drawn, promptLatest, promptsIn, sinceStarted } from './mcpServer'
 
 /** A switch holds its terminal at most this long, whatever happens. A slow teardown of the agent
  *  (up to EXIT_CEILING_MS), the exit, the line and the 30 s the relaunch gets to come up add up to
@@ -392,6 +392,18 @@ export function shellBackSince(io: SwitchIO, id: string, l: Look, start: AgentSt
   return promptSince(io, id, l, start.shellFrom ?? start.at, start.commands, start.prompted)
 }
 
+/** The shell's word that a key may go to it: back at its prompt since the agent's start (shellBackSince), and that prompt's report the
+ *  latest thing in the terminal, nothing an agent draws after it (promptLatest). What the screen shows otherwise authorizes nothing
+ *  (HOLD-C R3, H3-1). */
+function shellSays(io: SwitchIO, id: string, l: Look, start: AgentStartRecord): boolean {
+  return shellBackSince(io, id, l, start) && promptLatest(l.raw, indexOf(l, start.shellFrom ?? start.at), io.size(id))
+}
+
+/** The agent's own dialog, menu, busy line or input box at the screen's foot (agentUiAtFoot): a veto only. */
+export function agentAtFoot(l: Look, agent: AccountAgent): boolean {
+  return agentUiAtFoot(l.lines, ACCOUNT_AGENT_LABEL[agent], l.title, l.cols)
+}
+
 /** Claude Code waiting out its limit, the user's choice on its menu, on its status line over the
  *  box: Esc stops the wait. */
 const WAITING_OUT = /continuing automatically at.*\besc to cancel\b/
@@ -400,15 +412,16 @@ const STATUS_ROWS = 8
 
 export type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown'; os?: true }
 
-/** Is the agent live on screen (R2)? Gone only on the shell's own word: its prompt reported since the agent was started
- *  (promptSince), or (macOS and Linux) the shell in the PTY's foreground; the exit hint at the foot then names the session. The
- *  hint alone is no exit: an agent that printed one and stayed, or a quoted one, shows it too (HOLD-C). Live: its box, a menu or
- *  a busy line on screen. Neither: unknown. */
+/** Is the agent live on screen (R2)? Gone only on the shell's own word: its prompt reported since the agent was started, the latest
+ *  thing in the terminal (shellSays), or (macOS and Linux) the shell in the PTY's foreground; the exit hint at the foot then names the
+ *  session. The hint alone is no exit: an agent that printed one and stayed, or a quoted one, shows it too (HOLD-C). Live: its box, a
+ *  menu, a dialog or a busy line at the screen's foot, with no shell row under it (agentAtFoot; Opus R3-2). Neither: unknown. Live is
+ *  the screen's word only, which authorizes no key: livenessNow asks the OS (H3-1). */
 export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined): Liveness {
   const l = look(io, id)
   // The last frame an agent left, box and all, stays on screen above the shell's prompt.
   const hint = hintAtFoot(l, agent)
-  if ((start && shellBackSince(io, id, l, start)) || io.atShell?.(id) === true) return { state: 'gone', hint }
+  if ((start && shellSays(io, id, l, start)) || io.atShell?.(id) === true) return { state: 'gone', hint }
   // A hint under the agent's box is what an exit prints, but no word from the shell that the agent is gone: nothing is typed.
   if (hint) return { state: 'unknown' }
   // The shell reported its prompt since the agent's start, and what it shows since is not the shell back: the shell holds the prompt,
@@ -416,9 +429,7 @@ export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: A
   if (start && reportedAfter(io, id, l, start)) return { state: 'unknown' }
   // A box with the shell's prompt under it is the last frame an exited agent left there, its menu or busy line too: no live agent's.
   if (l.box >= 0 && !boxAtFoot(l.lines, l.cols)) return { state: 'unknown' }
-  const status = detectAgentStatus(l.lines.join('\n'), ACCOUNT_AGENT_LABEL[agent], 'idle', { screen: true, title: l.title })
-  if (l.box >= 0 || status.status === 'blocked' || status.status === 'waiting_for_input' || isBusyOnScreen(l.lines, l.title)) return { state: 'live' }
-  return { state: 'unknown' }
+  return agentAtFoot(l, agent) ? { state: 'live' } : { state: 'unknown' }
 }
 
 /** What the shared exit wait (agentExit.ts) asks the OS with, for this terminal. */
@@ -472,6 +483,9 @@ export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent,
     if (!(await processGone(io, id))) return { state: 'unknown', os: true }
     return alive.state === 'gone' ? alive : { state: 'gone', hint: hintAtFoot(look(io, id), agent) }
   }
+  // A key typed into the agent (Esc, its exit command) needs the OS's word that it runs: a live screen is only the last frame of an
+  // agent that may have gone, its shell's prompt not drawn yet, or a prompt of the person's own drawn like a box (HOLD-C R3, H3-1).
+  if (alive.state === 'live' && alone !== false) return { state: 'unknown' }
   return alive
 }
 
@@ -503,8 +517,9 @@ function boxShows(l: Look, text: string): boolean {
 
 /** Types `text` into the agent's own box, at its idle box `l`, and presses Enter only once its box
  *  shows it: what an agent is exited with (step 3). The box is emptied first (Ctrl+U, as submit
- *  clears one). */
-export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Look): Promise<'entered' | 'not-shown' | 'held'> {
+ *  clears one). `authorize`, where given, is asked again right before the Enter, which is withheld
+ *  unless it still says the agent is there to take it (HOLD-C R3, H3-2). */
+export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Look, authorize?: () => Promise<boolean>): Promise<'entered' | 'not-shown' | 'held' | 'withheld'> {
   if (!emptyInputBox(l.lines)) {
     io.write(id, CLEAR_BOX_KEYS)
     const cleared = await waitFor(io, CLEAR_WAIT_MS, () => {
@@ -523,8 +538,23 @@ export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Loo
     io.write(id, CLEAR_BOX_KEYS)
     return 'not-shown'
   }
+  if (authorize && !(await authorize())) return 'withheld'
   io.write(id, '\r')
   return 'entered'
+}
+
+/** What vetoes the user's word that the agent exited (HOLD-C R3, H3-3): 'os' when the OS sees a program in the terminal past its
+ *  teardown, 'screen' when the OS does not say the shell is alone and the agent's own UI is at the screen's foot, null for neither. */
+export async function exitVetoed(io: SwitchIO, id: string, agent: AccountAgent, os: OsMemo): Promise<'os' | 'screen' | null> {
+  const alone = await askOs(io, id, os)
+  if (alone === false && !(await processGone(io, id))) return 'os'
+  return alone !== true && agentAtFoot(look(io, id), agent) ? 'screen' : null
+}
+
+/** What authorizes the Enter after an exit command typed at `mark` (H3-2): the OS still sees the agent running, asked now, and no prompt
+ *  report since `mark` (the shell's, back while the command was typed: the agent was gone, and the Enter would go to the shell). */
+export function stillRunning(io: SwitchIO, id: string, mark: number): () => Promise<boolean> {
+  return async () => (await aloneNow(osOf(io, id))) === false && promptsIn(io.outputFrom(id, mark)).length === 0
 }
 
 /** The exit hint printed since `mark` (step 4), at the screen's foot: what names the session. It is no exit by itself
@@ -570,7 +600,8 @@ export const HINT_GRACE_MS = 1000
 export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number, memo: OsMemo): Promise<{ hint: ExitHint | null } | null> {
   let foregroundAt: number | null = null
   const shell = (): 'shell' | null => {
-    if (promptSince(io, id, look(io, id), mark, [], true)) return 'shell'
+    const l = look(io, id)
+    if (promptSince(io, id, l, mark, [], true) && promptLatest(l.raw, indexOf(l, mark), io.size(id))) return 'shell'
     if (io.atShell?.(id) !== true) {
       foregroundAt = null
       return null
@@ -814,15 +845,8 @@ async function shellBack(io: SwitchIO, id: string, mark: number, line: string, m
   if (alone !== null) return alone || (await processGone(io, id))
   return (await waitFor(io, PROMPT_WAIT_MS * 2, () => {
     const l = look(io, id)
-    return promptSince(io, id, l, mark, [line], true) && promptDrawn(l, mark)
+    return promptSince(io, id, l, mark, [line], true) && promptLatest(l.raw, indexOf(l, mark), io.size(id))
   })) !== null
-}
-
-/** A prompt drawn after the shell's last report since `at`: something shown after it, not the report alone. */
-function promptDrawn(l: Look, at: number): boolean {
-  const since = l.raw.slice(indexOf(l, at))
-  const prompts = promptsIn(since)
-  return plain(since.slice(prompts[prompts.length - 1])).trim() !== ''
 }
 
 // ── The switch ─────────────────────────────────────────────────────────────────────────
@@ -905,8 +929,13 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   if (over && !req.assumeExited) return { kind: 'unknown-exit' }
   if (req.assumeExited) {
     // The user's word that it exited: an exit hint on screen still names the session. It replaces the exit check (the
-    // OS is not asked, and not waited for), not the screen: a box still drawn with no hint, no prompt since the start
+    // OS is not waited for), not the screen: a box still drawn with no hint, no prompt since the start
     // and no foreground word for the shell is an agent that may be live (SW2-7, MODELS-R2-1).
+    // The user's word is vetoed by what shows it wrong (HOLD-C R3, H3-3): the OS seeing a program in the terminal past its teardown, or,
+    // where the OS does not say the shell is alone, the agent's own box, dialog, menu or busy line at the screen's foot. Nothing is
+    // typed then. The OS's "alone" outweighs a frame left on screen: the agent's last frame stays drawn after it exits, on Windows.
+    const veto = await exitVetoed(io, id, agent, os)
+    if (veto) return { kind: 'exit-unconfirmed', ...(veto === 'os' ? { osSees: true as const } : {}) }
     hint = hintAtFoot(look(io, id), agent)
     // Not proven gone is not gone: a dialog the detector does not know (Claude's /theme picker, /model, a plan to approve, agy's
     // permission prompts) reads as neither live nor gone, and the same few keys that submit a draft or answer a dialog go there
@@ -937,9 +966,11 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
       // Step 3: its own exit command, entered only once its box shows it.
       io.progress?.({ terminalId: id, step: 'exiting' })
       const exitMark = io.end(id)
-      const typed = await typeIntoBox(io, id, EXIT_COMMAND[agent], idle)
-      // The clear went out, so the draft it left is "typed nothing more", never "nothing was typed" (HOLD-C R2, Codex MINOR 5).
-      if (typed === 'held' || typed === 'not-shown') return { kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) }
+      const typed = await typeIntoBox(io, id, EXIT_COMMAND[agent], idle, stillRunning(io, id, exitMark))
+      // The clear went out, so the draft it left is "typed nothing more", never "nothing was typed" (HOLD-C R2, Codex MINOR 5). The
+      // same goes for an Enter withheld: the OS no longer sees the agent, or the shell reported its prompt (H3-2). The OS saw the agent
+      // running here: nothing is typed into a box on any other word (H3-1).
+      if (typed !== 'entered') return { kind: 'exit-unconfirmed', osSees: true }
       // Step 4: the exit, shown.
       io.progress?.({ terminalId: id, step: 'confirming' })
       const shown = await exitConfirmed(io, id, agent, exitMark, os)

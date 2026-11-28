@@ -47,6 +47,7 @@ function register(): void {
       write: (id, data) => term.io().write(id, data),
       sleep: (ms) => term.io().sleep(ms),
       now: () => term.clock,
+      shellAlone: async (id) => (await term.io().shellAlone?.(id)) ?? null,
     },
   })
 }

@@ -226,7 +226,7 @@ const resumeId = agent === 'claude' ? flag(['--resume', '-r'])
     : (argv.find((a) => a.startsWith('--conversation=')) || '').slice('--conversation='.length) || undefined
 const sessionId = resumeId || (agent === 'claude' ? flag(['--session-id']) : undefined) || randomUUID()
 
-log({ event: 'start', profile: profileName, profileDir, args: argv, session: sessionId, resume: resumeId || null, limitChooser: process.env.TERMPOLIS_LIMIT_CHOOSER || null, cwd: process.cwd() })
+log({ event: 'start', pid: process.pid, profile: profileName, profileDir, args: argv, session: sessionId, resume: resumeId || null, limitChooser: process.env.TERMPOLIS_LIMIT_CHOOSER || null, cwd: process.cwd() })
 
 // agy keeps ONE Google sign-in for the computer user. Signed out (or signing in, in Termpolis's
 // hidden session), it is the sign-in mock the session tests drive.

@@ -2,16 +2,10 @@
  * The prompt reports Termpolis's shell integration writes (shellIntegration.ts), read from a
  * terminal's output: OSC 9;9 from PowerShell and cmd, OSC 7 from bash, zsh and fish, one each time
  * the shell shows its prompt. They tell what the OS cannot always say: whether the shell has come up
- * yet (agentLaunch.ts waits for the first one), and whether it sits at its prompt now (useAutoPrimer).
+ * yet (agentLaunch.ts waits for the first one), and whether it sits at its prompt now (useAutoPrimer). A shell's own semantic prompt
+ * marks (OSC 133, 633) count too: main reads prompts with the same matcher (shared/accountSwitch.ts PROMPT_REPORT).
  */
-const REPORT_MARKS = ['\x1b]9;9;', '\x1b]7;']
-
-/** Where the last prompt report in `output` starts, or -1 when there is none. */
-function lastReport(output: string): number {
-  let last = -1
-  for (const mark of REPORT_MARKS) last = Math.max(last, output.lastIndexOf(mark))
-  return last
-}
+import { lastPromptReport as lastReport } from '../../../shared/accountSwitch'
 
 /** Whether `output` holds a prompt report: the shell has shown its prompt at least once. */
 export function promptReported(output: string): boolean {

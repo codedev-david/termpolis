@@ -336,6 +336,28 @@ export function boxAtFoot(rows: readonly string[], cols?: number): boolean {
     (i > 0 && cols !== undefined && cellsOf(footer[i - 1]) >= cols))
 }
 
+/** A select list's cursor row (Claude Code's /resume picker, a menu): its glyph, then an entry, with rows of the list under it. */
+const SELECT_CURSOR = /^\s*(?:│\s)?[❯›]\s+\S/
+
+/**
+ * Whether the screen's foot is the agent's own: its input box there (boxAtFoot), or, with none, a dialog, a menu or a busy line the
+ * agent draws in its place (detectAgentStatus's waiting_for_input or blocked, isBusyOnScreen, a select list's cursor with entries under
+ * it) with no shell row under it. A shell row is a last row drawn at its start that none of the agents draw (not a rule or a box's
+ * edge, an option, a menu's keys, a busy footer or Claude Code's mode row): the prompt an exited agent's last frame is left above.
+ * What it says is a veto only, never a word that a key may go anywhere (HOLD-C R3: H3-3, H3-5, Opus R3-1 and R3-2).
+ */
+export function agentUiAtFoot(lines: readonly string[], agentName: string, title: string, cols?: number): boolean {
+  const rows = lines.slice()
+  while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
+  if (inputBoxRow(rows) >= 0) return boxAtFoot(rows, cols)
+  const last = rows[rows.length - 1] ?? ''
+  const shellRow = /^\S/.test(last) && !/^[─━╭╰│┌└]/.test(last) && !OPTION_ROW.test(last) && !MENU_KEYS.test(last) && !BUSY_FOOTER.test(last) && !MODE_ROW.test(last)
+  if (shellRow) return false
+  const status = detectAgentStatus(rows.join('\n'), agentName, 'idle', { screen: true, title }).status
+  const picker = rows.slice(bottomStart(rows), -1).some((row) => SELECT_CURSOR.test(row))
+  return status === 'blocked' || status === 'waiting_for_input' || isBusyOnScreen(rows, title) || picker
+}
+
 /** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the
  *  placeholder the CLI shows until something is typed, on one row at any size. What
  *  write_to_terminal's submit sees go once the text it typed shows. */

@@ -6,7 +6,7 @@
 // veto at most. With neither word, nothing is typed (unknown-exit). The probes are Codex R2's (/tmp/hc2/tests/probe/hold-c-round2.test.ts
 // :73, :79, :87, :95, :115, :132) rebuilt by name, and Opus R3's (holdc-review.md '## Round 3').
 import { describe, it, expect, beforeEach } from 'vitest'
-import { _resetSwitchLocksForTest, livenessNow, runAccountSwitch } from '../../src/main/accountSwitch'
+import { _resetSwitchLocksForTest, exitConfirmed, livenessNow, runAccountSwitch } from '../../src/main/accountSwitch'
 import type { SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { runAgyStep } from '../../src/main/agySwitch'
 import { noteEnteredLine } from '../../src/main/limitLook'
@@ -117,6 +117,14 @@ describe('H3-1: the screen authorizes no key (Codex R2 :73, Opus R3-2, R3-4)', (
   it('livenessNow reads a live screen with no OS answer as unknown', async () => {
     expect(await livenessNow(probe(LIVE).io, 'probe', 'claude', { at: 0, commands: ['claude'] }, { known: false })).toEqual({ state: 'unknown' })
   })
+
+  it('exitConfirmed takes no shell report an agent drew over as the exit, with no OS answer; the report alone, latest, is', async () => {
+    // Something printed since the exit was typed, then the shell's report (promptSince's word).
+    const over = probe(LIVE + '\r\nGoodbye!\r\n' + REPORT + 'user@host:~$ ' + WIPE + FRAME + '\r\n' + FOOTER)
+    expect(await exitConfirmed(over.io, 'probe', 'claude', LIVE.length, { known: false })).toBeNull()
+    const latest = probe(LIVE + '\r\nGoodbye!\r\n' + REPORT + 'user@host:~$ ')
+    expect(await exitConfirmed(latest.io, 'probe', 'claude', LIVE.length, { known: false })).toEqual({ hint: null })
+  })
 })
 
 describe('H3-1, H3-2: a stale frame, and the Enter after /exit (Codex R2 :79)', () => {
@@ -153,7 +161,7 @@ describe('H3-1, H3-2: a stale frame, and the Enter after /exit (Codex R2 :79)', 
 
 describe('H3-3: "it has exited" is vetoed by the OS or the agent\'s own UI (Codex R2 :87)', () => {
   it('Codex R2 :87: the user\'s word over Claude Code\'s live box, no report and no OS answer, types nothing', async () => {
-    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, start: 'idle', exit: 'hint' })
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, os: 'none', start: 'idle', exit: 'hint' })
     const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'gitbash', assumeExited: true }, {
       io: t.io(), agent: 'claude', start: { at: t.launchedAt, commands: [t.launchLine()] }, target: TARGET, newSessionId: () => NEW_ID, record: () => {},
     })
@@ -168,7 +176,7 @@ describe('H3-3: "it has exited" is vetoed by the OS or the agent\'s own UI (Code
   })
 
   it('the user\'s word over a permission dialog at the foot, no OS answer, types nothing', async () => {
-    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, start: 'question', exit: 'hint' })
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, os: 'none', start: 'question', exit: 'hint' })
     const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'gitbash', assumeExited: true }, {
       io: t.io(), agent: 'claude', start: { at: t.launchedAt, commands: [t.launchLine()] }, target: TARGET, newSessionId: () => NEW_ID, record: () => {},
     })
@@ -177,7 +185,7 @@ describe('H3-3: "it has exited" is vetoed by the OS or the agent\'s own UI (Code
   })
 
   it('agy: the user\'s word over its live box, no OS answer, is not-exited with nothing typed', async () => {
-    const t = new FakeTerminal({ agent: 'agy', family: 'posix', reports: false, start: 'idle', exit: 'hint' })
+    const t = new FakeTerminal({ agent: 'agy', family: 'posix', reports: false, os: 'none', start: 'idle', exit: 'hint' })
     const outcome = await runAgyStep({ terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'exit', assumeExited: true }, { io: t.io(), start: { at: t.launchedAt, commands: [t.launchLine()] }, env: {}, record: () => {} })
     expect(outcome).toEqual({ kind: 'not-exited', why: 'agy didn\'t confirm it exited, so Termpolis typed nothing more' })
     expect(t.writes).toEqual([])
@@ -186,7 +194,7 @@ describe('H3-3: "it has exited" is vetoed by the OS or the agent\'s own UI (Code
 
 describe('H3-1: a cwd report followed by an agent\'s output is void (Codex R2 :95)', () => {
   it('Codex R2 :95: Codex that says "No saved session found", then a report, then "Still working…", is sent nothing after it', async () => {
-    const t = new FakeTerminal({ agent: 'codex', family: 'posix', start: 'gone-hint', exit: 'hint', relaunch: ['nothing'] })
+    const t = new FakeTerminal({ agent: 'codex', family: 'posix', os: 'none', start: 'gone-hint', exit: 'hint', relaunch: ['nothing'] })
     const base = t.io()
     const after: string[] = []
     let said = false
@@ -218,7 +226,7 @@ describe('H3-1, H3-4: the shell\'s word still switches over a retained frame (Co
   const cases = (['bash', 'zsh'] as const).flatMap((shell) => (['cwd', 'os', 'osc133', 'osc633'] as const).map((ev) => [shell, ev] as const))
 
   it.each(cases)('Codex R2 :115: Claude Code gone, its frame left above a %s prompt, told by %s, is relaunched fresh with no /exit', async (shell, ev) => {
-    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, start: 'gone-quiet', relaunch: ['box'], ...(ev === 'os' ? { os: 'tells' as const } : {}) })
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', reports: false, start: 'gone-quiet', relaunch: ['box'], os: ev === 'os' ? 'tells' : 'none' })
     const head = EVIDENCE[ev] + PROMPTS[shell]
     t.out = head + t.launchLine() + '\r\n' + t.frame() + '\r\n' + EVIDENCE[ev] + PROMPTS[shell]
     const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'gitbash' }, {

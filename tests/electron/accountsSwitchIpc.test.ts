@@ -50,6 +50,7 @@ function register(over: Partial<AccountsIpcDeps> = {}): void {
       sleep: (ms) => term.io().sleep(ms),
       now: () => term.clock,
       restarted: (id) => restartedIds.delete(id),
+      shellAlone: async (id) => (await term.io().shellAlone?.(id)) ?? null,
     },
     ...over,
   })

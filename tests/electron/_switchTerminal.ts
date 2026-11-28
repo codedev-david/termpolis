@@ -109,9 +109,10 @@ export interface TermScript {
   /** With `teardownMs`, the hint is printed only when the process is gone (after the hooks). */
   hintAfterTeardown?: boolean
   /** What the OS says about the terminal (shellAlone.ts): `tells` (true once only the shell is
-   *  left), `blind` (it cannot tell), `flaky` (cannot tell once in a while). Absent: the switch has
-   *  no such read. */
-  os?: 'tells' | 'blind' | 'flaky'
+   *  left), `blind` (it cannot tell), `flaky` (cannot tell at every third ask), `none` (the switch has
+   *  no such read). Absent: `tells`, as main wires it on every platform; the switch types /exit into a
+   *  live agent only on the OS's word that it runs (HOLD-C R3, H3-1). */
+  os?: 'tells' | 'blind' | 'flaky' | 'none'
   /** The shell reads what is typed this slowly, a character at a time, and draws what it has read
    *  only once its input is empty: Git Bash on a ConPTY took 39 ms a character on David's laptop
    *  when it was idle and over 100 ms when it was busy (measured with a real one), so a
@@ -488,7 +489,7 @@ export class FakeTerminal {
   private alone(): boolean | null {
     this.osAsked++
     if (this.s.os === 'blind') return null
-    if (this.s.os === 'flaky' && this.osAsked % 2 === 0) return null
+    if (this.s.os === 'flaky' && this.osAsked % 3 === 0) return null
     return this.mode === 'shell' && this.clock >= this.goneAt
   }
 
@@ -518,7 +519,7 @@ export class FakeTerminal {
       },
       now: () => this.clock,
       ...(this.s.foreground ? { atShell: () => this.mode === 'shell' } : {}),
-      ...(this.s.os ? { shellAlone: async () => this.alone() } : {}),
+      ...(this.s.os !== 'none' ? { shellAlone: async () => this.alone() } : {}),
     }
   }
 }

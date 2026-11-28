@@ -112,12 +112,22 @@ describe('Opus R3-3: a boxed clock prompt', () => {
   const before = REPORT + '$ '
   const exited = before + 'claude\r\n' + WIPE + 'Claude Code\r\n' + RULE + '\r\n❯ \r\n' + RULE + '\r\n' + '\r\nGoodbye!\r\n' + RULED_SHELL
 
-  it.each([false, true])('reads the shell back where its report came after the agent ran (the clock ticking: %s), and types the relaunch', async (ticks) => {
+  it.each([false, true])('reads the shell back where its report came after the agent ran and the OS sees only the shell (the clock ticking: %s), and types the relaunch', async (ticks) => {
     let tick = 0
     const p = probe(exited, (raw) => (ticks ? raw + `\x1b7${E}[2;1H12:00:0${++tick % 10}\x1b8` : raw))
-    await switchOf(p.io, 'claude', { at: before.length, commands: ['claude'] })
+    await switchOf({ ...p.io, shellAlone: async () => true }, 'claude', { at: before.length, commands: ['claude'] })
     expect(p.keys.slice(0, 2)).toEqual([LINE_CLEAR.posix, '\r'])
     expect(p.keys).not.toContain('/exit')
+  })
+
+  // HOLD-C R3, H3-1: the report alone authorizes no key where what follows it is drawn like the agent's box, as a frame the agent
+  // drew after the report would be. With no word from the OS the ruled prompt gets nothing: safe, the user switches by hand.
+  it.each([false, true])('types nothing at it on the report alone, with no word from the OS (the clock ticking: %s)', async (ticks) => {
+    let tick = 0
+    const p = probe(exited, (raw) => (ticks ? raw + `\x1b7${E}[2;1H12:00:0${++tick % 10}\x1b8` : raw))
+    const outcome = await switchOf(p.io, 'claude', { at: before.length, commands: ['claude'] })
+    typedNothingAtPrompt(p.keys)
+    expect(['switched', 'fresh']).not.toContain(outcome.kind)
   })
 })
 
@@ -144,8 +154,9 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
     expect(errorAt).toBeDefined()
     expect(writesWhileLive).not.toContain('\r')
     // HOLD-C R1 F1: nothing proves it exited, so it is not "the shell is at its prompt"; and the resume line was typed, so it is
-    // exit-unconfirmed ("typed nothing more"), never unknown-exit's "typed nothing" (HOLD-C R1 residual).
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed', relaunched: true })
+    // exit-unconfirmed ("typed nothing more"), never unknown-exit's "typed nothing" (HOLD-C R1 residual). The OS saw Codex run, as
+    // its /quit needs (HOLD-C R3, H3-1), and still sees it.
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
   })
 
   /** A Codex that answers its resume line "No saved session found", then quits or stays, in a shell whose prompt does not report,
@@ -368,13 +379,15 @@ describe('a record typed over one never seen ended (HOLD-C R1 F2)', () => {
 // live, and a line clear or an Enter only to a prompt proven to be the shell's. The probes are Codex's (holdc-codex-review.md, R1).
 describe('HOLD-C R2 C1 (Codex MAJOR, accountSwitch.ts:792): the Codex fallback types nothing on a cwd report or silence', () => {
   /** A live Codex that answers its resume line "No saved session found" and stays up, a child shell's cwd report printed after it. */
-  async function notFoundWithReport(os: 'tells' | undefined): Promise<{ outcome: SwitchOutcome; after: string[]; t: FakeTerminal }> {
-    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', ...(os ? { os } : {}), start: 'idle', exit: 'hint', relaunch: ['box'] })
+  async function notFoundWithReport(os: 'tells' | 'stops'): Promise<{ outcome: SwitchOutcome; after: string[]; t: FakeTerminal }> {
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', os: 'tells', start: 'idle', exit: 'hint', relaunch: ['box'] })
     const base = t.io()
     const after: string[] = []
     let said = false
     const io: SwitchIO = {
       ...base,
+      // 'stops': the OS saw Codex run (its /quit needs that word, HOLD-C R3 H3-1), and can't tell once it answered.
+      shellAlone: async (id) => (os === 'stops' && said ? null : base.shellAlone!(id)),
       write: (id, key) => {
         if (said) after.push(key)
         base.write(id, key)
@@ -398,9 +411,10 @@ describe('HOLD-C R2 C1 (Codex MAJOR, accountSwitch.ts:792): the Codex fallback t
   })
 
   it('a bare cwd report, with no prompt drawn after it and no word from the OS, is no prompt: nothing is sent', async () => {
-    const { outcome, after } = await notFoundWithReport(undefined)
+    const { outcome, after } = await notFoundWithReport('stops')
     expect(after).toEqual([])
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed', relaunched: true })
+    // osSees: the OS's last word was that Codex ran.
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
   })
 })
 
@@ -512,8 +526,9 @@ describe('HOLD-C R2-1 (Codex MINOR 4, accountSwitchRun.ts:156): an outcome after
 describe('HOLD-C R2 Codex MINOR 5 (accountSwitch.ts:911): a draft the clear did not remove', () => {
   it('is exit-unconfirmed ("typed nothing more"), not a refusal that says nothing was typed, once the clear went out', async () => {
     const p = probe('Claude Code\r\n' + RULE + '\r\n❯ draft\r\n' + RULE)
-    const outcome = await switchOf(p.io)
+    // The OS sees Claude Code run: the clear goes out only on that word (HOLD-C R3, H3-1).
+    const outcome = await switchOf({ ...p.io, shellAlone: async () => false })
     expect(p.keys).not.toEqual([])
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
   })
 })

@@ -68,6 +68,7 @@ function register(): void {
     switchIO: {
       output: (id) => term.io().output(id), outputFrom: (id, from) => term.io().outputFrom(id, from), end: (id) => term.io().end(id),
       size: () => ({ cols: 80, rows: 24 }), write: (id, data) => term.io().write(id, data), sleep: (ms) => term.io().sleep(ms), now: () => term.clock,
+      shellAlone: async (id) => (await term.io().shellAlone?.(id)) ?? null,
     },
   } as AccountsIpcDeps)
 }

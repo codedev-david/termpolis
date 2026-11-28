@@ -326,7 +326,7 @@ function loginTick(s: Session, deps: SessionDeps, screen: SignInScreen): void {
 
 /** Types `text` into the hidden agy's own box, as a switch types into an agent's (accountSwitch.ts):
  *  entered only once its box shows it. */
-function intoAgyBox(s: Session, deps: SessionDeps, text: string): Promise<'entered' | 'not-shown' | 'held'> {
+function intoAgyBox(s: Session, deps: SessionDeps, text: string): Promise<'entered' | 'not-shown' | 'held' | 'withheld'> {
   const io = ioOf(s, deps)
   // Called on agy's idle box only (agy-ready reads the same screen the same way); were it gone,
   // nothing is typed.

@@ -138,9 +138,10 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     const r = await run(claude({ reports: false, os: 'tells' }))
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     cleanRun(r)
-    const blind = await run(claude({ reports: false }))
-    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
-    expect(blind.t.writes).toEqual(['/exit', '\r'])
+    // With no word from the OS, the screen authorizes no key: not even /exit is typed (HOLD-C R3, H3-1).
+    const blind = await run(claude({ reports: false, os: 'none' }))
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
     expect(blind.t.ran).toEqual([])
   })
 
@@ -168,7 +169,7 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     const outcome = await runAccountSwitch({ terminalId: 't1', targetId: 'acc_b', shellType: 'bash' }, {
       io: t.io(), target: B, agent: 'claude', newSessionId: () => NEW_ID, record: () => undefined,
     })
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(t.writes).toEqual(['\u0015'.repeat(20)])
   })
 })
@@ -263,7 +264,7 @@ describe('step 2: what holds the box', () => {
 
   it('gives up, typing nothing more, when a menu doesn\'t close', async () => {
     const r = await run(claude({ start: 'menu', escCloses: false }))
-    expect(r.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(r.outcome).toEqual({ kind: 'unknown-exit', osSees: true })
     expect(r.t.writes).toEqual(['\u001b'])
   })
 })
@@ -279,22 +280,23 @@ describe('what the OS showed, carried to the outcome that stopped the switch (SA
   })
 
   it('says nothing of it where the OS was not asked, or could not tell', async () => {
-    expect((await run(claude({ start: 'menu', escCloses: false }))).outcome).toEqual({ kind: 'unknown-exit' })
-    expect((await run(claude({ exit: 'no-echo', os: 'blind' }))).outcome).toEqual({ kind: 'exit-unconfirmed' })
+    // With no word from the OS nothing is typed at all, not the Esc nor /exit (HOLD-C R3, H3-1).
+    expect((await run(claude({ start: 'menu', escCloses: false, os: 'none' }))).outcome).toEqual({ kind: 'unknown-exit' })
+    expect((await run(claude({ exit: 'no-echo', os: 'blind' }))).outcome).toEqual({ kind: 'unknown-exit' })
   })
 })
 
 describe('steps 3-4 (R3): the exit, shown', () => {
   it('stops when the agent ignores its exit command: nothing more is typed', async () => {
     const r = await run(claude({ exit: 'ignore' }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\r'])
     expect(r.t.clock).toBeGreaterThanOrEqual(EXIT_CONFIRM_MS)
   })
 
   it('takes its exit command back out of a box that never shows it', async () => {
     const r = await run(claude({ exit: 'no-echo' }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\u0015'.repeat(20)])
     expect(r.t.clock).toBeGreaterThanOrEqual(ECHO_MS)
   })
@@ -311,10 +313,10 @@ describe('steps 3-4 (R3): the exit, shown', () => {
     expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
     expect(r.t.ran).toEqual(['', `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --session-id ${NEW_ID}`])
     expect(r.t.sentPrompts).toEqual([])
-    // Without the read (Windows), the same screen confirms nothing, and nothing more is typed.
-    const blind = await run(claude({ exit: 'no-hint', reports: false }))
-    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
-    expect(blind.t.ran).toEqual([])
+    // With no word from the OS, nothing is typed at all, /exit included (HOLD-C R3, H3-1).
+    const blind = await run(claude({ exit: 'no-hint', reports: false, os: 'none' }))
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
   })
 
   it('waits for the hint that lands after the shell is back, and resumes the session it names', async () => {
@@ -325,7 +327,7 @@ describe('steps 3-4 (R3): the exit, shown', () => {
 
   it('never reads a shell in the foreground while the agent is still up as its exit', async () => {
     const r = await run(claude({ exit: 'ignore', reports: false, foreground: true }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\r'])
   })
 
@@ -333,18 +335,32 @@ describe('steps 3-4 (R3): the exit, shown', () => {
     // An answer that quotes the hint, the agent's box still under it: the agent is live, and gets
     // its exit command; it ignores it, and the quote still on screen proves nothing.
     const r = await run(claude({ exit: 'ignore', quoteHint: true }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\r'])
   })
 })
 
 describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => {
-  it('takes the line back out of a live agent\'s box, never entering it', async () => {
+  // HOLD-C R3, H3-3: the user's word that it exited is vetoed by a program the OS sees, and by a live box at the foot where the OS
+  // cannot tell: nothing is typed into it.
+  it('types nothing into a live agent\'s box at the user\'s word, on the OS\'s word or the box at the foot', async () => {
     const r = await run(claude(), { start: undefined }, { assumeExited: true })
-    expect(r.outcome).toEqual({ kind: 'agent-alive' })
-    expect(r.t.writes.slice(-1)).toEqual(['\u0015'.repeat(20)])
-    expect(r.t.sentPrompts).toEqual([])
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+    expect(r.t.writes).toEqual([])
     expect(r.recorded).toEqual([])
+    const blind = await run(claude({ os: 'none' }), { start: undefined }, { assumeExited: true })
+    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(blind.t.writes).toEqual([])
+    expect(blind.recorded).toEqual([])
+  })
+
+  // H3-3: the agent's last frame stays drawn after it exits (Windows draws nothing over it until the shell's prompt), so the OS's
+  // "only the shell is left" outweighs a box at the foot, and the user's word goes on.
+  it('goes on at the user\'s word where the OS says only the shell is left, though the agent\'s last frame is still at the foot', async () => {
+    const r = await run(claude(), { start: undefined }, { assumeExited: true }, (t) => { t.mode = 'shell'; t.goneAt = 0 })
+    expect(r.t.osAsked).toBeGreaterThan(0)
+    expect(r.outcome.kind).not.toBe('exit-unconfirmed')
+    expect(r.t.writes.length).toBeGreaterThan(0)
   })
 
   // SW2-7, MODELS-R2-1: "It has exited, switch now" replaces the exit check, not the screen. An agent's box still drawn, with
@@ -356,13 +372,12 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     const DRAFT = 'refactor the whole module'
     const draft = (t: FakeTerminal): void => { t.box = DRAFT }
 
-    it('submits no draft: the sacrificial Enter is not sent into a box that may be live', async () => {
-      const r = await run(claude({ family }), { start: undefined }, { assumeExited: true }, draft)
-      expect(r.outcome).toEqual({ kind: 'agent-alive' })
+    it('submits no draft: nothing is typed into a box that may be live (HOLD-C R3, H3-3)', async () => {
+      const r = await run(claude({ family, os: 'none' }), { start: undefined }, { assumeExited: true }, draft)
+      expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
       expect(r.t.sentPrompts).toEqual([])
-      expect(r.t.writes).not.toContain('\r')
-      expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
-      expect(r.t.box).toBe('')
+      expect(r.t.writes).toEqual([])
+      expect(r.t.box).toBe(DRAFT)
       expect(r.recorded).toEqual([])
     })
 
@@ -423,14 +438,11 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     expect(r.t.ran.filter(Boolean)).toEqual([LINE])
   })
 
-  it('does not type the rest of the line into an agent\'s box, and takes the first part back out', async () => {
-    // The user said it exited, but the agent is up: the first part lands in its box, and that is all
-    // the box is given before it is cleared.
-    const r = await run(claude(), { start: undefined }, { assumeExited: true })
-    expect(r.outcome).toEqual({ kind: 'agent-alive' })
-    expect(r.t.writes).toContain(LINE.slice(0, ECHO_PROBE_CHARS))
-    expect(r.t.writes).not.toContain(LINE.slice(ECHO_PROBE_CHARS))
-    expect(r.t.writes.slice(-1)).toEqual(['\u0015'.repeat(20)])
+  it('does not type the line into an agent\'s box the user said had exited (HOLD-C R3, H3-3)', async () => {
+    // The user said it exited, but the agent is up and its box at the foot: not even the first part goes in.
+    const r = await run(claude({ os: 'none' }), { start: undefined }, { assumeExited: true })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.t.writes).toEqual([])
     expect(r.t.sentPrompts).toEqual([])
   })
 
@@ -609,7 +621,7 @@ describe('Codex 0.164 as it really draws (SWITCH-R1 C1, C2)', () => {
     expect(cleared.t.writes.slice(0, 3)).toEqual(['\u0015'.repeat(20), '/quit', '\r'])
     expect(cleared.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     const held = await hold(codex({ codexStatus: true, clearFails: true }))
-    expect(held.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(held.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(held.t.writes).toEqual(['\u0015'.repeat(20)])
   })
 
@@ -778,9 +790,12 @@ describe('B1 and MODELS-R1-3: the agent is gone on screen while a program still 
     expect(Math.min(...r.t.writeClocks)).toBeGreaterThanOrEqual(6000 + PROMPT_SETTLE_MS - 50)
   })
 
-  it('does not ask the OS at all at the user\'s word that it has exited', async () => {
+  // HOLD-C R3, H3-3: the user's word is checked against the OS, which still sees a program: nothing is typed.
+  it('asks the OS at the user\'s word that it has exited, and types nothing while a program still runs', async () => {
     const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs: 90_000 }), {}, { assumeExited: true })
-    expect(r.t.osAsked).toBe(0)
+    expect(r.t.osAsked).toBeGreaterThan(0)
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+    expect(r.t.writes).toEqual([])
   })
 })
 
@@ -880,7 +895,7 @@ describe('a start Termpolis did not follow (MODELS-R2-4)', () => {
     const fresh = await run(claude({ start: 'gone-hint', os: 'tells' }), { start: undefined }, { fresh: true })
     expect(fresh.outcome).toEqual({ kind: 'fresh', why: 'asked', unseenStart: true })
     // With no start to read a prompt since, and no OS to ask, the hint under the box is no exit: nothing is typed (HOLD-C).
-    const blind = await run(claude({ start: 'gone-hint' }), { start: undefined })
+    const blind = await run(claude({ start: 'gone-hint', os: 'none' }), { start: undefined })
     expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
     expect(blind.t.writes).toEqual([])
     const none = await run(claude({ exit: 'no-hint' }), { start: undefined })
@@ -1176,9 +1191,10 @@ describe('the OS has the last word on whether the agent is gone', () => {
   it('types nothing at the shell, and says it could not confirm the exit, where the OS cannot be asked', async () => {
     // The contrast: without the OS's word, the hint shown at once is no exit (HOLD-C), so no line goes to a shell that is not
     // reading yet.
-    const r = await run(claude({ reports: false, teardownMs: 6000 }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
-    expect(r.t.writes).toEqual(['/exit', '\r'])
+    // ...and with no word from the OS, not even /exit is typed (HOLD-C R3, H3-1).
+    const r = await run(claude({ reports: false, os: 'none', teardownMs: 6000 }))
+    expect(r.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(r.t.writes).toEqual([])
     expect(r.t.ran).toEqual([])
   })
 
@@ -1187,9 +1203,9 @@ describe('the OS has the last word on whether the agent is gone', () => {
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     expect(r.t.clock).toBeGreaterThanOrEqual(12_000)
     // ...where without the OS the same 8 s window ends with nothing confirmed and nothing more typed.
-    const blind = await run(claude({ reports: false, teardownMs: 12_000, hintAfterTeardown: true }))
-    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
-    expect(blind.t.ran).toEqual([])
+    const blind = await run(claude({ reports: false, os: 'none', teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
   })
 
   it('confirms an exit that printed no hint at all (a session with no turns), on Windows too', async () => {
@@ -1205,7 +1221,7 @@ describe('the OS has the last word on whether the agent is gone', () => {
     expect(r.t.ran).toEqual(['', LINE(ID2)])
     // ...where the same screen with no OS to ask and no prompt report is a frame left above the shell's prompt, no live box at the
     // foot: nothing is typed, never /exit (HOLD-C R2, Codex C2).
-    const blind = await run(claude({ start: 'gone-quiet', reports: false }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
+    const blind = await run(claude({ start: 'gone-quiet', reports: false, os: 'none' }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
     expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
     expect(blind.t.writes).toEqual([])
   })
@@ -1239,12 +1255,14 @@ describe('the OS has the last word on whether the agent is gone', () => {
   })
 
 
-  it('goes on the screen\'s word where the OS cannot tell, as before it was asked', async () => {
+  // HOLD-C R3, H3-1: the screen authorizes no key, so where the OS cannot tell, /exit is not typed into what looks like the agent.
+  it('types nothing on the screen\'s word where the OS cannot tell', async () => {
     const blind = await run(claude({ os: 'blind' }))
-    expect(blind.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
     const none = await run(claude({ exit: 'ignore', reports: false, os: 'blind' }))
-    expect(none.outcome).toEqual({ kind: 'exit-unconfirmed' })
-    expect(none.t.writes).toEqual(['/exit', '\r'])
+    expect(none.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(none.t.writes).toEqual([])
   })
 
   it('treats a question it cannot answer after "still running" as a hiccup, and goes on waiting', async () => {
@@ -1253,9 +1271,9 @@ describe('the OS has the last word on whether the agent is gone', () => {
     expect(r.t.ran).toEqual(['', LINE(ID)])
   })
 
-  it('asks the OS nothing when the user said the agent exited: their word replaces the check', async () => {
+  it('asks the OS when the user said the agent exited, and goes on once it sees only the shell (HOLD-C R3, H3-3)', async () => {
     const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells' }), {}, { assumeExited: true })
-    expect(r.t.osAsked).toBe(0)
+    expect(r.t.osAsked).toBeGreaterThan(0)
     expect(r.outcome).toMatchObject({ kind: 'switched' })
   })
 
@@ -1755,19 +1773,16 @@ describe('the first part of the line typed at a shell that still shows the agent
 // press a key that does more than that. A screen no detector knows (a dialog, a blank one) is not a screen that shows the shell back.
 describe("the user's word that the agent exited, and nothing proves it (SW3-8, MODELS-R3-2)", () => {
   const ESC = '\x1b'
-  const DEL = '\x7f'.repeat(ECHO_PROBE_CHARS)
 
   describe.each([['powershell'], ['cmd'], ['posix']] as const)('a live agent that echoes nothing of what is typed (%s)', (family) => {
     it.each([
       ['a turn at work', { start: 'busy', escStops: true }],
       ['a rate-limit menu', { start: 'menu' }],
       ['a permission question', { start: 'question' }],
-    ] as const)('%s: only the first part of the line and its Backspaces reach it, no Esc, no Enter, no line clear', async (_what, over) => {
-      const r = await run(claude({ family, exit: 'no-echo', ...over }), { start: undefined }, { assumeExited: true })
-      expect(r.outcome).toEqual({ kind: 'didnt-start', line: expect.any(String) })
-      expect(r.t.writes).toEqual([r.t.writes[0], DEL])
-      expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
-      for (const w of r.t.writes) expect(w).not.toMatch(/[\r\u001b\u0005\u0015]/)
+    ] as const)('%s: its UI at the foot vetoes the user\'s word, and nothing at all is typed (HOLD-C R3, H3-3)', async (_what, over) => {
+      const r = await run(claude({ family, exit: 'no-echo', os: 'none', ...over }), { start: undefined }, { assumeExited: true })
+      expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+      expect(r.t.writes).toEqual([])
       // The turn is still at work, the menu still open, the question still unanswered.
       expect(r.t.agentState).toBe(over.start)
       expect(r.t.sentPrompts).toEqual([])
@@ -1775,22 +1790,28 @@ describe("the user's word that the agent exited, and nothing proves it (SW3-8, M
       expect(r.recorded).toEqual([])
     })
 
-    it('a live agent that does echo it takes the first part back out of its box, with no Enter and no Esc', async () => {
-      const r = await run(claude({ family }), { start: undefined }, { assumeExited: true }, (t) => { t.box = 'half a prompt' })
-      expect(r.outcome).toEqual({ kind: 'agent-alive' })
+    it('a live agent with a draft in its box at the foot is typed nothing, its draft kept (HOLD-C R3, H3-3)', async () => {
+      const r = await run(claude({ family, os: 'none' }), { start: undefined }, { assumeExited: true }, (t) => { t.box = 'half a prompt' })
+      expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
       expect(r.t.sentPrompts).toEqual([])
-      expect(r.t.writes).not.toContain('\r')
-      expect(r.t.writes).not.toContain(ESC)
+      expect(r.t.writes).toEqual([])
+      expect(r.t.box).toBe('half a prompt')
     })
   })
 
   describe.each([['powershell'], ['cmd'], ['posix']] as const)('a screen that shows neither the agent nor the shell (%s)', (family) => {
-    it.each([
-      ['a blank one', undefined],
-      ['an agent dialog no detector knows (the resume-size question)', 'resume-size' as const],
-    ])('%s: the first part of the line is typed alone, before any key that is not text', async (_what, dialog) => {
-      const prep = dialog ? (t: FakeTerminal): void => { t.agentState = dialog; t.out += t.frame() } : undefined
-      const r = await run(claude({ family, start: dialog ? 'idle' : 'blank' }), { start: undefined }, { assumeExited: true }, prep)
+    // An agent dialog no detector knows by its words (the resume-size question) is still the agent's own select list at the foot,
+    // and vetoes the user's word (HOLD-C R3, H3-3).
+    it('an agent dialog no detector knows (the resume-size question): nothing is typed', async () => {
+      const prep = (t: FakeTerminal): void => { t.agentState = 'resume-size'; t.out += t.frame() }
+      const r = await run(claude({ family, os: 'none', start: 'idle' }), { start: undefined }, { assumeExited: true }, prep)
+      expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+      expect(r.t.writes).toEqual([])
+    })
+
+    it('a blank one: the first part of the line is typed alone, before any key that is not text', async () => {
+      const r = await run(claude({ family, os: 'none', start: 'blank' }), { start: undefined }, { assumeExited: true })
+      expect(r.outcome).toEqual({ kind: 'agent-alive' })
       expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
       expect(r.t.writes[0]).toBe(r.t.writes[0].replace(/[\r\u001b\u0005\u0015]/g, ''))
       expect(r.t.writes).not.toContain('\r')
