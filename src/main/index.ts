@@ -278,7 +278,7 @@ import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory, correctedMemoryIds } from './memoryCorrectionStore'
-import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
+import { markerFs, recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { withoutCandidates } from './lessonSubstance'
 import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, clearNotesRecord, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
@@ -5541,6 +5541,9 @@ async function semanticPoolOptions(
         } catch { /* the next tick tries again */ }
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
+        // The three once-per-install markers below are asked for and recorded on the thread pool: this pass runs on the
+        // main thread, on a timer, and a synchronous look there stalls typing (each is inspected by Defender).
+        const recheckMarkerFs = markerFs(fsPromises)
         // Once per install: demote the sessions other computers' jobs left in memory through 1.52
         // (linkedHistoryRecheck.ts). Only after a pass that read every transcript, so it knows
         // every delegated session still on disk; a pass cut short leaves it for the next one.
@@ -5552,7 +5555,7 @@ async function semanticPoolOptions(
               delegatedHashes,
               isCorrected: (id) => correctionForMemory(id) !== null,
               demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
-              ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, LINKED_RECHECK_MARKER),
+              ...recheckMarker(app.getPath('userData'), recheckMarkerFs, join, LINKED_RECHECK_MARKER),
             })
           } catch { /* the store wasn't readable: the next complete pass tries again */ }
         }
@@ -5563,7 +5566,7 @@ async function semanticPoolOptions(
             list: (opts) => memoryList(opts),
             isCorrected: (id) => correctionForMemory(id) !== null,
             demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
-            ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join),
+            ...recheckMarker(app.getPath('userData'), recheckMarkerFs, join),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }
         // 1.55.0: and once more, now also judged by the substance gate groundEpisode applies at write time.
@@ -5573,7 +5576,7 @@ async function semanticPoolOptions(
             list: (opts) => memoryList(opts),
             isCorrected: (id) => correctionForMemory(id) !== null,
             demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
-            ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, RECHECK_V2_MARKER, 2),
+            ...recheckMarker(app.getPath('userData'), recheckMarkerFs, join, RECHECK_V2_MARKER, 2),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }
 

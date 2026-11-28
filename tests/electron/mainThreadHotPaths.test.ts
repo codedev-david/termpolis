@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 // FIRST: it patches fs and child_process, and a module loaded before it keeps the original functions.
 import { uninstall, arm, disarm, snapshot, describeCounts, describeSites, setAttribution, countSpawn, type Counts } from '../helpers/mainThreadCounters'
+import { quiesceIndexer } from './_indexerQuiesce'
 
 const H = vi.hoisted(() => {
   const os = require('os') as typeof import('os')
@@ -38,6 +39,7 @@ const H = vi.hoisted(() => {
     ptys: [] as any[],
     sent: [] as Array<{ channel: string; args: any[] }>,
     hostRequests: [] as any[],
+    memoryList: undefined as undefined | ((...a: unknown[]) => Promise<unknown[]>),
     hostReply: ((_req: any): { ok: boolean; stdout: string; stderr: string; error?: any } => ({ ok: true, stdout: '', stderr: '' })) as (req: any) => { ok: boolean; stdout: string; stderr: string; error?: any },
   }
 })
@@ -127,13 +129,19 @@ vi.mock('../../src/main/mcpServer', () => ({
   startMcpServer: vi.fn(), stopMcpServer: vi.fn(), getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(), awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
 }))
-vi.mock('../../src/main/memoryClient', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  // The host is never started: its client answers from the in-process store, which this test does not touch.
-  startMemoryHost: vi.fn(async () => 'host'),
-  stopMemoryHost: vi.fn(),
-  setMemoryHostSpawner: vi.fn(),
-}))
+vi.mock('../../src/main/memoryClient', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    // The host is never started: its client answers from the in-process store, which this test does not touch.
+    startMemoryHost: vi.fn(async () => 'host'),
+    stopMemoryHost: vi.fn(),
+    setMemoryHostSpawner: vi.fn(),
+    // The store's listing, as the client answers it, unless a test hands it an answer (the indexer pass below lists
+    // an empty store, so its recheck passes run to the end and record themselves).
+    memoryList: vi.fn((...a: unknown[]) => (H.memoryList ?? (actual.memoryList as (...x: unknown[]) => unknown))(...a)),
+  }
+})
 vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createProxyTransport: vi.fn(() => { throw new Error('no proxy process in this test') }),
@@ -205,12 +213,20 @@ describe('the counters see what src/main does (control)', () => {
     ;(await import('fs')).existsSync(__filename)
     expect(describeCounts(disarm())).toBe('')
     // ...unless the control says so.
-    setAttribution(/mainThreadHotPaths\.test/)
-    arm()
-    ;(await import('fs')).existsSync(__filename)
-    ;(await import('child_process')).execFileSync(process.execPath, ['-e', '0'])
-    const own = disarm()
-    setAttribution(null)
+    // Put back however the control ends: a spawn the OS refuses (EPERM in a sandbox) must fail this test alone, not leave the
+    // counters armed and counting the test's own calls in every later case (Codex R1 saw the watcher case "count" its write).
+    let own: Counts
+    try {
+      setAttribution(/mainThreadHotPaths\.test/)
+      arm()
+      ;(await import('fs')).existsSync(__filename)
+      // Nothing reads the child's output, so it gets none: Codex's Linux sandbox refuses the pipes with EPERM (Codex R2).
+      ;(await import('child_process')).execFileSync(process.execPath, ['-e', '0'], { stdio: 'ignore' })
+      own = disarm()
+    } finally {
+      disarm()
+      setAttribution(null)
+    }
     expect(own.sync.existsSync).toBe(1)
     expect(own.spawn.execFileSync).toBe(1)
     arm()
@@ -404,4 +420,43 @@ describe('what a person does while typing, and what the app does behind it', () 
     expect(H.hostRequests.length).toBeGreaterThan(0)
     expectNothing(c)
   })
+})
+
+describe('the memory indexer behind the typing', () => {
+  // The indexer's first pass starts 10 s after launch, on a timer, on the main thread, so under load it lands inside
+  // whichever hot-path window is open then. Each pass asks whether the once-per-install recheck passes have run
+  // (mnemeLessonRecheck's markers) and the first records them: that must cost no synchronous file call either.
+  it('a full indexer pass asks for and records the recheck markers without a synchronous file call', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const indexer = await import('../../src/main/memoryIndexer')
+    const recheck = await import('../../src/main/mnemeLessonRecheck')
+    // No timed pass from here on; tick() runs the very pass the real entry configured. One already under way finishes
+    // first, and the follow-up it may arm as it ends is cancelled, so nothing but the two ticks runs in the windows.
+    await quiesceIndexer(indexer)
+    expect(indexer.isIndexing()).toBe(false)
+    // As at launch: nothing known about the markers yet, and none on disk, so the pass asks the disk and writes all three.
+    recheck._resetRecheckMarkersForTests()
+    const markers = ['linked-history-recheck.json', 'mneme-lesson-recheck.json', 'mneme-lesson-recheck-v2.json'].map((n) => path.join(H.userData, n))
+    for (const m of markers) fs.rmSync(m, { force: true })
+    H.memoryList = async () => [] // an empty store: each recheck pass lists it, finds nothing to demote and records itself
+    try {
+      let r: any
+      const c = await measure(async () => { r = await indexer.tick() })
+      expect(r, JSON.stringify(r)).toMatchObject({ written: expect.any(Number) })
+      expect(r.error, JSON.stringify(r)).toBeUndefined()
+      expect(r.skipped, JSON.stringify(r)).toBeUndefined()
+      // Not vacuous: the pass did ask and did record (the markers are on disk now).
+      for (const m of markers) expect(fs.existsSync(m), m).toBe(true)
+      expectNothing(c)
+      // Every later pass of the launch already knows: it asks and records nothing. The pass did run (not busy, not paused).
+      const again = await measure(async () => { r = await indexer.tick() })
+      expect(r, JSON.stringify(r)).toMatchObject({ written: expect.any(Number) })
+      expect(r.error, JSON.stringify(r)).toBeUndefined()
+      expect(r.skipped, JSON.stringify(r)).toBeUndefined()
+      expectNothing(again)
+    } finally {
+      H.memoryList = undefined
+    }
+  }, 120_000)
 })

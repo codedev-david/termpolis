@@ -63,9 +63,10 @@ export interface LinkedRecheckDeps {
   /** Already-corrected ids are left alone: someone decided about them already. */
   isCorrected: (id: string) => boolean
   demote: (id: string, reason: string) => { ok: boolean }
-  /** Whether this pass has run on this install before. */
-  done: () => boolean
-  markDone: () => void
+  /** Whether this pass has run on this install before. Asynchronous, like the lesson recheck's (recheckMarker): the
+   *  marker is a file, and the indexer runs this pass on the main thread. */
+  done: () => Promise<boolean>
+  markDone: () => Promise<void>
   /** Awaited now and then: every demotion appends to the correction log on the main thread, and
    *  every chunk is matched there. Default: a setImmediate macrotask, which lets IPC and the PTYs
    *  through. */
@@ -102,7 +103,7 @@ const scopeOf = (c: StoredChunk): string => `${c.agentId}\0${c.projectKey ?? c.p
  *  that can't be read throws and leaves the pass unmarked, so the next indexer pass tries again; a
  *  demotion that fails is simply not counted. */
 export async function recheckLinkedHistory(deps: LinkedRecheckDeps): Promise<LinkedRecheckResult> {
-  if (deps.done()) return { checked: 0, demoted: 0, skipped: 'already-run' }
+  if (await deps.done()) return { checked: 0, demoted: 0, skipped: 'already-run' }
   const pause = deps.yield ?? macrotask
 
   const byId = new Map<string, StoredChunk>()
@@ -213,6 +214,6 @@ export async function recheckLinkedHistory(deps: LinkedRecheckDeps): Promise<Lin
     } catch { /* left as it is */ }
     if (++attempts % YIELD_EVERY_DEMOTIONS === 0) await pause()
   }
-  deps.markDone()
+  await deps.markDone()
   return { checked: byId.size, demoted }
 }

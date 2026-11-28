@@ -98,9 +98,10 @@ export interface RecheckDeps {
   /** Already-corrected ids are left alone: someone decided about them already. */
   isCorrected: (id: string) => boolean
   demote: (id: string, reason: string) => { ok: boolean }
-  /** Whether this pass has run on this install before. */
-  done: () => boolean
-  markDone: () => void
+  /** Whether this pass has run on this install before. Asynchronous: the marker is a file (recheckMarker), and the
+   *  indexer that runs the pass is on the main thread, where a synchronous file call stalls typing. */
+  done: () => Promise<boolean>
+  markDone: () => Promise<void>
   /** Awaited every YIELD_EVERY demotions. Each demotion appends to the correction log
    *  synchronously, on the main thread, so a store with thousands of junk lessons must not do them
    *  in one unbroken run. Default: a setImmediate macrotask, which lets IPC and the PTYs through. */
@@ -125,7 +126,7 @@ const macrotask = (): Promise<void> => new Promise<void>((resolve) => setImmedia
  *  leaves the pass unmarked, so the next indexer pass tries again; a demotion that fails is simply
  *  not counted. */
 export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckResult> {
-  if (deps.done()) return { checked: 0, demoted: 0, skipped: 'already-run' }
+  if (await deps.done()) return { checked: 0, demoted: 0, skipped: 'already-run' }
   const judge = deps.judge ?? wouldStillWrite
   const reason = deps.reason ?? RECHECK_REASON
   let checked = 0
@@ -152,7 +153,7 @@ export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckRe
     // didn't fit on this page are not skipped; `seen` drops the ones already judged.
     before = (page[page.length - 1].ts || 0) + 1
   }
-  deps.markDone()
+  await deps.markDone()
   return { checked, demoted }
 }
 
@@ -163,37 +164,145 @@ export function recheckStoredLessonsV2(deps: Omit<RecheckDeps, 'judge' | 'reason
   return recheckStoredLessons({ ...deps, judge: wouldStillWriteV2, reason: RECHECK_V2_REASON })
 }
 
-/** Whether the pass has run, kept in userData under `name`. Unreadable counts as not run: running
- *  a pass twice only re-judges what it judged, and an already-demoted entry is skipped as corrected.
- *  The linked-history pass keeps its own marker the same way (linkedHistoryRecheck). */
-/** What the disk said about each marker file, at the first look this launch. Module-level because the indexer builds a
- *  fresh marker object on every pass (index.ts), so a memo inside the object would be thrown away with it. */
-const markerKnown = new Map<string, boolean>()
+/** What the disk said about each marker file this launch: the first look's answer, or the look itself while it is out, so
+ *  passes that ask at the same time share one look; true once a pass has run to the end this launch. Module-level because
+ *  the indexer builds a fresh marker object on every pass (index.ts), so a memo inside the object would be thrown away. */
+const markerKnown = new Map<string, Promise<boolean>>()
+/** Markers whose pass ran to the end this launch but whose record is not on disk yet: the text still to write. */
+const markerOwed = new Map<string, string>()
+/** A marker write under way, so passes that retry it at the same time share it. */
+const markerWriting = new Map<string, Promise<void>>()
+/** A temp file a failed marker write could not remove, by marker: removed before that marker's next write. */
+const markerTempLeft = new Map<string, string>()
 
 /** @internal test-only */
 export function _resetRecheckMarkersForTests(): void {
   markerKnown.clear()
+  markerOwed.clear()
+  markerWriting.clear()
+  markerTempLeft.clear()
 }
 
+let markerTemps = 0
+/** How many temp names a write tries before it gives up, when each is already taken (EEXIST). */
+const MARKER_TEMP_TRIES = 8
+const errCode = (err: unknown): unknown => (err as { code?: unknown } | null)?.code
+
+/** The marker files' store, asynchronous so no look or write is made on the main thread (on David's laptop Defender
+ *  inspects each synchronous file call, and one can stall typing for up to 1.5 s). The app passes fs.promises.
+ *
+ *  A missing marker (ENOENT) is the answer "not run". Any other failure (EACCES, EPERM, EIO...) is "could not tell" and
+ *  rejects: recheckMarker reads that as not run too, but does not remember it, so the next pass asks again.
+ *
+ *  A marker is written whole or not at all, since its being there is the whole answer: the text goes to a temp file beside
+ *  it (same folder, so the rename never crosses a volume) and is renamed onto it. A write that fails part way, or a rename
+ *  that is refused, removes the temp and rejects, leaving no marker. (agentConfigIO's atomicWriteText is synchronous, and
+ *  ingestWatermark's writer falls back to writing the file in place, which could leave half a marker.)
+ *
+ *  The temp is created exclusively ('wx'), so the write never goes into, or through a link at, a file already there: a
+ *  name that is taken is left alone and the next is tried, up to MARKER_TEMP_TRIES. A temp the failed write could not
+ *  remove is remembered and removed before that marker's next write, which does not go ahead while it stays, so failures
+ *  that persist leave one temp per marker, not one per try. A temp left by a crash between the write and the rename is
+ *  not known to the next launch and stays: a few bytes, beside the marker, named for it. */
+export function markerFs(fsp: {
+  access: (p: string) => Promise<void>
+  writeFile: (p: string, text: string, options: { flag: 'wx' }) => Promise<void>
+  rename: (from: string, to: string) => Promise<void>
+  unlink: (p: string) => Promise<void>
+}): { exists: (p: string) => Promise<boolean>; write: (p: string, text: string) => Promise<void> } {
+  return {
+    exists: (p) => fsp.access(p).then(
+      () => true,
+      (err: unknown) => {
+        if (errCode(err) === 'ENOENT') return false
+        throw err
+      },
+    ),
+    write: async (p, text) => {
+      const unlink = (f: string): Promise<void> => new Promise<void>((resolve) => { resolve(fsp.unlink(f)) })
+      // Our temp is gone (removed, or never made), or it is remembered for the next write to remove.
+      const discard = (tmp: string): Promise<void> =>
+        unlink(tmp).catch((e: unknown) => { if (errCode(e) !== 'ENOENT') markerTempLeft.set(p, tmp) })
+      const left = markerTempLeft.get(p)
+      if (left !== undefined) {
+        // Still there and not removable: fail now rather than leave a second temp beside it.
+        await unlink(left).catch((e: unknown) => { if (errCode(e) !== 'ENOENT') throw e })
+        markerTempLeft.delete(p)
+      }
+      let tmp = ''
+      for (let tries = 1; ; tries++) {
+        tmp = `${p}.${process.pid}.${++markerTemps}.tmp`
+        try {
+          await fsp.writeFile(tmp, text, { flag: 'wx' })
+          break
+        } catch (err) {
+          if (errCode(err) === 'EEXIST') {
+            if (tries < MARKER_TEMP_TRIES) continue // someone else's file: left alone
+            throw err
+          }
+          await discard(tmp) // a write that failed part way may have made it
+          throw err
+        }
+      }
+      try {
+        await fsp.rename(tmp, p)
+      } catch (err) {
+        await discard(tmp)
+        throw err
+      }
+    },
+  }
+}
+
+/** Whether the pass has run, kept in userData under `name`. Unreadable counts as not run: running
+ *  a pass twice only re-judges what it judged, and an already-demoted entry is skipped as corrected.
+ *  The linked-history pass keeps its own marker the same way (linkedHistoryRecheck). */
 export function recheckMarker(userDataPath: string, fs: {
-  exists: (p: string) => boolean
-  write: (p: string, text: string) => void
+  exists: (p: string) => Promise<boolean>
+  write: (p: string, text: string) => Promise<void>
 }, join: (...parts: string[]) => string, name = 'mneme-lesson-recheck.json', version = 1): Pick<RecheckDeps, 'done' | 'markDone'> {
   const file = join(userDataPath, name)
+  const text = JSON.stringify({ version })
   // The disk is asked ONCE per launch. The indexer asks on every pass (every 30 minutes, on the main thread), and only
   // markDone() below changes the answer afterwards (one Termpolis per profile writes this file), so a second look at the
-  // disk could only repeat the first. An unreadable disk is not remembered: it is asked again on the next pass.
+  // disk could only repeat the first. Passes that ask while the look is out wait for it instead of asking again. An
+  // unreadable disk is not remembered: it is asked again on the next pass.
+  //
+  // Writes the record that is owed; one already under way is shared. Never rejects: a write that fails leaves the record
+  // owed, for the next pass to write again.
+  const persist = (owed: string): Promise<void> => {
+    const under = markerWriting.get(file)
+    if (under !== undefined) return under
+    const writing = new Promise<void>((resolve) => { resolve(fs.write(file, owed)) }).then(
+      () => { markerOwed.delete(file) },
+      () => { /* still owed */ },
+    ).finally(() => { markerWriting.delete(file) })
+    markerWriting.set(file, writing)
+    return writing
+  }
   return {
     done: () => {
+      // The pass ran this launch but its record is not on disk: done, and this pass only writes the record again.
+      const owed = markerOwed.get(file)
+      if (owed !== undefined) return persist(owed).then(() => true)
       let known = markerKnown.get(file)
       if (known === undefined) {
-        try { known = fs.exists(file) } catch { return false }
-        markerKnown.set(file, known)
+        // The executor runs now, so an exists() that throws instead of rejecting is caught here as well.
+        const look = new Promise<boolean>((resolve) => { resolve(fs.exists(file)) })
+        known = look
+        markerKnown.set(file, look)
+        // Forget a failed look, unless markDone() has recorded the pass meanwhile (that answer stands).
+        look.catch(() => { if (markerKnown.get(file) === look) markerKnown.delete(file) })
       }
-      return known
+      return known.catch(() => false)
     },
-    markDone: () => {
-      try { fs.write(file, JSON.stringify({ version })); markerKnown.set(file, true) } catch { /* runs again next launch */ }
+    markDone: async () => {
+      // The scan ran to the end: it is done for the rest of this launch whether or not the record reaches the disk, so a
+      // folder that refuses the write costs one scan per launch, not one per pass. Until the record is written, each later
+      // pass writes it again (done() above); a launch that never manages to write it scans once more at the next launch.
+      markerKnown.set(file, Promise.resolve(true))
+      markerOwed.set(file, text)
+      await persist(text)
     },
   }
 }

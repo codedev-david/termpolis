@@ -1,7 +1,7 @@
 // The one-time pass over memory that 1.50-1.52 stored from jobs other computers ran here. It must
 // take whole delegated sessions, including the windows a long primer was cut into and the chunks
 // a later ingest pass wrote without linking them, and nothing of the user's own sessions.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { join } from 'path'
 import {
   HISTORY_AGENTS,
@@ -12,7 +12,7 @@ import {
   type LinkedRecheckDeps,
   type StoredChunk,
 } from '../../src/main/linkedHistoryRecheck'
-import { recheckMarker } from '../../src/main/mnemeLessonRecheck'
+import { _resetRecheckMarkersForTests, recheckMarker } from '../../src/main/mnemeLessonRecheck'
 import { chunkTurns, parseClaudeTranscript } from '../../src/main/conversationIngest'
 import { buildExecPrompt } from '../../src/main/headlessExec'
 import { delegationHeader } from '../../src/shared/headlessPrompt'
@@ -54,8 +54,8 @@ function run(chunks: StoredChunk[], edges: Edge[] = [], over: Partial<LinkedRech
       demoted.push(id)
       return { ok: true }
     },
-    done: () => false,
-    markDone: () => marks.push(1),
+    done: async () => false,
+    markDone: async () => { marks.push(1) },
     yield: async () => {},
     ...over,
   }
@@ -120,13 +120,13 @@ describe('what it reads', () => {
     const s = store(same)
     // A store that ignores `before` keeps answering with the same page.
     s.list.mockImplementation(async (opts) => (opts.agentId === 'claude-history' ? same : []))
-    const result = await recheckLinkedHistory({ ...s, isCorrected: () => false, demote: () => ({ ok: true }), done: () => false, markDone: () => {}, yield: async () => {} })
+    const result = await recheckLinkedHistory({ ...s, isCorrected: () => false, demote: () => ({ ok: true }), done: async () => false, markDone: async () => {}, yield: async () => {} })
     expect(result.checked).toBe(500)
     expect(s.list.mock.calls.filter(([o]) => o.agentId === 'claude-history')).toHaveLength(2)
   })
 
   it('runs once per install', async () => {
-    const h = run([], [], { done: () => true })
+    const h = run([], [], { done: async () => true })
     expect(await h.result).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
     expect(h.list).not.toHaveBeenCalled()
     expect(h.marks).toEqual([])
@@ -334,18 +334,45 @@ describe('what it demotes', () => {
     const job = session('job', [{ role: 'user', text: `${HEADER}\n\nGo.` }], T0)
     const many = Array.from({ length: 30 }, (_, i) => ({ ...job.chunks[0], id: `m${i}`, ts: T0 + i, hash: undefined }))
     const s = store(many)
-    const result = await recheckLinkedHistory({ ...s, isCorrected: () => false, demote: () => ({ ok: true }), done: () => false, markDone: () => {} })
+    const result = await recheckLinkedHistory({ ...s, isCorrected: () => false, demote: () => ({ ok: true }), done: async () => false, markDone: async () => {} })
     expect(result.demoted).toBe(30)
   })
 })
 
 describe('the marker', () => {
-  it('lives in userData under its own name, next to the lesson recheck', () => {
+  beforeEach(() => { _resetRecheckMarkersForTests() })
+
+  it('lives in userData under its own name, next to the lesson recheck', async () => {
     const files = new Map<string, string>()
-    const m = recheckMarker('/data', { exists: (p) => files.has(p), write: (p, t) => { files.set(p, t) } }, join, LINKED_RECHECK_MARKER)
-    expect(m.done()).toBe(false)
-    m.markDone()
+    const m = recheckMarker('/data', { exists: async (p) => files.has(p), write: async (p, t) => { files.set(p, t) } }, join, LINKED_RECHECK_MARKER)
+    expect(await m.done()).toBe(false)
+    await m.markDone()
     expect([...files.keys()]).toEqual([join('/data', 'linked-history-recheck.json')])
-    expect(m.done()).toBe(true)
+    expect(await m.done()).toBe(true)
+  })
+
+  // The marker is asked and recorded off the main thread now (async fs), so the pass has to wait for both.
+  it('the pass waits for the answer before it reads anything', async () => {
+    let answer!: (v: boolean) => void
+    const h = run([], [], { done: () => new Promise<boolean>((r) => { answer = r }) })
+    for (let i = 0; i < 10; i++) await new Promise<void>((r) => setImmediate(r))
+    expect(h.list).not.toHaveBeenCalled()
+    answer(true)
+    expect(await h.result).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
+    expect(h.list).not.toHaveBeenCalled()
+  })
+
+  it('the pass reports itself finished only once its marker is recorded', async () => {
+    let recorded!: () => void
+    const markDone = vi.fn(() => new Promise<void>((r) => { recorded = r }))
+    let finished = false
+    const h = run([], [], { markDone })
+    void h.result.then(() => { finished = true })
+    for (let i = 0; i < 10; i++) await new Promise<void>((r) => setImmediate(r))
+    expect(markDone).toHaveBeenCalledTimes(1)
+    expect(finished).toBe(false)
+    recorded()
+    expect(await h.result).toEqual({ checked: 0, demoted: 0 })
+    expect(finished).toBe(true)
   })
 })

@@ -5,6 +5,7 @@ import {
   _resetRecheckMarkersForTests,
   RECHECK_V2_MARKER,
   RECHECK_V2_REASON,
+  markerFs,
   recheckMarker,
   recheckStoredLessons,
   recheckStoredLessonsV2,
@@ -82,8 +83,8 @@ function deps(store: StoredLesson[], over: Partial<RecheckDeps> = {}) {
         .slice(0, limit)),
     isCorrected: () => false,
     demote: vi.fn((id: string) => { demoted.push(id); return { ok: true } }),
-    done: () => marked,
-    markDone: () => { marked = true },
+    done: async () => marked,
+    markDone: async () => { marked = true },
     ...over,
     demoted,
     marked: () => marked,
@@ -101,7 +102,7 @@ describe('recheckStoredLessons', () => {
   })
 
   it('runs once per install', async () => {
-    const d = deps(JUNK, { done: () => true })
+    const d = deps(JUNK, { done: async () => true })
     expect(await recheckStoredLessons(d)).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
     expect(d.list).not.toHaveBeenCalled()
   })
@@ -172,7 +173,45 @@ describe('recheckStoredLessons', () => {
     await expect(recheckStoredLessons(d)).rejects.toThrow('memory host stopped')
     expect(d.marked()).toBe(false)
   })
+
+  // The marker is asked and recorded off the main thread now (async fs), so the pass has to wait for both.
+  it('waits for the marker: a pass not yet known to have run starts only once the answer is in', async () => {
+    let answer!: (v: boolean) => void
+    const d = deps(JUNK, { done: () => new Promise<boolean>((r) => { answer = r }) })
+    const result = recheckStoredLessons(d)
+    await macrotasks()
+    expect(d.list).not.toHaveBeenCalled()
+    answer(true)
+    expect(await result).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
+    expect(d.list).not.toHaveBeenCalled()
+  })
+
+  it('reports the pass finished only once its marker is recorded', async () => {
+    let recorded!: () => void
+    const markDone = vi.fn(() => new Promise<void>((r) => { recorded = r }))
+    let finished = false
+    const result = recheckStoredLessons(deps(JUNK, { markDone })).then((r) => { finished = true; return r })
+    await macrotasks()
+    expect(markDone).toHaveBeenCalledTimes(1)
+    expect(finished).toBe(false)
+    recorded()
+    expect(await result).toEqual({ checked: JUNK.length, demoted: JUNK.length })
+    expect(finished).toBe(true)
+  })
 })
+
+/** Let every promise and setImmediate already queued run (a pass yields with setImmediate). */
+async function macrotasks(n = 10): Promise<void> {
+  for (let i = 0; i < n; i++) await new Promise<void>((r) => setImmediate(r))
+}
+
+/** A promise the test settles itself. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
 
 // ── 1.55.0: the second pass, judged by the substance gate (lessonSubstance.ts) ──────────────────────────
 // Invented lessons. The first pass asked "would the 1.50.1 extractor still write this?"; this one also asks
@@ -264,7 +303,7 @@ describe('recheckStoredLessonsV2', () => {
   })
 
   it('runs once per device: a marked pass reads nothing', async () => {
-    const d = deps(store(), { done: () => true })
+    const d = deps(store(), { done: async () => true })
     expect(await recheckStoredLessonsV2(d)).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
     expect(d.list).not.toHaveBeenCalled()
     expect(d.demote).not.toHaveBeenCalled()
@@ -339,77 +378,479 @@ describe('recheckStoredLessonsV2', () => {
 describe('recheckMarker', () => {
   beforeEach(() => { _resetRecheckMarkersForTests() })
 
-  it('records the pass in userData and reads it back', () => {
-    const files = new Map<string, string>()
-    const m = recheckMarker('/data', { exists: (p) => files.has(p), write: (p, t) => { files.set(p, t) } }, join)
-    expect(m.done()).toBe(false)
-    m.markDone()
-    expect(files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}')
-    expect(m.done()).toBe(true)
+  /** A marker store in memory, asked and written asynchronously as the app's (markerFs over fs.promises) is. */
+  function memFs(files = new Map<string, string>()) {
+    const fs = {
+      files,
+      asks: 0,
+      exists: vi.fn(async (p: string) => { fs.asks++; return files.has(p) }),
+      write: vi.fn(async (p: string, t: string) => { files.set(p, t) }),
+    }
+    return fs
+  }
+
+  it('records the pass in userData and reads it back', async () => {
+    const fs = memFs()
+    const m = recheckMarker('/data', fs, join)
+    expect(await m.done()).toBe(false)
+    await m.markDone()
+    expect(fs.files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}')
+    expect(await m.done()).toBe(true)
   })
 
-  it('asks the disk once the marker is there, not on every pass (the indexer asks every few minutes, on the main thread)', () => {
-    let asks = 0
-    const files = new Map<string, string>([[join('/data', 'mneme-lesson-recheck.json'), '{"version":1}']])
-    const m = recheckMarker('/data', { exists: (p) => { asks++; return files.has(p) }, write: () => {} }, join)
-    for (let i = 0; i < 50; i++) expect(m.done()).toBe(true)
-    expect(asks).toBe(1)
+  it('asks the disk once the marker is there, not on every pass (the indexer asks every few minutes, on the main thread)', async () => {
+    const fs = memFs(new Map([[join('/data', 'mneme-lesson-recheck.json'), '{"version":1}']]))
+    const m = recheckMarker('/data', fs, join)
+    for (let i = 0; i < 50; i++) expect(await m.done()).toBe(true)
+    expect(fs.asks).toBe(1)
   })
 
-  it('asks the disk once per launch, however many marker objects ask (the indexer builds a new one on every pass)', () => {
-    let asks = 0
-    const files = new Map<string, string>()
-    const fsLike = { exists: (p: string) => { asks++; return files.has(p) }, write: (p: string, t: string) => { files.set(p, t) } }
-    for (let pass = 0; pass < 30; pass++) expect(recheckMarker('/data', fsLike, join).done()).toBe(false)
-    expect(asks).toBe(1)
-    recheckMarker('/data', fsLike, join).markDone() // this pass finished
-    expect(recheckMarker('/data', fsLike, join).done()).toBe(true) // the next pass's fresh marker knows
-    expect(asks).toBe(1)
-    expect(recheckMarker('/data', fsLike, join, 'linked-history-recheck.json').done()).toBe(false) // another marker is its own question
-    expect(asks).toBe(2)
+  it('asks the disk once per launch, however many marker objects ask (the indexer builds a new one on every pass)', async () => {
+    const fs = memFs()
+    for (let pass = 0; pass < 30; pass++) expect(await recheckMarker('/data', fs, join).done()).toBe(false)
+    expect(fs.asks).toBe(1)
+    await recheckMarker('/data', fs, join).markDone() // this pass finished
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true) // the next pass's fresh marker knows
+    expect(fs.asks).toBe(1)
+    expect(await recheckMarker('/data', fs, join, 'linked-history-recheck.json').done()).toBe(false) // another marker is its own question
+    expect(fs.asks).toBe(2)
   })
 
-  it('asks the disk once even when the marker is missing: only markDone() changes the answer, and it needs no read back', () => {
-    let asks = 0
-    const files = new Map<string, string>()
-    const m = recheckMarker('/data', { exists: (p) => { asks++; return files.has(p) }, write: (p, t) => { files.set(p, t) } }, join)
-    for (let i = 0; i < 20; i++) expect(m.done()).toBe(false) // twenty passes that could not finish: one look at the disk
-    expect(asks).toBe(1)
-    m.markDone()
-    expect(m.done()).toBe(true)
-    expect(m.done()).toBe(true)
-    expect(asks).toBe(1)
+  it('asks the disk once even when the marker is missing: only markDone() changes the answer, and it needs no read back', async () => {
+    const fs = memFs()
+    const m = recheckMarker('/data', fs, join)
+    for (let i = 0; i < 20; i++) expect(await m.done()).toBe(false) // twenty passes that could not finish: one look at the disk
+    expect(fs.asks).toBe(1)
+    await m.markDone()
+    expect(await m.done()).toBe(true)
+    expect(await m.done()).toBe(true)
+    expect(fs.asks).toBe(1)
   })
 
-  it('does not remember a disk that could not be read: the next pass asks again', () => {
+  it('takes a recorded pass as done without asking the disk at all', async () => {
+    const fs = memFs()
+    await recheckMarker('/data', fs, join).markDone() // the first pass of this launch ran to the end before anything asked
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(fs.asks).toBe(0)
+  })
+
+  it('does not remember a disk that could not be read: the next pass asks again', async () => {
     let asks = 0
     let broken = true
-    const m = recheckMarker('/data', { exists: () => { asks++; if (broken) throw new Error('EIO'); return true }, write: () => {} }, join)
-    expect(m.done()).toBe(false)
-    expect(m.done()).toBe(false)
+    const m = recheckMarker('/data', { exists: async () => { asks++; if (broken) throw new Error('EIO'); return true }, write: async () => {} }, join)
+    expect(await m.done()).toBe(false)
+    expect(await m.done()).toBe(false)
     expect(asks).toBe(2)
     broken = false
-    expect(m.done()).toBe(true)
-    expect(m.done()).toBe(true)
+    expect(await m.done()).toBe(true)
+    expect(await m.done()).toBe(true)
     expect(asks).toBe(3)
   })
 
-  it('keeps the second pass in its own file, so a store that ran the first still runs it', () => {
-    const files = new Map<string, string>()
-    const fs = { exists: (p: string) => files.has(p), write: (p: string, t: string) => { files.set(p, t) } }
-    recheckMarker('/data', fs, join).markDone() // the 1.50.1 pass has run
-    const v2 = recheckMarker('/data', fs, join, RECHECK_V2_MARKER, 2)
-    expect(RECHECK_V2_MARKER).toBe('mneme-lesson-recheck-v2.json')
-    expect(v2.done()).toBe(false)
-    v2.markDone()
-    expect(files.get(join('/data', 'mneme-lesson-recheck-v2.json'))).toBe('{"version":2}')
-    expect(files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}') // untouched
-    expect(v2.done()).toBe(true)
+  it('treats an exists that throws before it returns a promise as unreadable, not remembered', async () => {
+    let asks = 0
+    const exists = (): Promise<boolean> => { asks++; throw new Error('EIO') }
+    const m = recheckMarker('/data', { exists, write: async () => {} }, join)
+    expect(await m.done()).toBe(false)
+    expect(await m.done()).toBe(false)
+    expect(asks).toBe(2)
   })
 
-  it('never throws', () => {
-    const m = recheckMarker('/data', { exists: () => { throw new Error('EIO') }, write: () => { throw new Error('EROFS') } }, join)
-    expect(m.done()).toBe(false)
-    expect(() => m.markDone()).not.toThrow()
+  it('asks the disk once for passes that ask at the same time, and gives them all its answer', async () => {
+    const answer = deferred<boolean>()
+    let asks = 0
+    const fs = { exists: () => { asks++; return answer.promise }, write: async () => {} }
+    const asking = [recheckMarker('/data', fs, join).done(), recheckMarker('/data', fs, join).done(), recheckMarker('/data', fs, join).done()]
+    expect(asks).toBe(1)
+    answer.resolve(true)
+    expect(await Promise.all(asking)).toEqual([true, true, true])
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(asks).toBe(1)
+  })
+
+  it('a look that fails while several passes wait fails them all as "not run", and the next pass asks again', async () => {
+    const answer = deferred<boolean>()
+    let asks = 0
+    const fs = { exists: () => { asks++; return asks === 1 ? answer.promise : Promise.resolve(true) }, write: async () => {} }
+    const asking = [recheckMarker('/data', fs, join).done(), recheckMarker('/data', fs, join).done()]
+    answer.reject(new Error('EIO'))
+    expect(await Promise.all(asking)).toEqual([false, false])
+    expect(asks).toBe(1)
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(asks).toBe(2)
+  })
+
+  it('a pass recorded while a look is still out is done afterwards, whatever that look comes back with', async () => {
+    const answer = deferred<boolean>()
+    let asks = 0
+    const files = new Map<string, string>()
+    const fs = { exists: () => { asks++; return answer.promise }, write: async (p: string, t: string) => { files.set(p, t) } }
+    const early = recheckMarker('/data', fs, join).done() // asked before the pass finished
+    await recheckMarker('/data', fs, join).markDone()
+    answer.resolve(false) // the disk as it was when asked
+    expect(await early).toBe(false) // what was true when it asked, as a synchronous look would have said
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(asks).toBe(1)
+  })
+
+  it('a look that fails after the pass was recorded does not forget the record', async () => {
+    const answer = deferred<boolean>()
+    let asks = 0
+    const fs = { exists: () => { asks++; return answer.promise }, write: async () => {} }
+    const early = recheckMarker('/data', fs, join).done()
+    await recheckMarker('/data', fs, join).markDone()
+    answer.reject(new Error('EIO'))
+    expect(await early).toBe(false)
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(asks).toBe(1)
+  })
+
+  it('keeps the second pass in its own file, so a store that ran the first still runs it', async () => {
+    const fs = memFs()
+    await recheckMarker('/data', fs, join).markDone() // the 1.50.1 pass has run
+    const v2 = recheckMarker('/data', fs, join, RECHECK_V2_MARKER, 2)
+    expect(RECHECK_V2_MARKER).toBe('mneme-lesson-recheck-v2.json')
+    expect(await v2.done()).toBe(false)
+    await v2.markDone()
+    expect(fs.files.get(join('/data', 'mneme-lesson-recheck-v2.json'))).toBe('{"version":2}')
+    expect(fs.files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}') // untouched
+    expect(await v2.done()).toBe(true)
+  })
+
+  it('never rejects, and a pass whose record could not be written is done for the rest of this launch, not after it', async () => {
+    let asks = 0
+    const m = recheckMarker('/data', { exists: async () => { asks++; return false }, write: async () => { throw new Error('EROFS') } }, join)
+    expect(await m.done()).toBe(false)
+    await expect(m.markDone()).resolves.toBeUndefined()
+    expect(await m.done()).toBe(true) // the scan ran to the end: not again this launch
+    expect(asks).toBe(1)
+    _resetRecheckMarkersForTests() // the next launch: nothing on disk says it ran
+    expect(await m.done()).toBe(false)
+    expect(asks).toBe(2)
+    const sync = recheckMarker('/data', { exists: async () => false, write: () => { throw new Error('EROFS') } }, join, 'other.json')
+    await expect(sync.markDone()).resolves.toBeUndefined()
+    expect(await sync.done()).toBe(true)
+  })
+
+  it('a record that could not be written is written again by the next pass that asks, until it lands, and not after', async () => {
+    let fails = 2
+    const written: string[] = []
+    const fs = {
+      exists: vi.fn(async () => false),
+      write: vi.fn(async (p: string, t: string) => { if (fails-- > 0) throw new Error('EBUSY'); written.push(`${p}=${t}`) }),
+    }
+    await recheckMarker('/data', fs, join).markDone() // fails
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true) // retries, fails again
+    expect(fs.write).toHaveBeenCalledTimes(2)
+    expect(written).toEqual([])
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true) // retries, lands
+    expect(written).toEqual([`${join('/data', 'mneme-lesson-recheck.json')}={"version":1}`])
+    for (let i = 0; i < 5; i++) expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(fs.write).toHaveBeenCalledTimes(3) // landed: nothing more to write
+    expect(fs.exists).not.toHaveBeenCalled() // and the disk was never asked: the pass is known to have run
+  })
+
+  it('passes that retry the write at the same time share one write', async () => {
+    let first = true
+    const landing = deferred<void>()
+    const fs = { exists: async () => false, write: vi.fn(() => { if (first) { first = false; return Promise.reject(new Error('EBUSY')) } return landing.promise }) }
+    await recheckMarker('/data', fs, join).markDone()
+    const asking = [recheckMarker('/data', fs, join).done(), recheckMarker('/data', fs, join).done(), recheckMarker('/data', fs, join).done()]
+    expect(fs.write).toHaveBeenCalledTimes(2) // the failed one, then one retry for all three
+    landing.resolve()
+    expect(await Promise.all(asking)).toEqual([true, true, true])
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(fs.write).toHaveBeenCalledTimes(2)
+  })
+
+  it('a pass that finishes while a retry is out shares that write rather than start a second', async () => {
+    let first = true
+    const landing = deferred<void>()
+    const fs = { exists: async () => false, write: vi.fn(() => { if (first) { first = false; return Promise.reject(new Error('EBUSY')) } return landing.promise }) }
+    await recheckMarker('/data', fs, join).markDone()
+    const retry = recheckMarker('/data', fs, join).done()
+    const marking = recheckMarker('/data', fs, join).markDone()
+    expect(fs.write).toHaveBeenCalledTimes(2)
+    landing.resolve()
+    await marking
+    expect(await retry).toBe(true)
+    expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect(fs.write).toHaveBeenCalledTimes(2)
+  })
+
+  it('a write that keeps failing (EACCES/EPERM on the folder) scans the store once per launch, and only retries the write after (Codex R1 probe)', async () => {
+    const denied = (): never => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }) }
+    const fs = markerFs({ access: async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) }, writeFile: async () => denied(), rename: async () => denied(), unlink: async () => {} })
+    const store = [...JUNK, ...KEEP]
+    const d = deps(store, recheckMarker('/data', fs, join))
+    const writes = vi.spyOn(fs, 'write')
+    const first = await recheckStoredLessons({ ...d, ...recheckMarker('/data', fs, join) })
+    expect(first.checked).toBeGreaterThan(0)
+    for (let pass = 0; pass < 3; pass++) {
+      expect(await recheckStoredLessons({ ...d, ...recheckMarker('/data', fs, join) })).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
+    }
+    expect(d.list).toHaveBeenCalledTimes(1) // one scan, not one per pass
+    expect(writes).toHaveBeenCalledTimes(4) // the pass's own write, then one retry per later pass
+  })
+})
+
+describe('markerFs (the app\'s marker store, over fs.promises: off the main thread)', () => {
+  const err = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code })
+  const quiet = { writeFile: async () => {}, rename: async () => {}, unlink: async () => {} }
+  beforeEach(() => { _resetRecheckMarkersForTests() }) // a temp left by one test's marker is not the next test's
+
+  /** fs.promises in memory, enough of it for the marker: a file is there once written ('wx' refuses one already there);
+   *  a rename moves it. */
+  function disk(over: { writeFile?: (p: string, t: string, o?: { flag?: string }) => Promise<void>; rename?: (a: string, b: string) => Promise<void>; unlink?: (p: string) => Promise<void> } = {}, files = new Map<string, string>()) {
+    const io = {
+      files,
+      access: vi.fn(async (p: string) => { if (!files.has(p)) throw err('ENOENT') }),
+      writeFile: vi.fn(over.writeFile ?? (async (p: string, t: string, o?: { flag?: string }) => {
+        if (o?.flag === 'wx' && files.has(p)) throw err('EEXIST')
+        files.set(p, t)
+      })),
+      rename: vi.fn(over.rename ?? (async (a: string, b: string) => {
+        const t = files.get(a)
+        if (t === undefined) throw err('ENOENT')
+        files.delete(a)
+        files.set(b, t)
+      })),
+      unlink: vi.fn(over.unlink ?? (async (p: string) => { if (!files.delete(p)) throw err('ENOENT') })),
+    }
+    return io
+  }
+
+  it('a marker that is there exists', async () => {
+    const access = vi.fn(async () => {})
+    expect(await markerFs({ access, ...quiet }).exists('/data/m.json')).toBe(true)
+    expect(access).toHaveBeenCalledWith('/data/m.json')
+  })
+
+  it('a missing marker (ENOENT) is a plain no: the pass has not run', async () => {
+    expect(await markerFs({ access: async () => { throw err('ENOENT') }, ...quiet }).exists('/data/m.json')).toBe(false)
+  })
+
+  it('any other failure is "could not tell", which recheckMarker does not remember', async () => {
+    for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
+      await expect(markerFs({ access: async () => { throw err(code) }, ...quiet }).exists('/data/m.json')).rejects.toThrow(code)
+    }
+    await expect(markerFs({ access: async () => { throw 'odd' }, ...quiet }).exists('/data/m.json')).rejects.toBe('odd')
+    await expect(markerFs({ access: async () => { throw null }, ...quiet }).exists('/data/m.json')).rejects.toBeNull()
+  })
+
+  it('writes the marker whole or not at all: its text to a temp file in the same folder, then renamed into place', async () => {
+    const io = disk()
+    await markerFs(io).write(join('/data', 'm.json'), '{"version":1}')
+    expect([...io.files]).toEqual([[join('/data', 'm.json'), '{"version":1}']]) // the marker, and no temp left behind
+    expect(io.writeFile).toHaveBeenCalledTimes(1)
+    const tmp = io.writeFile.mock.calls[0][0]
+    expect(tmp).not.toBe(join('/data', 'm.json'))
+    expect(tmp.startsWith(`${join('/data', 'm.json')}.`)).toBe(true) // same folder, so the rename cannot cross a volume
+    expect(tmp.endsWith('.tmp')).toBe(true)
+    expect(io.writeFile).toHaveBeenCalledWith(tmp, '{"version":1}', { flag: 'wx' })
+    expect(io.rename).toHaveBeenCalledWith(tmp, join('/data', 'm.json'))
+    expect(io.unlink).not.toHaveBeenCalled()
+  })
+
+  it('gives every write its own temp file, so two writes at once never share one', async () => {
+    const io = disk()
+    const fs = markerFs(io)
+    await Promise.all([fs.write('/data/m.json', 'a'), fs.write('/data/m.json', 'b')])
+    const [one, two] = io.writeFile.mock.calls.map((c) => c[0])
+    expect(one).not.toBe(two)
+    expect([...io.files.keys()]).toEqual(['/data/m.json'])
+  })
+
+  it('a write that fails mid-way (disk full) leaves no marker, removes its temp, and fails (Codex R1 probe)', async () => {
+    const files = new Map<string, string>()
+    const io = disk({ writeFile: async (p, t) => { files.set(p, t.slice(0, 3)); throw err('ENOSPC') } }, files)
+    const fs = markerFs(io)
+    await expect(fs.write('/data/m.json', '{"version":1}')).rejects.toThrow('ENOSPC')
+    expect([...io.files.keys()]).toEqual([]) // no marker, no half-written temp
+    expect(io.rename).not.toHaveBeenCalled()
+    expect(await fs.exists('/data/m.json')).toBe(false)
+    // Through recheckMarker: this launch knows the pass ran; the next launch finds nothing that says so, and runs it.
+    _resetRecheckMarkersForTests()
+    await recheckMarker('/data', fs, join, 'm.json').markDone()
+    _resetRecheckMarkersForTests()
+    expect(await recheckMarker('/data', fs, join, 'm.json').done()).toBe(false)
+  })
+
+  it('a rename that is refused leaves no marker and removes the temp', async () => {
+    const io = disk({ rename: async () => { throw err('EPERM') } })
+    await expect(markerFs(io).write('/data/m.json', '{"version":1}')).rejects.toThrow('EPERM')
+    expect([...io.files.keys()]).toEqual([])
+    expect(io.unlink).toHaveBeenCalledWith(io.writeFile.mock.calls[0][0])
+  })
+
+  it('a temp that cannot be removed does not hide why the write failed', async () => {
+    const io = disk({ rename: async () => { throw err('EPERM') }, unlink: async () => { throw err('EBUSY') } })
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EPERM')
+    const sync = disk({ rename: async () => { throw err('EPERM') }, unlink: () => { throw err('EBUSY') } })
+    await expect(markerFs(sync).write('/data/other.json', 'x')).rejects.toThrow('EPERM')
+  })
+
+  it("creates its temp file exclusively ('wx'), so it never writes into, or through, a file already there", async () => {
+    const io = disk()
+    await markerFs(io).write('/data/m.json', '{"version":1}')
+    expect(io.writeFile).toHaveBeenCalledWith(expect.stringMatching(/\.tmp$/), '{"version":1}', { flag: 'wx' })
+  })
+
+  it('a temp name already taken (EEXIST) is left alone and the next name is used (Codex R2)', async () => {
+    const files = new Map<string, string>()
+    const io = disk({}, files)
+    let squat = 2
+    io.writeFile.mockImplementation(async (p: string, t: string, o?: { flag?: string }) => {
+      if (squat-- > 0) files.set(p, 'not ours') // someone else's file stands at this name
+      if (o?.flag === 'wx' && files.has(p)) throw err('EEXIST')
+      files.set(p, t)
+    })
+    await markerFs(io).write('/data/m.json', '{"version":1}')
+    const tried = io.writeFile.mock.calls.map((c) => c[0])
+    expect(tried).toHaveLength(3)
+    expect(new Set(tried).size).toBe(3)
+    expect(files.get('/data/m.json')).toBe('{"version":1}')
+    expect([...files.entries()].filter(([, t]) => t === 'not ours').map(([f]) => f)).toEqual(tried.slice(0, 2)) // untouched
+    expect(io.unlink).not.toHaveBeenCalled()
+  })
+
+  it('gives up after a bounded number of taken names, and removes none of them', async () => {
+    const io = disk({ writeFile: async () => { throw err('EEXIST') } })
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EEXIST')
+    expect(io.writeFile).toHaveBeenCalledTimes(8)
+    expect(io.rename).not.toHaveBeenCalled()
+    expect(io.unlink).not.toHaveBeenCalled()
+    // Not ours, so not remembered as a temp to clear: the next write starts clean.
+    io.writeFile.mockImplementation(async (p: string, t: string) => { io.files.set(p, t) })
+    await markerFs(io).write('/data/m.json', 'x')
+    expect(io.unlink).not.toHaveBeenCalled()
+    expect(io.files.get('/data/m.json')).toBe('x')
+  })
+
+  it('a write that keeps failing leaves at most one temp per marker: the one left last time is removed before the next try (Codex R2)', async () => {
+    let stuck = true
+    const io = disk({
+      rename: async () => { throw err('EPERM') },
+      unlink: async (p: string) => { if (stuck) throw err('EBUSY'); if (!io.files.delete(p)) throw err('ENOENT') },
+    })
+    const temps = () => [...io.files.keys()].filter((f) => f.endsWith('.tmp'))
+    for (let i = 0; i < 5; i++) await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow()
+    expect(temps()).toHaveLength(1) // not one per try
+    expect(io.writeFile).toHaveBeenCalledTimes(1) // with the old temp still there, no new one is made
+    const left = temps()[0]
+    // The folder lets go: the old temp is removed first, then the write goes ahead (and its own temp is cleared as usual).
+    stuck = false
+    io.unlink.mockClear()
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EPERM')
+    expect(io.unlink.mock.calls[0][0]).toBe(left)
+    expect(temps()).toEqual([])
+    expect(io.writeFile).toHaveBeenCalledTimes(2)
+    // Nothing is left to clear now, so the next write removes nothing first.
+    io.rename.mockImplementation(async (a: string, b: string) => { io.files.set(b, io.files.get(a)!); io.files.delete(a) })
+    io.unlink.mockClear()
+    await markerFs(io).write('/data/m.json', 'x')
+    expect(io.unlink).not.toHaveBeenCalled()
+    expect([...io.files.keys()]).toEqual(['/data/m.json'])
+  })
+
+  it('a temp left last time that is gone by now (ENOENT) is no obstacle, and each marker clears only its own', async () => {
+    let stuck = true
+    const io = disk({
+      rename: async () => { throw err('EPERM') },
+      unlink: async (p: string) => { if (stuck) throw err('EBUSY'); if (!io.files.delete(p)) throw err('ENOENT') },
+    })
+    await expect(markerFs(io).write('/data/a.json', 'x')).rejects.toThrow('EPERM')
+    await expect(markerFs(io).write('/data/b.json', 'x')).rejects.toThrow('EPERM') // b's own try: a's temp does not block it
+    expect(io.writeFile).toHaveBeenCalledTimes(2)
+    const leftA = io.writeFile.mock.calls[0][0]
+    io.files.delete(leftA) // removed by someone else meanwhile
+    stuck = false
+    io.rename.mockImplementation(async (a: string, b: string) => { io.files.set(b, io.files.get(a)!); io.files.delete(a) })
+    await markerFs(io).write('/data/a.json', 'x')
+    expect(io.files.get('/data/a.json')).toBe('x')
+    expect(io.unlink.mock.calls.map((c) => c[0])).toContain(leftA)
+  })
+
+  it('a write that fails part way remembers its temp when it cannot be removed, and clears it next time', async () => {
+    let stuck = true
+    const files = new Map<string, string>()
+    const io = disk({
+      writeFile: async (p: string, t: string) => { files.set(p, t.slice(0, 2)); throw err('ENOSPC') },
+      unlink: async (p: string) => { if (stuck) throw err('EBUSY'); files.delete(p) },
+    }, files)
+    await expect(markerFs(io).write('/data/m.json', '{"version":1}')).rejects.toThrow('ENOSPC')
+    const left = io.writeFile.mock.calls[0][0]
+    expect([...files.keys()]).toEqual([left])
+    stuck = false
+    io.unlink.mockClear()
+    await expect(markerFs(io).write('/data/m.json', '{"version":1}')).rejects.toThrow('ENOSPC')
+    expect(io.unlink.mock.calls[0][0]).toBe(left)
+    expect([...files.keys()]).toEqual([])
+  })
+
+  it('a temp the failed write never made (ENOENT on removal) is not remembered as left', async () => {
+    const io = disk({ writeFile: async () => { throw err('EACCES') } }) // refused before the file exists
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EACCES')
+    expect(io.unlink).toHaveBeenCalledTimes(1) // tried, and found nothing
+    io.unlink.mockClear()
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EACCES')
+    expect(io.unlink).toHaveBeenCalledTimes(1) // only this write's own: nothing was left to clear first
+    expect(io.unlink.mock.calls[0][0]).toBe(io.writeFile.mock.calls[1][0])
+  })
+
+  it('the reset for tests forgets a temp left behind, as a new launch would', async () => {
+    const io = disk({ rename: async () => { throw err('EPERM') }, unlink: async () => { throw err('EBUSY') } })
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EPERM')
+    _resetRecheckMarkersForTests()
+    await expect(markerFs(io).write('/data/m.json', 'x')).rejects.toThrow('EPERM') // not stopped by the old temp
+    expect(io.writeFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('through recheckMarker: passes that keep failing to record a pass leave one temp, not one per pass', async () => {
+    const io = disk({ rename: async () => { throw err('EPERM') }, unlink: async () => { throw err('EBUSY') } })
+    const fs = markerFs(io)
+    await recheckMarker('/data', fs, join).markDone()
+    for (let pass = 0; pass < 6; pass++) expect(await recheckMarker('/data', fs, join).done()).toBe(true)
+    expect([...io.files.keys()].filter((f) => f.endsWith('.tmp'))).toHaveLength(1)
+  })
+
+  it('through recheckMarker: an unreadable disk is asked again, a missing marker is remembered', async () => {
+    _resetRecheckMarkersForTests()
+    let code = 'EACCES'
+    let asks = 0
+    const fs = markerFs({ access: async () => { asks++; throw err(code) }, ...quiet })
+    expect(await recheckMarker('/data', fs, join).done()).toBe(false)
+    expect(await recheckMarker('/data', fs, join).done()).toBe(false)
+    expect(asks).toBe(2) // EACCES: not remembered
+    code = 'ENOENT'
+    expect(await recheckMarker('/data', fs, join).done()).toBe(false)
+    expect(await recheckMarker('/data', fs, join).done()).toBe(false)
+    expect(asks).toBe(3) // ENOENT: an answer, remembered for the launch
+  })
+
+  it('over the real fs.promises, in a real folder', async () => {
+    _resetRecheckMarkersForTests()
+    const { mkdtemp, rm, readFile, readdir, mkdir, access, writeFile, rename, unlink } = await import('fs/promises')
+    const { tmpdir } = await import('os')
+    const dir = await mkdtemp(join(tmpdir(), 'termpolis-marker-'))
+    try {
+      const fs = markerFs({ access, writeFile, rename, unlink })
+      expect(await fs.exists(join(dir, 'none.json'))).toBe(false)
+      const m = recheckMarker(dir, fs, join, 'real.json', 3)
+      expect(await m.done()).toBe(false)
+      await m.markDone()
+      expect(await readFile(join(dir, 'real.json'), 'utf8')).toBe('{"version":3}')
+      expect(await readdir(dir)).toEqual(['real.json']) // no temp left behind
+      _resetRecheckMarkersForTests() // the next launch
+      expect(await recheckMarker(dir, fs, join, 'real.json', 3).done()).toBe(true)
+      // A marker under a folder that is not there: still a plain no (ENOENT).
+      expect(await fs.exists(join(dir, 'missing-folder', 'm.json'))).toBe(false)
+      // A rename the OS refuses (a folder stands where the marker goes): the write fails and its temp is gone.
+      await mkdir(join(dir, 'blocked.json'))
+      await expect(fs.write(join(dir, 'blocked.json'), '{"version":1}')).rejects.toThrow()
+      expect((await readdir(dir)).sort()).toEqual(['blocked.json', 'real.json'])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

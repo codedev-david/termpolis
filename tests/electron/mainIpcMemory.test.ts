@@ -50,7 +50,8 @@ const {
     watch: vi.fn(() => ({ close: vi.fn() })),
     // The code-graph sweep MUST read through this, not readFileSync — see the reader tests below.
     // The saved-notes record is read and written through these too (claudeNotesIngest.ts fileManifest), off the main thread.
-    promises: { readFile: vi.fn(async () => '{}'), writeFile: vi.fn(async () => {}), rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}), readdir: vi.fn(async () => []), stat: vi.fn(async () => ({ isDirectory: () => false })) },
+    // The indexer's recheck markers are asked for with access (a missing one is ENOENT) and recorded with writeFile, off the main thread.
+    promises: { readFile: vi.fn(async () => '{}'), writeFile: vi.fn(async () => {}), rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}), readdir: vi.fn(async () => []), stat: vi.fn(async () => ({ isDirectory: () => false })), access: vi.fn(async (_p: string): Promise<void> => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }) },
   }
   return {
     mockShowOpenDialog: vi.fn(),
@@ -641,6 +642,7 @@ beforeEach(() => {
   fsMock.readFileSync.mockReturnValue('{}')
   fsMock.readdirSync.mockReturnValue([])
   fsMock.existsSync.mockReturnValue(false)
+  fsMock.promises.access.mockImplementation(async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) })
   fsMock.statSync.mockReturnValue({ mtimeMs: Date.now(), size: 0, isDirectory: () => false, isFile: () => true })
   fsMock.writeFileSync.mockImplementation(() => {})
   fsMock.unlinkSync.mockImplementation(() => {})
@@ -652,6 +654,14 @@ const metricsOfType = (t: string) => ledger.recordMetric.mock.calls.map((c) => c
 // ===========================================================================
 // memory:write
 // ===========================================================================
+
+/** The text of a recheck marker as it landed: written whole to a temp file beside it, then renamed onto it (markerFs). */
+function markerLanded(file: string): string | undefined {
+  const tmp = fsMock.promises.rename.mock.calls.map((c) => c as unknown[]).find((c) => c[1] === file)?.[0]
+  const wrote = fsMock.promises.writeFile.mock.calls.map((c) => c as unknown[]).find((c) => c[0] === tmp)
+  return wrote === undefined ? undefined : String(wrote[1])
+}
+
 describe('memory:write', () => {
   it('writes the entry and returns it', async () => {
     mem.memoryWrite.mockResolvedValueOnce({ id: 'e9', memoryType: 'procedural' })
@@ -2560,7 +2570,8 @@ describe('memory indexer passes', () => {
     expect(mem.edgeKeysIncident).toHaveBeenCalledWith(['job-0', 'job-1', 'job-2', 'own-0'])
     for (const id of ['job-0', 'job-1', 'job-2']) expect(correctionForMemory(id)).toMatchObject({ kind: 'demote', by: 'termpolis' })
     expect(correctionForMemory('own-0')).toBeNull()
-    expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, LINKED_RECHECK_MARKER), JSON.stringify({ version: 1 }))
+    expect(markerLanded(require('path').join(USER_DATA, LINKED_RECHECK_MARKER))).toBe(JSON.stringify({ version: 1 }))
+    expect(fsMock.writeFileSync).not.toHaveBeenCalledWith(require('path').join(USER_DATA, LINKED_RECHECK_MARKER), expect.anything())
     resetMemoryCorrections()
     mem.memoryList.mockReset()
     mem.memoryList.mockReturnValue([{ id: 'l1' }])
@@ -2588,7 +2599,8 @@ describe('memory indexer passes', () => {
     }
     expect(correctionForMemory('good-1')).toBeNull()
     expect(correctionForMemory('stub-1')).toBeNull()
-    expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, RECHECK_V2_MARKER), JSON.stringify({ version: 2 }))
+    expect(markerLanded(require('path').join(USER_DATA, RECHECK_V2_MARKER))).toBe(JSON.stringify({ version: 2 }))
+    expect(fsMock.writeFileSync).not.toHaveBeenCalledWith(require('path').join(USER_DATA, RECHECK_V2_MARKER), expect.anything())
     resetMemoryCorrections()
     mem.memoryList.mockReset()
     mem.memoryList.mockReturnValue([{ id: 'l1' }])
@@ -2633,21 +2645,25 @@ describe('memory indexer passes', () => {
     const marker = require('path').join(USER_DATA, RECHECK_V2_MARKER)
     const first = require('path').join(USER_DATA, 'mneme-lesson-recheck.json')
 
+    const onDisk = (...there: string[]) => async (p: string): Promise<void> => {
+      if (!there.includes(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    }
     mem.memoryList.mockClear()
-    fsMock.existsSync.mockImplementation((p: string) => p === first) // the 1.50.1 pass has run; the new one has not
+    fsMock.promises.access.mockImplementation(onDisk(first)) // the 1.50.1 pass has run; the new one has not
     await indexerOpts().run()
     expect(lessonPages()).toHaveLength(1) // only the new pass listed the lessons
+    expect(fsMock.existsSync).not.toHaveBeenCalledWith(first) // asked off the main thread
 
     mem.memoryList.mockClear()
-    fsMock.existsSync.mockImplementation((p: string) => p === first || p === marker) // both marked
+    recheckModule._resetRecheckMarkersForTests() // the next launch: the disk is asked again
+    fsMock.promises.access.mockImplementation(onDisk(first, marker)) // both marked
     await indexerOpts().run()
     expect(lessonPages()).toHaveLength(0)
-    fsMock.existsSync.mockReturnValue(false)
   })
 
   it('leaves the second lesson recheck for a later pass when the store cannot be listed, and the pass carries on', async () => {
     const { RECHECK_V2_MARKER } = await import('../../src/main/mnemeLessonRecheck')
-    const marked = () => fsMock.writeFileSync.mock.calls.filter(([f]) => String(f).endsWith(RECHECK_V2_MARKER))
+    const marked = () => fsMock.promises.rename.mock.calls.filter((c) => String((c as unknown[])[1]).endsWith(RECHECK_V2_MARKER))
     mem.memoryList.mockRejectedValue(new Error('host down'))
     await expect(indexerOpts().run()).resolves.toEqual({ written: 4, more: false })
     expect(marked()).toHaveLength(0)
@@ -2657,7 +2673,7 @@ describe('memory indexer passes', () => {
 
   it('leaves the linked-history recheck for a later pass when this one was cut short, or the store is unreadable', async () => {
     const { LINKED_RECHECK_MARKER } = await import('../../src/main/linkedHistoryRecheck')
-    const marked = () => fsMock.writeFileSync.mock.calls.filter(([f]) => String(f).endsWith(LINKED_RECHECK_MARKER))
+    const marked = () => fsMock.promises.rename.mock.calls.filter((c) => String((c as unknown[])[1]).endsWith(LINKED_RECHECK_MARKER))
     mneme.runConversationIngest.mockResolvedValueOnce({ chunksWritten: 250, truncated: true })
     await indexerOpts().run()
     expect(mem.edgeKeysIncident).not.toHaveBeenCalled()
