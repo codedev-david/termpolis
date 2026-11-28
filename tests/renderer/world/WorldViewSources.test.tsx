@@ -131,6 +131,66 @@ afterEach(() => {
   delete (window as any).termpolis
 })
 
+describe('WorldView: the question before a design change removes a district with buildings in it (D3)', () => {
+  const removals = [{ id: 'core', name: 'Core', buildings: 2 }]
+  const QUESTION = "Remove Core and its 2 buildings? This can't be undone."
+  const openDesign = async () => {
+    bridge()
+    const m = await mount('/repo')
+    switchTo('design:d1')
+    await settle()
+    act(() => { viewer().opts.renderCard('<h2>Shop</h2>') })
+    return m
+  }
+  const askIt = (m: Mounted): Promise<boolean> => {
+    let p!: Promise<boolean>
+    act(() => { p = (lastSlot(m)[3] as WorldAskLink).confirmRemoval!(removals) })
+    return p
+  }
+  const question = () => screen.queryByRole('alertdialog', { name: QUESTION })
+
+  it('the link asks in the pane, modal under the scrim; Remove answers yes and the pane is live again', async () => {
+    const m = await openDesign()
+    const answer = askIt(m)
+    expect(question()).toHaveTextContent(QUESTION)
+    expectModal(question())
+    fireEvent.click(screen.getByTestId('world-remove-district-go'))
+    await expect(answer).resolves.toBe(true)
+    expect(question()).toBeNull()
+    expectModal(null)
+  })
+
+  it('Cancel and Esc answer no', async () => {
+    const m = await openDesign()
+    const first = askIt(m)
+    fireEvent.click(screen.getByTestId('world-remove-district-cancel'))
+    await expect(first).resolves.toBe(false)
+    const second = askIt(m)
+    fireEvent.keyDown(screen.getByTestId('world-remove-district-cancel'), { key: 'Escape' })
+    await expect(second).resolves.toBe(false)
+    expect(question()).toBeNull()
+  })
+
+  it('a second question answers the first no; another world, the pane closing, or an ask after it closed answer no', async () => {
+    const m = await openDesign()
+    const first = askIt(m)
+    const second = askIt(m)
+    await expect(first).resolves.toBe(false)
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1)
+    switchTo('kf')
+    await settle()
+    await expect(second).resolves.toBe(false)
+    expect(question()).toBeNull()
+    switchTo('design:d1')
+    await settle()
+    const third = askIt(m)
+    const link = lastSlot(m)[3] as WorldAskLink
+    m.unmount()
+    await expect(third).resolves.toBe(false)
+    await expect(link.confirmRemoval!(removals)).resolves.toBe(false)
+  })
+})
+
 describe('WorldView sources', () => {
   it('a recent folder opens as it is (no git root lookup) and stops following the terminal', async () => {
     const api = bridge()
