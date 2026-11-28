@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  buildDesignPrompt, createDesigner, DESIGN_AGENT_FAILED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
+  buildDesignPrompt, createDesigner, DESIGN_AGENT_FAILED, DESIGN_CHANGED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
   DESIGN_KEY_RE, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
 } from '../../src/main/world/designer'
 import { applyDesignPatch, emptyDesignDoc, type DesignOp } from '../../src/shared/world/designPatch'
@@ -11,8 +11,8 @@ import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { districtRadius } from '../../src/main/world/layout'
 import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/sources'
-import { createAnnotationStore, withAnnotations } from '../../src/main/world/annotations'
-import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
+import { createAnnotationStore, NO_PART, withAnnotations, type AnnotationStore } from '../../src/main/world/annotations'
+import { createWorldStore, WORLD_SAVED_BY_NEWER, type WorldStore } from '../../src/main/world/worldStore'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import { ISOLATION_SETUP_FAILED } from '../../src/main/readOnlyIsolation'
 
@@ -33,19 +33,20 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number } = {}) {
+function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'list'> } = {}) {
   const execFn = vi.fn(exec)
   const execDeps = { deliver: vi.fn() }
   const store = over.store ?? createWorldStore(dir)
   const registry = over.registry ?? createSourceRegistry(dir, { exists: async () => true, now: () => 7 })
+  const annotations = over.annotations ?? createAnnotationStore(dir)
   let n = 0
   const designer = createDesigner({
     exec: execFn as never, execDeps: execDeps as never, store, registry,
     agent: over.agent ?? (() => 'claude'), runEnv: over.runEnv ?? (async () => ({ env: {} })),
     designsDir: over.designsDir ?? join(dir, 'world', 'designs'), newId: () => `id${++n}`,
-    timeoutMs: over.timeoutMs, now: over.now
+    timeoutMs: over.timeoutMs, now: over.now, annotations
   })
-  return { designer, execFn, execDeps, store, registry }
+  return { designer, execFn, execDeps, store, registry, annotations }
 }
 
 const failure = async (p: Promise<unknown>): Promise<string> => {
@@ -578,5 +579,228 @@ describe('design worlds keep their annotations', () => {
     // The stage cache methods pass straight through.
     expect(store.loadStages).toBe(inner.loadStages)
     expect(store.saveStages).toBe(inner.saveStages)
+  })
+})
+
+/** An agent that waits for `release()` before answering with `ops`; `running` settles once it has started. */
+function heldAgent(ops: unknown) {
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((r) => { release = r })
+  let started: () => void = () => undefined
+  const running = new Promise<void>((r) => { started = r })
+  const exec = async (): Promise<ExecResult> => {
+    started()
+    await gate
+    return okRes(reply('Done.', ops))
+  }
+  return { exec, running, release: () => release() }
+}
+
+const person = (text: string) => ({ text, state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'confirmed in Lumopolis' }] })
+const personClaims = (doc: WorldDoc, id: string) =>
+  [...doc.buildings, ...doc.edges].find((p) => p.id === id)!.claims.filter((c) => c.evidence.some((e) => e.kind === 'person'))
+const noRun = async (): Promise<ExecResult> => { throw new Error('no agent run') }
+
+describe('design annotations are written by the designer, under the design lock (D1)', () => {
+  /** The real store, with a slow load: a writer outside the lock would read the copy another writer is replacing. */
+  const slowStore = (): WorldStore => {
+    const real = createWorldStore(dir)
+    return { ...real, load: async (k) => { const d = await real.load(k); await new Promise((r) => setTimeout(r, 15)); return d } }
+  }
+
+  it('an annotation saved while a propose saves keeps both: the confirm and the new building', async () => {
+    const store = slowStore()
+    const { designer } = setup(noRun, { store })
+    await stored(store)
+    const [doc] = await Promise.all([
+      designer.annotate('design:id1', 'api', person('Takes orders.')),
+      designer.propose({ key: 'design:id1' }, [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }])
+    ])
+    expect(personClaims(doc, 'api')).toEqual([person('Takes orders.')])
+    const saved = (await store.load('design:id1')) as WorldDoc
+    expect(saved.buildings.map((b) => b.id)).toEqual(['api', 'db', 'mail'])
+    expect(personClaims(saved, 'api')).toEqual([person('Takes orders.')])
+  })
+
+  it("an annotation made while a refine's agent runs, then the refine's save, keeps both", async () => {
+    const agent = heldAgent([{ op: 'rename', id: 'db', name: 'Orders DB' }])
+    const { designer, store } = setup(agent.exec)
+    await stored(store)
+    const refining = designer.refine('design:id1', 'Rename the database', '')
+    await agent.running
+    const annotated = await designer.annotate('design:id1', 'e-api--db', person('Writes each order.'))
+    expect(personClaims(annotated, 'e-api--db')).toEqual([person('Writes each order.')])
+    agent.release()
+    expect((await refining).applied).toBe(1)
+    const saved = (await store.load('design:id1')) as WorldDoc
+    expect(saved.buildings.find((b) => b.id === 'db')!.name).toBe('Orders DB')
+    expect(personClaims(saved, 'e-api--db')).toEqual([person('Writes each order.')])
+  })
+
+  it('returns a newer generation, even when the clock is behind the saved one', async () => {
+    const { designer, store } = setup(noRun, { now: () => 0 })
+    const before = await stored(store)
+    const doc = await designer.annotate('design:id1', 'api', person('Takes orders.'))
+    expect(doc.generatedAt).toBe(before.generatedAt + 1)
+    expect(((await store.load('design:id1')) as WorldDoc).generatedAt).toBe(before.generatedAt + 1)
+    const later = setup(noRun, { now: () => 5000 })
+    expect((await later.designer.annotate('design:id1', 'db', person('Holds orders.'))).generatedAt).toBe(5000)
+  })
+
+  it('refuses a key that is not a stored design, a part it does not have, and a design it cannot open, writing nothing', async () => {
+    const add = vi.fn(async () => undefined)
+    const { designer, store } = setup(noRun, { annotations: { add, list: async () => ({}) } })
+    await stored(store)
+    for (const key of ['design:missing', 'design:..', 'C:/repo']) expect(await failure(designer.annotate(key, 'api', person('x')))).toBe(DESIGN_NOT_FOUND)
+    expect(await failure(designer.annotate('design:id1', 'nope', person('x')))).toBe(NO_PART)
+    const broken = setup(noRun, { store: { ...createWorldStore(dir), load: async () => { throw new Error('EPERM') } }, annotations: { add, list: async () => ({}) } })
+    expect(await failure(broken.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_OPEN_FAILED)
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('a failed annotation write or design save is a friendly error', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const noAdd = setup(noRun, { annotations: { add: async () => { throw new Error('EIO') }, list: async () => ({}) } })
+    expect(await failure(noAdd.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
+    const noSave = setup(noRun, { store: { ...real, save: async () => { throw new Error('ENOSPC') } } })
+    expect(await failure(noSave.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
+  })
+})
+
+describe('a refine never overwrites a change made to the parts it names after its agent read them (D2)', () => {
+  it.each<[string, DesignOp[], DesignOp[]]>([
+    ['a rename of the building it describes', [{ op: 'rename', id: 'api', name: 'Checkout API' }], [{ op: 'describe', id: 'api', does: 'Takes payments.' }]],
+    ['a building added to the district it removes', [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }], [{ op: 'remove', id: 'core' }]],
+    ['a line added to the building it removes', [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }], [{ op: 'remove', id: 'api' }]],
+    ['a district added that it moves a building into', [{ op: 'addDistrict', id: 'edge', name: 'Edge' }], [{ op: 'move', id: 'api', districtId: 'edge' }]],
+    ['a building removed that it draws a line from', [{ op: 'remove', id: 'db' }], [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }]]
+  ])('%s: the refine applies nothing and asks for a try again', async (_label, meanwhile, ops) => {
+    const agent = heldAgent(ops)
+    const { designer, store } = setup(agent.exec)
+    await stored(store)
+    const refining = failure(designer.refine('design:id1', 'Change it', ''))
+    await agent.running
+    expect((await designer.propose({ key: 'design:id1' }, meanwhile)).applied).toBe(1)
+    const afterPropose = await store.load('design:id1')
+    agent.release()
+    expect(await refining).toBe(DESIGN_CHANGED)
+    expect(await store.load('design:id1')).toEqual(afterPropose)
+  })
+
+  it('a confirm or service names added meanwhile to a part it names are not a change to that part', async () => {
+    const agent = heldAgent([{ op: 'describe', id: 'api', does: 'Takes payments.' }])
+    const { designer, store } = setup(agent.exec)
+    await stored(store)
+    const refining = designer.refine('design:id1', 'Describe it', '')
+    await agent.running
+    await designer.annotate('design:id1', 'api', person('Takes orders.'))
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: ['orders-api'] }])
+    agent.release()
+    expect((await refining).applied).toBe(1)
+    const saved = (await store.load('design:id1')) as WorldDoc
+    expect(saved.buildings.find((b) => b.id === 'api')!.how.map((c) => c.text)).toEqual(['Takes payments.'])
+    expect(personClaims(saved, 'api')).toEqual([person('Takes orders.')])
+    expect(saved.runtimeNames?.api).toEqual(['orders-api'])
+  })
+})
+
+describe('a refine that removes a district with buildings in it waits for a yes (D3)', () => {
+  const removeCore: DesignOp[] = [{ op: 'remove', id: 'core' }]
+
+  it('saves nothing and names the district and its buildings; confirm then saves the change', async () => {
+    const { designer, store, execFn } = setup(async () => okRes(reply('Removed Core.', removeCore)), { now: () => 90 })
+    const before = await stored(store)
+    const res = await designer.refine('design:id1', 'Remove the core', 'earlier')
+    expect(res.confirm).toEqual({ removals: [{ id: 'core', name: 'Core', buildings: 2 }] })
+    expect(res.doc).toEqual(before)
+    expect(res.text).toBe('Removed Core.')
+    expect(res.tokens).toBeGreaterThan(0)
+    expect(await store.load('design:id1')).toEqual(before)
+    const done = await designer.confirm('design:id1')
+    expect(done.confirm).toBeUndefined()
+    expect(done.applied).toBe(1)
+    expect(done.skipped).toBe(0)
+    expect(done.tokens).toBe(0) // the run was counted when the refine answered
+    expect(done.text).toBe('Removed Core.')
+    expect(done.summary).toBe(res.summary)
+    expect(done.doc.districts).toEqual([])
+    expect(done.doc.generatedAt).toBe(90)
+    expect(await store.load('design:id1')).toEqual(done.doc)
+    expect(execFn).toHaveBeenCalledTimes(1)
+    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED) // nothing is waiting any more
+  })
+
+  it('an empty district is removed without asking', async () => {
+    const { designer, store } = setup(async () => okRes(reply('ok', [{ op: 'remove', id: 'spare' }])))
+    await store.save(applyDesignPatch(emptyDesignDoc('design:id1', 1), [...DRAFT_OPS, { op: 'addDistrict', id: 'spare', name: 'Spare' }], layoutPlacer).doc)
+    const res = await designer.refine('design:id1', 'Drop the spare district', '')
+    expect(res.confirm).toBeUndefined()
+    expect(((await store.load('design:id1')) as WorldDoc).districts.map((d) => d.id)).toEqual(['core'])
+  })
+
+  it('a cancel or a newer refine drops the change waiting for a yes', async () => {
+    const { designer, store } = setup(async (req) => okRes(reply('ok', req.task.includes('Remove the core') ? removeCore : [{ op: 'rename', id: 'api', name: 'Checkout API' }])))
+    const before = await stored(store)
+    expect((await designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    designer.cancel('design:id1')
+    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED)
+    expect(await store.load('design:id1')).toEqual(before)
+    expect((await designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    expect((await designer.refine('design:id1', 'Rename the API', '')).applied).toBe(1)
+    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED)
+    expect(((await store.load('design:id1')) as WorldDoc).districts.map((d) => d.id)).toEqual(['core'])
+  })
+
+  it('a yes after the district changed applies nothing and asks for a try again', async () => {
+    const { designer, store } = setup(async () => okRes(reply('ok', removeCore)))
+    await stored(store)
+    await designer.refine('design:id1', 'Remove the core', '')
+    await designer.propose({ key: 'design:id1' }, [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }])
+    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_CHANGED)
+    expect(((await store.load('design:id1')) as WorldDoc).buildings.map((b) => b.id)).toEqual(['api', 'db', 'mail'])
+  })
+})
+
+describe('a design saved by a newer Termpolis is never changed here (WP3)', () => {
+  /** The real store, whose loads mark the design as a newer version's while `newer` is set. */
+  const newerStore = (newer: boolean) => {
+    const real = createWorldStore(dir)
+    const state = { newer }
+    const store: WorldStore = { ...real, load: async (k) => { const d = await real.load(k); return d && state.newer ? { ...d, savedByNewer: true } : d } }
+    return { real, store, state, save: vi.spyOn(real, 'save') }
+  }
+
+  it('refine, propose and annotate refuse it with the B7 note, run no agent and write nothing', async () => {
+    const n = newerStore(true)
+    const add = vi.fn(async () => undefined)
+    const { designer, execFn } = setup(async () => okRes(reply('ok', [{ op: 'rename', id: 'api', name: 'X' }])), { store: n.store, annotations: { add, list: async () => ({}) } })
+    await stored(n.real)
+    n.save.mockClear()
+    expect(await failure(designer.refine('design:id1', 'Rename it', ''))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(await failure(designer.propose({ key: 'design:id1' }, [{ op: 'rename', id: 'api', name: 'X' }]))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(await failure(designer.annotate('design:id1', 'api', person('x')))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(execFn).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
+    expect(n.save).not.toHaveBeenCalled()
+  })
+
+  it('a design a newer Termpolis saved while the agent ran, or while a removal waited for a yes, is left as it is', async () => {
+    const n = newerStore(false)
+    const agent = heldAgent([{ op: 'rename', id: 'api', name: 'X' }])
+    const { designer } = setup(agent.exec, { store: n.store })
+    await stored(n.real)
+    n.save.mockClear()
+    const refining = failure(designer.refine('design:id1', 'Rename it', ''))
+    await agent.running
+    n.state.newer = true
+    agent.release()
+    expect(await refining).toBe(WORLD_SAVED_BY_NEWER)
+    n.state.newer = false
+    const waiting = setup(async () => okRes(reply('ok', [{ op: 'remove', id: 'core' }])), { store: n.store })
+    expect((await waiting.designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    n.state.newer = true
+    expect(await failure(waiting.designer.confirm('design:id1'))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(n.save).not.toHaveBeenCalled()
   })
 })
