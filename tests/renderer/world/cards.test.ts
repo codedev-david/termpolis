@@ -343,6 +343,23 @@ describe('card headings', () => {
 
 describe('read-only cards', () => {
   const RO = { readOnly: true }
+  it('a world a newer Termpolis saved has no Confirm or Edit, as main refuses a change to it, and its evidence still opens (WP3)', () => {
+    const doc = { ...minimal(), savedByNewer: true }
+    const b = doc.buildings[0]
+    b.how = [{ text: 'does it', state: 'inferred', evidence: [{ kind: 'file', ref: 'src/main/foo.ts' }] }]
+    b.claims = [claim('c', 'inferred')]
+    doc.edges[0].how = [claim('e', 'inferred')]
+    const card = buildingCard(doc, b.id) + edgeCard(doc, doc.edges[0].id)
+    expect(card).not.toContain('data-confirm')
+    expect(card).not.toContain('data-runtime-edit')
+    expect(card).toContain('class="ev"')
+    // The same world as this version saved it keeps both.
+    const own = { ...doc, savedByNewer: undefined }
+    expect(buildingCard(own, b.id)).toContain('data-confirm')
+    expect(buildingCard(own, b.id)).toContain('data-runtime-edit')
+    expect(edgeCard(own, doc.edges[0].id)).toContain('data-confirm')
+  })
+
   it('a read-only card has no Confirm or Edit and shows evidence as text', () => {
     const doc = minimal()
     const b = doc.buildings[0]
