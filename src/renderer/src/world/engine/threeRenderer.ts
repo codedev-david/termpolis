@@ -20,7 +20,7 @@ import { zoomTierAt, type ZoomTier, backOffs, CONTROLS_DAMPING_RATE, bufferRatio
 import { shrunk, TIER_LOOK, tierPixelRatio, type TierName } from './tierBudget'
 import { WINDOW_FRAMES, WINDOW_MS } from './qualityGovernor'
 import { timedUpdate } from './timedDamping'
-import { createLineShotCache, lineShotKey, reaim } from './lineShotCache'
+import { type CachedLineShot, createLineShotCache, lineShotKey, reaim } from './lineShotCache'
 import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
@@ -1774,7 +1774,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    rig.refit()
+    panelMoved = true
+    try {
+      rig.refit()
+    } finally {
+      panelMoved = false
+    }
   }
 
   /**
@@ -2048,10 +2053,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * A line's close-up (WP2 M-a). The search (searchLineShot) runs once per line, framing and layout: a resize or a
    * panel change, which the rig answers by asking for the framing's shot again (resized, refit), only fits the kept
-   * shot's distance to the new free area (reaim), with no search. A new framing, a new layout and an explode search again.
+   * shot's distance to the new free area (reaim), with no search; after a panel's change the re-aimed look's ends are
+   * checked once more, and one hidden there searches again. A new framing, a new layout and an explode search again.
    */
   const lineShots = createLineShotCache()
   let layoutVersion = 0
+  /** Set while a panel's change (reframe) asks for the framing's shot again, not a resize of the view. */
+  let panelMoved = false
+  /** The ends each kept close-up's search checked (their probe points), checked again after a panel's change. */
+  const keptEnds = new WeakMap<CachedLineShot, LineEnd[]>()
   function newLayout(): void {
     layoutVersion++
     lineShots.clear()
@@ -2062,17 +2072,32 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const fit = { margin: CLOSE_UP_MARGIN, minDist: CLOSE_UP_MIN, maxDist: controls.maxDistance }
     if (kept) {
       const { pos, target } = reaim(kept, fitAspect(), fitFov(), fit)
-      return { pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target) }
+      const shot = { pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target) }
+      // A panel that changed size (the building card giving way to a taller line card) moves the camera along the kept
+      // look, closer or further out, where a tower can stand in front of an end that showed from the searched spot. The
+      // search's own check of its ends (endsHidden) is run there once: a look that now hides an end is dropped, and the
+      // search runs again for the new free area, going on to its next look. A resize of the view (a divider dragged,
+      // every frame) is only re-aimed, as is a look that already hid an end when it was found.
+      if (!panelMoved || !kept.clear || endsHidden(keptEnds.get(kept) as LineEnd[], shot.pos, shot.target, 1) === 0) return shot
     }
     const { points } = lineFrame(e)
-    const shot = searchLineShot(e, from)
-    const off = shot.pos.clone().sub(shot.target)
+    const { pos, target: aim, clear, ends } = searchLineShot(e, from)
+    const off = pos.clone().sub(aim)
     const dist = Math.max(1e-6, off.length())
     const dir: V3 = [off.x / dist, off.y / dist, off.z / dist]
-    const target: V3 = [shot.target.x, shot.target.y, shot.target.z]
+    const target: V3 = [aim.x, aim.y, aim.z]
     const fitted = fitDistance(points, target, dir, fitFov(), fitAspect(), fit.margin, fit.minDist)
-    lineShots.put(key, { dir, target, points, stretch: dist / fitted })
-    return shot
+    const entry: CachedLineShot = { dir, target, points, stretch: dist / fitted, clear }
+    lineShots.put(key, entry)
+    keptEnds.set(entry, ends)
+    return { pos, target: aim }
+  }
+  /** The buildings or orbs at a line's two ends, with the points a click on each is looked for at (endsHidden). */
+  function lineEnds(e: EdgeRec): LineEnd[] {
+    return [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m).map((node): LineEnd => {
+      const probes = lineProbes(node)
+      return { node, probes, ball: new THREE.Sphere().setFromPoints(probes) }
+    })
   }
   /** What a line's close-up frames: the arch and each end building's upper part (`points`), and the ends' name points. */
   function lineFrame(e: EdgeRec): { pts: V3[]; names: V3[]; points: V3[] } {
@@ -2089,7 +2114,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     return { pts, names, points: pts.concat(names) }
   }
-  function searchLineShot(e: EdgeRec, from: THREE.Vector3): Shot {
+  /** The search's shot, whether it shows both ends beside the card (`clear`), and the ends it checked. */
+  function searchLineShot(e: EdgeRec, from: THREE.Vector3): Shot & { clear: boolean; ends: LineEnd[] } {
     scene.updateMatrixWorld()
     takePickBalls()
     const balls = new Map<EdgeRec, THREE.Sphere>()
@@ -2106,10 +2132,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // What must be in clear sight from `eye`: the middle of the arch, and each end building's face
     // toward the camera at 60% of its height (an orb: its top), so the ends are seen, not peeked at.
     const mids = [0.3, 0.5, 0.7].map((t) => e.curve.getPoint(t))
-    const ends = [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m).map((node): LineEnd => {
-      const probes = lineProbes(node)
-      return { node, probes, ball: new THREE.Sphere().setFromPoints(probes) }
-    })
+    const ends = lineEnds(e)
     const seen = (eye: THREE.Vector3): THREE.Vector3[] => [...mids, ...ends.map(({ node: m }) => {
       if (m.orb) return m.anchor.clone().setY(m.anchor.y + 0.5)
       const c = m.group.position
@@ -2129,7 +2152,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
         for (const back of LINE_BACKS) {
           const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
-          if (!insideAny(eye) && clearOf(eye, target, e, balls) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target, 1) === 0) return { pos: eye, target }
+          if (!insideAny(eye) && clearOf(eye, target, e, balls) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target, 1) === 0) return { pos: eye, target, clear: true, ends }
         }
       }
     }
@@ -2156,13 +2179,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
           // Once a view hides at most one end, only a view hiding none is better: one hidden end is enough to know.
           const hidden = endsHidden(ends, eye, target, bestScore > 1 ? ends.length : 1)
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
-          if (midSeen) return { pos: eye, target }
+          if (midSeen) return { pos: eye, target, clear: true, ends }
           const score = hidden === 0 ? 0.5 : hidden
           if (score < bestScore) { bestShot = { pos: eye, target }; bestScore = score }
         }
       }
     }
-    if (bestScore < ends.length) return bestShot as Shot // a finite score was set with its shot
+    if (bestScore < ends.length) return { ...(bestShot as Shot), clear: bestScore < 1, ends } // a finite score was set with its shot
     // Nothing shows an end: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
     const fit = lineFit(dir)
@@ -2170,7 +2193,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
     while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e, balls)) dist *= 1.15
-    return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target }
+    return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target, clear: false, ends }
   }
 
   // ---------------- pulses ----------------
