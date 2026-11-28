@@ -635,6 +635,11 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
   })
 
   ipc.handle('world:build-it', async (_event: unknown, args?: unknown) => {
+    // DIAG buildflake: each step's monotonic epoch ms, read by the e2e spec.
+    const bfT: [string, number][] = []
+    ;((globalThis as unknown as { __bfSteps?: [string, number][][] }).__bfSteps ??= []).push(bfT)
+    const bf = (label: string): void => { bfT.push([label, performance.timeOrigin + performance.now()]) }
+    bf('enter')
     const key = field(args, 'key')
     const root = field(args, 'root')
     const agent = field(args, 'agent')
@@ -644,12 +649,15 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     if (typeof agent !== 'string' || !AGENT_RE.test(agent)) return err('agent required')
     if (confirm !== undefined && typeof confirm !== 'boolean') return err('confirmNonEmpty must be a boolean')
     const refused = await forbidden(root)
+    bf('forbidden')
     if (refused) return err(refused)
     let title: string
     try {
       // Only a folder the user chose in the dialog (or one already in the home): never one the renderer names.
       if (!(await knownFolder(root))) return err(NOT_PICKED)
+      bf('knownFolder')
       const entry = await registry.get(key)
+      bf('registry.get')
       if (!entry || entry.source.kind !== 'design') return err(DESIGN_NOT_FOUND)
       title = entry.title
     } catch {
@@ -657,12 +665,14 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     }
     try {
       if (!(await deps.isEmpty(root)) && confirm !== true) return err(NOT_EMPTY)
+      bf('isEmpty')
     } catch {
       return err(FOLDER_FAILED)
     }
     let folderEntryKey: string
     try {
       folderEntryKey = (await registry.upsert({ kind: 'folder', root, linkedDesign: key })).key
+      bf('upsert')
     } catch {
       return err(SOURCES_FAILED)
     }
@@ -671,6 +681,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     } catch {
       // the world still opens; it refreshes on the next open instead of live
     }
+    bf('watch')
     const res: BuildItResult = { root, key, title, prompt: BUILD_PROMPT(title, key) }
     return ok(res)
   })

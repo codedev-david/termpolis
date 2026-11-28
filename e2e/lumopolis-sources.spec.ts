@@ -290,8 +290,94 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await dialog.getByRole('button', { name: 'Choose folder…' }).click()
     await expect(dialog).toContainText(path.basename(buildDir))
     await expect(dialog).not.toContainText("This folder isn't empty")
+    // DIAG buildflake: a Chromium trace of the app and the page's and main's own clocks around the Build it click.
+    await page.evaluate(() => {
+      const s = { click: 0, building: 0, gone: 0, lag: [] as number[][], long: [] as number[][], frames: [] as unknown[], raf: [] as number[], stop: () => {} }
+      ;(window as unknown as { __bf: typeof s }).__bf = s
+      const now = (): number => performance.timeOrigin + performance.now()
+      const onClick = (e: Event): void => {
+        const b = (e.target as Element | null)?.closest?.('button')
+        if (b && b.textContent === 'Build it' && b.closest('[data-testid="world-build-it"]')) s.click = now()
+      }
+      document.addEventListener('click', onClick, true)
+      const mo = new MutationObserver(() => {
+        const d = document.querySelector('[data-testid="world-build-it"]')
+        if (!s.building && d && d.textContent?.includes('Building…')) s.building = now()
+        if (!s.gone && !d) s.gone = now()
+      })
+      mo.observe(document.body, { subtree: true, childList: true, characterData: true })
+      let last = performance.now()
+      const timer = setInterval(() => { const t = performance.now(); if (t - last > 30) s.lag.push([performance.timeOrigin + t, t - last - 10]); last = t }, 10)
+      let rafId = 0
+      const raf = (): void => { s.raf.push(now()); rafId = requestAnimationFrame(raf) }
+      rafId = requestAnimationFrame(raf)
+      let lt: PerformanceObserver | null = null
+      try {
+        lt = new PerformanceObserver((l) => { for (const e of l.getEntries()) s.long.push([performance.timeOrigin + e.startTime, e.duration]) })
+        lt.observe({ type: 'longtask', buffered: false })
+      } catch { lt = null }
+      let lf: PerformanceObserver | null = null
+      try {
+        lf = new PerformanceObserver((l) => {
+          for (const e of l.getEntries() as unknown as { startTime: number; duration: number; renderStart: number; blockingDuration: number; scripts: { invoker: string; duration: number; sourceURL: string; sourceFunctionName: string }[] }[]) {
+            s.frames.push({ t: performance.timeOrigin + e.startTime, d: Math.round(e.duration), render: Math.round(e.renderStart ? e.startTime + e.duration - e.renderStart : 0), blocking: Math.round(e.blockingDuration), scripts: e.scripts.map((x) => `${x.invoker} ${Math.round(x.duration)} ${x.sourceFunctionName}@${x.sourceURL.split('/').pop()}`) })
+          }
+        })
+        lf.observe({ type: 'long-animation-frame', buffered: false })
+      } catch { lf = null }
+      s.stop = () => { clearInterval(timer); cancelAnimationFrame(rafId); mo.disconnect(); lt?.disconnect(); lf?.disconnect(); document.removeEventListener('click', onClick, true) }
+    })
+    await app.evaluate(async ({ app: eapp, BrowserWindow, contentTracing }) => {
+      const clock = (): number => performance.timeOrigin + performance.now()
+      const s = { lag: [] as number[][], cpu: [] as { t: number; p: string }[], sends: [] as [number, string][], stop: () => {} }
+      ;(globalThis as unknown as { __bfMain: typeof s }).__bfMain = s
+      const wc = BrowserWindow.getAllWindows()[0].webContents
+      const send = wc.send
+      wc.send = function (channel: string, ...args: unknown[]) { s.sends.push([clock(), channel]); return send.call(this, channel, ...args) }
+      let last = clock()
+      const lagTimer = setInterval(() => { const t = clock(); if (t - last > 30) s.lag.push([t, t - last - 10]); last = t }, 10)
+      const cpuTimer = setInterval(() => {
+        s.cpu.push({ t: clock(), p: eapp.getAppMetrics().map((m) => `${m.name ? `${m.type}:${m.name}` : m.type} ${m.cpu.percentCPUUsage.toFixed(0)}`).join(', ') })
+      }, 250)
+      await contentTracing.startRecording({
+        recording_mode: 'record-continuously', trace_buffer_size_in_kb: 300_000,
+        included_categories: ['toplevel', 'toplevel.flow', 'ipc', 'ipc.flow', 'mojom', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'v8.execute', 'v8', 'sequence_manager', 'scheduler', 'renderer.scheduler', 'electron', 'cc', 'viz', 'gpu', 'benchmark', 'input', 'blink', 'loading', 'navigation', 'node', '__metadata'],
+      })
+      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); wc.send = send }
+    })
     await dialog.getByRole('button', { name: 'Build it', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    const bfStart = Date.now()
+    await expect(dialog).toHaveCount(0, { timeout: 60_000 })
+    const bfWait = Date.now() - bfStart
+    // The pane settles into the folder's world for a moment, so the trace shows what came after the close too.
+    await page.waitForTimeout(1500)
+    const bfPage = await page.evaluate(() => {
+      const s = (window as unknown as { __bf: { click: number; building: number; gone: number; lag: number[][]; long: number[][]; frames: unknown[]; raf: number[]; stop: () => void } }).__bf
+      s.stop()
+      return { click: s.click, building: s.building, gone: s.gone, lag: s.lag, long: s.long, frames: s.frames, raf: s.raf }
+    })
+    const bfTrace = test.info().outputPath('buildflake-trace.json')
+    const bfMain = await app.evaluate(async ({ contentTracing }, tp) => {
+      const s = (globalThis as unknown as { __bfMain: { lag: number[][]; cpu: { t: number; p: string }[]; sends: [number, string][]; stop: () => void } }).__bfMain
+      s.stop()
+      let traced = ''
+      try { traced = await contentTracing.stopRecording(tp) } catch (e) { traced = `failed: ${String(e)}` }
+      return { lag: s.lag, cpu: s.cpu, sends: s.sends, traced, steps: (globalThis as unknown as { __bfSteps?: [string, number][][] }).__bfSteps ?? [] }
+    }, bfTrace)
+    {
+      const c = bfPage.click
+      const rel = (t: number): string => (t - c).toFixed(0)
+      const steps = bfMain.steps[bfMain.steps.length - 1] ?? []
+      console.log(`[buildflake] wait ${bfWait} ms; page: click 0, Building… ${bfPage.building ? rel(bfPage.building) : 'never'}, dialog gone ${bfPage.gone ? rel(bfPage.gone) : 'never'}; main steps ${steps.map(([l, t]) => `${l} ${rel(t)}`).join(', ')}; traced ${bfMain.traced}`)
+      console.log(`[buildflake] page lag>20 ${bfPage.lag.map(([t, d]) => `${rel(t)}+${d.toFixed(0)}`).join(' ')}; long tasks ${bfPage.long.map(([t, d]) => `${rel(t)}+${d.toFixed(0)}`).join(' ')}`)
+      const gaps: string[] = []
+      for (let i = 1; i < bfPage.raf.length; i++) if (bfPage.raf[i] - bfPage.raf[i - 1] > 50) gaps.push(`${rel(bfPage.raf[i - 1])}+${(bfPage.raf[i] - bfPage.raf[i - 1]).toFixed(0)}`)
+      console.log(`[buildflake] page frames ${bfPage.raf.length}, gaps>50 ${gaps.join(' ')}; long frames ${JSON.stringify((bfPage.frames as { t: number }[]).map((f) => ({ ...f, t: rel(f.t) })))}`)
+      console.log(`[buildflake] main lag>20 ${bfMain.lag.map(([t, d]) => `${rel(t)}+${d.toFixed(0)}`).join(' ')}; sends ${bfMain.sends.filter(([t]) => t >= c - 200).map(([t, ch]) => `${ch}@${rel(t)}`).join(' ')}`)
+      console.log(`[buildflake] cpu ${bfMain.cpu.map((x) => `${rel(x.t)}: ${x.p}`).join(' | ')}`)
+      if (bfWait < 1000 && !bfMain.traced.startsWith('failed')) fs.rmSync(bfTrace, { force: true })
+    }
+    expect.soft(bfWait, 'BUILDFLAKE: the Build it dialog took 5 s or more to close').toBeLessThan(5000)
 
     // The pane is on the build folder's world: the linked plan alone, every part still a wireframe.
     await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
