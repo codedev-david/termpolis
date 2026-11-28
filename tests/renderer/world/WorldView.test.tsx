@@ -1896,14 +1896,22 @@ describe('WorldView card actions', () => {
       .mockResolvedValueOnce(fail('No part with that id.'))
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(fail(savedByNewerNotice()))
-    // Main refuses an annotate only over a world a newer Termpolis saved, which the pane already says in its files note.
-    await open({ ...infer(), savedByNewer: true }, { worldAnnotate })
-    expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
+    // Main refuses an annotate over a world a newer Termpolis saved after the pane opened it (one opened so shows no
+    // Confirm, WP3), in the words of the pane's files note.
+    const doc = infer()
+    await open(doc, { worldAnnotate })
     for (const want of [CONFIRM_FAILED, CONFIRM_FAILED, savedByNewerNotice()]) {
       fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
       await settle()
       expect(screen.getByTestId('world-notice').textContent).toBe(want)
     }
+    // From that refusal on, the pane shows the world as one a newer Termpolis saved: the note stays, and its cards are
+    // read-only (WP3), so no further change is made and then refused.
+    expect(viewer().load).toHaveBeenLastCalledWith({ ...doc, savedByNewer: true }, expect.anything())
+    act(() => { viewer().opts.renderCard(buildingCard({ ...doc, savedByNewer: true }, 'b1')) })
+    await settle()
+    expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
+    expect(screen.getByTestId('world-card').querySelector('[data-confirm]')).toBeNull()
     expect(CONFIRM_FAILED).toBe("Lumopolis couldn't save your confirmation. Try again.")
   })
 
@@ -1923,6 +1931,7 @@ describe('WorldView card actions', () => {
     const returned = infer()
     returned.generatedAt = doc.generatedAt + 1
     const worldAnnotate = vi.fn().mockResolvedValueOnce(ok(returned)).mockResolvedValueOnce(fail('nope')).mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(fail(savedByNewerNotice()))
     await open(doc, { worldAnnotate })
     const save = (text: string) => {
       fireEvent.click(screen.getByTestId('world-card').querySelector('[data-runtime-edit="b1"]') as Element)
@@ -1939,6 +1948,11 @@ describe('WorldView card actions', () => {
     save('y')
     await settle()
     expect(screen.getByTestId('world-notice').textContent).toBe(NAMES_FAILED)
+    // A world a newer Termpolis saved meanwhile: the refusal names it, and the pane shows the world read-only from then (WP3).
+    save('z')
+    await settle()
+    expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
+    expect(viewer().load).toHaveBeenLastCalledWith({ ...returned, savedByNewer: true }, expect.anything())
     expect(NAMES_FAILED).toBe("Lumopolis couldn't save the service names. Try again.")
   })
 
