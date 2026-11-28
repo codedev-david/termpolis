@@ -359,17 +359,27 @@ describe('cloneRepo', () => {
     [11_000, AUTH_MESSAGE],
     [60_000, TIMEOUT_MESSAGE],
   ])('git that answers a sign-in failure at %i ms of a 60 s deadline gives its message within a second', async (elapsed, expected) => {
-    let t = 0
-    const { deps } = mkDeps({
-      now: () => t,
-      timeoutMs: 60_000,
-      execFile: async () => {
-        t = elapsed
-        return { code: 1, stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" }
-      }
-    })
-    expect(await cloneRepo(URL1, undefined, deps)).toMatchObject({ ok: false, error: expected })
-    expect(t - elapsed).toBeLessThanOrEqual(1000)
+    // The clock is the fake timers' own: whatever the clone waits on before it answers (a timer, its sleep) moves it on, so an
+    // answer held back past git's shows as time gone by (HOLD-C R1 F4: the bound could not fail while nothing moved the clock).
+    // The clock only moves forward: git's clone answers at `elapsed`, and a later git call (the login-helper check) takes no time.
+    vi.useFakeTimers({ now: 0 })
+    try {
+      const { deps } = mkDeps({
+        now: () => Date.now(),
+        sleep: async (ms) => { vi.setSystemTime(Date.now() + ms) },
+        timeoutMs: 60_000,
+        execFile: async () => {
+          vi.setSystemTime(Math.max(Date.now(), elapsed))
+          return { code: 1, stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" }
+        }
+      })
+      const answer = cloneRepo(URL1, undefined, deps)
+      await vi.runAllTimersAsync()
+      expect(await answer).toMatchObject({ ok: false, error: expected })
+      expect(Date.now() - elapsed).toBeLessThanOrEqual(1000)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a shorter timeoutMs from the caller sets the deadline; without one it is the full 5 minutes', async () => {
