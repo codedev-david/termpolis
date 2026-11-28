@@ -67,6 +67,13 @@ function cellWidth(cp: number): 0 | 1 | 2 {
   return inRanges(cp, WIDE) ? 2 : 1
 }
 
+/** The cells a row of text takes on screen: a wide glyph two, a combining mark none. */
+export function cellsOf(text: string): number {
+  let n = 0
+  for (const ch of text) n += cellWidth(ch.codePointAt(0) as number)
+  return n
+}
+
 /** A wide glyph's second cell. */
 const CONTINUATION = ''
 

@@ -5,6 +5,8 @@
  * Used by the swarm monitoring loop to update dashboard status indicators.
  */
 
+import { cellsOf } from './terminalScreen'
+
 // 'blocked' = agent process has exited or is stalled and needs manual restart
 // (e.g. Codex printed "Please restart Codex" after a self-update, the CLI
 // segfaulted silently, or the shell is back at a plain prompt with no agent
@@ -319,6 +321,19 @@ function footerOf(rows: readonly string[], box: number): readonly string[] {
   const close = closingRule(rows, box)
   if (close > box) return rows.slice(close + 1)
   return rows.slice(composerEnd(rows, box))
+}
+
+/** Whether the agent's input box is the screen's foot, where what is typed next goes: under it only its footer, every row of which
+ *  the CLIs indent (Claude Code's, Codex's) or start with the mode row or the busy line (agy's "? for shortcuts", "esc to cancel"). Claude Code leaves its last frame,
+ *  box and all, above the shell's prompt when it exits, and the prompt is drawn at the start of a row ("user@host:~$", "host%",
+ *  "PS C:\repo>"): a box with a row like that under it is a frame left behind, not a live agent's (HOLD-C R2, Codex C2). In a pane
+ *  `cols` wide, a footer row the pane wraps goes on at the start of the next: a row under one that fills the pane is its tail. */
+export function boxAtFoot(rows: readonly string[], cols?: number): boolean {
+  const box = inputBoxRow(rows)
+  if (box < 0) return false
+  const footer = footerOf(rows, box)
+  return footer.every((row, i) => row.trim() === '' || /^\s/.test(row) || MODE_ROW.test(row) || BUSY_FOOTER.test(row) ||
+    (i > 0 && cols !== undefined && cellsOf(footer[i - 1]) >= cols))
 }
 
 /** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the

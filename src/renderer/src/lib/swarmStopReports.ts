@@ -129,12 +129,19 @@ export function carryIfStopped(terminalId: string, turned: () => Promise<boolean
   if (last) last.carried = turned
 }
 
+/** A restart that failed with the worker's limit off its screen: why, in a few words, and whether its agent may still be running there
+ *  (the relaunch answered "not found" with nothing proving the agent exited, HOLD-C R2-3) rather than gone. */
+export interface AfterExit {
+  why: string
+  mayRun?: true
+}
+
 /** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task
  *  to another installed agent; for a menu, to answer it. Sent also when the restart offer for a
  *  limit is declined, fails or has no answer in time (§9). `afterExit`: a restart that failed once its agent had been exited
  *  (why, in a few words): the limit is no longer on the worker's screen (a prompt, a sign-in screen or a dialog is), so the conductor
  *  is told what happened and that the task is its to give away, not to look for a limit first (SWARM-R3-2). */
-export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult, afterExit?: string): Promise<void> {
+export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult, afterExit?: AfterExit): Promise<void> {
   const kind = stopKind(result)
   // The conductor sent the task, so it knows which one this terminal has; when the task was
   // assigned to it, say which.
@@ -155,7 +162,7 @@ export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusR
     : `Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit${answer ? `: ${answer}` : ', with the keys its screen shows for the option to pick'}. ` +
       'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.'
   const said = afterExit !== undefined
-    ? `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) could not be restarted on another account (${afterExit}), and its agent is no longer running there.${task} ` +
+    ? `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) could not be restarted on another account (${afterExit.why}), and its agent ${afterExit.mayRun ? 'may still be running' : 'is no longer running'} there.${task} ` +
       'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.'
     : `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`
   try {

@@ -153,7 +153,7 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'exit-unconfirmed':
       return {
         what: o.osSees ? `${name} didn't confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.` : `${name} didn't confirm it exited, so Termpolis typed nothing more.`,
-        now: `${name} may still be running here, on ${from}.${o.osSees ? SAY_ONLY_AT_PROMPT : ''}`,
+        now: `${name} may still be running here, on ${o.relaunched ? to : from}.${o.osSees ? SAY_ONLY_AT_PROMPT : ''}`,
         actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE],
       }
     case 'agent-alive':

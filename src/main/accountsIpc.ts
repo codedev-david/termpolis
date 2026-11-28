@@ -18,11 +18,12 @@ import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
-import { agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
+import { agentGone, agentOfLaunch, lookForLimit, noteEnteredLine, showsExit } from './limitLook'
 import { setExtraTranscriptRoots } from './conversationIngest'
 import type { ConversationSource } from './conversationIngest'
 import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
+import { boxAtFoot } from '../shared/agentStatusDetector'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
   cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInArgs, slugOf, tildifyPath,
@@ -477,7 +478,16 @@ function noteUnseenLaunch(terminalId: string, end: number, now: number, lookNow:
   const io = wiring.io
   const prev = agentStarts.get(terminalId)
   if (!io || !prev?.agent) return
-  if (!agentGone(io, terminalId, prev, now, lookNow())) return
+  const l = lookNow()
+  if (!agentGone(io, terminalId, prev, now, l)) {
+    // In a terminal that can't show the agent's exit, an edited line (Up and Enter) not into its live box at the screen's foot may have
+    // run it again, or gone into it: recorded as round 1's typed launch over a record never seen ended, whose switch types nothing
+    // (HOLD-C R2-4). The record before is not read as ended: nothing said so.
+    if (showsExit(io, terminalId, prev, l) || boxAtFoot(l.lines, l.cols)) return
+    setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true, overUnended: true })
+    noteTerminalSession(terminalId, null)
+    return
+  }
   prev.ended = true
   setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true, unseen: true })
   if (prev.agent === 'claude') noteTerminalSession(terminalId, null)

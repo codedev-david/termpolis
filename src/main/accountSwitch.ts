@@ -25,7 +25,7 @@
 // Anything it can't confirm ends the switch with nothing more typed, and its outcome says so; the
 // dialog asks the user, and runs it again with their answer (assumeExited, stopBusy, fresh).
 import { randomUUID } from 'crypto'
-import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind } from '../shared/agentStatusDetector'
+import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind, boxAtFoot } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
   ASKS_USER, CLEAR_BOX_KEYS, CODEX_STARTING, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
@@ -346,12 +346,25 @@ export function joinWrapped(rows: readonly string[], cols: number): string[] {
  *  runs after it: that one is no exit. Nor is a report with nothing printed before it since `at`: the shell's extra prompt before
  *  it echoed the line. The screen's timing (a quiet spell, a repaint, a second look) is never read (HOLD-C, 2026-11-28). */
 export function promptSince(io: SwitchIO, id: string, l: Look, at: number, commands: readonly string[], prompted?: boolean): boolean {
+  return reportedSince(l, at, prompted) && sinceStarted(l.raw, indexOf(l, at), false, io.size(id), commands).shell
+}
+
+/** The shell's own prompt report since `at`, with something printed before it (promptSince's word, without what is drawn after it):
+ *  the shell has held the prompt since then. Whatever is drawn after that report (a prompt of the person's own drawn like a box, with
+ *  a rule over and under its ❯) is no live agent's box to type /exit into (HOLD-C R2, Codex C2). */
+function reportedSince(l: Look, at: number, prompted?: boolean): boolean {
   const from = indexOf(l, at)
   const since = l.raw.slice(from)
   const prompts = promptsIn(since)
   const own = prompted || l.raw.slice(0, from).search(PROMPT_REPORT) >= 0 ? prompts : prompts.slice(1)
-  if (own.length === 0 || plain(since.slice(0, own[own.length - 1])).trim() === '') return false
-  return sinceStarted(l.raw, from, false, io.size(id), commands).shell
+  return own.length > 0 && plain(since.slice(0, own[own.length - 1])).trim() !== ''
+}
+
+/** The shell's prompt reported since the agent `start` records was started, after its line (reportedSince, and not the prompt the line
+ *  was typed at, which shows the line after it), whatever is drawn after the report: the shell holds the prompt (HOLD-C R2, Codex C2). */
+function reportedAfter(io: SwitchIO, id: string, l: Look, start: AgentStartRecord): boolean {
+  const at = start.shellFrom ?? start.at
+  return reportedSince(l, at, start.prompted) && sinceStarted(l.raw, indexOf(l, at), false, io.size(id), start.commands).reported
 }
 
 /** Keeps the shell's first prompt after a start as seen, the first look that sees it whole (its row entered): after a minute of the
@@ -398,6 +411,11 @@ export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: A
   if ((start && shellBackSince(io, id, l, start)) || io.atShell?.(id) === true) return { state: 'gone', hint }
   // A hint under the agent's box is what an exit prints, but no word from the shell that the agent is gone: nothing is typed.
   if (hint) return { state: 'unknown' }
+  // The shell reported its prompt since the agent's start, and what it shows since is not the shell back: the shell holds the prompt,
+  // so nothing is typed, and never /exit (HOLD-C R2, Codex C2).
+  if (start && reportedAfter(io, id, l, start)) return { state: 'unknown' }
+  // A box with the shell's prompt under it is the last frame an exited agent left there, its menu or busy line too: no live agent's.
+  if (l.box >= 0 && !boxAtFoot(l.lines, l.cols)) return { state: 'unknown' }
   const status = detectAgentStatus(l.lines.join('\n'), ACCOUNT_AGENT_LABEL[agent], 'idle', { screen: true, title: l.title })
   if (l.box >= 0 || status.status === 'blocked' || status.status === 'waiting_for_input' || isBusyOnScreen(l.lines, l.title)) return { state: 'live' }
   return { state: 'unknown' }
@@ -469,10 +487,11 @@ export async function waitFor<T>(io: SwitchIO, ms: number, test: () => T | null 
   return null
 }
 
-/** The agent at its idle box: a box on screen, and no busy line. */
+/** The agent at its idle box: a box at the screen's foot (never the last frame an agent left above the shell's prompt: HOLD-C R2),
+ *  and no busy line. */
 export function atIdleBox(io: SwitchIO, id: string): Look | null {
   const l = look(io, id)
-  return l.box >= 0 && !isBusyOnScreen(l.lines, l.title) ? l : null
+  return l.box >= 0 && boxAtFoot(l.lines, l.cols) && !isBusyOnScreen(l.lines, l.title) ? l : null
 }
 
 /** The first row of the agent's box shows `text`, and only it: its glyph and the text. Codex lists
@@ -786,13 +805,24 @@ export function ownScreen(rows: readonly string[], agent: AccountAgent): string 
   return rows.slice(agent === 'codex' ? Math.max(0, box - 3) : box).join('\n')
 }
 
-/** Whether the shell is back after an agent quit by itself (Codex's "no such session"), on positive evidence only: its prompt
- *  reported since the Enter, or the OS's word that only the shell is left. Codex that says it found no session and stays up,
- *  quiet, is not back (HOLD-C). */
+/** Whether the shell is back after an agent quit by itself (Codex's "no such session"), on positive evidence only: the OS's word
+ *  that only the shell is left, asked first, since a program it sees running is never typed at, whatever the screen shows (a child
+ *  shell's cwd report); and where the OS can't tell, the shell's prompt reported since the Enter and a prompt drawn after that
+ *  report: a bare report is no prompt. Codex that says it found no session and stays up, quiet, is not back (HOLD-C R2, Codex C1). */
 async function shellBack(io: SwitchIO, id: string, mark: number, line: string, memo: OsMemo): Promise<boolean> {
-  if (await waitFor(io, PROMPT_WAIT_MS * 2, () => promptSince(io, id, look(io, id), mark, [line], true))) return true
   const alone = await askOs(io, id, memo)
-  return alone === true || (alone === false && (await processGone(io, id)))
+  if (alone !== null) return alone || (await processGone(io, id))
+  return (await waitFor(io, PROMPT_WAIT_MS * 2, () => {
+    const l = look(io, id)
+    return promptSince(io, id, l, mark, [line], true) && promptDrawn(l, mark)
+  })) !== null
+}
+
+/** A prompt drawn after the shell's last report since `at`: something shown after it, not the report alone. */
+function promptDrawn(l: Look, at: number): boolean {
+  const since = l.raw.slice(indexOf(l, at))
+  const prompts = promptsIn(since)
+  return plain(since.slice(prompts[prompts.length - 1])).trim() !== ''
 }
 
 // ── The switch ─────────────────────────────────────────────────────────────────────────
@@ -908,8 +938,8 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
       io.progress?.({ terminalId: id, step: 'exiting' })
       const exitMark = io.end(id)
       const typed = await typeIntoBox(io, id, EXIT_COMMAND[agent], idle)
-      if (typed === 'held') return { kind: 'refused', why: `${ACCOUNT_AGENT_LABEL[agent]}'s input held text that clearing it didn't remove, so nothing was typed` }
-      if (typed === 'not-shown') return { kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) }
+      // The clear went out, so the draft it left is "typed nothing more", never "nothing was typed" (HOLD-C R2, Codex MINOR 5).
+      if (typed === 'held' || typed === 'not-shown') return { kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) }
       // Step 4: the exit, shown.
       io.progress?.({ terminalId: id, step: 'confirming' })
       const shown = await exitConfirmed(io, id, agent, exitMark, os)
@@ -956,8 +986,8 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   // The conversation the line resumed; none once Codex's path (c) starts a new session instead.
   let relaunched = sessionId
   // The resume line was typed, so a program that may still be up after it is exit-unconfirmed ("typed nothing more"), never
-  // unknown-exit's "typed nothing" (HOLD-C R1 residual).
-  const exitUnconfirmed = (): SwitchOutcome => ({ kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) })
+  // unknown-exit's "typed nothing" (HOLD-C R1 residual); and on the target, which the terminal is recorded on now (HOLD-C R2-1).
+  const exitUnconfirmed = (): SwitchOutcome => ({ kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}), relaunched: true })
   if (watched.seen === 'not-found' && agent === 'codex') {
     // Codex's path (c): the target can't see the session. A new session in place, and said so, where the shell is back; where
     // nothing says so the Codex that said it may still be up, and is sent nothing more. That is exit-unconfirmed, not

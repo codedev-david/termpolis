@@ -14,14 +14,14 @@
 // An exit hint, a footer or a closing rule not drawn yet, a quiet screen are never an exit (HOLD-C).
 // In a terminal that shows none of these, an agent typed later is recorded over the one before,
 // never seen ended, with its options unknown (noteEnteredLine, HOLD-C R1).
-import { detectAgentStatus, inputBoxRows, limitWords, stopKind } from '../shared/agentStatusDetector'
+import { boxAtFoot, detectAgentStatus, inputBoxRows, limitWords, stopKind } from '../shared/agentStatusDetector'
 import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
 import { CODEX_STARTING } from '../shared/accountSwitch'
-import { PROMPT_REPORT } from './mcpServer'
-import { look, plain, shellBackSince } from './accountSwitch'
+import { PROMPT_REPORT, sinceStarted } from './mcpServer'
+import { indexOf, look, plain, shellBackSince } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 
 /** Where a terminal's agent was started, as main recorded it (accountsIpc.ts AgentStart). */
@@ -51,6 +51,9 @@ export interface LiveStart {
    *  the line may have gone into that agent. Recorded so the chip names the agent typed, with its options unknown (`unsure`); the
    *  switch from it types nothing, and on the user's word carries nothing and resumes no conversation (HOLD-C R1). */
   overUnended?: true
+  /** When a look first saw it running (epoch ms): its box drawn since the start, at the screen's foot, or a turn entered in it. The
+   *  OS's last answer that only the shell is left counts only if it was asked after this (HOLD-C R2-2). */
+  seenUpAt?: number
   /** Took a turn since: a prompt entered in its box, or seen at work. */
   turned?: boolean
   /** Where in its output that turn began (the Enter, or the first look that saw it at work). */
@@ -88,13 +91,15 @@ export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: numbe
   if (start.ended || shellBackSince(io, id, l, start)) return true
   const ready = (start.time ?? 0) + FOREGROUND_GRACE_MS
   if (now < ready) return false
-  return io.atShell?.(id) === true || io.aloneSince?.(id, ready) === true
+  if (io.atShell?.(id) === true) return true
+  // The OS's answer asked before the agent was seen running may be of the moment before it was up, the shell alone (HOLD-C R2-2).
+  return start.seenUpAt !== undefined && io.aloneSince?.(id, Math.max(ready, start.seenUpAt)) === true
 }
 
 /** Can this terminal show an agent's exit? Not where its shell has never reported a prompt (none kept, none in the window, none before
  *  the line) and the PTY's foreground can't be read (Windows): Git Bash whose rc sets a PROMPT_COMMAND of its own, WSL, a shell with no
  *  integration. */
-function showsExit(io: SwitchIO, id: string, start: LiveStart, l: Look): boolean {
+export function showsExit(io: SwitchIO, id: string, start: LiveStart, l: Look): boolean {
   if (start.prompted || typeof io.atShell?.(id) === 'boolean') return true
   const kept = io.reported?.(id)
   return kept?.posix === true || kept?.windows === true || l.raw.search(PROMPT_REPORT) >= 0
@@ -115,6 +120,10 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
   if (!start) return { agent: null, live: false, turned: false, startAt: null, status, words: null }
   if (agentGone(io, id, start, now, l)) start.ended = true
   const live = !start.ended
+  // Its box drawn since its start, at the screen's foot: it runs (the OS's answer counts from here, HOLD-C R2-2).
+  if (live && start.seenUpAt === undefined && boxAtFoot(l.lines, l.cols) && sinceStarted(l.raw, indexOf(l, start.at), false, io.size(id), start.commands).started) {
+    start.seenUpAt = now
+  }
   // Codex says "model: loading" in its header until it is up, with its box already drawn, and the detector reads
   // that as work (the real fresh-launch streams do, at 0.7 s): no prompt was taken, so it is no turn.
   const starting = start.agent === 'codex' && CODEX_STARTING.test(l.lines.join('\n'))
@@ -173,10 +182,11 @@ export function noteEnteredLine(
   // answer said nothing), not into that agent's box: the record must not stay that agent's for ever. Claude Code leaves its last
   // frame, box and all, above the shell's prompt, so a box on screen says nothing there; the line drawn in it does (HOLD-C R1).
   const over = launched !== null && !showsExit(io, id, start, l) && !inBox(l, line)
-  // Typed in the live agent's box: a prompt, a turn.
-  if (l.box >= 0 && !over) {
+  // Typed in the live agent's box, at the screen's foot: a prompt, a turn; and the agent seen running.
+  if (boxAtFoot(l.lines, l.cols) && !over) {
     start.turned = true
     start.turnedAt = at
+    if (start.seenUpAt === undefined) start.seenUpAt = now
     return null
   }
   // The record becomes the agent typed, with its options unknown, over a record never seen ended: the line may have gone into that
@@ -185,8 +195,9 @@ export function noteEnteredLine(
   return null
 }
 
-/** Is `line` drawn in the agent's box on screen (its first 40 characters, as the switch reads a line it typed)? */
+/** Is `line` drawn in the agent's live box, at the screen's foot (its first 40 characters, as the switch reads a line it typed)? Never
+ *  in the last frame an exited agent left above the shell's prompt: a draft there is no line typed into an agent (HOLD-C R2, C3). */
 function inBox(l: Look, line: string): boolean {
-  const box = inputBoxRows(l.lines)
+  const box = boxAtFoot(l.lines, l.cols) ? inputBoxRows(l.lines) : null
   return box !== null && bareText(box.join('')).includes(bareText(line.slice(0, 40)))
 }

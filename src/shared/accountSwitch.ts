@@ -370,8 +370,10 @@ export type SwitchOutcome =
    *  itself still showed a program running in the terminal (not merely nothing readable on the screen). */
   | { kind: 'unknown-exit'; osSees?: true }
   /** The exit command went in, but no exit showed within 8 s; or the resume line went in, the target couldn't see the
-   *  conversation, and nothing proves the program that said so exited: nothing more was typed. `osSees` as above. */
-  | { kind: 'exit-unconfirmed'; osSees?: true }
+   *  conversation, and nothing proves the program that said so exited: nothing more was typed. `osSees` as above. Or a draft
+   *  in the agent's box that the clear sent did not remove (HOLD-C R2, Codex MINOR 5). `relaunched`: the relaunch on the target
+   *  went out (the terminal is recorded on the target's account), so what may still be running is on the target (HOLD-C R2-1). */
+  | { kind: 'exit-unconfirmed'; osSees?: true; relaunched?: true }
   /** The line landed in the agent's own box (it never exited): it was cleared, and not entered. */
   | { kind: 'agent-alive' }
   /** The line never showed: nothing was entered. `line` is what to type by hand. `otherShell`: the

@@ -161,14 +161,14 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     expect(held.sentPrompts).toEqual([])
   })
 
-  it('types nothing when clearing the box doesn\'t empty it', async () => {
+  it('types nothing more when clearing the box doesn\'t empty it (HOLD-C R2, Codex MINOR 5: the clear went out)', async () => {
     const t = new FakeTerminal(claude({ clearFails: true }))
     t.box = 'kept'
     t.out += t.frame()
     const outcome = await runAccountSwitch({ terminalId: 't1', targetId: 'acc_b', shellType: 'bash' }, {
       io: t.io(), target: B, agent: 'claude', newSessionId: () => NEW_ID, record: () => undefined,
     })
-    expect(outcome).toEqual({ kind: 'refused', why: 'Claude Code\'s input held text that clearing it didn\'t remove, so nothing was typed' })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed' })
     expect(t.writes).toEqual(['\u0015'.repeat(20)])
   })
 })
@@ -609,7 +609,7 @@ describe('Codex 0.164 as it really draws (SWITCH-R1 C1, C2)', () => {
     expect(cleared.t.writes.slice(0, 3)).toEqual(['\u0015'.repeat(20), '/quit', '\r'])
     expect(cleared.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     const held = await hold(codex({ codexStatus: true, clearFails: true }))
-    expect(held.outcome).toEqual({ kind: 'refused', why: 'Codex\'s input held text that clearing it didn\'t remove, so nothing was typed' })
+    expect(held.outcome).toEqual({ kind: 'exit-unconfirmed' })
     expect(held.t.writes).toEqual(['\u0015'.repeat(20)])
   })
 
@@ -1203,9 +1203,11 @@ describe('the OS has the last word on whether the agent is gone', () => {
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID2 })
     expect(keys(r.t)).not.toContain('/exit')
     expect(r.t.ran).toEqual(['', LINE(ID2)])
-    // ...where the same screen with no OS to ask is an agent live on screen, and gets its exit command.
+    // ...where the same screen with no OS to ask and no prompt report is a frame left above the shell's prompt, no live box at the
+    // foot: nothing is typed, never /exit (HOLD-C R2, Codex C2).
     const blind = await run(claude({ start: 'gone-quiet', reports: false }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
-    expect(keys(blind.t)).toContain('/exit')
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
   })
 
   it('waits for an agent the user quit by hand a moment ago, whose process is still going', async () => {

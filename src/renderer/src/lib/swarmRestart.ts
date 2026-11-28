@@ -35,6 +35,7 @@ import type { SwitchDeps } from './accountSwitchFlow'
 import { recentCheck } from './limitChooser'
 import { osNotify, setSwarmStopOffer } from './limitWatch'
 import { carryIfStopped, carryWorkerStop, reportWorkerStop, setSwarmWorkingAgain, stopMark } from './swarmStopReports'
+import type { AfterExit } from './swarmStopReports'
 import type { SwarmWorker } from './swarmStopReports'
 import type { AccountsAPI, SwarmAPI, TerminalSession } from '../types'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
@@ -205,7 +206,7 @@ async function tell(deps: RestartDeps, content: string): Promise<void> {
 /** v1.54.0's close-and-reassign, for a worker whose offer ended without a restart. Never while a
  *  relaunch holds the worker (R16): it looks again when the lock lets go. And not at all for a
  *  worker the conductor closed meanwhile: there is nothing left to close. */
-async function reassign(w: RestartWorker, deps: RestartDeps, afterExit?: string): Promise<void> {
+async function reassign(w: RestartWorker, deps: RestartDeps, afterExit?: AfterExit): Promise<void> {
   const s = deps.store()
   if (!s.terminals.some((t) => t.id === w.terminalId)) {
     await closedBefore(w, deps)
@@ -220,15 +221,18 @@ async function reassign(w: RestartWorker, deps: RestartDeps, afterExit?: string)
   await reportWorkerStop(w, { status: 'blocked', summary: w.summary }, afterExit)
 }
 
-/** Why a restart that failed ended with the worker's agent already exited, in a few words for the conductor; undefined for an outcome
- *  that left the agent where it was (busy, still running, not confirmed gone, refused), whose screen still shows the limit. */
-function exitedWhy(o: SwitchOutcome): string | undefined {
+/** Why a restart that failed ended with the worker's limit off its screen, in a few words for the conductor: its agent exited, or the
+ *  relaunch went out and answered "not found" with nothing proving the agent exited (mayRun, HOLD-C R2-3); undefined for an outcome
+ *  that left the agent where it was (busy, still running, not confirmed gone before the relaunch, refused), whose screen still shows
+ *  the limit. */
+function exitedWhy(o: SwitchOutcome): AfterExit | undefined {
   switch (o.kind) {
-    case 'didnt-start': return o.otherShell ? 'a shell of another kind took the terminal\'s place' : 'the account line never showed, so nothing was entered'
-    case 'sign-in': return 'the other account\'s sign-in has expired'
-    case 'asks-user': return 'it stopped at a question only a person can answer'
-    case 'no-outcome': return 'nothing showed within 30 seconds'
-    case 'resume-not-found': return 'the other account could not start it'
+    case 'didnt-start': return { why: o.otherShell ? 'a shell of another kind took the terminal\'s place' : 'the account line never showed, so nothing was entered' }
+    case 'sign-in': return { why: 'the other account\'s sign-in has expired' }
+    case 'asks-user': return { why: 'it stopped at a question only a person can answer' }
+    case 'no-outcome': return { why: 'nothing showed within 30 seconds' }
+    case 'resume-not-found': return { why: 'the other account could not start it' }
+    case 'exit-unconfirmed': return o.relaunched ? { why: 'not found: the other account found no saved session for it', mayRun: true } : undefined
     default: return undefined
   }
 }

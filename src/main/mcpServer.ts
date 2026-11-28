@@ -935,15 +935,16 @@ function echoing(rows: readonly string[], commands: readonly string[]): boolean 
  *  still running stays on: an agent in its fullscreen view, started again by hand. A box with the
  *  command on a row under it is the screen of before the agent started, the shell's line under the
  *  last frame an agent left, painted again by a resize. Under the box is from the rule that closes
- *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). */
-export function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
+ *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). `reported`: the last
+ *  prompt reported since is one after the command, whatever is drawn after it (HOLD-C R2, C2). */
+export function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean; reported: boolean } {
   const since = drawn(raw.slice(from), size).lines
   const box = inputBoxRow(since)
   const rows = box < 0 ? [] : inputBoxRows(since)!
   const joined = rows.findIndex((row) => JOINED_RULE.test(row))
   const started = box >= 0 && !showsCommand(since.slice(box + (joined < 0 ? rows.length : joined)), commands)
   const prompts = promptsIn(raw.slice(from)).slice(whole && raw.slice(0, from).search(PROMPT_REPORT) < 0 ? 1 : 0)
-  if (prompts.length === 0) return { shell: false, started }
+  if (prompts.length === 0) return { shell: false, started, reported: false }
   const after = raw.slice(from + prompts[prompts.length - 1])
   const upTo = (end: RegExp): string[] => {
     const at = after.search(end)
@@ -952,7 +953,8 @@ export function sinceStarted(raw: string, from: number, whole: boolean, size: Sc
   const switches = [...after.matchAll(ALT_SCREEN)]
   const onAlt = switches.length > 0 && switches[switches.length - 1][1] === 'h'
   const shown = upTo(WIPE)
-  return { shell: !onAlt && inputBoxRow(upTo(REPAINT)) < 0 && !showsCommand(shown, commands) && !echoing(shown, commands), started }
+  const reported = !showsCommand(shown, commands) && !echoing(shown, commands)
+  return { shell: reported && !onAlt && inputBoxRow(upTo(REPAINT)) < 0, started, reported }
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
