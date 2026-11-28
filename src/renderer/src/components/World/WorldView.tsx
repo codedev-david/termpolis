@@ -51,6 +51,7 @@ import { RepoAccessDialog } from './RepoAccessDialog'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
 import { RelayoutConfirm } from './RelayoutConfirm'
+import { RemoveDistrictConfirm } from './RemoveDistrictConfirm'
 import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
@@ -118,6 +119,9 @@ export interface WorldAskLink {
    */
   confirmRemoval?(removals: DistrictRemoval[]): Promise<boolean>
 }
+
+/** The question before a design change removes districts with buildings in them, and how it is answered (D3). */
+interface RemovalAsk { removals: DistrictRemoval[]; resolve: (yes: boolean) => void }
 
 /** The e2e probe on window.__termpolis_world. */
 export interface WorldProbe {
@@ -395,6 +399,17 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
+  /** The question before a design change removes a district with buildings in it, while it is up, and its answer (D3). */
+  const [removing, setRemoving] = useState<RemovalAsk | null>(null)
+  const removingRef = useRef<RemovalAsk | null>(null)
+  /** Answers the question that is up, if one is, and takes it down. */
+  const answerRemoval = (yes: boolean): void => {
+    const r = removingRef.current
+    if (r === null) return
+    removingRef.current = null
+    if (mountedRef.current) setRemoving(null)
+    r.resolve(yes)
+  }
   // The ask box's side: its Esc handler, whether it is answering, and a world held back meanwhile.
   const askEscRef = useRef<(() => boolean) | null>(null)
   const askBusyRef = useRef(false)
@@ -415,6 +430,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const runGenRef = useRef(0)
   const [askLink] = useState<WorldAskLink>(() => ({
     onEscape: (fn) => { askEscRef.current = fn },
+    confirmRemoval: (removals) => new Promise<boolean>((resolve) => {
+      if (!mountedRef.current) { resolve(false); return }
+      // Never two questions: one still up is answered no (the box asks again only for a newer change).
+      answerRemoval(false)
+      const r = { removals, resolve }
+      removingRef.current = r
+      setRemoving(r)
+    }),
     setBusy: (b) => {
       askBusyRef.current = b
       const held = heldDocRef.current
@@ -1093,6 +1116,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (tokenOpen) { closeToken(); return }
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
+    if (removing !== null) { answerRemoval(false); return }
     if (building) { setBuilding(false); return }
     if (exporting !== null) { setExporting(null); return }
     // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
@@ -1174,6 +1198,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setExporting(null)
     setSaved(null)
   }, [worldKey])
+  // Another world, the home or the pane closing: the question before removing a district was the old design's, so it is
+  // answered no and main drops the change it held (D3).
+  useEffect(() => () => answerRemoval(false), [worldKey])
   /**
    * Opens an export dialog. The documentation's picture is the city as drawn: WebGL clears the canvas once a frame
    * is on screen, so it is read inside the next frame, after the viewer's own draw (the viewer queues each frame at
@@ -1188,7 +1215,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
    * of them are never up together (A11Y fix round 1, I1). The terminals beside the pane are left alone: the dialogs
    * are no aria-modal ones, which would hide them from VoiceOver too.
    */
-  const paneModal = dialogOpen || confirmRelayout || (repoUpdate !== null && tokenOpen)
+  const paneModal = dialogOpen || confirmRelayout || removing !== null || (repoUpdate !== null && tokenOpen)
   // With a dialog of the pane up, everything on the stage but the dialogs on it (the re-layout question, the token
   // dialog) is inert: the map, its 2D stand-in, the card, the notices and the Ask box (A11Y fix round 1, I1). Each child
   // is set apart, as the stage's children are the panels the map's labels keep clear of. React 18 does not pass
@@ -1362,6 +1389,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && <RelayoutConfirm zoom={zoom} onCancel={() => setConfirmRelayout(false)} onConfirm={relayout} />}
+        {removing && <RemoveDistrictConfirm zoom={zoom} removals={removing.removals} onCancel={() => answerRemoval(false)} onConfirm={() => answerRemoval(true)} />}
         {(repoUpdate || busy || notice || saved || recompileShown) && (
           <div style={{ position: 'absolute', ...noticeAt, transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (
