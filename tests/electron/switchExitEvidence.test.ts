@@ -6,9 +6,9 @@
 // closing rule not drawn yet, a lost launch echo and a second look are never an exit: without evidence the switch types
 // nothing ("unknown-exit"), and the limit look keeps the agent live. The probes are Codex R3's and Opus R3's (holdb review 3).
 import { describe, it, expect, beforeEach } from 'vitest'
-import { _resetSwitchLocksForTest, livenessNow, runAccountSwitch } from '../../src/main/accountSwitch'
+import { _resetSwitchLocksForTest, atIdleBox, livenessNow, runAccountSwitch } from '../../src/main/accountSwitch'
 import type { SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
-import { lookForLimit } from '../../src/main/limitLook'
+import { lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import { LINE_CLEAR } from '../../src/shared/accountSwitch'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -145,7 +145,7 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
     expect(writesWhileLive).not.toContain('\r')
     // HOLD-C R1 F1: nothing proves it exited, so it is not "the shell is at its prompt"; and the resume line was typed, so it is
     // exit-unconfirmed ("typed nothing more"), never unknown-exit's "typed nothing" (HOLD-C R1 residual).
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', relaunched: true })
   })
 
   /** A Codex that answers its resume line "No saved session found", then quits or stays, in a shell whose prompt does not report,
@@ -189,7 +189,7 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
 
   it('Codex that says it found no session and stays up, with the OS saying so, is sent nothing more', async () => {
     const { outcome, writesAfter } = await notFoundOnOs(false)
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
     expect(writesAfter).toEqual([])
   })
 })
@@ -226,7 +226,7 @@ describe('HOLD-C R1 F1: resume-not-found only where the shell is proven back', (
       io: s.io, agent: 'claude', start: { at: s.t.launchedAt, commands: [s.t.launchLine()] }, target: TARGET, newSessionId: () => NEW_ID, record: () => {},
     })
     expect(s.said()).toBe(true)
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
     expect(s.writesAfter).toEqual([])
   })
 
@@ -252,7 +252,7 @@ describe('HOLD-C R1 F1: resume-not-found only where the shell is proven back', (
       io: s.io, agent: 'codex', start: { at: s.t.launchedAt, commands: [s.t.launchLine()] }, target: CODEX_TARGET, newSessionId: () => NEW_ID, record: () => {},
     })
     expect(s.said()).toBe(true)
-    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
     expect(s.writesAfter).toEqual([])
   })
 })
@@ -361,5 +361,159 @@ describe('a record typed over one never seen ended (HOLD-C R1 F2)', () => {
     expect(t.ran.join('\n')).not.toContain(ID)
     expect(t.ran.join('\n')).not.toContain('33333333-4444-4555-8666-777777777777')
     expect(t.ran.join('\n')).toContain(`--session-id ${NEW_ID}`)
+  })
+})
+
+// HOLD-C R2 (signoff-decisions.md, 2026-11-28): the switch types only into what it has proven. /exit goes only to an agent proven
+// live, and a line clear or an Enter only to a prompt proven to be the shell's. The probes are Codex's (holdc-codex-review.md, R1).
+describe('HOLD-C R2 C1 (Codex MAJOR, accountSwitch.ts:792): the Codex fallback types nothing on a cwd report or silence', () => {
+  /** A live Codex that answers its resume line "No saved session found" and stays up, a child shell's cwd report printed after it. */
+  async function notFoundWithReport(os: 'tells' | undefined): Promise<{ outcome: SwitchOutcome; after: string[]; t: FakeTerminal }> {
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', ...(os ? { os } : {}), start: 'idle', exit: 'hint', relaunch: ['box'] })
+    const base = t.io()
+    const after: string[] = []
+    let said = false
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        if (said) after.push(key)
+        base.write(id, key)
+        if (!said && key === '\r' && t.ran.some((line) => line.includes(' resume '))) {
+          said = true
+          t.out += '\r\nNo saved session found with ID 123\r\n' + PS_REPORT
+        }
+      },
+    }
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: CODEX_TARGET.id, shellType: 'powershell' }, {
+      io, agent: 'codex', start: { at: t.launchedAt, commands: [t.launchLine()] }, target: CODEX_TARGET, newSessionId: () => NEW_ID, record: () => {},
+    })
+    return { outcome, after, t }
+  }
+
+  it('a live Codex whose child shell reports its cwd, the OS saying a program still runs, is sent nothing after its answer', async () => {
+    const { outcome, after, t } = await notFoundWithReport('tells')
+    expect(t.mode).toBe('agent')
+    expect(after).toEqual([])
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
+  })
+
+  it('a bare cwd report, with no prompt drawn after it and no word from the OS, is no prompt: nothing is sent', async () => {
+    const { outcome, after } = await notFoundWithReport(undefined)
+    expect(after).toEqual([])
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', relaunched: true })
+  })
+})
+
+describe('HOLD-C R2 C2 (Codex MAJOR, accountSwitch.ts:398): /exit goes only to a live box at the screen\'s foot', () => {
+  const frame = 'Claude Code\r\n' + RULE + '\r\n❯ \r\n' + RULE + '\r\n'
+  const PROMPTS = { bash: 'user@host:~$ ', zsh: 'host% ' } as const
+
+  it.each(['bash', 'zsh'] as const)('a normal Claude exit that left its last frame above a plain %s prompt, with no report and no OS answer, is refused with nothing typed', async (shell) => {
+    const p = probe('claude\r\n' + frame + PROMPTS[shell])
+    const outcome = await switchOf(p.io)
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
+    expect(p.keys).toEqual([])
+  })
+
+  it.each(['bash', 'zsh'] as const)('the same exit over %s switches where the shell reported its prompt after the start', async (shell) => {
+    const before = REPORT + '$ '
+    const p = probe(before + 'claude\r\n' + frame + REPORT + PROMPTS[shell])
+    await switchOf(p.io, 'claude', { at: before.length, commands: ['claude'] })
+    expect(p.keys).not.toContain('/exit')
+    expect(p.keys.slice(0, 2)).toEqual([LINE_CLEAR.posix, '\r'])
+  })
+
+  it.each(['bash', 'zsh'] as const)('the same exit over %s switches where the OS says only the shell is left', async (shell) => {
+    const p = probe('claude\r\n' + frame + PROMPTS[shell])
+    const outcome = await switchOf({ ...p.io, shellAlone: async () => true })
+    expect(p.keys).not.toContain('/exit')
+    expect(p.keys.slice(0, 2)).toEqual([LINE_CLEAR.posix, '\r'])
+    expect(outcome.kind).not.toBe('unknown-exit')
+  })
+
+  it('a prompt drawn with an opening and a closing rule, reported after the start, is never sent /exit, nor anything else', async () => {
+    const p = probe(REPORT + '$ claude\r\nGoodbye!\r\n' + REPORT + RULE + '\r\n❯ \r\n' + RULE)
+    const outcome = await switchOf(p.io, 'claude', { at: (REPORT + '$ ').length, commands: ['claude'] })
+    expect(p.keys).toEqual([])
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
+  })
+
+  it('a frame left above the prompt that shows Claude Code\'s limit is not answered with Esc or /exit', async () => {
+    const limit = 'Claude Code\r\n❯ hi\r\n  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)\r\n\r\n' + RULE + '\r\n❯ \r\n' + RULE + '\r\n'
+    const p = probe('claude\r\n' + limit + PROMPTS.bash)
+    const outcome = await switchOf(p.io)
+    expect(p.keys).toEqual([])
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
+  })
+
+  it('a frame left above the prompt that shows Claude Code waiting out its limit is not live: no Esc to stop the wait, nothing typed', async () => {
+    const waiting = 'Claude Code\r\n' + RULE + '\r\n❯ \r\n' + RULE + '\r\n  continuing automatically at 3pm · esc to cancel\r\n'
+    const p = probe('claude\r\n' + waiting + PROMPTS.bash)
+    const outcome = await switchOf(p.io)
+    expect(p.keys).toEqual([])
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
+  })
+
+  it('atIdleBox, which agy\'s switch and the sign-in session also type by, takes only the live box at the foot, never a frame left above a prompt', () => {
+    expect(atIdleBox(probe('claude\r\n' + frame + PROMPTS.bash).io, 'probe')).toBeNull()
+    expect(atIdleBox(probe('claude\r\n' + frame + PROMPTS.zsh).io, 'probe')).toBeNull()
+    expect(atIdleBox(probe('claude\r\n' + frame + '  ⏵⏵ bypass permissions on').io, 'probe')).not.toBeNull()
+  })
+})
+
+describe('HOLD-C R2 C3 (Codex MINOR, limitLook.ts:175): only the live box at the foot takes a typed line', () => {
+  it('a real shell launch whose text matches a draft left in a stale frame above the prompt is a new start, not a turn', () => {
+    const screen = RULE + '\r\n❯ codex 你好🙂世界\r\n' + RULE + '\r\nuser@host:~$ codex 你好🙂世界'
+    const p = probe(screen, undefined, 80, 24)
+    const start: LiveStart = { at: 0, agent: 'claude', commands: ['claude'], time: 0 }
+    const next = noteEnteredLine(p.io, 'probe', start, 'codex 你好🙂世界', screen.length, 9000)
+    expect(next).toMatchObject({ agent: 'codex', overUnended: true, unsure: true })
+    expect(start.turned).not.toBe(true)
+  })
+
+  it('the same line drawn in the live box at the foot is a turn of the agent there', () => {
+    const screen = 'Claude Code\r\n' + RULE + '\r\n❯ codex 你好🙂世界\r\n' + RULE + '\r\n  ⏵⏵ bypass permissions on'
+    const p = probe(screen, undefined, 80, 24)
+    const start: LiveStart = { at: 0, agent: 'claude', commands: ['claude'], time: 0 }
+    expect(noteEnteredLine(p.io, 'probe', start, 'codex 你好🙂世界', screen.length, 9000)).toBeNull()
+    expect(start.turned).toBe(true)
+  })
+
+  it('a plain shell line entered under a stale frame is no turn of an agent, nor the agent seen running', () => {
+    const screen = 'Claude Code\r\n' + RULE + '\r\n❯ \r\n' + RULE + '\r\nuser@host:~$ ls'
+    const p = probe(screen, undefined, 80, 24)
+    const start: LiveStart = { at: 0, agent: 'claude', commands: ['claude'], time: 0 }
+    expect(noteEnteredLine(p.io, 'probe', start, 'ls', screen.length, 9000)).toBeNull()
+    expect(start.turned).not.toBe(true)
+    expect(start.seenUpAt).toBeUndefined()
+  })
+})
+
+describe('HOLD-C R2-1 (Codex MINOR 4, accountSwitchRun.ts:156): an outcome after the relaunch says so', () => {
+  it('a resume the target answers "No saved session found", recorded on the target, is exit-unconfirmed and relaunched', async () => {
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', os: 'tells', start: 'idle', exit: 'hint', relaunch: ['box'] })
+    const base = t.io()
+    const recorded: string[] = []
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        base.write(id, key)
+        if (key === '\r' && t.ran.some((line) => line.includes(' resume '))) t.out += '\r\nNo saved session found with ID 123\r\n'
+      },
+    }
+    const outcome = await runAccountSwitch({ terminalId: 'probe', targetId: CODEX_TARGET.id, shellType: 'powershell' }, {
+      io, target: CODEX_TARGET, agent: 'codex', start: { at: t.launchedAt, commands: [t.launchLine()] }, newSessionId: () => NEW_ID, record: ({ accountId }) => recorded.push(accountId),
+    })
+    expect(recorded).toEqual([CODEX_TARGET.id])
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true, relaunched: true })
+  })
+})
+
+describe('HOLD-C R2 Codex MINOR 5 (accountSwitch.ts:911): a draft the clear did not remove', () => {
+  it('is exit-unconfirmed ("typed nothing more"), not a refusal that says nothing was typed, once the clear went out', async () => {
+    const p = probe('Claude Code\r\n' + RULE + '\r\n❯ draft\r\n' + RULE)
+    const outcome = await switchOf(p.io)
+    expect(p.keys).not.toEqual([])
+    expect(outcome).toEqual({ kind: 'exit-unconfirmed' })
   })
 })

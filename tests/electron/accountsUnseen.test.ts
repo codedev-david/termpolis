@@ -138,11 +138,14 @@ afterEach(() => { _resetTerminalAccountsForTest(); sb.dispose() })
 describe('an agent\'s exit in a terminal that never shows one (CH4-1, HOLD-C)', () => {
   // HOLD-C R1 F2: the record is not the first agent's for ever. A launch typed later replaces it as one started with unknown options,
   // over a record never seen ended: the chip shows the new agent, and the switch from it carries nothing and types nothing.
-  it('stays on record after its exit hint and the shell\'s prompt, an edited line making no guess, until a launch typed after it replaces it as unsure', async () => {
+  it('stays on record after its exit hint and the shell\'s prompt, an edited line or a launch typed after it replacing it as one typed over it', async () => {
     await firstSession()
     const first = terminalAgentStart('t1')
     await editedLine()
-    expect(terminalAgentStart('t1')).toBe(first)
+    // HOLD-C R2-4: the edited line may have run the agent again (a recall), or gone into the agent before: recorded as round 1's typed
+    // launch over a record never seen ended, whose switch types nothing; the first is not read as ended.
+    expect(terminalAgentStart('t1')).not.toBe(first)
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude'], unsure: true, overUnended: true })
     expect(terminalAgentStart('t1')).not.toHaveProperty('unseen')
     clock += 3000
     type('codex -m gpt-5.6-sol\r'); clock += 100
@@ -152,6 +155,25 @@ describe('an agent\'s exit in a terminal that never shows one (CH4-1, HOLD-C)', 
     expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'], unsure: true, overUnended: true })
     expect(l).toMatchObject({ agent: 'codex', live: true })
     expect(first?.ended).not.toBe(true)
+  })
+
+  // HOLD-C R2-4 (signoff-decisions.md): Up and Enter runs `claude` again with no key naming it, or goes into the agent before if it is
+  // still up: the record is the agent recalled, typed over a record never seen ended, as round 1's typed launch.
+  it('records a launch recalled with Up and Enter as one typed over a record never seen ended; Up and Enter in the live box changes nothing', async () => {
+    await firstSession()
+    const first = terminalAgentStart('t1')
+    clock += 3000
+    type(`${E}[A`); data('claude'); type('\r'); clock += 100
+    data('\r\n' + paint(CLAUDE_UP))
+    const recalled = terminalAgentStart('t1')
+    expect(recalled).not.toBe(first)
+    expect(recalled).toMatchObject({ agent: 'claude', commands: ['claude'], unsure: true, overUnended: true })
+    expect(recalled).not.toHaveProperty('unseen')
+    expect(first?.ended).not.toBe(true)
+    // Claude Code's own prompt history, recalled in its box at the screen's foot: a prompt of the agent's, no launch.
+    clock += 3000
+    type(`${E}[A`); type('\r')
+    expect(terminalAgentStart('t1')).toBe(recalled)
   })
 })
 

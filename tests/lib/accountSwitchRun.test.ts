@@ -194,6 +194,8 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
   it('says what happened and what the terminal shows now, in a sentence each', () => {
     expect(cardFor({ kind: 'unknown-exit' }, run, false)).toMatchObject({ what: 'Termpolis couldn\'t tell whether Claude Code is still running, so it typed nothing.', now: 'Claude Code is as you left it, on personal.' })
     expect(cardFor({ kind: 'exit-unconfirmed' }, run, false)).toMatchObject({ what: 'Claude Code didn\'t confirm it exited, so Termpolis typed nothing more.', now: 'Claude Code may still be running here, on personal.' })
+    // HOLD-C R2-1: once the relaunch went out, the account it may still be running on is the target's.
+    expect(cardFor({ kind: 'exit-unconfirmed', relaunched: true }, run, false)).toMatchObject({ what: 'Claude Code didn\'t confirm it exited, so Termpolis typed nothing more.', now: 'Claude Code may still be running here, on codedev.' })
     expect(cardFor({ kind: 'agent-alive' }, run, false)).toMatchObject({ now: 'Claude Code is still running here, on personal.' })
     expect(cardFor({ kind: 'didnt-start', line: 'x' }, run, false)).toMatchObject({ what: 'The account line never showed in the terminal, so nothing was entered.', now: 'The shell is at its prompt: Claude Code has exited.' })
     expect(cardFor({ kind: 'resume-not-found' }, run, false)).toMatchObject({ what: 'codedev can\'t see this conversation.', now: 'The shell is at its prompt, and the conversation is still on personal.' })
@@ -240,7 +242,8 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
     const card = cardFor(outcome, { ...run, agent: 'codex' }, false)!
     expect(card.what).toBe(what)
     expect(card.what).not.toMatch(/typed nothing\./)
-    expect(card.now).toBe(`Codex may still be running here, on personal.${osTells ? ' Say it has exited only if the terminal is at its prompt.' : ''}`)
+    // Its resume line was typed on codedev, which the terminal is recorded on now: that is where Codex may still be running (HOLD-C R2-1).
+    expect(card.now).toBe(`Codex may still be running here, on codedev.${osTells ? ' Say it has exited only if the terminal is at its prompt.' : ''}`)
   })
 
   // SAFETY-R2-4: where the operating system itself still showed a program running, the card says so before it offers the

@@ -614,14 +614,42 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
 // agent's start; and where nothing can tell, an agent typed later replaces it as one started with unknown options, over a record
 // never seen ended, which the switch types nothing for (signoff-decisions.md, HOLD-C R1).
 describe('a terminal that never shows an exit (HOLD-C R1 F2)', () => {
-  /** Claude Code started at 1000, exited printing no hint at a shell that reports nothing, on Windows. */
-  function silentExit(over: Partial<SwitchIO> = {}): { t: FakeTerminal; io: SwitchIO; start: LiveStart } {
+  /** Claude Code started at 1000, seen up by a look at `seenAt` (none for null), exited printing no hint at a shell that reports
+   *  nothing, on Windows. */
+  function silentExit(over: Partial<SwitchIO> = {}, seenAt: number | null = 1500): { t: FakeTerminal; io: SwitchIO; start: LiveStart } {
     const { t, start } = setup({ exit: 'no-hint', reports: false })
+    start.time = 1000
+    const io: SwitchIO = { ...t.io(), atShell: () => null, ...over }
+    if (seenAt !== null) expect(lookForLimit({ ...io, aloneSince: () => null }, 't', start, seenAt).live).toBe(true)
     t.type('/exit')
     t.type('\r')
-    start.time = 1000
-    return { t, start, io: { ...t.io(), atShell: () => null, ...over } }
+    return { t, start, io }
   }
+
+  // HOLD-C R2-2 (signoff-decisions.md): the OS's "only the shell is left" counts only if it was asked after the agent was seen running.
+  // Asked between the agent's start and its first frame (a slow start), the shell was alone because the agent was not up yet.
+  it('reads the OS\'s answer only where it was asked after a look saw the agent running', () => {
+    /** The OS's last answer, asked at `askedAt`: given for a `since` no later than that, as terminalManager.ts shellAloneSince. */
+    const askedAt = (at: number) => ({ aloneSince: (_id: string, since: number) => (at >= since ? true : null) })
+    const late = silentExit(askedAt(7000), 6000)
+    expect(late.start.seenUpAt).toBe(6000)
+    expect(agentGone(late.io, 't', late.start, 9000)).toBe(true)
+    const early = silentExit(askedAt(5000), 6000)
+    expect(agentGone(early.io, 't', early.start, 9000)).toBe(false)
+    // Never seen running: no answer counts, however late it was asked.
+    const unseen = silentExit(askedAt(8000), null)
+    expect(unseen.start.seenUpAt).toBeUndefined()
+    expect(agentGone(unseen.io, 't', unseen.start, 9000)).toBe(false)
+    expect(lookForLimit(unseen.io, 't', unseen.start, 9000).live).toBe(true)
+  })
+
+  it('reads the agent seen running at its first turn, the Enter of a prompt in its box', () => {
+    const { t, start } = setup({ reports: false })
+    const io = { ...t.io(), atShell: () => null }
+    t.type('fix the test')
+    expect(noteEnteredLine(io, 't', start, 'fix the test', 500, 2500)).toBeNull()
+    expect(start).toMatchObject({ turned: true, seenUpAt: 2500 })
+  })
 
   it('reads the agent gone on the OS\'s last answer that only the shell was left, asked once the agent had started, and on no other', () => {
     const asked: number[] = []

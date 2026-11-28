@@ -600,7 +600,13 @@ describe('restartOn: the restart', () => {
     expect(said).toBe(true)
     expect(switchAccount).toHaveBeenCalledTimes(1)
     expect(writesAfter).toEqual([])
-    expect(messages()[1]).toBe(reassignOf(W, TASK1))
+    // HOLD-C R2-3: its limit is gone from the screen, replaced by the relaunch's "not found": the conductor is told so, and not to look
+    // for the limit; nor that its agent is gone, as the Codex that answered may still be running.
+    expect(messages()[1]).toBe(
+      `Codex (Build UI, terminal w1) could not be restarted on another account (not found: the other account found no saved session for it), and its agent may still be running there. Its task is "${TASK1.title}" (taskId ${TASK1.id}). ` +
+      'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.',
+    )
+    expect(messages()[1]).not.toMatch(/read_output|if the limit is there|no longer running/)
     expect((groups()[0].phase as { lines: string[] }).lines[0]).toBe(
       'Codex (Build UI): Codex didn\'t confirm it exited, and the operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing more. The conductor reassigns its task.',
     )
@@ -650,6 +656,19 @@ describe('restartOn: the restart', () => {
       expect(told).not.toMatch(/read_output|if the limit is there/)
       // The card says the same thing to the user, as it did.
       expect((groups()[0].phase as { lines: string[] }).lines[0]).toMatch(/The conductor reassigns its task\.$/)
+    })
+
+    // HOLD-C R2-3: the relaunch typed and answered "not found", with nothing proving the agent exited: the conductor is told the result
+    // is not found and not to look for the limit; an exit-unconfirmed before the relaunch left the limit on screen, and is v1.54.0's report.
+    it('tells the conductor the result is not found, not to look for the limit, where the relaunch went out and its agent may still run', async () => {
+      await offered()
+      outcomes = [{ kind: 'exit-unconfirmed', relaunched: true }]
+      await restartOn('g1', 'acc_c', deps)
+      expect(messages()[1]).toBe(
+        `Claude (Build UI, terminal w1) could not be restarted on another account (not found: the other account found no saved session for it), and its agent may still be running there. Its task is "${TASK1.title}" (taskId ${TASK1.id}). ` +
+        'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.',
+      )
+      expect((deps.accounts.switchAccount as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
     })
 
     it('says so when the fresh session it fell back on could not start either', async () => {
