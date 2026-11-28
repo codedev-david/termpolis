@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import type { SwitchIO } from '../../src/main/accountSwitch'
-import { firstPromptRead, liveness, livenessNow } from '../../src/main/accountSwitch'
+import { liveness, livenessNow } from '../../src/main/accountSwitch'
 import type { AccountAgent } from '../../src/shared/agentAccounts'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
@@ -397,10 +397,10 @@ describe('a long launch line Git Bash on Windows echoes late (the CI run of 2026
   }
   const start: LiveStart = { at: BEFORE.length, commands: [LINE], agent: 'codex', time: 0 }
 
-  it('is no exit at the prompt printed before the echo, in the moment the shell takes to start the agent', () => {
-    expect(agentGone(io(BEFORE + AFTER), 't', start, FOREGROUND_GRACE_MS - 1)).toBe(false)
-    // Past it, a prompt and nothing more is the shell back: the line never ran.
-    expect(agentGone(io(BEFORE + AFTER), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+  // A prompt with nothing printed before it since the start is the shell's extra one, no word that the agent ran and exited, at any
+  // moment: the screen's timing is never evidence (HOLD-C, signoff-decisions.md 2026-11-28).
+  it('is no exit at the prompt printed before the echo, at any moment', () => {
+    for (const now of [FOREGROUND_GRACE_MS - 1, FOREGROUND_GRACE_MS, FOREGROUND_GRACE_MS * 100]) expect(agentGone(io(BEFORE + AFTER), 't', start, now)).toBe(false)
   })
 
   it('is no exit with the line half echoed, at any moment', () => {
@@ -414,12 +414,13 @@ describe('a long launch line Git Bash on Windows echoes late (the CI run of 2026
     expect(agentGone(io(`${BEFORE}${LINE}\r\nError: no such model${AFTER}`), 't', start, 0)).toBe(true)
   })
 
-  it('reads a prompt that only ends like the line, or like a line too short to tell, as the shell back', () => {
-    expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, 20)), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+  it('reads a prompt after the agent ran that only ends like the line, or like a line too short to tell, as the shell back', () => {
+    const ran = `${BEFORE}${LINE}\r\nError: no such model${AFTER}`
+    expect(agentGone(io(ran + LINE.slice(0, 20)), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
     const brief: LiveStart = { ...start, commands: ['codex -m o3'] }
-    expect(agentGone(io(BEFORE + AFTER + 'codex -m'), 't', brief, FOREGROUND_GRACE_MS)).toBe(true)
+    expect(agentGone(io(ran + 'codex -m'), 't', brief, FOREGROUND_GRACE_MS)).toBe(true)
     // The line's head twice, the second time not followed by the rest of it.
-    expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, 40) + ' ' + LINE.slice(0, 30) + 'zzz'), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+    expect(agentGone(io(ran + LINE.slice(0, 40) + ' ' + LINE.slice(0, 30) + 'zzz'), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
   })
 })
 
@@ -458,13 +459,12 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     expect(agentGone(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN), 't', start(), FOREGROUND_GRACE_MS * 10)).toBe(true)
   })
 
-  it('reads that first prompt with only part of the line, or another line, after it as the shell back once the moment is past', () => {
-    expect(agentGone(io(BEFORE + FIRST), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
-    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, 30)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
-    expect(agentGone(io(BEFORE + FIRST + 'ls -la\r\n'), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
-    // All of the line but its last character, still at the prompt or entered: not the line (holdb-codex-review).
-    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, -1)), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
-    expect(agentGone(io(BEFORE + FIRST + LINE.slice(0, -1) + `${E}[?2004l\r\n`), 't', start(), FOREGROUND_GRACE_MS)).toBe(true)
+  // That first prompt is the shell's first, on its way when the line was typed, and the agent runs after it: whatever follows it
+  // (part of the line, another line, nothing), it is no exit at any moment, only the shell's next report is (HOLD-C).
+  it('reads that first prompt as no exit whatever follows it, at any moment', () => {
+    for (const after of ['', LINE.slice(0, 30), 'ls -la\r\n', LINE.slice(0, -1), LINE.slice(0, -1) + `${E}[?2004l\r\n`]) {
+      for (const now of [FOREGROUND_GRACE_MS, FOREGROUND_GRACE_MS * 100]) expect(agentGone(io(BEFORE + FIRST + after), 't', start(), now)).toBe(false)
+    }
   })
 
   // The switch reads the same output for its first step (liveness): read as the shell back, it pressed the shell's line clear
@@ -477,9 +477,9 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     // And a repaint after that prompt (a resize) that draws the line again where it still shows is no echo at a first prompt.
     const repaint = `${E}[H${E}[2Jbash-5.3$ ${LINE}\r\nbash-5.3$ `
     expect(liveness(io(BEFORE + FIRST + ECHO + BOX + '\r\n' + AGAIN + repaint), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
-    expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'gone', hint: null })
-    // The agent's name alone is no echo of a line: a prompt can show it, a folder's (a start Termpolis was not sure of).
-    expect(liveness(io(BEFORE + FIRST + 'claude\r\n'), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'gone', hint: null })
+    // That first prompt, whatever follows it, is no exit: nothing on screen says the agent runs either.
+    expect(liveness(io(BEFORE + FIRST + 'ls -la\r\n'), 't', 'claude', rec)).toEqual({ state: 'unknown' })
+    expect(liveness(io(BEFORE + FIRST + 'claude\r\n'), 't', 'claude', { at: BEFORE.length, commands: ['claude'] })).toEqual({ state: 'unknown' })
   })
 
   // Two looks at the same output, `gap` ms apart, nothing printed between, as the limit look and the switch each take them: what
@@ -497,26 +497,24 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
   /** A prompt drawn like an agent's box: powerlevel10k's ruler over its ❯. */
   const RULED = `${report}${E}[2J${E}[H${RULE}\r\n❯ `
 
-  // A prompt drawn like an agent's box (powerlevel10k's ruler over its ❯, starship's ❯) at the first prompt, the line lost: one
-  // look can't tell it from an agent's box caught before its closing rule was drawn (holdb-review R2-2), so it is the shell back
-  // only once a second look, a moment on, finds nothing more printed and still no closing rule (holdb-review M1).
-  it('reads a first prompt drawn like a box, with nothing under it, as the shell back on a second look, and an agent box under it as live', () => {
+  // A prompt drawn like an agent's box (powerlevel10k's ruler over its ❯, starship's ❯) at the first prompt, the line lost, is no
+  // exit however long it stays, and nor is one with a wrapped line, output or a status row under it: a second look is no evidence
+  // (HOLD-C). Only the shell's next report, or the OS, tells the agent gone there.
+  it('reads a first prompt drawn like a box, whatever is under it, as no exit on any look', () => {
     const rec = { at: BEFORE.length, commands: [LINE] }
-    expect(agentGone(io(BEFORE + RULED), 't', start(), FOREGROUND_GRACE_MS)).toBe(false)
     expect(liveness(io(BEFORE + RULED), 't', 'claude', rec).state).toBe('live')
-    expect(twoLooks(RULED, 100)).toEqual({ gone: false, state: 'live' })
-    expect(twoLooks(RULED, 60_000)).toEqual({ gone: true, state: 'gone' })
-    expect(liveness(io(BEFORE + FIRST + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
-  })
-
-  // Under such a prompt, only an agent's closing structure tells a box: the line typed at it wrapped onto the next row, a command's
-  // output under it, a status row the prompt paints under it (the cursor put back) are the shell's, and read as a box with the line
-  // lost, the switch typed /exit into the shell (holdb-review R2-1, holdb-codex-review round 2).
-  it('reads such a prompt with a wrapped line, output or a status row under it as the shell back on a second look', () => {
     const wrapped = RULED + 'x'.repeat(130)
     const output = RULED + `ls${E}[?2004l\r\nfile1  file2\r\n`
     const status = RULED + `${E}7\r\n  main ✔ 12:04${E}8`
-    for (const out of [wrapped, output, status]) expect(twoLooks(out, 60_000)).toEqual({ gone: true, state: 'gone' })
+    for (const out of [RULED, wrapped, output, status]) {
+      for (const gap of [100, 60_000]) {
+        const second = twoLooks(out, gap)
+        expect(second.gone).toBe(false)
+        expect(second.state).not.toBe('gone')
+      }
+    }
+    expect(liveness(io(BEFORE + FIRST + BOX), 't', 'claude', rec)).toEqual({ state: 'live' })
+    expect(twoLooks(output + AGAIN, 0)).toEqual({ gone: true, state: 'gone' })
   })
 
   // An agent's first frame caught before it was all drawn, the launch echo gone from the window: Claude Code's box before its
@@ -545,19 +543,13 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     }
   })
 
-  it('looks again a moment on before the switch reads the agent gone at that first prompt, and finds it live once the frame is drawn', async () => {
-    for (const [agent, half, rest] of HALVES) {
-      let out = BEFORE + half
+  it('reads the agent at that first prompt on one look, never a second, to the switch', async () => {
+    for (const [agent, half] of HALVES) {
       const clock = { t: 0 }
-      const t: SwitchIO = { ...io('', clock), output: () => ({ raw: out, end: out.length }), outputFrom: (_id, from) => out.slice(from), end: () => out.length, sleep: async (ms) => { clock.t += ms; out = BEFORE + half + rest } }
-      expect((await livenessNow(t, 't', agent, { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('live')
+      expect((await livenessNow(io(BEFORE + half, clock), 't', agent, { at: BEFORE.length, commands: [LINE] }, { known: false })).state).not.toBe('gone')
+      expect(clock.t).toBe(0)
     }
-    // A box-like prompt still as it was, nothing more printed, is the shell back.
-    expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('gone')
-  })
-
-  it('firstPromptRead reads no first prompt in output with no prompt report in it', () => {
-    expect(firstPromptRead(`bash-5.3$ ${LINE}\r\n`, [LINE], null)).toBeNull()
+    expect((await livenessNow(io(BEFORE + RULED), 't', 'claude', { at: BEFORE.length, commands: [LINE] }, { known: false })).state).toBe('live')
   })
 
   // agy is started by its name alone, and no echo of a name can be told from a prompt that shows it: the box agy draws after that
@@ -571,10 +563,10 @@ describe('a launch line typed before Git Bash printed its first prompt (the load
     for (const now of [FOREGROUND_GRACE_MS, FOREGROUND_GRACE_MS * 10]) {
       expect(agentGone(io(BEFORE + FIRST + 'agy\r\n' + AGY), 't', agy, now)).toBe(false)
     }
-    // Gone once the shell reports a prompt after it, and gone where nothing agy drew follows that first prompt.
+    // Gone once the shell reports a prompt after it; where nothing agy drew follows that first prompt, unknown, and no exit.
     expect(liveness(io(BEFORE + FIRST + 'agy\r\n' + AGY + '\r\n' + AGAIN), 't', 'agy', rec)).toEqual({ state: 'gone', hint: null })
     expect(agentGone(io(BEFORE + FIRST + 'agy\r\n' + AGY + '\r\n' + AGAIN), 't', agy, FOREGROUND_GRACE_MS)).toBe(true)
-    expect(liveness(io(BEFORE + FIRST + 'agy\r\n'), 't', 'agy', rec)).toEqual({ state: 'gone', hint: null })
-    expect(agentGone(io(BEFORE + FIRST + 'agy\r\n'), 't', agy, FOREGROUND_GRACE_MS)).toBe(true)
+    expect(liveness(io(BEFORE + FIRST + 'agy\r\n'), 't', 'agy', rec)).toEqual({ state: 'unknown' })
+    expect(agentGone(io(BEFORE + FIRST + 'agy\r\n'), 't', agy, FOREGROUND_GRACE_MS)).toBe(false)
   })
 })

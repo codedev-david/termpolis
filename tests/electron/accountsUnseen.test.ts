@@ -8,6 +8,10 @@
 // Where the exit can be seen (prompt reports, or the PTY's foreground on macOS and Linux), the guess
 // is watched as before, so a relaunch by recall still has its limit seen.
 //
+// HOLD-C (signoff-decisions.md 2026-11-28): an agent is gone only on the shell's own word (its prompt
+// reported since the agent started) or the OS's (the PTY's foreground back at the shell). The exit
+// hint is no exit: in a terminal that shows neither, the agent stays on record, and no guess is made.
+//
 // The real wiring: registerAccountsIpc's limit look, the real noteTypedInput (terminal:write) and
 // the output buffers with their kept screen, as index.ts wires them.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -96,7 +100,7 @@ const opens = (l: LimitLook): boolean => l.live && l.turned && stopKind(l.status
 /** Claude typed at the shell, a turn that ends at its limit, /exit, the shell's prompt. */
 async function firstSession(): Promise<void> {
   register()
-  data('$ ')
+  data(prompt())
   type('claude\r'); atShell = false; clock += 100
   data('claude\r\n' + paint(CLAUDE_UP))
   await lookNow()
@@ -113,7 +117,8 @@ async function firstSession(): Promise<void> {
   await lookNow()
   data(prompt())
   clock += 3000
-  expect((await lookNow()).live).toBe(false)
+  // A shell that tells nothing gives no word of the exit: the hint above its prompt is none (HOLD-C).
+  expect((await lookNow()).live).toBe(shell === 'silent')
 }
 
 /** `ls fo<Tab>`, completed by the shell, entered. */
@@ -130,71 +135,90 @@ beforeEach(() => {
 })
 afterEach(() => { _resetTerminalAccountsForTest(); sb.dispose() })
 
-describe('an edited line after an exit, in a terminal that never shows an exit (CH4-1)', () => {
-  it('never opens the chooser on a limit screen a shell prints, twice over', async () => {
-    await firstSession(); await editedLine()
-    // The guess is kept for the switch: an agent may have started, with options unknown.
-    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', unsure: true, unseen: true })
-    clock += 3000
-    type('cat limit-a.txt\r')
-    data('cat limit-a.txt\r\n' + nl(CAPTURE) + prompt())
-    clock += 3000
-    expect(opens(await lookNow())).toBe(false)
-    type('cat limit-b.txt\r')
-    clock += 100
-    data('cat limit-b.txt\r\n' + nl(CAPTURE) + prompt())
-    clock += 3000
-    const l = await lookNow()
-    expect(l.live).toBe(false)
-    expect(opens(l)).toBe(false)
-  })
-
-  it('records codex typed afterwards as codex, and judges its limit as Codex\'s', async () => {
-    await firstSession(); await editedLine()
+describe('an agent\'s exit in a terminal that never shows one (CH4-1, HOLD-C)', () => {
+  it('stays on record after its exit hint and the shell\'s prompt: an edited line makes no guess, and a launch typed after it starts no record', async () => {
+    await firstSession()
+    const first = terminalAgentStart('t1')
+    await editedLine()
+    expect(terminalAgentStart('t1')).toBe(first)
+    expect(terminalAgentStart('t1')).not.toHaveProperty('unseen')
     clock += 3000
     type('codex\r'); clock += 100
     data('codex\r\n' + paint(CODEX_UP))
-    expect((await lookNow()).agent).toBe('codex')
-    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'] })
-    clock += 3000
-    type('go\r')
-    data(paint(['› go', '', ...CODEX_LIMIT]))
-    clock += 100
-    const l = await lookNow()
-    expect(l.agent).toBe('codex')
-    expect(opens(l)).toBe(true)
-  })
-
-  it('keeps the whole line of a launch typed with flags afterwards', async () => {
-    await firstSession(); await editedLine()
-    clock += 3000
-    const line = 'claude --dangerously-skip-permissions --model opus'
-    type(`${line}\r`); clock += 100
-    data(`${line}\r\n` + paint(CLAUDE_UP))
     await lookNow()
-    const start = terminalAgentStart('t1')
-    expect(start?.commands).toEqual([line])
-    expect(start?.unsure).toBeUndefined()
-    expect(start?.unseen).toBeUndefined()
-  })
-
-  it('starts a record with no turn for `claude --resume` typed afterwards, so the old limit it draws again is no stop (R4)', async () => {
-    await firstSession(); await editedLine()
-    clock += 3000
-    const line = `claude --resume ${SESSION}`
-    type(`${line}\r`); clock += 100
-    data(`${line}\r\n` + paint(CAPTURE))
-    clock += 100
-    const l = await lookNow()
-    expect(terminalAgentStart('t1')).toMatchObject({ commands: [line], agent: 'claude' })
-    expect(terminalAgentStart('t1')?.turned).not.toBe(true)
-    expect(l.turned).toBe(false)
-    expect(opens(l)).toBe(false)
+    expect(terminalAgentStart('t1')).toBe(first)
+    expect(first).toMatchObject({ agent: 'claude', commands: ['claude'] })
+    expect(first?.ended).not.toBe(true)
   })
 })
 
 describe('an edited line after an exit, where the exit can be seen (CH4-1)', () => {
   for (const kind of ['reports', 'foreground'] as const) {
+    it(`never opens the chooser on a limit screen a shell prints, twice over (${kind})`, async () => {
+      shell = kind
+      await firstSession(); await editedLine()
+      // The guess is kept for the switch: an agent may have started, with options unknown.
+      expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', unsure: true, unseen: true })
+      clock += 3000
+      type('cat limit-a.txt\r')
+      data('cat limit-a.txt\r\n' + nl(CAPTURE) + prompt())
+      clock += 3000
+      expect(opens(await lookNow())).toBe(false)
+      type('cat limit-b.txt\r')
+      clock += 100
+      data('cat limit-b.txt\r\n' + nl(CAPTURE) + prompt())
+      clock += 3000
+      const l = await lookNow()
+      expect(l.live).toBe(false)
+      expect(opens(l)).toBe(false)
+    })
+
+    it(`records codex typed afterwards as codex, and judges its limit as Codex's (${kind})`, async () => {
+      shell = kind
+      await firstSession(); await editedLine()
+      clock += 3000
+      type('codex\r'); atShell = false; clock += 100
+      data('codex\r\n' + paint(CODEX_UP))
+      expect((await lookNow()).agent).toBe('codex')
+      expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'] })
+      clock += 3000
+      type('go\r')
+      data(paint(['› go', '', ...CODEX_LIMIT]))
+      clock += 100
+      const l = await lookNow()
+      expect(l.agent).toBe('codex')
+      expect(opens(l)).toBe(true)
+    })
+
+    it(`keeps the whole line of a launch typed with flags afterwards (${kind})`, async () => {
+      shell = kind
+      await firstSession(); await editedLine()
+      clock += 3000
+      const line = 'claude --dangerously-skip-permissions --model opus'
+      type(`${line}\r`); atShell = false; clock += 100
+      data(`${line}\r\n` + paint(CLAUDE_UP))
+      await lookNow()
+      const start = terminalAgentStart('t1')
+      expect(start?.commands).toEqual([line])
+      expect(start?.unsure).toBeUndefined()
+      expect(start?.unseen).toBeUndefined()
+    })
+
+    it(`starts a record with no turn for \`claude --resume\` typed afterwards, so the old limit it draws again is no stop (R4) (${kind})`, async () => {
+      shell = kind
+      await firstSession(); await editedLine()
+      clock += 3000
+      const line = `claude --resume ${SESSION}`
+      type(`${line}\r`); atShell = false; clock += 100
+      data(`${line}\r\n` + paint(CAPTURE))
+      clock += 100
+      const l = await lookNow()
+      expect(terminalAgentStart('t1')).toMatchObject({ commands: [line], agent: 'claude' })
+      expect(terminalAgentStart('t1')?.turned).not.toBe(true)
+      expect(l.turned).toBe(false)
+      expect(opens(l)).toBe(false)
+    })
+
     it(`watches an agent relaunched by recall, and sees its limit (${kind})`, async () => {
       shell = kind
       await firstSession()
@@ -215,13 +239,13 @@ describe('an edited line after an exit, where the exit can be seen (CH4-1)', () 
 
 // CH4-3: David's wrapper (~/.claude/claude-run.sh) restarts Claude Code in the same shell after /switch-account then /exit: the
 // exit hint (with the --effort it was started with), its banner, Claude's box again. No prompt is shown and no line typed, so
-// nothing but the banner says a new run began; the exit hint had already ended the record.
+// nothing but the banner says a new run began; the exit hint is no exit (HOLD-C), and the banner replaces the record.
 describe("David's wrapper restarting Claude in the same shell (CH4-3)", () => {
   for (const kind of ['silent', 'reports', 'foreground'] as const) {
     it(`watches the restarted agent, and sees its limit (${kind})`, async () => {
       shell = kind
       register()
-      data('$ ')
+      data(prompt())
       type('claude\r'); atShell = false; clock += 100
       data('claude\r\n' + paint(CLAUDE_UP))
       await lookNow(); clock += 3000
@@ -229,7 +253,7 @@ describe("David's wrapper restarting Claude in the same shell (CH4-3)", () => {
       await lookNow(); clock += 3000
       type('/switch-account personal\r'); clock += 500
       type('/exit\r'); data(paint(['\u276f /exit', '', 'Resume this session with:', `claude --effort max --resume ${SESSION}`])); clock += 1500
-      expect((await lookNow()).live).toBe(false)
+      expect((await lookNow()).live).toBe(true)
       clock += 800
       data('\r\nSwitching this terminal to personal: starting Claude again on its profile and resuming the conversation...\r\n')
       data(paint(['', '  Claude Code v2.1.317', '', '\u25cf done.', '', ...CLAUDE_IDLE])); clock += 3000

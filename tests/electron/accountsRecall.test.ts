@@ -203,7 +203,7 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     noteTerminalSession('t1', SESSION)
     term.type(`${line}\r`)
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
   }
 
@@ -268,7 +268,7 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     noteAgentStart('t1', { at: 0, commands: ['codex --model gpt-5'], agent: 'codex' }, clock)
     noteTerminalSession('t1', SESSION)
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     noteTypedInput('t1', 'cd src/ma\t\r', clock)
     expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'], unsure: true })
@@ -280,7 +280,7 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     const before = terminalAgentStart('t1')!
     expect(before.agent).toBeUndefined()
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     noteTypedInput('t1', `${E}[A\r`, clock)
     noteTypedInput('t1', 'cd src/ma\t\r', clock)
@@ -295,7 +295,7 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     expect(terminalSessionId('t1')).toBeUndefined()
     // Gone again, then one that names its conversation.
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     noteTypedInput('t1', `claude --resume ${SESSION}\r`, clock)
     expect(terminalSessionId('t1')).toBe(SESSION)
@@ -367,7 +367,7 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     wire()
     await launched()
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
     expect(trace).toEqual(['watch t1', 'unwatch t1'])
@@ -380,7 +380,7 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
     expect(trace).toEqual(['watch t1', 'unwatch t1', 'watch t1'])
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
     await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
@@ -392,7 +392,7 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     await launched()
     expect(trace).toEqual(['watch t1'])
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     noteTypedInput('t1', 'ls -la\r', clock)
     expect(trace).toEqual(['watch t1', 'unwatch t1'])
@@ -408,7 +408,7 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     register({ switchIO: baseIO(() => undefined, () => { throw new Error('no such terminal') }) })
     await launched()
     term.mode = 'shell'
-    term.out += term.prompt()
+    term.out += term.hint() + term.prompt()
     clock += 5000
     await expect(ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })).resolves.toMatchObject({ agent: 'claude', live: false })
   })

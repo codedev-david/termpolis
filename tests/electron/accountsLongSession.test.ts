@@ -10,7 +10,7 @@ import type { SwitchIO } from '../../src/main/accountSwitch'
 import { lookForLimit } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
 import {
-  appendOutput, liveScreen, readOutputFrom, readOutputTail, resizeScreen, watchScreen,
+  appendOutput, liveScreen, readOutputFrom, readOutputTail, reportedFamilies, resizeScreen, watchScreen,
 } from '../../src/main/terminalOutputBuffer'
 import type { OutputBuffers } from '../../src/main/terminalOutputBuffer'
 import { stopKind } from '../../src/shared/agentStatusDetector'
@@ -216,6 +216,7 @@ describe('accounts:limit-look on a terminal whose agent worked past the window (
         size: () => size,
         screen: (id) => liveScreen(buffers, id),
         watch: (id) => { watchScreen(buffers, id, size) },
+        reported: (id) => reportedFamilies(buffers, id),
         write: () => undefined,
         sleep: async () => undefined,
         now: () => clock,
@@ -259,11 +260,16 @@ describe('accounts:limit-look on a terminal whose agent worked past the window (
     expect(stopKind(seen.status)).toBeNull()
   })
 
-  it('reads the agent as gone once it has exited and its shell is back', async () => {
+  // The shell's own prompt report after the agent's start is the word that it is back; a prompt that reports nothing is only
+  // drawn, and the screen alone never ends the agent (HOLD-C, signoff-decisions.md 2026-11-28).
+  it('reads the agent as gone once it has exited and its shell reports its prompt, and not on a prompt only drawn', async () => {
+    const REPORT = '\x1b]7;file://host/tmp/project\x07'
+    const HINT = `\x1b[${ROWS};1H\r\nResume this session with:\r\nclaude --resume 3f2a9c1e-5b7d-4e8f-a012-3456789abcde\r\n`
+    appendOutput(buffers, 't1', REPORT)
     aTurn()
-    // It exits below its box: the hint is at the screen's foot with the box above it, and the shell's prompt after.
-    appendOutput(buffers, 't1', `\x1b[${ROWS};1H\r\nResume this session with:\r\nclaude --resume 3f2a9c1e-5b7d-4e8f-a012-3456789abcde\r\n$ `)
-    const seen = await lookAt()
-    expect(seen.live).toBe(false)
+    appendOutput(buffers, 't1', HINT + '$ ')
+    expect((await lookAt()).live).toBe(true)
+    appendOutput(buffers, 't1', `\r\n${REPORT}$ `)
+    expect((await lookAt()).live).toBe(false)
   })
 })

@@ -132,10 +132,16 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     expect(cmd.outcome.kind).toBe('switched')
   })
 
-  it('works in David\'s Git Bash, which reports no prompt: the hint at the foot carries it', async () => {
-    const r = await run(claude({ reports: false }))
+  // The hint names the session but is no word that the agent is gone: in a shell that reports no prompt, the OS's word carries
+  // the switch, and where the OS cannot be asked either, nothing is typed at the shell (HOLD-C, signoff-decisions.md 2026-11-28).
+  it('works in David\'s Git Bash, which reports no prompt: the OS\'s word carries it, the hint names the session', async () => {
+    const r = await run(claude({ reports: false, os: 'tells' }))
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     cleanRun(r)
+    const blind = await run(claude({ reports: false }))
+    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(blind.t.writes).toEqual(['/exit', '\r'])
+    expect(blind.t.ran).toEqual([])
   })
 
   it('clears what the box held before typing /exit, and resumes in a worktree as the hint printed it', async () => {
@@ -360,10 +366,12 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
       expect(r.recorded).toEqual([])
     })
 
-    it('still sends it where the screen shows the shell is back: the hint at the foot, or a prompt since the start', async () => {
+    // A hint at the foot alone is no word from the shell (HOLD-C): the line goes on there as at a box, its first part looked at.
+    it('still sends it where the shell\'s own prompt since the start shows it is back, and not on a hint at the foot alone', async () => {
       const hint = await run(claude({ family, start: 'gone-hint' }), { start: undefined }, { assumeExited: true })
       expect(hint.outcome).toMatchObject({ kind: 'switched', resumed: true })
-      expect(hint.t.writes.slice(0, 2)).toEqual([family === 'posix' ? '\u0005\u0015' : '\u001b', '\r'])
+      expect(hint.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
+      expect(hint.t.writes.indexOf('\r')).toBeGreaterThan(0)
       // No hint on this screen, so the conversation starts new: what matters here is that the line was entered.
       const prompt = await run(claude({ family, start: 'gone-quiet' }), {}, { assumeExited: true })
       expect(prompt.outcome).toMatchObject({ kind: 'fresh', why: 'no-session' })
@@ -551,8 +559,9 @@ describe('Codex', () => {
     expect(dead.outcome).toEqual({ kind: 'resume-not-found' })
   })
 
-  it('waits for a shell that reports no prompt to go quiet before the new session', async () => {
-    const r = await run(codex({ family: 'posix', reports: false, relaunch: ['not-found', 'box'] }))
+  // Quiet is no word that the shell is back (HOLD-C): where it reports no prompt, the OS's is.
+  it('has the OS\'s word that the shell is back before the new session, where the shell reports no prompt', async () => {
+    const r = await run(codex({ family: 'posix', reports: false, os: 'tells', relaunch: ['not-found', 'box'] }))
     expect(r.outcome).toEqual({ kind: 'fresh', why: 'not-found' })
   })
 
@@ -866,10 +875,14 @@ describe('G2: a flag the shell cannot carry is refused before the agent is asked
 // bare and the user is told so, since a restriction (Codex's -s read-only, a permission mode) is among what is not carried.
 describe('a start Termpolis did not follow (MODELS-R2-4)', () => {
   it('flags a switch that had no record of the start, whether it resumed or began anew', async () => {
-    const resumed = await run(claude({ start: 'gone-hint' }), { start: undefined })
+    const resumed = await run(claude({ start: 'gone-hint', os: 'tells' }), { start: undefined })
     expect(resumed.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
-    const fresh = await run(claude({ start: 'gone-hint' }), { start: undefined }, { fresh: true })
+    const fresh = await run(claude({ start: 'gone-hint', os: 'tells' }), { start: undefined }, { fresh: true })
     expect(fresh.outcome).toEqual({ kind: 'fresh', why: 'asked', unseenStart: true })
+    // With no start to read a prompt since, and no OS to ask, the hint under the box is no exit: nothing is typed (HOLD-C).
+    const blind = await run(claude({ start: 'gone-hint' }), { start: undefined })
+    expect(blind.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(blind.t.writes).toEqual([])
     const none = await run(claude({ exit: 'no-hint' }), { start: undefined })
     expect(none.outcome).toEqual({ kind: 'fresh', why: 'no-session', unseenStart: true })
   })
@@ -1160,11 +1173,12 @@ describe('the OS has the last word on whether the agent is gone', () => {
     cleanRun(r)
   })
 
-  it('loses the line typed during the teardown, and says the switch did not start, where the OS cannot be asked', async () => {
-    // The contrast: without the OS's word the screen says "gone" at once, the line goes to a shell
-    // that is not reading yet, and nothing is entered.
+  it('types nothing at the shell, and says it could not confirm the exit, where the OS cannot be asked', async () => {
+    // The contrast: without the OS's word, the hint shown at once is no exit (HOLD-C), so no line goes to a shell that is not
+    // reading yet.
     const r = await run(claude({ reports: false, teardownMs: 6000 }))
-    expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.t.writes).toEqual(['/exit', '\r'])
     expect(r.t.ran).toEqual([])
   })
 
