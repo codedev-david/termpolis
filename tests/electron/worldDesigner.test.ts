@@ -7,7 +7,7 @@ import {
   DESIGN_KEY_RE, DESIGN_NEEDS_PERSON, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
 } from '../../src/main/world/designer'
 import { applyDesignPatch, emptyDesignDoc, type DesignOp } from '../../src/shared/world/designPatch'
-import type { WorldDoc } from '../../src/shared/world/types'
+import type { Claim, WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { districtRadius } from '../../src/main/world/layout'
 import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/sources'
@@ -903,6 +903,33 @@ describe('a design saved by a newer Termpolis is never changed here (WP3)', () =
   })
 })
 
+describe('an agent\'s note on a design shows once, however often the design is saved (DSN R2, F1)', () => {
+  const agentNote = (text: string): Claim => ({ text, state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }] })
+  const count = (doc: WorldDoc, id: string, text: string): number =>
+    [...doc.buildings, ...doc.edges].find((p) => p.id === id)!.claims.filter((c) => c.text === text).length
+
+  it('an agent note stays one through a second annotate and three proposes, on the card and in the file', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(real, annotations)
+    const { designer } = setup(noRun, { store, annotations })
+    const answered = await designer.annotate('design:id1', 'api', agentNote('Calls the bank.'))
+    expect(count(answered, 'api', 'Calls the bank.')).toBe(1)
+    expect(count((await store.load('design:id1')) as WorldDoc, 'api', 'Calls the bank.')).toBe(1)
+    await designer.annotate('design:id1', 'db', agentNote('Holds the orders.'))
+    await designer.annotate('design:id1', 'api', person('Takes orders.'))
+    for (const name of ['Store', 'Ledger', 'Vault']) await designer.propose({ key: 'design:id1' }, [{ op: 'rename', id: 'db', name }])
+    const doc = (await store.load('design:id1')) as WorldDoc
+    expect(count(doc, 'api', 'Calls the bank.')).toBe(1)
+    expect(count(doc, 'db', 'Holds the orders.')).toBe(1)
+    expect(personClaims(doc, 'api')).toEqual([person('Takes orders.')])
+    const file = JSON.parse(await readFile(join(dir, 'world', 'design_id1.json'), 'utf8')) as WorldDoc
+    expect(count(file, 'api', 'Calls the bank.')).toBe(1)
+    expect(count(file, 'db', 'Holds the orders.')).toBe(1)
+  })
+})
+
 describe('a note is stored only once the design it goes on is saved (DSN Round 1, item 9)', () => {
   const note = person('Takes orders.')
 
@@ -916,9 +943,9 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     expect(personClaims((await withAnnotations(real, annotations).load('design:id1')) as WorldDoc, 'api')).toEqual([])
   })
 
-  it('a design a newer Termpolis saved just before the write stores no note', async () => {
+  it('a design a newer Termpolis saved just before the write stores no note, and the next load shows neither the note nor the change', async () => {
     const real = createWorldStore(dir)
-    await stored(real)
+    const first = await stored(real)
     const file = join(dir, 'world', 'design_id1.json')
     const annotations = createAnnotationStore(dir)
     const racing: WorldStore = { ...real, save: async (doc) => { await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), version: 99 })); await real.save(doc) } }
@@ -926,6 +953,11 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     expect(await failure(designer.annotate('design:id1', 'api', note))).toBe(WORLD_SAVED_BY_NEWER)
     expect(await annotations.list('design:id1')).toEqual({})
     expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(99)
+    // DSN R2, F2: the store keeps no copy of the refused design, so a later load in this session shows the newer file.
+    const again = (await withAnnotations(real, annotations).load('design:id1')) as WorldDoc
+    expect(again.savedByNewer).toBe(true)
+    expect(again.generatedAt).toBe(first.generatedAt)
+    expect(personClaims(again, 'api')).toEqual([])
   })
 
   it('a note stored after the save is answered on its part even when the list read back fails', async () => {

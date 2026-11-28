@@ -543,6 +543,43 @@ describe('withAnnotations', () => {
     await store.save(own)
     expect(own.savedByNewer).toBeUndefined()
   })
+
+  const agent: Claim = { text: 'Calls the bank.', state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }] }
+  const onB1 = (d: WorldDoc): Claim[] => d.buildings.find((b) => b.id === 'b1')!.claims
+
+  it('an agent note is shown once through three saves and loads; person and runtime notes are as before (DSN R2, F1)', async () => {
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(createWorldStore(dir), annotations)
+    await annotations.add('design:x', 'b1', agent)
+    await annotations.add('design:x', 'b1', person('Takes orders.'))
+    await annotations.add('design:x', 'b1', person(runtimeText(['orders-api'])))
+    const before = onB1(minimal())
+    let d = { ...minimal(), projectKey: 'design:x' } as WorldDoc
+    for (let i = 0; i < 3; i++) {
+      await store.save(d)
+      d = (await store.load('design:x')) as WorldDoc
+    }
+    expect(onB1(d)).toEqual([...before, agent, person('Takes orders.')])
+    expect(d.runtimeNames.b1).toEqual(['orders-api'])
+    expect(d.runtimeHandSet).toEqual(['b1'])
+    const disk = JSON.parse(await readFile(join(dir, 'world', worldFileName('design:x')), 'utf8')) as WorldDoc
+    expect(onB1(disk).filter((c) => c.text === agent.text)).toEqual([agent])
+  })
+
+  it('a design file already holding four copies of an agent note loads as one and saves as one (DSN R2, F1)', async () => {
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(createWorldStore(dir), annotations)
+    await annotations.add('design:x', 'b1', agent)
+    const copies = { ...minimal(), projectKey: 'design:x' } as WorldDoc
+    copies.buildings = copies.buildings.map((b) => (b.id === 'b1' ? { ...b, claims: [...b.claims, agent, agent, agent, agent] } : b))
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const file = join(dir, 'world', worldFileName('design:x'))
+    await writeFile(file, JSON.stringify(copies))
+    const loaded = (await store.load('design:x')) as WorldDoc
+    expect(onB1(loaded).filter((c) => c.text === agent.text)).toEqual([agent])
+    await store.save(loaded)
+    expect(onB1(JSON.parse(await readFile(file, 'utf8')) as WorldDoc).filter((c) => c.text === agent.text)).toEqual([agent])
+  })
 })
 
 describe('addClaim: one more stored note, as a merge with it shows it (DSN Round 1, item 9)', () => {

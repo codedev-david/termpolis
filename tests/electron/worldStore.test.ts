@@ -794,8 +794,9 @@ describe('a save looks at the file again just before it puts its copy in place (
     expect(mine.savedByNewer).toBe(true)
     expect(await readFile(file(), 'utf8')).toBe(text)
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
-    // From then on the store knows: this version's copy is shown, marked, and the file stays the newer one's.
-    expect(await store.load('demo')).toMatchObject({ generatedAt: 3, savedByNewer: true })
+    // From then on the store knows: the file stays the newer one's, and it is what a load shows (DSN R2, F2: the refused
+    // copy is not kept in memory, so no change this version could not save turns up later in the session).
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 9, savedByNewer: true })
     await store.save({ ...doc(), generatedAt: 4 })
     expect(await readFile(file(), 'utf8')).toBe(text)
   })
@@ -809,6 +810,9 @@ describe('a save looks at the file again just before it puts its copy in place (
     })
     await store.save(doc())
     const before = await readFile(file(), 'utf8')
+    // Changed since the save (DSN R2, F4: an unchanged file is not read again).
+    const later = new Date(Date.now() + 60_000)
+    await utimes(file(), later, later)
     fail = true
     await expect(store.save({ ...doc(), generatedAt: 5 })).rejects.toBeInstanceOf(WorldReadError)
     expect(await readFile(file(), 'utf8')).toBe(before)
@@ -826,5 +830,71 @@ describe('a save looks at the file again just before it puts its copy in place (
     await rm(file())
     await store.save({ ...doc(), generatedAt: 7 })
     expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(7)
+  })
+
+  describe('only a file changed since this store last read or wrote it is read again (DSN R2, F4)', () => {
+    /** Each read of the world file. */
+    const counting = (reads: string[]) => (async (f: string, enc: 'utf8') => { reads.push(f); return readFile(f, enc) }) as never
+    const newer = (): string => JSON.stringify({ ...doc(), version: 99 })
+
+    it('a recompile of a project world whose file is unchanged reads nothing', async () => {
+      const reads: string[] = []
+      const store = createWorldStore(dir, { readFile: counting(reads) })
+      await store.save(doc())
+      reads.length = 0
+      await store.save({ ...doc(), generatedAt: 2 })
+      await store.save({ ...doc(), generatedAt: 3 })
+      expect(reads.filter((f) => f === file())).toEqual([])
+      expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(3)
+      // Nor after a load: the load saw the file as it is.
+      expect(await store.load('demo')).toMatchObject({ generatedAt: 3 })
+      reads.length = 0
+      await store.save({ ...doc(), generatedAt: 4 })
+      expect(reads).toEqual([])
+    })
+
+    it('a changed modified time is read, and a newer world there is kept', async () => {
+      // Every size the same, so only the time tells.
+      const store = createWorldStore(dir, { stat: (async (f: string) => ({ size: 0, mtimeMs: (await stat(f)).mtimeMs })) as never })
+      await store.save(doc())
+      await writeFile(file(), newer())
+      const later = new Date(Date.now() + 60_000)
+      await utimes(file(), later, later)
+      const mine = { ...doc(), generatedAt: 5 }
+      await store.save(mine)
+      expect(mine.savedByNewer).toBe(true)
+      expect(await readFile(file(), 'utf8')).toBe(newer())
+    })
+
+    it('a changed size is read though the modified time is the same, and a newer world there is kept', async () => {
+      const store = createWorldStore(dir, { stat: (async (f: string) => ({ size: (await stat(f)).size, mtimeMs: 0 })) as never })
+      await store.save(doc())
+      await writeFile(file(), newer())
+      const mine = { ...doc(), generatedAt: 5 }
+      await store.save(mine)
+      expect(mine.savedByNewer).toBe(true)
+      expect(await readFile(file(), 'utf8')).toBe(newer())
+    })
+
+    it('a file whose details cannot be looked up is read, and a newer world there is kept', async () => {
+      let fail = false
+      const store = createWorldStore(dir, { stat: (async (f: string) => { if (fail && f === file()) throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); return stat(f) }) as never })
+      await store.save(doc())
+      fail = true
+      await writeFile(file(), newer())
+      const mine = { ...doc(), generatedAt: 5 }
+      await store.save(mine)
+      expect(mine.savedByNewer).toBe(true)
+      expect(await readFile(file(), 'utf8')).toBe(newer())
+    })
+
+    it('a temp copy whose details cannot be looked up leaves the next save to read the file', async () => {
+      const reads: string[] = []
+      const store = createWorldStore(dir, { readFile: counting(reads), stat: (async (f: string) => { if (f.endsWith('.tmp')) throw new Error('EPERM'); return stat(f) }) as never })
+      await store.save(doc())
+      reads.length = 0
+      await store.save({ ...doc(), generatedAt: 2 })
+      expect(reads).toEqual([file()])
+    })
   })
 })
