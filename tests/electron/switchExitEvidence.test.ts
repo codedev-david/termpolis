@@ -145,6 +145,51 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
     expect(writesWhileLive).not.toContain('\r')
     expect(outcome).toEqual({ kind: 'resume-not-found' })
   })
+
+  /** A Codex that answers its resume line "No saved session found", then quits or stays, in a shell whose prompt does not report,
+   *  so the OS's word is all the fallback has. */
+  async function notFoundOnOs(quits: 'now' | 'later' | false): Promise<{ outcome: Awaited<ReturnType<typeof runAccountSwitch>>; t: FakeTerminal; writesAfter: string[] }> {
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', reports: false, os: 'tells', start: 'idle', exit: 'hint', relaunch: ['box'] })
+    const base = t.io()
+    let said = false
+    const writesAfter: string[] = []
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        if (said) writesAfter.push(key)
+        base.write(id, key)
+        if (key === '\r' && !said && t.ran.some((line) => line.includes(' resume '))) {
+          said = true
+          t.out += '\r\nNo saved session found with ID 123\r\n'
+          if (quits === 'now') {
+            t.mode = 'shell'
+            t.goneAt = t.clock
+            t.out += t.prompt()
+          }
+          if (quits === 'later') {
+            t.goneAt = t.clock + 3000
+            t.late = { at: t.goneAt, text: t.prompt(), mode: 'shell' }
+          }
+        }
+      },
+    }
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: CODEX_TARGET.id, shellType: 'powershell' }, {
+      io, agent: 'codex', start: { at: t.launchedAt, commands: [t.launchLine()] }, target: CODEX_TARGET, newSessionId: () => NEW_ID, record: () => {},
+    })
+    return { outcome, t, writesAfter }
+  }
+
+  it.each(['now', 'later'] as const)('Codex that says it found no session and quits (%s), in a shell that reports no prompt, is read back on the OS\'s word: a new session in place', async (when) => {
+    const { outcome, writesAfter } = await notFoundOnOs(when)
+    expect(outcome).toMatchObject({ kind: 'fresh', why: 'not-found' })
+    expect(writesAfter).toContain('\r')
+  })
+
+  it('Codex that says it found no session and stays up, with the OS saying so, is sent nothing more', async () => {
+    const { outcome, writesAfter } = await notFoundOnOs(false)
+    expect(outcome).toEqual({ kind: 'resume-not-found' })
+    expect(writesAfter).toEqual([])
+  })
 })
 
 describe('Codex R3 MINOR (limitLook.ts:120): the limit look never latches "ended" from the screen alone', () => {
