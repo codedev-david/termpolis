@@ -64,11 +64,12 @@ function world(): { h: ChooserHome; accounts: Record<keyof typeof ACCOUNT_IDS, A
   return { h, accounts: Object.fromEntries(Object.entries(ACCOUNT_IDS).map(([k, id]) => [k, byId(id)])) as Record<keyof typeof ACCOUNT_IDS, AgentAccount> }
 }
 
-/** A shell with the mock agents first on PATH and a test home, ready at its prompt. */
-async function openShell(shell: ShellSpec, h: ChooserHome): Promise<RealTerminal> {
+/** A shell with the mock agents first on PATH and a test home, ready at its prompt: with Termpolis's shell integration, as a
+ *  terminal of Termpolis's has it, unless `bare`. */
+async function openShell(shell: ShellSpec, h: ChooserHome, bare = false): Promise<RealTerminal> {
   const shim = chooserShimEnv()
   const env = prependPath(shim.TERMPOLIS_TEST_SHIM_DIR, cleanEnv({ TERMPOLIS_TEST_AGENT_HOME: h.home, HOME: h.home, USERPROFILE: h.home, TERMPOLIS_LIMIT_CHOOSER: '1' }))
-  const t = new RealTerminal(pty as PtyModule, shell, { cwd: h.project, env })
+  const t = new RealTerminal(pty as PtyModule, shell, { cwd: h.project, env, bare })
   terminals.push(t)
   // Ready: it has drawn something and has been quiet for a moment.
   await t.until(() => t.total > 0, 30_000, 'the shell to start')
@@ -250,8 +251,8 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
       }, 120_000)
 
       // SW2-10: no committed real-PTY test wired the OS's own word on whether the agent is gone (shellAlone.ts, node-pty's console list
-      // on Windows), which is the production switch's primary exit evidence: the cases here and above run on the screen's word alone.
-      // The same switch, with that word wired in as main wires it, and every answer it gave kept for a failure to be read by.
+      // on Windows), which is the production switch's primary exit evidence: the cases here and above run on the shell's prompt report
+      // alone. The same switch, with that word wired in as main wires it, and every answer it gave kept for a failure to be read by.
       it.skipIf(process.platform !== 'win32')('Claude Code: the switch exits and resumes the session with the OS\'s own word on the exit wired in', async () => {
         const { h, accounts } = world()
         const t = await openShell(shell, h)
@@ -409,6 +410,29 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         expect(writes.join('')).not.toContain('/exit')
         expect(writes.join('')).not.toMatch(/[\u0003\u0004]/)
         expect(eventsOf(h, 'claude').filter((e) => e.event === 'exit')).toHaveLength(1)
+      }, 120_000)
+
+      // HOLD-C: the screen is no word that the agent is gone. In a shell whose prompt does not report (Termpolis's integration did not
+      // load) and with the OS not asked, an exited agent's hint and the prompt under it leave the switch unsure, and it types nothing.
+      it('Claude Code: in a shell without Termpolis\'s integration, an agent that already exited gets nothing typed, as nothing says it is gone', async () => {
+        const { h, accounts } = world()
+        const t = await openShell(shell, h, true)
+        const built = accountLine(shell.family, accountEnv(accounts.claudeMain, 'claude'), `claude --session-id ${SESSION}`)
+        if ('refused' in built) throw new Error(built.refused)
+        const start = launch(t, built.line, 'claude')
+        await untilBox(t, 'the mock Claude Code box')
+        prompt(t, start, 'a first turn')
+        await sleep(2500)
+        t.write('/exit\r')
+        await t.until(() => /Resume this session with:/.test(t.screen()) && t.screen().trimEnd().split('\n').length > 3, 20_000, 'the exit hint')
+        await sleep(1500)
+        const writes: string[] = []
+        const outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
+          io: t.io(writes), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, sessionId: SESSION, newSessionId: () => randomUUID(), record: () => undefined,
+          hasTranscript: () => true, carry: () => ({ carried: true }),
+        })
+        expect(outcome, debug(t)).toMatchObject({ kind: 'unknown-exit' })
+        expect(writes, debug(t)).toEqual([])
       }, 120_000)
 
       it('R5: a limit screen printed in the shell after the agent exited is no stop', async () => {

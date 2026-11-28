@@ -4,11 +4,13 @@
 // shell isn't on the machine, and give every process they start a temp home, so none can reach a
 // real profile.
 import { createRequire } from 'module'
-import { existsSync } from 'fs'
-import { delimiter } from 'path'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { delimiter, join } from 'path'
 import type { SwitchIO } from '../../src/main/accountSwitch'
 import { drawn } from '../../src/main/mcpServer'
 import { killProcessTree } from '../../src/main/processTree'
+import { integrationArgs, integrationEnv, integrationFile } from '../../src/main/shellIntegration'
 import type { ShellFamily } from '../../src/shared/agentAccounts'
 
 const nodeRequire = createRequire(import.meta.url)
@@ -116,16 +118,32 @@ export class RealTerminal {
   private t0 = Date.now()
   private proc: PtyProcess
   private dead = false
+  /** Where the shell's integration file was written, removed with the terminal. */
+  private dir: string | null = null
 
-  constructor(pty: PtyModule, readonly shell: ShellSpec, opts: { cwd: string; env: Record<string, string>; cols?: number; rows?: number }) {
+  constructor(pty: PtyModule, readonly shell: ShellSpec, opts: { cwd: string; env: Record<string, string>; cols?: number; rows?: number; bare?: boolean }) {
     this.cols = opts.cols ?? 110
     this.rows = opts.rows ?? 30
     // A bash terminal of Termpolis's own reports each prompt (shellIntegration.ts: OSC 7 from PROMPT_COMMAND), and the switch waits for
     // that report where its terminal's shell sends one, instead of reading a quiet spell as "the prompt is back". The harness's bash,
     // started with --noprofile --norc, sent none, so a loaded machine's slow shell read as a stalled one (MODELS-R3-6). The host's own
     // PROMPT_COMMAND (David's rc has one) is replaced, not chained: a test's shell is the same on every machine.
-    const env = shell.family === 'posix' ? { ...opts.env, PROMPT_COMMAND: POSIX_PROMPT_REPORT } : opts.env
-    this.proc = pty.spawn(shell.file, shell.args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd: opts.cwd, env })
+    // PowerShell and cmd get Termpolis's own integration as well (shellIntegration.ts: the dot-sourced prompt wrapper, the PROMPT
+    // string), so their prompts report too: the switch types only on the shell's word that the agent is gone (HOLD-C), and a
+    // terminal of Termpolis's always has it. `bare` starts the shell without, as a terminal whose integration did not load.
+    let env = opts.env
+    let args = shell.args
+    if (!opts.bare && shell.family === 'posix') env = { ...env, PROMPT_COMMAND: POSIX_PROMPT_REPORT }
+    if (!opts.bare && shell.family !== 'posix') {
+      const kind = shell.family === 'cmd' ? 'cmd' : 'powershell'
+      const file = integrationFile(kind)!
+      this.dir = mkdtempSync(join(tmpdir(), 'termpolis-realpty-'))
+      const path = join(this.dir, file.name)
+      writeFileSync(path, file.content)
+      env = { ...env, ...integrationEnv(kind, env, path) }
+      args = [...args, ...integrationArgs(kind, path)]
+    }
+    this.proc = pty.spawn(shell.file, args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd: opts.cwd, env })
     this.proc.onData((d) => {
       this.trace.push(`+${Date.now() - this.t0} r ${JSON.stringify(d.slice(0, 80))}`)
       this.raw += d
@@ -178,6 +196,8 @@ export class RealTerminal {
   kill(): void {
     if (this.dead) return
     this.dead = true
+    // Each shell read its file once, at its start.
+    if (this.dir) rmSync(this.dir, { recursive: true, force: true })
     // A shell that exited needs nothing: node-pty's own kill() asks Windows for its console's
     // process list and prints a stack trace when the console is gone.
     if (this.exitCode !== null) return
