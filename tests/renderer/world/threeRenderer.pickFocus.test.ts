@@ -1140,6 +1140,147 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     }
   })
 
+  // Round 11, Codex (MEDIUM R10-5, threeRenderer.ts:2635-2649): the fit's timer fitted the buffer at the size it was
+  // armed for when the host had been hidden or resized since, the observer not yet told (a fit clears the buffer: a
+  // blank canvas until the next redraw). R11-4: the fit reads the host when it runs, and is armed again instead.
+  it.each([[0, 0], [430, 600], [440, 500]])('the host at %ix%i when the fit\'s timer runs, the observer not yet told: no fit and no search, the settle armed again; back at the size armed for, it fits and checks', async (w, ht) => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      const stretched = r.canvas.width // the buffer the drag stretched, not yet fitted to 440
+      expect(stretched).not.toBe(440)
+      resizeHost(h.host, w, ht) // hidden or moved on: the observer is told after the next task
+      vi.advanceTimersToNextTimer() // the fit's task
+      settle()
+      expect(r.canvas.width).toBe(stretched) // nothing fitted at a size the host no longer has
+      expect(n.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1) // armed again, the fit and the check still owed
+      vi.advanceTimersByTime(HELD_MS * 3)
+      settle()
+      expect(r.canvas.width).toBe(stretched)
+      expect(n.count()).toBe(0)
+      // Back at the size it was armed for before the observer ever told: the fit, then the owed check.
+      resizeHost(h.host, 440, 600)
+      vi.advanceTimersByTime(HELD_MS)
+      settle()
+      expect(r.canvas.width).toBe(440)
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  // Round 11, Codex (MEDIUM R10-5, WorldView.tsx:1311): the world's host is hidden by visibility while the flat map
+  // shows, its size unchanged, and the look guard searched it. R11-4: a host hidden by its style is hidden as one 1 by 1
+  // is: no fit, no check, no search, whether by the settle, a panel's change or a pane shown again; the settle stays
+  // owed, and runs once the host shows.
+  it("a host hidden by visibility between the fit's task and the check's: no search, the check armed again; shown, it checks", async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      vi.advanceTimersToNextTimer() // the fit's task
+      expect(r.canvas.width).toBe(440)
+      h.host.style.visibility = 'hidden' // the flat map shown before the check's task
+      vi.advanceTimersToNextTimer() // the check's task
+      settle()
+      expect(n.count()).toBe(0)
+      expect(r.screenPoint('p')).toBeNull()
+      expect(vi.getTimerCount()).toBe(1) // armed again, the check still owed
+      h.host.style.visibility = ''
+      vi.advanceTimersByTime(HELD_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  // With no settle pending, a hidden host's look is not checked either: neither a pane shown again (resizeNow) nor a
+  // panel's change (reframe) searches a host hidden by visibility, or one 1 by 1; each only re-aims, here to where the
+  // tower hides p, which a check would search. Shown again at a size, the pane is checked at once.
+  it('no settle pending: a pane shown again or a panel change on a host hidden by visibility, or 1 by 1, only re-aims; shown at a size, it checks', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      h.host.style.visibility = 'hidden'
+      resized(1, 1)
+      settle()
+      resized(440, 600) // shown again from 1 by 1, still hidden by visibility: drawn at once, nothing armed
+      settle()
+      expect(vi.getTimerCount()).toBe(0)
+      expect(n.count()).toBe(0)
+      expect(r.screenPoint('p')).toBeNull()
+      r.setCardReserve(380, 120) // a panel's change on it
+      settle()
+      expect(n.count()).toBe(0)
+      expect(r.screenPoint('p')).toBeNull()
+      h.host.style.visibility = ''
+      resized(1, 1) // a pane 1 by 1, its style shown
+      settle()
+      expect(vi.getTimerCount()).toBe(0)
+      r.setCardReserve(380, 100)
+      settle()
+      expect(n.count()).toBe(0)
+      // A pane 1 high, or 1 wide, is 1 by 1 or less too.
+      for (const [w, ht] of [[440, 1], [1, 600]]) {
+        resized(w, ht)
+        settle()
+        r.setCardReserve(380, 120)
+        settle()
+        r.setCardReserve(380, 100)
+        settle()
+        expect(n.count(), `${w}x${ht}`).toBe(0)
+        expect(vi.getTimerCount()).toBe(0)
+      }
+      resized(440, 600) // shown at a size: checked at once, and p searched into view
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('a host hidden by visibility, its size unchanged: no fit and no search by the settle; shown again, the settle fits and checks', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      const stretched = r.canvas.width
+      h.host.style.visibility = 'hidden' // the flat map shown
+      vi.advanceTimersByTime(HELD_MS * 3)
+      settle()
+      expect(r.canvas.width).toBe(stretched)
+      expect(n.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1) // still owed
+      h.host.style.visibility = '' // the world shown again
+      vi.advanceTimersByTime(HELD_MS)
+      settle()
+      expect(r.canvas.width).toBe(440)
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('a pane hidden and shown again at another size is checked at once: an end the new size hides searches again', async () => {
     const n = searches()
     const { r, resized } = await dragged(800, 600)

@@ -475,6 +475,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** A hand, a key, a flight or a framing ended the slow turn the city opens with: it never starts again. */
   let turnEnded = false
   const size = (): [number, number] => [Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)]
+  /**
+   * The host shows nothing: 1 by 1 or less (display none, on the host or a pane round it, lays it out at 0 by 0, so its
+   * size says so), or hidden by visibility, its size kept (the world's host is hidden so while the flat map shows,
+   * WorldView). A hidden host's buffer is not fitted by a settle and its look is never checked (Round 11, R11-4).
+   */
+  const hidden = (): boolean => host.clientWidth <= 1 || host.clientHeight <= 1 || getComputedStyle(host).visibility === 'hidden'
   let [width, height] = size()
 
   // No multisampling, at either tier. At high quality the city is drawn into the glow chain's render targets, which
@@ -1814,8 +1820,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fitOverview(lastModel)
     fogTarget = fogFor()
     // While a resize's size has yet to hold (its settle pending), the panel's change only re-aims: the settle checks
-    // the look once, at the size the view comes to rest at, not at each size a divider passes on the way.
-    recheck = settleTimer === null
+    // the look once, at the size the view comes to rest at, not at each size a divider passes on the way. A hidden
+    // host's look is never checked (hidden).
+    recheck = settleTimer === null && !hidden()
     try {
       rig.refit()
     } finally {
@@ -2626,13 +2633,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * ms of the thread on the runners, a new search 66 to 179) and kept in the fit's task it made that task the check's
    * too: the fit's own work stays the fit's (BUFFER_FIT_MEASURE's task), the check is a task like any other. Until the
    * check has run the settle is still pending (settleTimer): a resize puts both off, a new pixel ratio or tier puts the
-   * check off again (onRatio, setTier), and a panel's change only re-aims (reframe). The check reads the host when it
-   * runs: hidden, or at a size other than the one fitted (the observer not yet told of a change, Round 10, Codex), it
-   * searches nothing and the settle is armed again, the check still owed. It is named on the page's timeline
-   * (LOOK_CHECK_MEASURE), its own and wall time logged apart by the drag check.
+   * check off again (onRatio, setTier), and a panel's change only re-aims (reframe). The fit and the check each read the
+   * host when they run: hidden (display none, visibility hidden, or 1 by 1), or at a size other than the one armed for
+   * or fitted (the observer not yet told of a change, Round 10 and 11, Codex: a fit at a stale size leaves the canvas
+   * blank until a redraw), nothing is fitted or searched and the settle is armed again, the check still owed. It is
+   * named on the page's timeline (LOOK_CHECK_MEASURE), its own and wall time logged apart by the drag check.
    */
   const armSettle = (): void => {
     settleTimer = setTimeout(() => {
+      const [w0, h0] = size()
+      if (hidden() || w0 !== width || h0 !== height) {
+        armSettle()
+        return
+      }
       if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) {
         const start = performance.now()
         fitBuffer()
@@ -2645,8 +2658,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       settleTimer = setTimeout(() => {
         settleTimer = null
         const [w, h] = size()
-        // A hidden host (1 by 1, size) is a size other than the one fitted: a settle is armed only above 1 by 1.
-        if (w !== shown.width || h !== shown.height) {
+        if (hidden() || w !== shown.width || h !== shown.height) {
           armSettle()
           return
         }
@@ -2684,7 +2696,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fitOverview(lastModel)
     fogTarget = fogFor()
     rig.resized()
-    if (held) settleCheck()
+    if (held && !hidden()) settleCheck()
   }
   // One observer watches the host and the panels over it (setPanels): any change has the panels'
   // boxes measured again; the host's own changes resize the view.

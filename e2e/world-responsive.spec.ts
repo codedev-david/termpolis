@@ -38,7 +38,7 @@ import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, REDUCED_SPLIT_AT, settleBudget, stillMoving, steady, VIEWPORTS, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../src/renderer/src/world/engine/bufferFit'
-import { DRAG_TRACE, dragVerdict, fitsNamed, widestGap, type OwnTime, type TraceEvent } from './helpers/dragTrace'
+import { DRAG_TRACE, dragVerdict, fitsNamed, pageMeasure, widestGap, type OwnTime, type TraceEvent } from './helpers/dragTrace'
 import { CORNER_MAX_LEVELS, cornerPatches, drawnBackground, levelsApart, MAX_WHITE_FRACTION, MIN_LIT_FRACTION, pngMetrics } from './worldPixels'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -1344,13 +1344,14 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // is named (RESIZE_MEASURE, counted against RendererPerf.resizeCount), at least 80% of them are timed on the thread's
     // clock (in the trace, in the work around each; one the trace dropped is timed on the wall), and each
     // takes under 16 ms of its own and 50 ms on the wall; no long task but a buffer fit's runs over 200 ms of its own or
-    // 350 ms on the wall; a long task holds a fit named, and the task that holds a fit's measure (BUFFER_FIT_MEASURE: the
-    // buffer fitted once the size holds, BUFFER_SETTLE_MS, then the fence and the wake, and whatever else that task runs),
-    // at least 90% of them in the trace or all but one, and one it lost charged its wall, takes no more than 200 ms of
-    // thread time, 1000 ms on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU process, 50 ms
-    // to 5.2 s on the macOS runner) and 2 s on the wall on Windows and ubuntu, 8 s on macOS; the tasks that hold all the
-    // drag's fits take no more than DRAG_LIMITS.fitCpuTotal ms of thread time in all, each once (fits too short to be long
-    // tasks too); and the page handles the drag's pointer moves, and its release, no more than 5 s
+    // 350 ms on the wall; a fit is named (BUFFER_FIT_MEASURE: the buffer fitted once the size holds, BUFFER_SETTLE_MS, then
+    // the fence and the wake), each one the trace places in one task it holds (one it drops, names at another length, or
+    // holds across two tasks or in none fails the drag, Round 11), and each takes no more than 200 ms of thread time in its
+    // measure, 1000 ms on the wall beyond its waits on the GPU (in software its GL calls wait for the GPU process, 50 ms to
+    // 5.2 s on the macOS runner) and 2 s on the wall on Windows and ubuntu, 8 s on macOS, and the drag's fits no more than
+    // DRAG_LIMITS.fitCpuTotal ms of thread time in all; only a fit's measured time is the fit's, so the rest of the task
+    // that holds it is held to a resize's limits, under 16 ms of its own and 50 ms on the wall (note (k), Round 11); and
+    // the page handles the drag's pointer moves, and its release, no more than 5 s
     // apart on Windows, 7 s on macOS and 2 s on ubuntu. The trace loses no events, and holds the page's marker once, on
     // one thread (Round 6, approved 2026-11-28). Long animation frames cannot time this (look plan Task 5 deviation, PENDING
     // SIGN-OFF): the app's pages are file:// pages, whose long animation frames name no scripts. The frame drawn right after
@@ -1463,10 +1464,6 @@ test.describe.serial('Lumopolis at every screen size', () => {
     await page.mouse.up()
     // The page's work after the drag is the drag's too, up to DRAG_AFTER_MS after the mouse-up.
     await page.waitForTimeout(DRAG_AFTER_MS)
-    await page.evaluate(([m, t]) => { performance.measure(`${m}:to`, { start: t, end: performance.now() }) }, [marker, markFrom] as const)
-    await trace.send('Tracing.end')
-    const dataLoss = await traceDone
-    await trace.detach().catch(() => {})
     const after = await page.evaluate(([fitName, resizeName, afterMs]) => {
       const w = window as unknown as { __longTasks: Array<{ start: number; ms: number }>; __moves: number[]; __benchAt: number; __longObs?: PerformanceObserver; __worldPerf: { end(): { frames: number } }; __termpolis_world: { drawn(): { perf: { resizeWorstMs: number; resizeCount: number; tier: string } } } }
       // The tasks the observer has not handed over yet are taken too: one that ended just now is still the drag's.
@@ -1489,13 +1486,30 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // release's after the last one included (widestGap).
     const named = fitsNamed(after.fits, after.moves[0], after.upAt + DRAG_AFTER_MS)
     const gap = widestGap(after.moves, after.upAt)
+    // Each span handed to the check, recorded into the trace under a name of its own (pageMeasure), from its start to its
+    // end on the page's clock, while the trace runs (look plan A2.1 note (10), Round 11): the browser puts a measure on
+    // the trace's clock as it does every User Timing measure (blink.user_timing), so the check finds each span by its
+    // name beside the work that holds it, and no number of the page's is put on the trace's clock. Then the marker's
+    // `:to`, named last.
+    const spans = [
+      ...after.resizes.map((x, k) => ({ name: pageMeasure(marker, 'resize', k), start: x.start, end: x.start + x.ms })),
+      ...after.tasks.map((x, k) => ({ name: pageMeasure(marker, 'task', k), start: x.start, end: x.start + x.ms })),
+      ...named.map((x, k) => ({ name: pageMeasure(marker, 'fit', k), start: x.start, end: x.start + x.ms })),
+    ]
+    await page.evaluate(([xs, m, t]) => {
+      for (const x of xs) performance.measure(x.name, { start: x.start, end: x.end })
+      performance.measure(`${m}:to`, { start: t, end: performance.now() })
+    }, [spans, marker, markFrom] as const)
+    await trace.send('Tracing.end')
+    const dataLoss = await traceDone
+    await trace.detach().catch(() => {})
     const verdict = dragVerdict({ events: traced, resizes: after.resizes, resizeCount: after.resizeCount, tasks: after.tasks, fits: named, widestGap: gap, platform: process.platform, marker, dataLoss })
     const { own, others, fits } = verdict
     const show = (xs: Array<{ wall: number }>): string => xs.map((x) => x.wall.toFixed(0)).join(', ') || 'none'
     const pairs = (xs: OwnTime[], over: number): string => xs.filter((x) => x.wall > over).map((x) => `${x.wall.toFixed(1)}/${x.own.toFixed(1)}${x.waited >= 0.05 ? ` (${x.waited.toFixed(1)} waited)` : ''}${x.matched ? '' : ' (not traced)'}${x.by && x.own >= 4 ? ` [in ${x.by}]` : ''}`).join(', ') || 'none'
     const threads = (xs: OwnTime[]): string => xs.map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.waited >= 0.5 ? ` (${x.waited.toFixed(0)} waited, ${x.gpu.toFixed(0)} on the GPU)` : ''}${x.matched ? '' : ' (not traced)'}`).join(', ') || 'none'
     console.log(`[world-responsive] divider drag with a line card open: worst resize ${after.resizeWorstMs.toFixed(1)} ms, ${after.resizes.length} of ${after.resizeCount} resizes named, ${after.frames} frames, tier ${after.tier}, ${after.moves.length} moves (widest gap ${gap.toFixed(0)} ms, the release's included), ${named.length} fits named; long tasks from the first move to ${DRAG_AFTER_MS} ms after the mouse-up ${show(others)}, the fits ${show(fits)}`)
-    console.log(`[world-responsive] divider drag on the thread's clock: ${own.traced} resizes in the trace on ${own.thread} (clocks ${own.spread.toFixed(2)} ms apart), ${own.resizes.filter((x) => x.matched).length} and ${others.filter((x) => x.matched).length} of ${others.length} long tasks timed on it; wall/own ms of the resizes over 4 ms ${pairs(own.resizes, 4)}; of the long tasks ${pairs(others, 0)}; wall/thread ms of the fits' tasks ${threads(fits)}`)
+    console.log(`[world-responsive] divider drag on the thread's clock: ${own.traced} of ${after.resizes.length} resizes found by name in the trace on ${own.thread} (recorded: ${own.recorded.resize} resizes, ${own.recorded.task} of ${after.tasks.length} long tasks, ${own.recorded.fit} of ${named.length} fits), ${own.resizes.filter((x) => x.matched).length} and ${others.filter((x) => x.matched).length} of ${others.length} long tasks timed on it; wall/own ms of the resizes over 4 ms ${pairs(own.resizes, 4)}; of the long tasks ${pairs(others, 0)}; wall/thread ms of the fits' tasks ${threads(fits)}`)
     // The thread time of all the fits' tasks (fitCpuTotal), and the begin/end pairs the trace logs on the page's thread, by name.
     const be = Object.entries(own.pairs).sort((p, q) => q[1] - p[1]).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'
     // A begin or an end it leaves in doubt (an end of another name than the open begin's, one with none open, a begin never ended) is charged as a wait to the edge of the trace.
@@ -1503,14 +1517,19 @@ test.describe.serial('Lumopolis at every screen size', () => {
     console.log(`[world-responsive] divider drag trace: ${dataLoss ? 'events lost' : 'no events lost'}; the marker ${own.marker.held ? 'held' : 'not held'} (${own.marker.from} from, ${own.marker.to} to, on ${own.marker.threads.join(', ') || 'no thread'})`)
     console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}; unpaired: ${doubt}`)
     // The long tasks the trace tags otherwise than the page (its 1 ms), and the worst a fit's measure lies outside every
-    // task the trace holds (the margin FIT_SLACK, 0.25 ms, keeps), Round 7; and (Round 9) the fits with no measure paired
-    // within the window, dropped or unmatched, each giving no long task a fit, the long tasks the page tags a fit's for
-    // one of them (withheld, judged as tasks with none), and whether the resizes settle the clock; and (Round 10) the fits
-    // whose measure lies across two tasks or in none (unplaced, each giving no long task a fit), and each look check after
-    // a settle (LOOK_CHECK_MEASURE) on the wall and on the thread, logged apart: a task like any other, under the same limits.
+    // task the trace holds (Round 7); each fit's wall, thread and GPU-waited ms in its measure, and why the trace does not
+    // place one (dropped, unmatched, straddles, untasked: each fails the drag, Round 11); and each task that holds fits,
+    // on the wall and of its own, the fits' measured time (less the grain each) taken off, and what is left of it, held to
+    // a resize's limits (Round 11, note (k)); and each look check after a settle (LOOK_CHECK_MEASURE) on the wall and on
+    // the thread, logged apart: a task like any other, under the same limits.
     const retagged = verdict.retagged.map((t) => `${t.start.toFixed(1)}+${t.ms.toFixed(0)} ms (the page: ${t.page ? 'a fit\'s' : 'no fit\'s'})`).join(', ') || 'none'
-    const withheld = own.withheld.map((t) => `${t.start.toFixed(1)}+${t.ms.toFixed(0)} ms (a fit at ${t.fit.toFixed(2)}, ${t.reason})`).join(', ') || 'none'
-    console.log(`[world-responsive] divider drag tags: long tasks the trace tags otherwise ${retagged}; a fit's measure at most ${own.fitSkew.toFixed(3)} ms outside a task the trace holds; fits with no measure in the window ${own.unmeasured.dropped} dropped, ${own.unmeasured.unmatched} unmatched; fits in no one task ${own.unplaced.straddles} straddling, ${own.unplaced.untasked} untasked; long tasks withheld from them ${withheld}; the clock ${own.settled ? 'settled' : 'not settled'} (spread ${own.spread.toFixed(3)} ms)`)
+    const unplaced = own.fits.filter((f) => f.reason).map((f) => `${f.start.toFixed(2)}+${f.ms.toFixed(2)} ms ${f.reason as string}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag tags: long tasks the trace tags otherwise ${retagged}; a fit's measure at most ${own.fitSkew.toFixed(3)} ms outside a task the trace holds; fits not placed ${unplaced}`)
+    const fitEach = own.fits.map((f) => `${f.wall.toFixed(2)}/${f.cpu.toFixed(2)}/${f.gpu.toFixed(2)}${f.reason ? ` (${f.reason})` : ''}`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag fit measures: wall/thread/GPU-waited ms ${fitEach}`)
+    const rests = own.fitTasks.map((t) => `${t.wall.toFixed(1)}/${t.own.toFixed(1)} less ${t.off.toFixed(2)} of ${t.fits} = ${t.restWall.toFixed(1)}/${t.restOwn.toFixed(1)}`).join(', ') || 'none'
+    const worst = own.fitTasks.length ? `${Math.max(...own.fitTasks.map((t) => t.restWall)).toFixed(1)}/${Math.max(...own.fitTasks.map((t) => t.restOwn)).toFixed(1)}` : 'none'
+    console.log(`[world-responsive] divider drag remainders after the fits: worst wall/own ms ${worst}; each task's wall/own less the fits' = what is left ${rests}`)
     const looks = own.looks.map((x) => `${x.wall.toFixed(1)}/${Number.isNaN(x.own) ? 'in no task' : x.own.toFixed(1)}`).join(', ') || 'none'
     console.log(`[world-responsive] divider drag look checks: wall/own ms ${looks}`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
