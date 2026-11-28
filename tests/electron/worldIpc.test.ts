@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { PROGRESS_PACE_MS } from '../../src/main/world/progressPace'
 import { ANNOTATE_FAILED, DESIGN_FAILED, SETTINGS_FAILED, SETTINGS_LOAD_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
@@ -343,7 +344,7 @@ describe('registerWorldIpc', () => {
     const s = setup(() => current)
     const p: WorldProgressEvent = { root: 'C:/repo', projectKey: 'k', stage: 'layout', pct: 50 }
     const u: WorldUpdatedEvent = { root: 'C:/repo', projectKey: 'k' }
-    for (const cb of s.progress) cb(p) // no window: nothing happens
+    for (const cb of s.progress) cb({ ...p, projectKey: 'k0' }) // no window: nothing happens (another project, as progress is paced per project)
     current = { webContents: { send } }
     for (const cb of s.progress) cb(p)
     for (const cb of s.updated) cb(u)
@@ -359,6 +360,27 @@ describe('registerWorldIpc', () => {
     s.off()
     expect(s.progress.size).toBe(0)
     expect(s.updated.size).toBe(0)
+  })
+
+  // TYPEFLAKE: a compile posts up to 1,400 progress events a second; each was an IPC and a render of the world pane.
+  it('paces progress to the window: the first at once, then the latest each interval, and nothing after off()', () => {
+    vi.useFakeTimers()
+    try {
+      const send = vi.fn()
+      const s = setup(() => ({ webContents: { send } }))
+      const at = (pct: number): WorldProgressEvent => ({ root: 'C:/repo', projectKey: 'k', stage: 'structure', pct })
+      for (let i = 0; i < 40; i++) for (const cb of s.progress) cb(at(5 + i / 20))
+      expect(send.mock.calls).toEqual([['world:progress', at(5)]])
+      vi.advanceTimersByTime(PROGRESS_PACE_MS)
+      expect(send.mock.calls).toEqual([['world:progress', at(5)], ['world:progress', at(5 + 39 / 20)]])
+      for (const cb of s.progress) cb(at(8))
+      for (const cb of s.progress) cb(at(9))
+      s.off()
+      vi.advanceTimersByTime(PROGRESS_PACE_MS * 2)
+      expect(send).toHaveBeenCalledTimes(2) // 8 and 9 fell inside the interval and went with off()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

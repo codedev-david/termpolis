@@ -60,6 +60,7 @@ import type { WorldClient } from './worldClient'
 import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
 import { isShownAsIs, windowMessage } from './windowError'
 import { isWorldQuality, type WorldSettings, type WorldSettingsStore } from './worldSettings'
+import { paceProgress } from './progressPace'
 
 export interface WorldIpcMain {
   handle(channel: string, listener: (event: unknown, args?: unknown) => unknown): void
@@ -406,14 +407,16 @@ export function registerWorldIpc(
 
   if (sources) registerSourceHandlers(ipc, sources, client)
 
-  // A closed or reloading window must never break the host's event stream.
-  const offProgress = client.onProgress((e) => {
+  // A closed or reloading window must never break the host's event stream. Progress is paced (progressPace.ts): a
+  // compile posts up to 1,400 events a second, and the page's one bar can use ten.
+  const pace = paceProgress((e) => {
     try {
       win()?.webContents.send('world:progress', e)
     } catch {
       // window gone
     }
   })
+  const offProgress = client.onProgress(pace.push)
   const offUpdated = client.onUpdated((e) => {
     try {
       win()?.webContents.send('world:updated', e)
@@ -423,6 +426,7 @@ export function registerWorldIpc(
   })
   return () => {
     offProgress()
+    pace.stop()
     offUpdated()
   }
 }
