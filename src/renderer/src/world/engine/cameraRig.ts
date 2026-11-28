@@ -179,8 +179,9 @@ export function createCameraRig<F>(deps: CameraRigDeps<F>): CameraRig<F> {
       return fly({ pos: [...pose.pos], target: [...pose.target] }, instant, FRAME_FLIGHT_S)
     },
     // refit and resized ask for the framing's shot again on every panel change and every ResizeObserver call (a pane
-    // divider dragged calls it each frame). A line's close-up is searched once per line, framing and layout and only
-    // re-aimed here (threeRenderer lineShot, lineShotCache): no search runs in these.
+    // divider dragged calls it each frame). A line's close-up is searched once per line, framing and layout and
+    // re-aimed here (threeRenderer lineShot, lineShotCache). resized never searches; refit, after a panel's change or
+    // once a resize's size has held, checks the re-aimed look and searches once when it fails there.
     refit() {
       const to = goal()
       if (to) glide(to)

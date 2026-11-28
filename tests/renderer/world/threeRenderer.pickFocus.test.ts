@@ -4,7 +4,7 @@
 // focus, a hover and a selection dim and light the parts.
 import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
-import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
+import { BUFFER_SETTLE_MS, createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { focusOpacity } from '../../../src/renderer/src/world/engine/interaction'
 import { LABEL_MIN_OPACITY } from '../../../src/renderer/src/world/engine/viewMath'
@@ -729,17 +729,18 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     r.dispose()
   })
 
+  /** The tower that stands behind the close-up's first look, where a line card grown to 380x420 re-aims the camera: in front of p. */
+  const TOWER = (): ReturnType<typeof bldg> => bldg('t', [-5.6, 0, 95.3], { floors: 10, height: 80 })
   /**
    * A line 80 long in a 400x600 view, framed under a short card (380x100) from straight across it at lift 0.7 (the
-   * search's first look). With `tower`, a tower stands behind that spot, where a line card that grows to 380x420 re-aims
-   * the camera along the same look, about twice as far out: there it stands in front of p.
+   * search's first look), with `extra` buildings round it. `before` runs just before the framing (an explode).
    */
-  const longLine = async (tower: boolean): Promise<ThreeRenderer> => {
+  const longLine = async (extra: Array<ReturnType<typeof bldg>>, before?: (r: ThreeRenderer) => void): Promise<ThreeRenderer> => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     boxCanvas(r.canvas, 400, 600)
     r.draw({
       districts: [district('d1', [0, 0, 0], 120)],
-      buildings: [bldg('p', [-40, 0, 0]), bldg('q', [40, 0, 0]), ...(tower ? [bldg('t', [-5.6, 0, 95.3], { floors: 10, height: 80 })] : [])],
+      buildings: [bldg('p', [-40, 0, 0]), bldg('q', [40, 0, 0]), ...extra],
       conduits: [conduit('e', [-40, 0, 0], [40, 0, 0])],
       orbs: [],
     }, smallText(), false)
@@ -747,17 +748,23 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     look(r, [0, 40, 120], [0, 0, 0])
     r.setCardReserve(380, 100)
     r.setSelected('e')
+    before?.(r)
     await r.frame(['e'], true)
     settle()
     for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the short card`).not.toBeNull()
     return r
+  }
+  /** Whether the camera stands inside the building at `x`, `z` up to `height` (insideAny's reach). */
+  const insideOf = (r: ThreeRenderer, x: number, z: number, height: number): boolean => {
+    const c = r.getCamera().pos
+    return Math.hypot(c[0] - x, c[2] - z) < 6.5 && c[1] < height + 3
   }
 
   it('a card that grows after the search and re-aims the camera to where a tower hides an end searches again: both ends stay in view (CI: headroomAdaptiveSteering.test -> mcpAdapterDataDir.test)', async () => {
     // The building card gives way to the taller line card after the search ran: the camera backed out along the kept
     // look, unchecked, and an end stood behind a tower in the close-up (world-visual, this repository's world on Ubuntu).
     const n = searches()
-    const r = await longLine(true)
+    const r = await longLine([TOWER()])
     const searched = pose(r)
     n.count()
     r.setCardReserve(380, 420)
@@ -770,7 +777,7 @@ describe('threeRenderer line close-up, kept across resizes', () => {
 
   it('a panel change that keeps both ends in view, or a close-up that could not show both, is only re-aimed: no search', async () => {
     const n = searches()
-    const r = await longLine(false)
+    const r = await longLine([])
     const searched = pose(r)
     n.count()
     r.setCardReserve(380, 420)
@@ -802,6 +809,107 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     expect(walled.screenPoint('q')).not.toBeNull()
     walled.dispose()
   })
+
+  // The card grown to 380x420 re-aims the camera to (0, 87.8, 111) along the searched look. A tower there: its top over
+  // the camera (the camera inside it), or just under it (the camera skimming its roof). The rays to the ends pass
+  // through its faces from within, or clear over its roof, and come back clear: only the search's own tests that the
+  // camera stands clear of every building catch it (insideAny for the one, clearOf for both).
+  for (const [where, height] of [['inside a tower', 107.8], ['just over a tower roof', 80]] as const) {
+    it(`a card that grows and re-aims the camera to ${where} searches again: the camera is not left there`, async () => {
+      const n = searches()
+      const r = await longLine([bldg('t', [0, 0, 111], { floors: 12, height })])
+      const searched = pose(r)
+      n.count()
+      r.setCardReserve(380, 420)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      expect(angle(pose(r).dir, searched.dir)).toBeGreaterThan(3) // another look, not the kept one further out
+      expect(insideOf(r, 0, 111, height)).toBe(false)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the tall card`).not.toBeNull()
+      r.dispose()
+    })
+  }
+
+  it('a tower opened before its floors rose is checked where they stand after a panel change: an end they now hide searches again', async () => {
+    // The close-up is searched as the open tower's floors start to rise (the floors low); once they stand at their
+    // height, a card that grows re-aims the camera to where they stand in front of p. The tower is far enough from the
+    // camera to leave it clear (clearOf goes by the closed tower's height): only the pick shapes where the floors now
+    // stand show p hidden, not those taken at the search.
+    const n = searches()
+    const r = await longLine([bldg('t', [-26, 0, 40], { floors: 10, height: 34 })], (v) => v.setExploded('t'))
+    n.count()
+    r.setCardReserve(380, 420)
+    settle()
+    for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the tall card`).not.toBeNull()
+    expect(n.count()).toBeGreaterThan(0)
+    r.dispose()
+  })
+
+  /**
+   * The tower world under a short card in a `w` by `hgt` view the host's ResizeObserver reported, timers faked: the
+   * close-up searched at that size, or (`late`) on the 400x600 canvas before the observer's first call, which then
+   * reports the size as a drag begins (the size never holds before the divider moves on).
+   */
+  const dragged = async (w: number, hgt: number, late = false): Promise<{ r: ThreeRenderer; resized: (w: number, hgt: number) => void }> => {
+    const resized = observe()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    canvasOf = r.canvas
+    boxCanvas(r.canvas, late ? 400 : w, late ? 600 : hgt)
+    r.draw({
+      districts: [district('d1', [0, 0, 0], 120)],
+      buildings: [bldg('p', [-40, 0, 0]), bldg('q', [40, 0, 0]), TOWER()],
+      conduits: [conduit('e', [-40, 0, 0], [40, 0, 0])],
+      orbs: [],
+    }, smallText(), false)
+    settle()
+    if (!late) resized(w, hgt)
+    look(r, [0, 40, 120], [0, 0, 0])
+    r.setCardReserve(380, 100)
+    r.setSelected('e')
+    await r.frame(['e'], true)
+    settle()
+    if (late) resized(w, hgt)
+    else {
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+    }
+    for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at ${w}x${hgt}`).not.toBeNull()
+    return { r, resized }
+  }
+
+  for (const [[w0, h0], [w1, h1], late] of [[[600, 600], [400, 600], true], [[800, 600], [440, 600], false]] as const) {
+    it(`a divider dragged from ${w0}x${h0} to ${w1}x${h1} only re-aims while it moves; once the size holds the look is checked and an end hidden there searches again`, async () => {
+      const n = searches()
+      const { r, resized } = await dragged(w0, h0, late)
+      try {
+        n.count()
+        // The drag: a resize each frame, 10 ms apart. The kept look is only re-aimed, to where the tower hides p.
+        for (let k = 1; k <= 10; k++) {
+          resized(Math.round(w0 + ((w1 - w0) * k) / 10), Math.round(h0 + ((h1 - h0) * k) / 10))
+          h.frames.step()
+          vi.advanceTimersByTime(10)
+        }
+        settle()
+        expect(n.count()).toBe(0) // no search while the divider moves
+        expect(r.screenPoint('p')).toBeNull() // the re-aimed look hides p
+        // The size holds: the look is checked once, p hidden there, and the search runs again.
+        vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+        settle()
+        expect(n.count()).toBeGreaterThan(0)
+        for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at ${w1}x${h1}`).not.toBeNull()
+        // A look that holds is not searched again when the size next holds.
+        resized(w1 + 2, h1)
+        settle()
+        vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+        settle()
+        expect(n.count()).toBe(0)
+      } finally {
+        r.dispose()
+        vi.useRealTimers()
+      }
+    })
+  }
 
   it('the reaimed shot matches a fresh search within 2% distance and 3 degrees direction at the original aspect', async () => {
     const { r, resized } = await open()
