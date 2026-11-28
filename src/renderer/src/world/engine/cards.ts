@@ -23,30 +23,40 @@ const evidenceOf = (e: Evidence): Evidence =>
 /** `readOnly` (the exported page): no Confirm or Edit control, and each piece of evidence is plain text, not a button. */
 export interface CardOptions { readOnly?: boolean }
 
-function claims(list: Claim[], itemId: string, start: number, readOnly: boolean, empty = '<p class="muted">Not described yet.</p>'): string {
+/**
+ * How a card is drawn: `plain`, evidence as text (the exported page); `fixed`, no Confirm or Edit, on the exported page
+ * and on a world a newer Termpolis saved, which main refuses to change (WP3) though its evidence still opens.
+ */
+interface View { plain: boolean; fixed: boolean }
+const viewOf = (doc: WorldDoc, opts: CardOptions): View => {
+  const plain = opts.readOnly === true
+  return { plain, fixed: plain || doc.savedByNewer === true }
+}
+
+function claims(list: Claim[], itemId: string, start: number, view: View, empty = '<p class="muted">Not described yet.</p>'): string {
   if (list.length === 0) return empty
   const rows = list.map((c, i) => {
-    const ev = c.evidence.map((e) => readOnly
+    const ev = c.evidence.map((e) => view.plain
       ? `<span class="ev-ref">${esc(evidenceText(e))}</span>`
       : `<button class="ev" data-evidence="${esc(JSON.stringify(evidenceOf(e)))}">evidence</button>`).join(' ')
-    const confirm = c.state === 'inferred' && !readOnly ? ` <button class="confirm" data-confirm="${esc(itemId)}|${start + i}">Confirm</button>` : ''
+    const confirm = c.state === 'inferred' && !view.fixed ? ` <button class="confirm" data-confirm="${esc(itemId)}|${start + i}">Confirm</button>` : ''
     return `<li class="claim" data-state="${esc(c.state)}"><span class="ctext">${esc(c.text)}</span> <span class="state">${esc(c.state)}</span>${ev ? ` ${ev}` : ''}${confirm}</li>`
   })
   return `<ul class="claims">${rows.join('')}</ul>`
 }
 
 /** "What we know": the facts found beyond the descriptions (tests, code, a person's confirmation), only when there are some. */
-const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }, readOnly: boolean): string =>
-  b.claims.length ? section(CARD_HEADINGS.know, claims(b.claims, b.id, b.how.length + b.why.length, readOnly)) : ''
+const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }, view: View): string =>
+  b.claims.length ? section(CARD_HEADINGS.know, claims(b.claims, b.id, b.how.length + b.why.length, view)) : ''
 
 /**
  * "Service names": what a part goes by while it runs. A building of the world has an Edit button (the
  * pane saves what is typed as an annotation); a planned building has no names to edit. Nothing when
  * there are none and none can be edited.
  */
-function serviceNames(doc: WorldDoc, id: string, readOnly: boolean): string {
+function serviceNames(doc: WorldDoc, id: string, view: View): string {
   const { names, handSet } = serviceNamesOf(doc, id)
-  const editable = !readOnly && doc.buildings.some((x) => x.id === id)
+  const editable = !view.fixed && doc.buildings.some((x) => x.id === id)
   if (names.length === 0 && !editable) return '' // read-only: nothing to show when there are none
   const list = names.length ? `<span class="rtnames">${esc(names.join(', '))}</span>` : '<span class="muted">None yet</span>'
   const edit = editable ? ` <button class="edit-names" data-runtime-edit="${esc(id)}" data-names="${esc(names.join(', '))}">Edit</button>` : ''
@@ -75,7 +85,7 @@ function edgeList(doc: WorldDoc, edges: WorldEdge[], dir: 'from' | 'to'): string
 
 /** `floors` is how the reader can open the floors: only the 3D city opens them on a double-click. */
 export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'none', opts: CardOptions = {}): string {
-  const readOnly = opts.readOnly === true
+  const view = viewOf(doc, opts)
   const b = allBuildings(doc).find((x) => x.id === id)
   if (!b) {
     const x = doc.externals.find((e) => e.id === id)
@@ -96,19 +106,19 @@ export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'no
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
     + (runsIn.trim() ? `<div class="proc">${esc(RUNS_IN_LABEL)} <b>${esc(runsIn)}</b></div>` : '')
-    + section(CARD_HEADINGS.whatItDoes, claims(b.how, b.id, 0, readOnly))
+    + section(CARD_HEADINGS.whatItDoes, claims(b.how, b.id, 0, view))
     + (parts ? section(CARD_HEADINGS.inside, `<ul>${parts}</ul>`) : '')
     + (big ? section(CARD_HEADINGS.whyBig, `<p>${esc(big)}</p>`) : '')
     + (b.stack.length ? section(CARD_HEADINGS.technology, `<div>${chips(doc, b.stack)}</div>`) : '')
-    + section(CARD_HEADINGS.whyBuilt, claims(b.why, b.id, b.how.length, readOnly))
-    + serviceNames(doc, id, readOnly)
-    + known(b, readOnly)
+    + section(CARD_HEADINGS.whyBuilt, claims(b.why, b.id, b.how.length, view))
+    + serviceNames(doc, id, view)
+    + known(b, view)
     + (ins.length ? section(CARD_HEADINGS.comesIn, edgeList(doc, ins, 'from')) : '')
     + (outs.length ? section(CARD_HEADINGS.goesOut, edgeList(doc, outs, 'to')) : '')
 }
 
 export function edgeCard(doc: WorldDoc, id: string, opts: CardOptions = {}): string {
-  const readOnly = opts.readOnly === true
+  const view = viewOf(doc, opts)
   const e = allEdges(doc).find((x) => x.id === id)
   if (!e) return ''
   const cargo = doc.cargo[e.cargo]
@@ -126,10 +136,10 @@ export function edgeCard(doc: WorldDoc, id: string, opts: CardOptions = {}): str
     + carries
     + section(CARD_HEADINGS.travels, `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
     // A line no model described still says what the code shows.
-    + section(CARD_HEADINGS.howTravels, claims(e.how, e.id, 0, readOnly, `<p>${esc(edgeFromCode(doc, e))}</p>`))
+    + section(CARD_HEADINGS.howTravels, claims(e.how, e.id, 0, view, `<p>${esc(edgeFromCode(doc, e))}</p>`))
     + (e.tech.length ? section(CARD_HEADINGS.technology, `<div>${chips(doc, e.tech)}</div>`) : '')
-    + section(CARD_HEADINGS.whyDone, claims(e.why, e.id, e.how.length, readOnly, `<p class="muted">${NO_WHY_YET}</p>`))
-    + known(e, readOnly)
+    + section(CARD_HEADINGS.whyDone, claims(e.why, e.id, e.how.length, view, `<p class="muted">${NO_WHY_YET}</p>`))
+    + known(e, view)
     + (e.rate ? section(CARD_HEADINGS.howOften, `<p>${esc(e.rate)}</p>`) : '')
 }
 
