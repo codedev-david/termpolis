@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorldDoc } from '../../src/shared/world/types'
-import { createWorldStore, LABEL_MAX_AGE_MS, pruneLabelCache, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
+import { createWorldStore, LABEL_MAX_AGE_MS, pruneLabelCache, WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, WorldSavedByNewerError, worldFileName } from '../../src/main/world/worldStore'
 import { STAGE_CACHE_VERSION } from '../../src/main/world/stageCache'
 import { edgeId } from '../../src/main/world/group'
 
@@ -607,6 +607,11 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     await store.saveStages?.('demo', { version: STAGE_CACHE_VERSION, files: {}, structureHash: 's' })
     expect((await readdir(join(dir, 'world'))).sort()).toEqual(['demo.json'])
     expect(await readFile(file(), 'utf8')).toBe(text)
+  })
+
+  it("a world a newer Termpolis saved is refused in the signed-off words, which the pane's note shares (copy row B7)", () => {
+    expect(WORLD_SAVED_BY_NEWER).toBe('This world was saved by a newer Termpolis, so this version shows a copy and leaves the saved one as it is. Update Termpolis to save changes to it.')
+    expect(new WorldSavedByNewerError().message).toBe(WORLD_SAVED_BY_NEWER)
   })
 
   it('the copy in memory is not changed by what a caller does to a loaded or saved doc', async () => {
