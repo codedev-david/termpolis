@@ -122,7 +122,7 @@ describe('Opus R3-3: a boxed clock prompt', () => {
 })
 
 describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only where the shell is proven back', () => {
-  it('Codex that says "No saved session found with ID" and stays up is sent no Enter, and the switch says it found no session', async () => {
+  it('Codex that says "No saved session found with ID" and stays up is sent no Enter, and the switch says it can\'t tell whether Codex exited', async () => {
     const t = new FakeTerminal({ agent: 'codex', family: 'powershell', start: 'idle', exit: 'hint', relaunch: ['box'] })
     const base = t.io()
     let errorAt: number | undefined
@@ -143,7 +143,8 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
     })
     expect(errorAt).toBeDefined()
     expect(writesWhileLive).not.toContain('\r')
-    expect(outcome).toEqual({ kind: 'resume-not-found' })
+    // HOLD-C R1 F1: nothing proves it exited, so it is the approved unknown-exit, not "the shell is at its prompt".
+    expect(outcome).toEqual({ kind: 'unknown-exit' })
   })
 
   /** A Codex that answers its resume line "No saved session found", then quits or stays, in a shell whose prompt does not report,
@@ -187,8 +188,70 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
 
   it('Codex that says it found no session and stays up, with the OS saying so, is sent nothing more', async () => {
     const { outcome, writesAfter } = await notFoundOnOs(false)
-    expect(outcome).toEqual({ kind: 'resume-not-found' })
+    expect(outcome).toEqual({ kind: 'unknown-exit', osSees: true })
     expect(writesAfter).toEqual([])
+  })
+})
+
+// HOLD-C R1 F1: resume-not-found's card says the shell is at its prompt, and a swarm restart answers it with "it has exited" on
+// its own, so it is said only where the shell is proven back: wherever the "can't see the conversation" line shows and nothing
+// proves the program that printed it is gone, the switch ends as unknown-exit, with nothing typed after it.
+describe('HOLD-C R1 F1: resume-not-found only where the shell is proven back', () => {
+  /** A terminal whose relaunch prints `words` on the Enter of the line that holds `on`, and stays up (no box, no prompt). */
+  function staysUp(agent: AccountAgent, on: (line: string) => boolean, words: string, over: Partial<ConstructorParameters<typeof FakeTerminal>[0]> = {}): { t: FakeTerminal; io: SwitchIO; writesAfter: string[]; said: () => boolean } {
+    const t = new FakeTerminal({ agent, family: 'powershell', reports: false, os: 'tells', start: 'idle', exit: 'hint', relaunch: ['nothing'], ...over })
+    const base = t.io()
+    let said = false
+    const writesAfter: string[] = []
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        if (said) writesAfter.push(key)
+        base.write(id, key)
+        if (key === '\r' && !said && on(t.ran[t.ran.length - 1] ?? '')) {
+          said = true
+          t.mode = 'agent'
+          t.out += `\r\n${words}\r\n`
+        }
+      },
+    }
+    return { t, io, writesAfter, said: () => said }
+  }
+
+  it('Claude Code that prints "No conversation found" and is still running, the OS saying so, is unknown-exit with nothing more typed', async () => {
+    const s = staysUp('claude', (line) => line.includes('--resume'), `No conversation found with session ID: ${NEW_ID}`)
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'powershell' }, {
+      io: s.io, agent: 'claude', start: { at: s.t.launchedAt, commands: [s.t.launchLine()] }, target: TARGET, newSessionId: () => NEW_ID, record: () => {},
+    })
+    expect(s.said()).toBe(true)
+    expect(outcome).toEqual({ kind: 'unknown-exit', osSees: true })
+    expect(s.writesAfter).toEqual([])
+  })
+
+  it('Claude Code that prints it and goes, the OS saying the shell is alone, is still resume-not-found', async () => {
+    const s = staysUp('claude', (line) => line.includes('--resume'), `No conversation found with session ID: ${NEW_ID}`)
+    const write = s.io.write
+    s.io.write = (id, key) => {
+      const before = s.said()
+      write(id, key)
+      if (!before && s.said()) s.t.mode = 'shell'
+    }
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: TARGET.id, shellType: 'powershell' }, {
+      io: s.io, agent: 'claude', start: { at: s.t.launchedAt, commands: [s.t.launchLine()] }, target: TARGET, newSessionId: () => NEW_ID, record: () => {},
+    })
+    expect(outcome).toEqual({ kind: 'resume-not-found' })
+  })
+
+  it('Codex whose new session in place says it too and stays up is unknown-exit, with nothing typed after it', async () => {
+    // The resume line's "No saved session found" ends at the shell's prompt (FakeTerminal's 'not-found'); the new session's line
+    // gets the same words, and that Codex stays.
+    const s = staysUp('codex', (line) => line.includes('codex') && !line.includes(' resume '), 'No saved session found with ID 123', { relaunch: ['not-found', 'nothing'], reports: true })
+    const outcome = await runAccountSwitch({ terminalId: 't1', targetId: CODEX_TARGET.id, shellType: 'powershell' }, {
+      io: s.io, agent: 'codex', start: { at: s.t.launchedAt, commands: [s.t.launchLine()] }, target: CODEX_TARGET, newSessionId: () => NEW_ID, record: () => {},
+    })
+    expect(s.said()).toBe(true)
+    expect(outcome).toEqual({ kind: 'unknown-exit', osSees: true })
+    expect(s.writesAfter).toEqual([])
   })
 })
 

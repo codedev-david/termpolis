@@ -14,8 +14,12 @@ import { _resetLimitWatchForTest, noteSwarmStop } from '../../src/renderer/src/l
 import { _resetStopReportsForTest, carryWorkerStop, isStopCarried, noteWorkerStatus, setSwarmWorkingAgain } from '../../src/renderer/src/lib/swarmStopReports'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
-import type { SwitchOutcome } from '../../src/shared/accountSwitch'
+import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
+import type { AgentAccount } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
+import { _resetSwitchLocksForTest, runAccountSwitch } from '../../src/main/accountSwitch'
+import type { SwitchIO } from '../../src/main/accountSwitch'
+import { FakeTerminal } from '../electron/_switchTerminal'
 
 const NOW = Date.UTC(2026, 9, 23, 12, 0, 0)
 const LIMIT = { status: 'blocked' as const, summary: 'usage limit reached (resets 3pm)' }
@@ -553,6 +557,53 @@ describe('restartOn: the restart', () => {
     await restartOn('g1', 'acc_c', deps)
     expect((deps.accounts.switchAccount as ReturnType<typeof vi.fn>).mock.calls[1][0]).toMatchObject({ terminalId: 'w1', targetId: 'acc_c', assumeExited: true, fresh: true })
     expect(messages()[1]).toBe(freshMessage(W1))
+  })
+
+  // HOLD-C R1 F1 (signoff-decisions.md): Codex that says "No saved session found" and nothing proves it exited is the switch's
+  // unknown-exit, not resume-not-found, so the restart makes no "it has exited" retry of its own: no key reaches the Codex that
+  // stayed up. Main's real switch runs here, behind the bridge, over a terminal whose Codex answers its resume line so and stays.
+  it('types nothing more into a Codex worker that says the target can\'t see its session and stays up, and reassigns its task', async () => {
+    const CX = row({ id: 'acx_m', agent: 'codex', label: 'personal', folder: '/h/.codex', lastEmail: 'a@example.test' })
+    const CX_B = row({ id: 'acx_b', agent: 'codex', label: 'work-b', profile: 'C:\\work', isDefault: false, order: 1, lastEmail: 'b@example.test' })
+    useTerminalStore.setState({ terminals: [worker('w1', { name: 'Codex (w1)', swarmAgent: 'codex', agentAccountId: 'acx_m' })], accountsView: view([CX, CX_B]) })
+    const target: AgentAccount = { id: 'acx_b', agent: 'codex', label: 'work-b', profile: 'C:\\work', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
+    const t = new FakeTerminal({ agent: 'codex', family: 'powershell', reports: false, os: 'tells', start: 'idle', exit: 'hint', relaunch: ['box'] })
+    const base = t.io()
+    let said = false
+    const writesAfter: string[] = []
+    const io: SwitchIO = {
+      ...base,
+      write: (id, key) => {
+        if (said) writesAfter.push(key)
+        base.write(id, key)
+        if (key === '\r' && !said && t.ran.some((line) => line.includes(' resume '))) {
+          said = true
+          t.out += '\r\nNo saved session found with ID 123\r\n'
+        }
+      },
+    }
+    const start = { at: t.launchedAt, commands: [t.launchLine()] }
+    const switchAccount = vi.fn(async (req: SwitchRequest) => ({
+      success: true as const,
+      data: await runAccountSwitch(req, { io, agent: 'codex', start, target, newSessionId: () => 'n', record: () => {} }),
+    }))
+    deps = makeDeps({ accounts: { ...makeDeps().accounts, switchAccount } })
+    ;(window as any).swarmAPI = deps.swarm
+    tasks = [{ ...TASK1, assignedTo: 'w1', status: 'in_progress' }]
+    const W = { terminalId: 'w1', agentName: 'Codex', role: 'Build UI' }
+    try {
+      await offerRestart(W, LIMIT, () => WORDS, deps)
+      await restartOn('g1', 'acx_b', deps)
+    } finally {
+      _resetSwitchLocksForTest()
+    }
+    expect(said).toBe(true)
+    expect(switchAccount).toHaveBeenCalledTimes(1)
+    expect(writesAfter).toEqual([])
+    expect(messages()[1]).toBe(reassignOf(W, TASK1))
+    expect((groups()[0].phase as { lines: string[] }).lines[0]).toBe(
+      'Codex (Build UI): The operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing. The conductor reassigns its task.',
+    )
   })
 
   it.each([
