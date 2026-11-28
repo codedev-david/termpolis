@@ -22,8 +22,11 @@ export const GIVE_WAY_REST_MS = 30
 export interface GiveWay {
   /** Someone typed (main said so). */
   typed(): void
-  /** Resolves when a read may start: at once unless someone typed lately and the slice is used up. */
-  wait(): Promise<void>
+  /**
+   * When a read may start: null for now (nobody typed lately, or the slice has time left), else the rest to wait out.
+   * Null rather than a resolved promise, so a caller with nothing to wait for calls straight through, in this turn.
+   */
+  turn(): Promise<void> | null
 }
 
 export interface GiveWayOptions {
@@ -42,7 +45,7 @@ export function createGiveWay(opts: GiveWayOptions = {}): GiveWay {
   /** The rest every waiter shares once a slice is used up. */
   let resting: Promise<void> | null = null
 
-  const rest = (): Promise<void> => {
+  const rest = (): Promise<void> | null => {
     const over = (): void => {
       resting = null
       sliceAt = null
@@ -51,7 +54,7 @@ export function createGiveWay(opts: GiveWayOptions = {}): GiveWay {
       resting = sleep(GIVE_WAY_REST_MS).then(over, over)
     } catch {
       over()
-      return Promise.resolve()
+      return null
     }
     return resting
   }
@@ -64,20 +67,20 @@ export function createGiveWay(opts: GiveWayOptions = {}): GiveWay {
         // no clock: the compile never gives way
       }
     },
-    wait() {
+    turn() {
       if (resting) return resting
       let t: number
       try {
         t = now()
       } catch {
-        return Promise.resolve()
+        return null
       }
       if (t - typedAt >= GIVE_WAY_QUIET_MS) {
         sliceAt = null
-        return Promise.resolve()
+        return null
       }
       if (sliceAt === null) sliceAt = t
-      if (t - sliceAt < GIVE_WAY_SLICE_MS) return Promise.resolve()
+      if (t - sliceAt < GIVE_WAY_SLICE_MS) return null
       return rest()
     }
   }

@@ -16,7 +16,9 @@ function clock(start = 1_000_000) {
   return k
 }
 
-const settled = async (p: Promise<unknown>): Promise<boolean> => {
+/** True once the turn is free: null (go now) at once, a rest once it has ended. */
+const settled = async (p: Promise<unknown> | null): Promise<boolean> => {
+  if (p === null) return true
   let done = false
   void p.then(() => (done = true))
   for (let i = 0; i < 5; i++) await Promise.resolve()
@@ -30,12 +32,12 @@ describe('createGiveWay', () => {
     expect(GIVE_WAY_REST_MS).toBe(30)
   })
 
-  it('nobody has typed: every wait goes at once, with no sleep', async () => {
+  it('nobody has typed: every turn is now (null), with no sleep', async () => {
     const k = clock()
     const g = createGiveWay({ now: k.now, sleep: k.sleep })
     for (let i = 0; i < 50; i++) {
       k.t += 5
-      expect(await settled(g.wait())).toBe(true)
+      expect(g.turn()).toBeNull()
     }
     expect(k.sleeps).toEqual([])
   })
@@ -45,13 +47,13 @@ describe('createGiveWay', () => {
     const g = createGiveWay({ now: k.now, sleep: k.sleep })
     g.typed()
     // The slice starts at the first wait and lasts GIVE_WAY_SLICE_MS.
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     k.t += GIVE_WAY_SLICE_MS - 1
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     k.t += 1
     // Used up: this wait and any that come while it rests share one rest.
-    const a = g.wait()
-    const b = g.wait()
+    const a = g.turn()
+    const b = g.turn()
     expect(k.sleeps).toEqual([GIVE_WAY_REST_MS])
     expect(await settled(a)).toBe(false)
     expect(await settled(b)).toBe(false)
@@ -60,9 +62,9 @@ describe('createGiveWay', () => {
     expect(await settled(a)).toBe(true)
     expect(await settled(b)).toBe(true)
     // After the rest a new slice starts from the next wait.
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     k.t += GIVE_WAY_SLICE_MS
-    void g.wait()
+    void g.turn()
     expect(k.sleeps).toEqual([GIVE_WAY_REST_MS, GIVE_WAY_REST_MS])
   })
 
@@ -70,54 +72,54 @@ describe('createGiveWay', () => {
     const k = clock()
     const g = createGiveWay({ now: k.now, sleep: k.sleep })
     g.typed()
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     k.t += GIVE_WAY_QUIET_MS
     for (let i = 0; i < 5; i++) {
       k.t += GIVE_WAY_SLICE_MS
-      expect(await settled(g.wait())).toBe(true)
+      expect(await settled(g.turn())).toBe(true)
     }
     expect(k.sleeps).toEqual([])
     // Typing again: the slice is timed from now, not from the slice before the quiet.
     g.typed()
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     k.t += GIVE_WAY_SLICE_MS - 1
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     expect(k.sleeps).toEqual([])
   })
 
   it('fails open: a clock or sleep that throws lets the work go ahead', async () => {
     const g = createGiveWay({ now: () => { throw new Error('no clock') } })
     g.typed()
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
     let t = 0
     const s = createGiveWay({ now: () => t, sleep: () => { throw new Error('no timer') } })
     s.typed()
-    await s.wait()
+    await s.turn()
     t += GIVE_WAY_SLICE_MS
-    expect(await settled(s.wait())).toBe(true)
+    expect(await settled(s.turn())).toBe(true)
     // A rejected sleep is no rest either, and the next slice still starts.
     const r = createGiveWay({ now: () => t, sleep: async () => { throw new Error('gone') } })
     r.typed()
-    await r.wait()
+    await r.turn()
     t += GIVE_WAY_SLICE_MS
-    await r.wait()
-    expect(await settled(r.wait())).toBe(true)
+    await r.turn()
+    expect(await settled(r.turn())).toBe(true)
   })
 
   it('with the real clock, a wait just after a keystroke starts a slice and goes at once', async () => {
     const g = createGiveWay()
     g.typed()
-    expect(await settled(g.wait())).toBe(true)
+    expect(await settled(g.turn())).toBe(true)
   })
 
   it('the real sleep rests for the rest period', async () => {
     let t = 0
     const g = createGiveWay({ now: () => t })
     g.typed()
-    await g.wait()
+    await g.turn()
     t += GIVE_WAY_SLICE_MS
     const start = Date.now()
-    await g.wait()
+    await g.turn()
     expect(Date.now() - start).toBeGreaterThanOrEqual(GIVE_WAY_REST_MS - 5)
   })
 })

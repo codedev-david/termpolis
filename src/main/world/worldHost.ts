@@ -637,9 +637,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   // a busy machine the compile leaves the keyboard's processes the CPU (TYPEFLAKE). Nobody typing: it goes at once.
   const giveWay = createGiveWay({ now, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
   const sourceRead = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
-  const readSource = async (p: string): Promise<string | null> => {
-    await giveWay.wait()
-    return sourceRead(p)
+  // With no rest due the read is called straight through, so a reader that throws outright still throws in this turn
+  // (fileSnapshot ends on that, fix round 1 M2); after a rest it can only reject (the real reader is async either way).
+  const readSource = (p: string): Promise<string | null> => {
+    const turn = giveWay.turn()
+    return turn === null ? sourceRead(p) : turn.then(() => sourceRead(p))
   }
   const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
   const firstMapWait = deps.firstMapWaitMs ?? FIRST_MAP_WAIT_MS
