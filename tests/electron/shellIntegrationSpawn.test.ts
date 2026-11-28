@@ -102,11 +102,12 @@ async function exercise(sh: ReturnType<typeof start>, belDir: string | null, spa
 
   const nope = after('lumopolis no_such_folder_zz')
   await waitFor(nope, /lumopolis: no such folder: no_such_folder_zz/, 'the no-such-folder line')
-  expect(nope()).not.toContain('\x1b]7377')
+  // Only the lumopolis sequence is ruled out: zsh's prompt report also prints the ready mark (\x1b]7377;ready), #29.
+  expect(nope()).not.toContain('\x1b]7377;lumopolis')
 
   const help = after('lumopolis -h')
   await waitFor(help, new RegExp(LUMOPOLIS_USAGE.replace(/[[\]]/g, '\\$&')), 'the usage line')
-  expect(help()).not.toContain('\x1b]7377')
+  expect(help()).not.toContain('\x1b]7377;lumopolis')
 
   // A folder with a space and a non-ASCII letter in its name travels whole, as one argument.
   const spaced = after('lumopolis "$TP_SPACED_DIR"')
@@ -116,7 +117,7 @@ async function exercise(sh: ReturnType<typeof start>, belDir: string | null, spa
     // A real folder whose name holds a BEL: refused, because the BEL would end the sequence early.
     const bel = after('lumopolis "$TP_BEL_DIR"')
     await waitFor(bel, /lumopolis: no such folder: [^\r\n]*a\x07b/, 'the refusal of a folder with a BEL in its name')
-    expect(bel()).not.toContain('\x1b]7377')
+    expect(bel()).not.toContain('\x1b]7377;lumopolis')
   }
 }
 
