@@ -5,7 +5,7 @@
 // the runner took from the page is not charged to it and a wait on another process is. dragVerdict holds every rule
 // the check keeps, with the limits in DRAG_LIMITS, so the rules can be tried on made-up traces (tests/scripts/
 // dragTrace.test.ts) as well as on the drag's.
-import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE, LOOK_CHECK_MEASURE, RESIZE_MEASURE } from '../../src/renderer/src/world/engine/bufferFit'
 
 /** A Chromium trace event, as Tracing.dataCollected hands it over (times in microseconds). */
 export type TraceEvent = { name: string; ph: string; ts: number; dur?: number; tdur?: number; tts?: number; pid: number; tid: number; cat: string; id?: string; id2?: { local?: string; global?: string }; args?: { name?: string } }
@@ -245,17 +245,18 @@ export function heldAll(xs: TraceEvent[]): number {
  * A2.1 note (10), Round 5): a wait counts only inside the window scored (the page's task, the resize's call) as an
  * excuse, and the whole window counts when charged.
  *
- * The fits the page named (`fits`, BUFFER_FIT_MEASURE) are put on the thread's clock the same way, each in every task
- * around it: `fitCpu` is the thread time of those tasks (each once, heldAll, the fit's fence and wake and whatever else
- * the task runs too), and of the fits in one long task at least that long task's thread time as `tasks` gives it (each
- * long task once; Round 6: the trace may hold only a task inside it); a fit the trace does not hold is charged so too
- * (in a long task the trace does not hold, its wall) or, in none, 50 ms (a task as long would be a long task);
- * `fitsTraced` counts the fits in a task.
+ * The fits the page named (`fits`, BUFFER_FIT_MEASURE) are each paired one to one with the trace's measure of it, and
+ * a fit belongs to the one task the trace holds whole that holds its measure whole, to the page clock's grain (Round
+ * 10): `taskFit` tags the long tasks a fit belongs to, `fitCpu` is the thread time of the fits' tasks (each once,
+ * heldAll; the fits in one long task at least that long task's thread time as `tasks` gives it; a fit whose measure lies
+ * across two tasks, both; one the trace holds in no task, 50 ms, as a task as long would be a long task), and
+ * `fitsTraced` counts the fits that belong to a task. No number of the page's is put on the thread's clock to place a
+ * fit (`withheld`, `unmeasured` and `unplaced` give the ones the trace does not place, and why).
  */
-/** A long task the page tags a fit's that the trace gives none, as the fit's measure is dropped or outside the window (Round 9). */
-export type Withheld = { start: number; ms: number; fit: number; reason: 'dropped' | 'unmatched' }
+/** A long task the page tags a fit's that the trace gives none, as the fit has no measure paired (Round 9) or its measure lies in no one task (Round 10). */
+export type Withheld = { start: number; ms: number; fit: number; reason: 'dropped' | 'unmatched' | 'straddles' | 'untasked' }
 
-export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[], marker: string): { traced: number; spread: number; thread: string; marker: { held: boolean; from: number; to: number; threads: string[] }; resizes: OwnTime[]; tasks: OwnTime[]; taskFit: boolean[]; settled: boolean; withheld: Withheld[]; unmeasured: { dropped: number; unmatched: number }; fitSkew: number; fitCpu: number; fitsTraced: number; pairs: Record<string, number>; unpaired: Array<{ kind: Unpaired['kind']; name: string; at: number }> } {
+export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[], marker: string): { traced: number; spread: number; thread: string; marker: { held: boolean; from: number; to: number; threads: string[] }; resizes: OwnTime[]; tasks: OwnTime[]; taskFit: boolean[]; settled: boolean; withheld: Withheld[]; unmeasured: { dropped: number; unmatched: number }; unplaced: { straddles: number; untasked: number }; fitSkew: number; fitCpu: number; fitsTraced: number; looks: Array<{ own: number; wall: number }>; pairs: Record<string, number>; unpaired: Array<{ kind: Unpaired['kind']; name: string; at: number }> } {
   const { events, open, pairs: allPairs, unpaired } = paired(raw)
   const key = (e: { pid: number; tid: number }): string => `${e.pid}:${e.tid}`
   const asyncId = (e: TraceEvent): string => e.id ?? e.id2?.local ?? e.id2?.global ?? ''
@@ -281,32 +282,42 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   const mark = marks.from.length === 1 && marks.to.length === 1 && markThreads.length === 1 && Math.abs(marks.from[0].s - marks.to[0].s) <= SLACK ? marks.to[0] : undefined
   const main = mark?.key ?? ''
   const inMark = (s: number, e: number): boolean => !!mark && s >= mark.s && e <= mark.e
-  const spans = spansOf(RESIZE_MEASURE).filter((x) => x.key === main)
+  // The resizes the trace names on the page's thread inside the marker: only they are paired with the page's (Round 10,
+  // Codex: a resize before the marker, of a length a page resize has, put the clock at a false offset).
+  const spans = spansOf(RESIZE_MEASURE).filter((x) => x.key === main && inMark(x.s, x.e))
   const names = new Map(events.filter((e) => e.ph === 'M' && e.name === 'thread_name').map((e) => [key(e), e.args?.name ?? ''] as const))
   const page = [...named].sort((p, q) => p.start - q.start)
-  // The clocks are put together by the offset most resizes agree on, a resize and a span of its length (to 0.1 ms) on
-  // the page's thread.
+  // The clocks are put together by the offset most resizes agree on (to the pairing's 0.5 ms), each vote a resize and a
+  // span of its length (to 0.1 ms) on the page's thread inside the marker.
   const alike = (m: { ms: number }, x: { s: number; e: number }): boolean => Math.abs((x.e - x.s) / 1000 - m.ms) < 0.1
-  const votes = new Map<number, number[]>()
-  for (const m of page) for (const x of spans) if (alike(m, x)) {
-    const o = x.s / 1000 - m.start
-    const bin = Math.round(o * 10)
-    votes.set(bin, [...(votes.get(bin) ?? []), o])
-  }
-  const best = [...votes.values()].sort((p, q) => q.length - p.length)[0] ?? []
-  const off = best.length ? [...best].sort((p, q) => p - q)[Math.floor(best.length / 2)] : NaN
-  // Each span of the page's paired with one of the trace's on the page's thread: its length, at the offset (to 0.5 ms).
-  const pairUp = (xs: PageSpan[], found: Array<{ key: string; s: number; e: number }>): Array<{ s: number; e: number } | undefined> => {
-    const used = new Set<{ s: number; e: number }>()
-    return xs.map((m) => {
-      const x = Number.isFinite(off) ? found.find((y) => !used.has(y) && alike(m, y) && Math.abs(y.s / 1000 - m.start - off) < 0.5) : undefined
-      if (x) used.add(x)
-      return x
-    })
+  const votes = page.flatMap((m) => spans.filter((x) => alike(m, x)).map((x) => x.s / 1000 - m.start)).sort((p, q) => p - q)
+  // Each offset's support: the votes within the pairing's 0.5 ms of it. The best supported is the clock's, the median of
+  // its votes; two as well supported whose votes are none of each other's (1 ms or more apart) are no offset (Round 10:
+  // an ambiguous pairing is no pairing; alike resizes evenly spaced, the first left out, tie with the offset one space
+  // off), so nothing is then paired and the clock is unsettled.
+  const near = (o: number): number[] => votes.filter((v) => Math.abs(v - o) < 0.5)
+  const support = votes.map((o) => near(o).length)
+  const top = support.reduce((t, x) => Math.max(t, x), 0)
+  const leaders = votes.filter((_, i) => support[i] === top)
+  const best = leaders.length && leaders[leaders.length - 1] - leaders[0] < 1 ? near(leaders[Math.floor(leaders.length / 2)]) : []
+  const off = best.length ? best[Math.floor(best.length / 2)] : NaN
+  // Each span of the page's paired with one of the trace's on the page's thread: its length, at the offset (to 0.5 ms),
+  // one to one. A page span with two such, or with one another page span has too, pairs with none (Round 10: an
+  // ambiguous pairing is no pairing; a resize left unpaired so leaves the clock unsettled, and a fit so gets no measure).
+  type Span = { key: string; s: number; e: number }
+  const pairUp = (xs: PageSpan[], found: Span[]): Array<Span | undefined> => {
+    const options = xs.map((m) => (Number.isFinite(off) ? found.filter((y) => alike(m, y) && Math.abs(y.s / 1000 - m.start - off) < 0.5) : []))
+    const claims = new Map<Span, number>()
+    for (const ys of options) for (const y of ys) claims.set(y, (claims.get(y) ?? 0) + 1)
+    return options.map((ys) => (ys.length === 1 && claims.get(ys[0]) === 1 ? ys[0] : undefined))
   }
   const pairs = pairUp(page, spans)
   const offs = page.flatMap((m, i) => (pairs[i] ? [(pairs[i] as { s: number }).s / 1000 - m.start] : [])).sort((p, q) => p - q)
   const spread = offs.length ? offs[offs.length - 1] - offs[0] : NaN
+  // Whether the clock is settled, logged by the e2e: every resize the page named paired (one to one, inside the marker),
+  // at least two of them, agreeing on the offset to FIT_SLACK / 2 (Round 9 and Round 10). Nothing is judged by it: a
+  // measure the trace names is on the thread's clock already, and no number of the page's is put there (Round 10).
+  const settled = offs.length >= 2 && offs.length === page.length && spread <= FIT_SLACK / 2000
   const onMain = events.filter((e) => e.ph === 'X' && typeof e.dur === 'number' && key(e) === main)
   const timed = onMain.filter((x) => typeof x.tdur === 'number')
   // The thread's waits (waitedIn), a begin or an end the trace does not pair whatever its name, and of them the GPU's:
@@ -326,7 +337,7 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   const resizes = page.map((m, i): OwnTime => {
     const span = pairs[i]
     const around = span ? timed.filter((x) => x.ts <= span.s + SLACK && end(x) >= span.e - SLACK).sort((p, q) => (p.dur as number) - (q.dur as number))[0] : undefined
-    if (!span || !around || !inMark(span.s, span.e)) return { wall: m.ms, own: m.ms, cpu: m.ms, waited: 0, gpu: 0, matched: false }
+    if (!span || !around) return { wall: m.ms, own: m.ms, cpu: m.ms, waited: 0, gpu: 0, matched: false }
     const waited = waitedIn(waitsOn, span.s, span.e, 'most') / 1000
     const cpu = within(around, span.s, span.e) / 1000
     const gpu = waitedIn(gpuOn, Math.max(span.s, around.ts), Math.min(span.e, end(around)), 'least', around.tdur as number, timed) / 1000
@@ -356,88 +367,74 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
     const gpu = waitedIn(gpuOn, ws, we, 'least', run.tdur as number, timed) / 1000
     return { wall: t.ms, own: Math.min(t.ms, cpu + waited), cpu, waited, gpu, matched: true }
   })
-  // The fits' tasks (look plan A2.1 note (10), Round 5): every task around a fit's measure the trace holds (FIT_SLACK),
-  // as any of them may be the fit's (all of them charged, heldAll, each once: a fit that could be in either of two is
-  // charged both); else the task of the long task that holds the fit, if the trace holds one. A fit whose measure is in
-  // doubt (the trace dropped it, or a measure of its length is as near another fit) is charged every task around each
-  // measure it may be, every task around it on the thread's clock put from the page's (within the 0.5 ms a measure is
-  // paired in, and FIT_SLACK), and its long task's (any of them may be its). So is every fit when the clock is not
-  // settled (`settled`, below: the resizes disagree on the offset by more than FIT_SLACK / 2, `spread`, Round 6, Opus
-  // m6-1, a clock that drifts so far may put a measure as far from its task as FIT_SLACK; or one is left unpaired, or
-  // only one paired, Round 9). The page's number on the thread's clock only adds tasks to a fit's charge here; it never
-  // gives a long task a fit (`holds`, Round 9). The fits in a long task are charged at least its thread time (`tasks`:
-  // the trace may hold only a task inside it, and the part of its window outside the task the trace holds is charged
-  // whole); a fit in none that the trace does not hold, 50 ms each. A task with no thread time given is charged its wall
-  // (heldAll).
-  const fitMeasures = spansOf(BUFFER_FIT_MEASURE).filter((x) => x.key === main)
-  const near = fits.map((m) => (Number.isFinite(off) ? fitMeasures.filter((y) => alike(m, y) && Math.abs(y.s / 1000 - m.start - off) < 0.5) : []))
-  const claims = new Map<object, number>()
-  for (const xs of near) for (const x of xs) claims.set(x, (claims.get(x) ?? 0) + 1)
-  const aroundOf = (s: number, e: number, slack: number): TraceEvent[] => runs.filter((x) => x.ts <= s + slack && end(x) >= e - slack)
-  // The clock is settled only when every resize the page named is paired, at least two of them, and they agree on the
-  // offset to FIT_SLACK / 2 (look plan A2.1 note (10), Round 9, Codex: one pair alone gives a spread of 0, and a resize
-  // the 0.5 ms window leaves out, 0.625 ms off, left the other nine agreeing; each now counts as drift). A spread of NaN
-  // (no resize paired) leaves no clock to put a fit on, so no fit has a measure near it either way.
-  const settled = offs.length >= 2 && offs.length === page.length && spread <= FIT_SLACK / 2000
-  // Whether long task `t` holds fit `j` (look plan A2.1 note (10), Round 7 and Round 9): only by a measure of the fit's
-  // the trace holds, paired with it within the 0.5 ms window (`near`). When the trace holds the long task's task, that
-  // measure must lie in it within FIT_SLACK, the slack its charge is found in (Codex and Opus, Round 7: the page's 1 ms
-  // made a 400 ms task, 4 ms of thread time and 395 waiting on the GPU, the fit's when a timer's fit began 0.4 ms after
-  // it, and the stall passed by the fit's limits, 4 / 9; a measure begun within FIT_SLACK after the task's end still
-  // tags it, the residual, as note (10) (f)'s). Else, as the page tags it, the fit within 1 ms of the long task on the
-  // page's clock (a long task's numbers may be whole ms). A fit whose measure the trace dropped, or holds outside the
-  // window, gives no long task a fit (Round 9, Codex: the page's number put on the trace's clock, on one held settled,
-  // let a 400 ms stall pass at a spread of 0.125, from one pair, or with a resize the window left out; the projection
-  // is gone): its long task is judged as one that holds none, and `withheld` gives each the page tags a fit's for it,
-  // with why ('dropped': the trace holds no measure of its length no fit paired; 'unmatched': it holds one, outside
-  // the window). `unmeasured` counts the fits of each kind.
+  // The fits (look plan A2.1 note (10), Round 10, approved 2026-11-28): each fit the page named is paired one to one
+  // with a measure of its length the trace names inside the marker (pairUp, within 0.5 ms on the thread's clock), and
+  // the fit belongs to the one task the trace holds whole that holds that measure whole. The page's clock is coarsened
+  // (FIT_SLACK), so a measure may lie that far outside the task that truly holds it: every task that holds the measure
+  // to FIT_SLACK may be the fit's, the true one always among them, and only when that is one task (the outermost of
+  // tasks one inside another) is it the fit's. A fit belongs to no other task, and no number of the page's is put on
+  // the thread's clock to find one (Round 10, Codex: a fit 0.15 ms into the next task tagged both, and hid the 400 ms
+  // stall before it; a fit's time put on the clock pulled a 198 ms task into the fits' charge). A fit not so placed
+  // gives no long task a fit, and `withheld` gives each long task the page tags a fit's for it (its 1 ms), with why:
+  // 'dropped', the trace names no measure of its length that no fit is paired with; 'unmatched', it names one but none
+  // pairs (outside the 0.5 ms, or two to choose from); 'straddles', its measure lies so in two tasks or more, across
+  // the boundary between them; 'untasked', in no task the trace holds whole. `unmeasured` and `unplaced` count them.
+  const fitMeasures = spansOf(BUFFER_FIT_MEASURE).filter((x) => x.key === main && inMark(x.s, x.e))
+  const fitSpans = pairUp(fits, fitMeasures)
+  const placed = new Set(fitSpans)
+  // Each fit's place: the tasks that hold its measure to FIT_SLACK (`in`, each charged: of nested ones either may be the
+  // fit's, Round 5, Opus m5-1), and its task (`run`) when the outermost of them are one.
+  const place = fits.map((m, j): { run?: TraceEvent; in: TraceEvent[]; reason?: Withheld['reason'] } => {
+    const x = fitSpans[j]
+    if (!x) return { in: [], reason: fitMeasures.some((y) => !placed.has(y) && alike(m, y)) ? 'unmatched' : 'dropped' }
+    const all = runs.filter((r) => r.ts <= x.s + FIT_SLACK && end(r) >= x.e - FIT_SLACK)
+    // The outermost: in no other (of two with the very same bounds, the first one the trace gives is the outer).
+    const inside = (r: TraceEvent, o: TraceEvent): boolean => o.ts <= r.ts && end(o) >= end(r) && (o.ts < r.ts || end(o) > end(r) || all.indexOf(o) < all.indexOf(r))
+    const outer = all.filter((r) => !all.some((o) => o !== r && inside(r, o)))
+    return outer.length === 1 ? { run: outer[0], in: all } : { in: all, reason: all.length ? 'straddles' : 'untasked' }
+  })
+  // Each long task a fit's or not: whether a fit belongs to its task (dragVerdict judges each by the rules this gives it).
+  const taskFit = taskRuns.map((r) => !!r && place.some((p) => p.run === r))
   const pageHolds = (t: number, j: number): boolean => fits[j].start >= longTasks[t].start - 1 && fits[j].start + fits[j].ms <= longTasks[t].start + longTasks[t].ms + 1
-  const holds = (t: number, j: number): boolean => {
-    const run = taskRuns[t]
-    if (!near[j].length) return false
-    if (!run) return pageHolds(t, j)
-    return near[j].some((x) => x.s >= run.ts - FIT_SLACK && x.e <= end(run) + FIT_SLACK)
-  }
-  // Each long task a fit's or not, by `holds` (dragVerdict judges each by the rules this gives it).
-  const taskFit = longTasks.map((_, t) => fits.some((_, j) => holds(t, j)))
-  const why = fits.map((m, j): Withheld['reason'] | undefined => (near[j].length ? undefined : fitMeasures.some((y) => !claims.has(y) && alike(m, y)) ? 'unmatched' : 'dropped'))
   const withheld = longTasks.flatMap((t, i) => (taskFit[i] ? [] : fits.flatMap((f, j) => {
-    const reason = why[j]
+    const reason = place[j].reason
     return reason && pageHolds(i, j) ? [{ start: t.start, ms: t.ms, fit: f.start, reason }] : []
   })))
-  const unmeasured = { dropped: why.filter((x) => x === 'dropped').length, unmatched: why.filter((x) => x === 'unmatched').length }
+  const count = (r: Withheld['reason']): number => place.filter((p) => p.reason === r).length
+  const unmeasured = { dropped: count('dropped'), unmatched: count('unmatched') }
+  const unplaced = { straddles: count('straddles'), untasked: count('untasked') }
   // How far a fit's measure lies outside the nearest task the trace holds whole, the worst (ms; 0 with none, or no task):
   // the margin FIT_SLACK keeps, logged by the e2e (Round 7).
-  const fitSkew = runs.length ? Math.max(0, ...near.flat().map((x) => Math.min(...runs.map((r) => Math.max(0, r.ts - x.s, x.e - end(r)))) / 1000)) : 0
-  // The tasks charged, by the long task the fits are in (-1: in none).
+  const fitSkew = runs.length ? Math.max(0, ...fitSpans.flatMap((x) => (x ? [Math.min(...runs.map((r) => Math.max(0, r.ts - x.s, x.e - end(r)))) / 1000] : []))) : 0
+  // The fits' charge (look plan A2.1 note (10), Round 10): a fit is charged the task it belongs to, the fits in a long
+  // task at least its thread time (`tasks`: the trace may hold only a task inside it); a fit whose measure lies in two
+  // tasks or more, each of them (either may be its); and a fit the trace holds in no task, 50 ms (a task as long would
+  // be a long task). Each task once (heldAll), and one with no thread time given is charged its wall.
   const held = new Map<number, Set<TraceEvent>>()
   let fitWalls = 0
   let fitsTraced = 0
-  fits.forEach((f, i) => {
-    const sure = settled && near[i].length === 1 && claims.get(near[i][0]) === 1
-    // The long task it is charged with: the one it holds; or, its measure dropped or outside the window (Round 9), the
-    // one the page tags it in, which it still charges, though that long task is judged as one with no fit too.
-    const at = longTasks.findIndex((_, t) => (near[i].length ? holds(t, i) : pageHolds(t, i)))
-    const long = longTasks[at]
-    const run = taskRuns[at]
-    const around = sure ? aroundOf(near[i][0].s, near[i][0].e, FIT_SLACK) : [
-      ...near[i].flatMap((x) => aroundOf(x.s, x.e, FIT_SLACK)),
-      ...(Number.isFinite(off) ? aroundOf((f.start + off) * 1000, (f.start + off + f.ms) * 1000, 500 + FIT_SLACK) : []),
-    ]
-    const found = sure && around.length ? around : run ? [...around, run] : around
-    if (found.length) fitsTraced++
-    else if (!long) {
+  for (const p of place) {
+    if (!p.in.length) {
       fitWalls += 50
-      return
+      continue
     }
+    if (p.run) fitsTraced++
+    const at = p.run ? taskRuns.indexOf(p.run) : -1
     const xs = held.get(at) ?? new Set<TraceEvent>()
     held.set(at, xs)
-    for (const x of found) xs.add(x)
-  })
+    for (const x of p.in) xs.add(x)
+  }
   // Each long task once, at least its thread time; the groups are not taken together, as a task in two is charged twice.
   const fitCpu = [...held].reduce((t, [at, xs]) => t + Math.max(heldAll([...xs]) / 1000, at < 0 ? 0 : tasks[at].cpu), 0) + fitWalls
+  // Each look check after a settle (LOOK_CHECK_MEASURE) on the page's thread inside the marker, for the log alone (Round
+  // 10, R10-6: a task like any other, judged by the ordinary limits): its wall, and the thread time of the tasks that
+  // hold it to FIT_SLACK (NaN in none).
+  const looks = spansOf(LOOK_CHECK_MEASURE).filter((x) => x.key === main && inMark(x.s, x.e)).map((x) => {
+    const holding = runs.filter((r) => r.ts <= x.s + FIT_SLACK && end(r) >= x.e - FIT_SLACK)
+    return { own: holding.length ? heldAll(holding) / 1000 : NaN, wall: (x.e - x.s) / 1000 }
+  })
   const onPage = allPairs.get(main) ?? new Map<string, number>()
-  return { traced: offs.length, spread, thread: names.get(main) ?? main, marker: { held: !!mark, from: marks.from.length, to: marks.to.length, threads: markThreads.map((k) => names.get(k) || k) }, resizes, tasks, taskFit, settled, withheld, unmeasured, fitSkew, fitCpu, fitsTraced, pairs: Object.fromEntries(onPage), unpaired: unpaired.filter((u) => u.thread === main).map((u) => ({ kind: u.kind, name: u.name, at: u.ts / 1000 - off })) }
+  return { traced: offs.length, spread, thread: names.get(main) ?? main, marker: { held: !!mark, from: marks.from.length, to: marks.to.length, threads: markThreads.map((k) => names.get(k) || k) }, resizes, tasks, taskFit, settled, withheld, unmeasured, unplaced, fitSkew, fitCpu, fitsTraced, looks, pairs: Object.fromEntries(onPage), unpaired: unpaired.filter((u) => u.thread === main).map((u) => ({ kind: u.kind, name: u.name, at: u.ts / 1000 - off })) }
 }
 
 /**
@@ -454,8 +451,8 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
  *   on Windows, 518 on ubuntu, 5204 on macOS, soak 45933131129; macOS's about 1.5 times its worst); an OS it does not
  *   name gets the widest;
  * - fitCpuTotal: the thread time of the tasks that hold the drag's fits, in all, each once (ownTimes' fitCpu: the fits
- *   in a long task at least that long task's charge, Round 6; a fit in no task the trace holds whole charged its long
- *   task's, or 50 ms), so fits too short to be long tasks are held too
+ *   in a long task at least that long task's charge, Round 6; a fit whose measure lies across two tasks charged both, one
+ *   the trace places in no task 50 ms, Round 10), so fits too short to be long tasks are held too
  *   (the worst seen: 41 ms on Windows, 31 on ubuntu, 82 on macOS, 72 drags, diag 45985754504, 45985767956, 45985786689;
  *   about 2.5 times the worst);
  * - tracedResizes: the share of the resizes the page named that the trace holds on the thread's clock, each in the work
@@ -535,7 +532,7 @@ export function dragVerdict(input: DragInput, limits = DRAG_LIMITS): { checks: D
     { rule: `no fit's task runs over ${limits.fitCpu} ms of thread time, its waits left out, one the trace does not hold charged its wall (wall/thread ms)`, fails: fits.filter((x) => x.cpu > limits.fitCpu).map((x) => `${x.wall.toFixed(0)}/${x.cpu.toFixed(0)}${x.matched ? '' : ' (not traced)'}`) },
     { rule: `no fit's task runs over ${limits.fitWall} ms on the wall beyond its waits on the GPU, any other wait counted (wall/GPU-waited ms)`, fails: fits.filter((x) => x.wall - x.gpu > limits.fitWall).map((x) => `${x.wall.toFixed(0)}/${x.gpu.toFixed(0)}`) },
     { rule: `no fit's task runs over ${ceiling} ms on the wall on ${input.platform}, its waits on the GPU too (ms)`, fails: fits.filter((x) => x.wall > ceiling).map((x) => x.wall.toFixed(0)) },
-    { rule: `the tasks that hold the drag's fits take no more than ${limits.fitCpuTotal} ms of the thread in all, each once, the fits in a long task at least its charge, a fit the trace does not hold charged its long task's or 50 ms (ms, fits traced/named)`, fails: own.fitCpu > limits.fitCpuTotal ? [`${own.fitCpu.toFixed(0)} (${own.fitsTraced}/${fitCount})`] : [] },
+    { rule: `the tasks that hold the drag's fits take no more than ${limits.fitCpuTotal} ms of the thread in all, each once, the fits in a long task at least its charge, a fit whose measure lies across tasks charged each, one the trace places in no task 50 ms (ms, fits placed/named)`, fails: own.fitCpu > limits.fitCpuTotal ? [`${own.fitCpu.toFixed(0)} (${own.fitsTraced}/${fitCount})`] : [] },
     { rule: `the page handles the drag's pointer moves no more than ${gap} ms apart on ${input.platform}, the release too (ms)`, fails: input.widestGap > gap ? [input.widestGap.toFixed(0)] : [] },
   ]
   return { checks, own, others, fits, retagged }

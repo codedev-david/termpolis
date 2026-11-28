@@ -21,3 +21,10 @@ export const BUFFER_FIT_MEASURE = 'world-buffer-fit'
  * work on the thread's clock. Outside a window nothing is named, so a session's resizes leave nothing on the timeline.
  */
 export const RESIZE_MEASURE = 'world-resize'
+
+/**
+ * The performance measure each look check after a settle records (threeRenderer's settleCheck in the task after the
+ * fit's), so a check of the page's own work can log the look check's own and wall time apart (look plan A2.1 note (10),
+ * Round 10): it is a task like any other, under the ordinary limits.
+ */
+export const LOOK_CHECK_MEASURE = 'world-look-check'

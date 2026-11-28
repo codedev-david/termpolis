@@ -25,7 +25,7 @@ import { createFrameSampler, frameStats, type FrameStats } from './frameSampler'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
-import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS, RESIZE_MEASURE } from './bufferFit'
+import { BUFFER_FIT_MEASURE, BUFFER_SETTLE_MS, LOOK_CHECK_MEASURE, RESIZE_MEASURE } from './bufferFit'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
 export interface SceneText {
@@ -2593,7 +2593,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (settleTimer !== null) clearTimeout(settleTimer)
     settleTimer = null
   }
-  /** A span of the renderer's work, named for the page's timeline (BUFFER_FIT_MEASURE, RESIZE_MEASURE): a page without User Timing goes without. */
+  /** A span of the renderer's work, named for the page's timeline (BUFFER_FIT_MEASURE, LOOK_CHECK_MEASURE, RESIZE_MEASURE): a page without User Timing goes without. */
   const nameSpan = (name: string, start: number, end: number): void => {
     try {
       performance.measure(name, { start, end })
@@ -2626,7 +2626,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * ms of the thread on the runners, a new search 66 to 179) and kept in the fit's task it made that task the check's
    * too: the fit's own work stays the fit's (BUFFER_FIT_MEASURE's task), the check is a task like any other. Until the
    * check has run the settle is still pending (settleTimer): a resize puts both off, a new pixel ratio or tier puts the
-   * check off again (onRatio, setTier), and a panel's change only re-aims (reframe).
+   * check off again (onRatio, setTier), and a panel's change only re-aims (reframe). The check reads the host when it
+   * runs: hidden, or at a size other than the one fitted (the observer not yet told of a change, Round 10, Codex), it
+   * searches nothing and the settle is armed again, the check still owed. It is named on the page's timeline
+   * (LOOK_CHECK_MEASURE), its own and wall time logged apart by the drag check.
    */
   const armSettle = (): void => {
     settleTimer = setTimeout(() => {
@@ -2641,7 +2644,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       settleTimer = setTimeout(() => {
         settleTimer = null
+        const [w, h] = size()
+        // A hidden host (1 by 1, size) is a size other than the one fitted: a settle is armed only above 1 by 1.
+        if (w !== shown.width || h !== shown.height) {
+          armSettle()
+          return
+        }
+        const start = performance.now()
         settleCheck()
+        nameSpan(LOOK_CHECK_MEASURE, start, performance.now())
         wake()
       }, 0)
       wake()

@@ -3,7 +3,7 @@
 // (SETTLE_FRAMES), then sleeps. The frame stepper drives performance.now, which THREE.Clock, the camera rig and the
 // change animator read.
 import { describe, expect, it, vi } from 'vitest'
-import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../../../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE, LOOK_CHECK_MEASURE, RESIZE_MEASURE } from '../../../src/renderer/src/world/engine/bufferFit'
 import { BUFFER_SETTLE_MS, createThreeRenderer, DROPPED_FRAME_MS, sameLayout, sameRects, SETTLE_FRAMES, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import { SOFTWARE_FENCE_MAX_MS, SOFTWARE_LOOP_MAX_MS, SOFTWARE_LOOP_MS, softwareLoopGap } from '../../../src/renderer/src/world/engine/viewMath'
 import { RISE_MS } from '../../../src/renderer/src/world/engine/changeAnimation'
@@ -1408,7 +1408,7 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
     }
   })
 
-  it('a settled fit is named on the page\'s timeline (BUFFER_FIT_MEASURE), from the timer\'s call to its end; without User Timing it goes unnamed', () => {
+  it('a settled fit is named on the page\'s timeline (BUFFER_FIT_MEASURE), from the timer\'s call to its end, and the check of the look after it (LOOK_CHECK_MEASURE); without User Timing they go unnamed', () => {
     const v = drawnView()
     const measure = vi.spyOn(performance, 'measure')
     try {
@@ -1420,11 +1420,17 @@ describe('threeRenderer frame times (look spec 6.1)', () => {
       const [name, span] = measure.mock.calls[0] as [string, { start: number; end: number }]
       expect(name).toBe(BUFFER_FIT_MEASURE)
       expect(span.end).toBeGreaterThanOrEqual(span.start)
+      // The look's check, in the task after the fit's, is named apart (Round 10: its own and wall time logged apart).
+      vi.advanceTimersByTime(1)
+      expect(measure).toHaveBeenCalledTimes(2)
+      const [look, lookSpan] = measure.mock.calls[1] as [string, { start: number; end: number }]
+      expect(look).toBe(LOOK_CHECK_MEASURE)
+      expect(lookSpan.end).toBeGreaterThanOrEqual(lookSpan.start)
       measure.mockImplementation(() => { throw new TypeError('no User Timing') })
       const fits = v.fits()
       resizeHost(h.host, 650, 600)
       v.resized()
-      expect(() => vi.advanceTimersByTime(BUFFER_SETTLE_MS)).not.toThrow()
+      expect(() => vi.advanceTimersByTime(BUFFER_SETTLE_MS + 1)).not.toThrow()
       expect(v.fits()).toBe(fits + 1) // fitted all the same
     } finally {
       measure.mockRestore()

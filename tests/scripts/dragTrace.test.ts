@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DRAG_LIMITS, DRAG_TRACE, dragVerdict, fitsNamed, heaviest, heldAll, isGpu, isWait, ownTimes as ownTimesOf, paired, waitedIn, widestGap, type DragInput, type TraceEvent } from '../../e2e/helpers/dragTrace'
-import { BUFFER_FIT_MEASURE, RESIZE_MEASURE } from '../../src/renderer/src/world/engine/bufferFit'
+import { BUFFER_FIT_MEASURE, LOOK_CHECK_MEASURE, RESIZE_MEASURE } from '../../src/renderer/src/world/engine/bufferFit'
 
 // The divider-drag check's clock and rules (e2e/helpers/dragTrace.ts) on made-up traces: the page's clock is OFF ms
 // behind the trace's, the page's main thread is 1:1, and every time is in ms on the page's clock.
@@ -43,7 +43,7 @@ const ownTimes = (raw: TraceEvent[], named: Array<{ start: number; ms: number }>
 /** A fit the page named, as the trace holds it. */
 const fitNamed = (start: number, ms: number): TraceEvent[] => named(start, ms, 1, BUFFER_FIT_MEASURE)
 /**
- * A quiet drag: `n` resizes of 2 ms of the thread, each in a task of its own 100 ms apart, the page naming each; a
+ * A quiet drag: `n` resizes of 2 ms of the thread, each in a task of its own about 100 ms apart, the page naming each; a
  * fit's task at 2500 ms: 80 ms on the wall, 75 of them waiting on the GPU, 5 of thread time; and two more fits in tasks
  * too short to be long tasks, at 2700 and 2800 ms (5 ms, 1 of thread time): 7 ms of the fits' thread time in all.
  */
@@ -51,7 +51,7 @@ function quiet(n = 10): { events: TraceEvent[]; resizes: Array<{ start: number; 
   const events: TraceEvent[] = [META]
   const resizes: Array<{ start: number; ms: number }> = []
   for (let k = 0; k < n; k++) {
-    const t = 1000 + k * 100
+    const t = 1000 + k * 100 + k * k * 0.7 // unevenly spaced, as a drag's are: an offset one resize off gets no bloc of votes
     events.push(X('ThreadControllerImpl::RunTask', 'toplevel', t, 3, 3), X('FunctionCall', 'devtools.timeline', t + 0.5, 2.2, 2.2), ...named(t + 0.6, 2))
     resizes.push({ start: t + 0.6, ms: 2 })
   }
@@ -77,6 +77,8 @@ const input = (over: Partial<DragInput> = {}): DragInput => {
   }
   return { ...v, fits, events: [...events, ...markOf(events, [...v.resizes, ...v.tasks, ...fits])] }
 }
+/** A task on the page's main thread the trace gives no thread time of. */
+const U = (start: number, dur: number): TraceEvent => ({ ...X('ThreadControllerImpl::RunTask', 'toplevel', start, dur, 0), tdur: undefined })
 /** A wait on the page's main thread with no thread time given. */
 const W = (name: string, cat: string, start: number, dur: number): TraceEvent => ({ name, cat, ph: 'X', ts: us(start), dur: Math.round(dur * 1000), pid: 1, tid: 1 })
 /** What broke the rule whose text holds `word` (the rule must be there). */
@@ -245,28 +247,37 @@ describe('the drag trace (dragTrace)', () => {
     expect(fails(v, 'beyond its waits on the GPU')).toEqual(['1500/0'])
   })
 
-  // Round 2, Codex major 2: a fit's task the trace dropped skipped the thread-time rule, and "most" was 1 of 2.
-  it("charges a fit's task the trace does not hold its wall as thread time, and wants 90% of them held (60 ms held and 600 ms dropped)", () => {
-    const v = dragVerdict(input({ tasks: [FIT, { start: 9000, ms: 600, fit: true }] }))
+  // Round 2, Codex major 2: a fit's task the trace dropped skipped the thread-time rule, and "most" was 1 of 2. Round
+  // 10: a fit belongs only to a task the trace holds, so a fit's task the trace holds with no thread time is the one
+  // charged its wall; a long task the trace holds no task for is no fit's, and is judged as one with none.
+  it("charges a fit's task the trace gives no thread time its wall as thread time, and wants 90% of them timed (60 ms timed and 600 ms not)", () => {
+    const events = [...quiet().events, U(9000, 600)]
+    const v = dragVerdict(input({ events, tasks: [FIT, { start: 9000, ms: 600, fit: true }] }))
     expect(v.fits[1]).toEqual({ wall: 600, own: 600, cpu: 600, waited: 0, gpu: 0, matched: false })
     expect(fails(v, 'ms of thread time')).toEqual(['600/600 (not traced)'])
-    expect(fails(v, "of the fits' tasks")).toEqual([]) // one dropped is allowed (fitsDropped), its wall charged
-    expect(fails(dragVerdict(input({ tasks: [FIT, ...Array(2).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")).toEqual(['1/3'])
-    // Nine held of ten is enough, eight is not.
-    const many = (held: number): string[] => fails(dragVerdict(input({ tasks: [...Array(held).fill(FIT), ...Array(10 - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
+    expect(fails(v, "of the fits' tasks")).toEqual([]) // one untimed is allowed (fitsDropped), its wall charged
+    const short = [...quiet().events, U(9000, 100)]
+    expect(fails(dragVerdict(input({ events: short, tasks: [FIT, ...Array(2).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")).toEqual(['1/3'])
+    // Nine timed of ten is enough, eight is not.
+    const many = (held: number): string[] => fails(dragVerdict(input({ events: short, tasks: [...Array(held).fill(FIT), ...Array(10 - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
     expect(many(9)).toEqual([])
     expect(many(8)).toEqual(['8/10'])
+    // No task in the trace there: the fit is in none (untasked, 50), and its long task is judged as one with none.
+    const none = dragVerdict(input({ tasks: [FIT, { start: 9000, ms: 600, fit: true }] }))
+    expect(none.own).toMatchObject({ taskFit: [true, false], withheld: [{ start: 9000, ms: 600, fit: 9000.5, reason: 'untasked' }], unplaced: { straddles: 0, untasked: 1 }, fitCpu: 7 + 50 })
+    expect(fails(none, "of its own, the fit's left out")).toEqual(['600/600'])
   })
 
   // Round 3, Opus m3-2: with fewer than 10 fits one dropped failed the 90% (ubuntu's drags name 6 to 9 at the least).
   it("lets the trace drop one fit's task of any number: 6 of 7, not 5; 18 of 20, not 17", () => {
-    const of = (n: number, held: number): string[] => fails(dragVerdict(input({ tasks: [...Array(held).fill(FIT), ...Array(n - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
+    const events = [...quiet().events, U(9000, 100), U(10000, 250)]
+    const of = (n: number, held: number): string[] => fails(dragVerdict(input({ events, tasks: [...Array(held).fill(FIT), ...Array(n - held).fill({ start: 9000, ms: 100, fit: true })] })), "of the fits' tasks")
     expect(of(7, 6)).toEqual([])
     expect(of(7, 5)).toEqual(['5/7'])
     expect(of(20, 18)).toEqual([])
     expect(of(20, 17)).toEqual(['17/20'])
-    expect(of(1, 0)).toEqual([]) // one fit dropped: charged its wall as thread time, which holds it to 200 ms
-    expect(fails(dragVerdict(input({ tasks: [{ start: 9000, ms: 250, fit: true }] })), 'ms of thread time')).toEqual(['250/250 (not traced)'])
+    expect(of(1, 0)).toEqual([]) // one fit's task untimed: charged its wall as thread time, which holds it to 200 ms
+    expect(fails(dragVerdict(input({ events, tasks: [{ start: 10000, ms: 250, fit: true }] })), 'ms of thread time')).toEqual(['250/250 (not traced)'])
   })
 
   // Round 2, Codex minor: a fit named whose task the check never scored passed.
@@ -553,7 +564,8 @@ describe('the drag trace (dragTrace)', () => {
     const q = quiet()
     const on2 = (e: TraceEvent): TraceEvent => ({ ...e, pid: 2 })
     // The trace drops one of the page's resizes: nine of its resizes against ten of the other renderer's.
-    const events = q.events.filter((e) => !(e.name === RESIZE_MEASURE && e.ts >= us(1500.6) && e.ts <= us(1502.6)))
+    const r5 = q.resizes[5]
+    const events = q.events.filter((e) => !(e.name === RESIZE_MEASURE && e.ts >= us(r5.start) && e.ts <= us(r5.start + r5.ms)))
     const fits = [...q.fits]
     for (let k = 0; k < 6; k++) {
       const t = 3000 + k * 100
@@ -612,17 +624,23 @@ describe('the drag trace (dragTrace)', () => {
   })
 
   // Round 6: a span of the page outside its marker is timed on the wall, and a task of the trace outside it is no fit's.
+  // Round 10: the quiet drag's resizes are alike and 100 ms apart, so with its first left out the vote would tie
+  // between the offset and one 100 ms off (no offset, below); the first here is 3 ms, a length no other has.
   it("times on the wall a resize or a long task outside the page's marker, and charges no task outside it", () => {
     const q = quiet()
-    const at = (s: number, e: number): ReturnType<typeof dragVerdict> => dragVerdict({ ...input(), events: [...q.events, ...mark(us(s), us(e))] })
-    // From the second resize's task on: the first resize is the wall's (2 ms), the rest traced.
+    const first = [...q.events.filter((e) => !(e.name === RESIZE_MEASURE && e.ts < us(1050))), ...named(1000.6, 3)]
+    const resizes = [{ start: 1000.6, ms: 3 }, ...q.resizes.slice(1)]
+    const at = (s: number, e: number): ReturnType<typeof dragVerdict> => dragVerdict({ ...input(), resizes, events: [...first, ...mark(us(s), us(e))] })
+    // From the second resize's task on: the first resize is the wall's (3 ms), the rest traced.
     const late = at(1100, 3000)
     expect(late.own.resizes.map((x) => x.matched)).toEqual([false, ...Array(9).fill(true)])
-    expect(late.own.resizes[0]).toMatchObject({ wall: 2, own: 2 })
-    // To the long task's start: its window is the wall's, 80 of thread time, and its fit charged that.
+    expect(late.own.resizes[0]).toMatchObject({ wall: 3, own: 3 })
+    expect(late.own).toMatchObject({ traced: 9, settled: false })
+    // To the long task's start: its window is the wall's, 80 of thread time, and no task outside the marker holds a fit,
+    // so each fit is charged 50 (Round 10: its measure outside the marker is none; Round 6 charged the long task's 80).
     const early = at(900, 2500.4)
     expect(early.own.tasks[0]).toMatchObject({ matched: false, cpu: 80 })
-    expect(early.own.fitCpu).toBeCloseTo(80 + 2 * 50, 9)
+    expect(early.own).toMatchObject({ taskFit: [false], fitCpu: 3 * 50, unmeasured: { dropped: 3, unmatched: 0 } })
   })
 
   // Round 2, Opus m2-2, Codex minor: one 7000 ms gap for every OS, and the release after the last move not counted.
@@ -806,92 +824,86 @@ describe('the drag trace (dragTrace)', () => {
     expect(fails(dragVerdict(input({ events, fits: fits.slice(0, 8) })), 'ms of the thread in all')).toEqual(['202 (8/8)'])
   })
 
-  it("charges a fit the trace does not hold its long task's wall, each long task once, or 50 ms in none; and a task with two fits once", () => {
+  // Round 10: a fit the trace names no measure of is charged 50 ms, never its long task's wall by the page's number on
+  // the trace's clock (R10-3: nothing is pulled in by projection).
+  it("charges a fit the trace names no measure of 50 ms, its long task's or not, and a task with two fits once", () => {
     const q = quiet()
-    // Two fits in the 2500 task: charged once; two the trace does not hold in a 120 ms long task: 120 once; one in none: 50.
-    // One before every long task is in none (50). A fit in a task in a task is charged the outer one (8 of the inner's
-    // 4: Round 5, Opus m5-1, either may be the fit's), and one that ends 0.03 ms past its task on the thread's clock is
+    // Two fits in the 2500 task: charged once; two the trace names no measure of in a 120 ms long task: 50 each, as is
+    // one in none and one before every long task. A fit in a task in a task is charged both, once (8 of the inner's 4:
+    // Round 5, Opus m5-1, either may be the fit's), and one that ends 0.03 ms past its task on the thread's clock is
     // still in it (2).
     const fits = [...q.fits, { start: 2501.6, ms: 0.5 }, { start: 4000.5, ms: 1 }, { start: 4001.5, ms: 1 }, { start: 6000, ms: 1 }, { start: 1550, ms: 1 }, { start: 7002, ms: 2 }, { start: 8000.5, ms: 4.53 }]
     const events = [...q.events, ...fitNamed(2501.6, 0.5), X('ThreadControllerImpl::RunTask', 'toplevel', 7000, 10, 8), X('ThreadControllerImpl::RunTask', 'toplevel', 7001, 5, 4), ...fitNamed(7002, 2)]
     events.push(X('ThreadControllerImpl::RunTask', 'toplevel', 8000, 5, 2), ...fitNamed(8000.5, 4.53))
     const own = ownTimes(events, q.resizes, [FIT, { start: 4000, ms: 120 }], fits)
-    expect(own).toMatchObject({ fitCpu: 7 + 120 + 50 + 50 + 8 + 2, fitsTraced: 6 })
-    // A fit the trace drops at 1500 on the page's clock, where a 3 ms task runs: that task may be its (3, not 50).
-    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 1500.2, ms: 1 }])).toMatchObject({ fitCpu: 7 + 3, fitsTraced: 4 })
-    // On a trace the page's clock cannot be put on, every fit is charged so.
-    expect(ownTimes([META, ...fitNamed(2500.5, 1)], [], [FIT], [{ start: 2500.5, ms: 1 }])).toMatchObject({ fitCpu: 80, fitsTraced: 0 })
+    expect(own).toMatchObject({ fitCpu: 7 + 4 * 50 + 8 + 2, fitsTraced: 6, taskFit: [true, false], unmeasured: { dropped: 4, unmatched: 0 } })
+    // A fit the trace drops at 1500 on the page's clock, where a 3 ms task runs: 50, the task not pulled in (Round 6: 3).
+    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 1500.2, ms: 1 }])).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3 })
+    // On a trace the page's clock cannot be put on, no fit is paired: each is charged 50.
+    expect(ownTimes([META, ...fitNamed(2500.5, 1)], [], [FIT], [{ start: 2500.5, ms: 1 }])).toMatchObject({ fitCpu: 50, fitsTraced: 0, unmeasured: { dropped: 0, unmatched: 1 } })
     expect(ownTimes(events, q.resizes, [])).toMatchObject({ fitCpu: 0, fitsTraced: 0 })
   })
 
   // Round 4 data (diag 45983711383, 45983723838, 45983738302): a fit's measure, named from the page's coarsened clock,
   // began up to 0.17 ms before its task and ended up to 0.07 ms after it, so the 50 us slack left it in no task and
   // charged the fit its long task's wall (1142 ms of a drag whose fits' tasks took 31).
-  it("finds a fit's tasks by its measure within 0.25 ms, every one around it; else the long task's own task the trace holds", () => {
+  it("finds a fit's task by its measure within 0.25 ms; a measure across two tasks charges both and tags neither, one in no task or none 50 ms", () => {
     const q = quiet()
     const fits = [...q.fits, { start: 4000, ms: 120 }, { start: 5000, ms: 0.4 }, { start: 6000, ms: 150 }, { start: 7000, ms: 100 }]
     const events = [...q.events,
       // The measure 0.17 ms before its task's start and 0.07 ms past its end: 3 of thread time, not the long task's 130.
       X('ThreadControllerImpl::RunTask', 'toplevel', 4000.17, 119.76, 3), ...fitNamed(4000, 120),
       // Two tasks within 0.25 ms of a 0.4 ms measure, the shorter ending 0.15 ms into it, the other holding the rest of it
-      // (0.25): both (2.1), as either may be the fit's (Round 5; Round 4 took the one holding more of it, 2).
+      // (0.25): both charged (2.1), as either may be the fit's (Round 5), and (Round 10) the fit is neither's: it straddles.
       X('ThreadControllerImpl::RunTask', 'toplevel', 4999.95, 0.2, 0.1), X('ThreadControllerImpl::RunTask', 'toplevel', 5000.15, 0.35, 2), ...fitNamed(5000, 0.4),
-      // A measure the trace drops, in a long task whose own task the trace holds: that task's thread time (6), though
-      // (Round 9) it gives that long task no fit, so the long task is judged as one with none too.
+      // A measure the trace drops, in a long task whose own task the trace holds: 50 (Round 10: that task's 6 is not
+      // pulled in by the page's number), and the long task holds no fit (Round 9).
       X('ThreadControllerImpl::RunTask', 'toplevel', 5999, 152, 6),
-      // A measure 0.3 ms before its task: in no task, and (Round 7) not in the long task whose task the trace holds, so
-      // that long task holds no fit and the fit in none is charged 50 (Round 4 to 6: its long task's charge, 5.2).
+      // A measure 0.3 ms before its task: in no task (untasked), 50, and the long task holds no fit (Round 7).
       X('ThreadControllerImpl::RunTask', 'toplevel', 7000.3, 99.8, 4), ...fitNamed(7000, 100)]
     const long = [FIT, { start: 4000, ms: 130 }, { start: 5999, ms: 152 }, { start: 7000, ms: 101 }]
     // The fits in a long task are charged at least its own charge (Round 6, Codex: the tasks found 25, the long task 175):
-    // its task's thread time and the part of its window outside that task, 3 + 0.17 + 10.07 for [4000,4130]. Without the
-    // floor, 7 + 3 + 2.1 + 6 + 50.
-    expect(ownTimes(events, q.resizes, long, fits).fitCpu).toBeCloseTo(7 + 13.24 + 2.1 + 6 + 50, 9)
-    expect(ownTimes(events, q.resizes, long, fits)).toMatchObject({ fitsTraced: 6, taskFit: [true, true, false, false], withheld: [{ start: 5999, ms: 152, fit: 6000, reason: 'dropped' }], unmeasured: { dropped: 1, unmatched: 0 } })
-    // 0.26 ms before and after: in no task, and its long task's wall (none of the trace's tasks hold half of it).
+    // its task's thread time and the part of its window outside that task, 3 + 0.17 + 10.07 for [4000,4130].
+    const own = ownTimes(events, q.resizes, long, fits)
+    expect(own.fitCpu).toBeCloseTo(7 + 13.24 + 2.1 + 50 + 50, 9)
+    expect(own).toMatchObject({
+      fitsTraced: 4, taskFit: [true, true, false, false],
+      withheld: [{ start: 5999, ms: 152, fit: 6000, reason: 'dropped' }, { start: 7000, ms: 101, fit: 7000, reason: 'untasked' }],
+      unmeasured: { dropped: 1, unmatched: 0 }, unplaced: { straddles: 1, untasked: 1 },
+    })
+    // 0.26 ms before and after: in no task, 50 (Round 4 to 9: its long task's wall, 110).
     const far = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000.26, 49, 3), ...fitNamed(4000, 49.52)]
-    expect(ownTimes(far, q.resizes, [FIT, { start: 4000, ms: 110 }], [...q.fits, { start: 4000, ms: 49.52 }])).toMatchObject({ fitCpu: 7 + 110, fitsTraced: 3 })
+    expect(ownTimes(far, q.resizes, [FIT, { start: 4000, ms: 110 }], [...q.fits, { start: 4000, ms: 49.52 }])).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3, taskFit: [true, false] })
   })
 
   // Round 5, the property test's trace 1764: a fit whose measure the trace dropped, 0.44 ms before another fit of its
-  // length, was paired with that one's measure, and its own task (0.38 ms of thread time) went uncharged.
-  it("charges a fit whose measure is in doubt every task it may be in: those around each measure, around it, and its long task's", () => {
+  // length, was paired with that one's measure, and its own task (0.38 ms of thread time) went uncharged. Round 5 to 9
+  // charged both fits every task each may be in; Round 10 (R10-4): a pairing in doubt is none, each fit charged 50.
+  it("pairs a fit's measure one to one: two fits a measure may be either's are both unmatched, 50 each, and tag no long task", () => {
     const q = quiet()
     const events = [...q.events,
       X('ThreadControllerImpl::RunTask', 'toplevel', 5000, 0.62, 0.38),
       X('ThreadControllerImpl::RunTask', 'toplevel', 5000.85, 0.4, 0.29), ...fitNamed(5001, 0.01)]
     const fits = [...q.fits, { start: 5000.56, ms: 0.01 }, { start: 5001, ms: 0.01 }]
-    // Both fits may be the one measure's, so both are charged its task and the tasks near them: 0.38 + 0.29.
-    expect(ownTimes(events, q.resizes, [FIT], fits)).toMatchObject({ fitCpu: 7 + 0.38 + 0.29, fitsTraced: 5 })
-    // A measure that is one fit's alone charges only the tasks around it (0.29); the dropped one far off, its wall (50).
-    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 5001, ms: 0.01 }, { start: 9000, ms: 0.01 }])).toMatchObject({ fitCpu: 7 + 0.29 + 50, fitsTraced: 4 })
-    // A task the trace holds that ends 0.06 ms after where the page puts the dropped one: one in doubt is charged that
-    // task's too (within the 0.75 ms around it), though the tasks near it are found.
-    const long = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 50.5, 30)]
-    expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 50.5 }], fits).fitCpu).toBeCloseTo(7 + 30 + 0.38 + 0.29, 9)
-    // Round 7: the trace holds the long task's task and puts the one measure 0.5 ms past its end (beyond FIT_SLACK), so
-    // the long task holds no fit, though the page's window runs past the measure: it is judged by the rules of a task
-    // with none, and the fits are charged the tasks near them alone (Round 6: the long task's 31.5).
-    expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 51.1 }], fits).taskFit).toEqual([true, false])
-    const short = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 49.5, 30)]
-    expect(ownTimes(short, q.resizes, [FIT, { start: 4950, ms: 51 }], fits)).toMatchObject({ fitCpu: 7 + 0.38 + 0.29, taskFit: [true, false] })
+    expect(ownTimes(events, q.resizes, [FIT], fits)).toMatchObject({ fitCpu: 7 + 2 * 50, fitsTraced: 3, unmeasured: { dropped: 0, unmatched: 2 } })
+    // A measure that is one fit's alone is its, charged its task (0.29); the dropped one far off, 50.
+    expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 5001, ms: 0.01 }, { start: 9000, ms: 0.01 }])).toMatchObject({ fitCpu: 7 + 0.29 + 50, fitsTraced: 4, unmeasured: { dropped: 1, unmatched: 0 } })
+    // A long task around both: neither fit is its, so it is judged as a task with none (Round 5 to 9 charged its 30).
+    const long = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 51.3, 30)]
+    expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 51.3 }], fits)).toMatchObject({ fitCpu: 7 + 2 * 50, taskFit: [true, false] })
+    // Two measures of its length within 0.5 ms of one fit (0.45 before, 0.3 after): which is its is in doubt, so neither.
+    const two = [...q.events, ...fitNamed(6999.55, 0.92), ...fitNamed(7000.3, 0.95), X('ThreadControllerImpl::RunTask', 'toplevel', 6999.6, 0.64, 0.3)]
+    expect(ownTimes(two, q.resizes, [FIT], [...q.fits, { start: 7000, ms: 1 }])).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3, unmeasured: { dropped: 0, unmatched: 1 } })
   })
 
-  // Round 5: where a fit in doubt may be. Its measure dropped, every task around it on the thread's clock within the
-  // 0.5 ms a measure is paired in and FIT_SLACK; each measure near it of its length, every task around that one; and a
-  // measure on another thread is none of the page's, so it puts no fit in doubt.
-  it('charges a fit in doubt the tasks around it to 0.75 ms and around each measure near it, and no other thread puts one in doubt', () => {
+  // Round 10 (R10-3): no number of the page's is put on the thread's clock to pull in a task for a fit. Round 5 to 9
+  // charged a fit the trace names no measure of the tasks within 0.75 ms of where the page puts it.
+  it("charges a fit the trace names no measure of 50 ms, whatever task runs where the page puts it, and no other thread's measure is the page's", () => {
     const q = quiet()
     const lost = [...q.fits, { start: 6000, ms: 2 }]
-    // No measure: a task 0.5 ms after it starts is around it (0.4); one 0.8 ms after is not, so 50 on the wall.
-    expect(ownTimes([...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 6000.5, 1, 0.4)], q.resizes, [FIT], lost)).toMatchObject({ fitCpu: 7 + 0.4, fitsTraced: 4 })
-    expect(ownTimes([...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 6000.8, 1, 0.4)], q.resizes, [FIT], lost)).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3 })
-    // Two measures near it (0.45 before, 0.3 after): the task around the first ends 0.76 ms before it does, around it
-    // not, so only the measure finds it (0.3).
-    const two = [...q.events, ...fitNamed(6999.55, 0.92), ...fitNamed(7000.3, 0.95), X('ThreadControllerImpl::RunTask', 'toplevel', 6999.6, 0.64, 0.3)]
-    expect(ownTimes(two, q.resizes, [FIT], [...q.fits, { start: 7000, ms: 1 }])).toMatchObject({ fitCpu: 7 + 0.3, fitsTraced: 4 })
-    // One measure on the page's thread and one alike on another: the fit is sure, charged the task around its measure
-    // (0.5) and not the one before it that is around it only (0.2).
+    for (const at of [6000, 6000.5, 6000.8]) expect(ownTimes([...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', at, 1, 0.4)], q.resizes, [FIT], lost)).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3 })
+    // One measure on the page's thread and one alike on another: the fit is the page thread's, charged the task around
+    // its measure (0.5) and not the one before it that is around where the page puts it only (0.2).
     const other = [...q.events, ...fitNamed(8000.4, 1), ...named(8000.4, 1, 2, BUFFER_FIT_MEASURE),
       X('ThreadControllerImpl::RunTask', 'toplevel', 8000.35, 1.2, 0.5), X('ThreadControllerImpl::RunTask', 'toplevel', 7999.8, 0.5, 0.2)]
     expect(ownTimes(other, q.resizes, [FIT], [...q.fits, { start: 8000, ms: 1 }])).toMatchObject({ fitCpu: 7 + 0.5, fitsTraced: 4 })
@@ -905,7 +917,9 @@ describe('the drag trace (dragTrace)', () => {
   // When the resizes paired disagree on the offset by more than FIT_SLACK / 2, every fit is in doubt: 241.6, and it
   // fails. With the resizes agreeing, 7.6 still: the limit note (10) states, Round 6 (c) (a measure as far from its task as that,
   // on a clock the resizes show steady, is not seen; the worst seen in the e2e is 0.17 ms).
-  it('puts every fit in doubt when the resizes disagree on the offset by more than FIT_SLACK / 2 (Opus m6-1: 7.6, now 241.6)', () => {
+  // Round 10 (R10-3): the spread no longer puts the fits in doubt, as no fit is placed by the page's number: each is
+  // charged the task its measure lies in, the 0.2 ms one (0.1), whatever the resizes' spread, and `settled` is only logged.
+  it("charges each fit its measure's task whatever the resizes' spread (Opus m6-1: 7.6, Round 6 to 9 241.6 on drift, now 7.6)", () => {
     const q = quiet()
     const events = [...q.events]
     const fits = [...q.fits]
@@ -914,31 +928,34 @@ describe('the drag trace (dragTrace)', () => {
       events.push(X('ThreadControllerImpl::RunTask', 'toplevel', t, 40, 39), X('ThreadControllerImpl::RunTask', 'toplevel', t + 40, 0.2, 0.1), ...fitNamed(t + 40.26, 0.04))
       fits.push({ start: t + 40.26, ms: 0.04 })
     }
-    // The page's sixth resize 0.12 or 0.13 ms earlier than the trace puts it (its first would tie the vote, the resizes
-    // being alike and 100 ms apart, between the offset and one 100 ms off).
+    // The page's sixth resize 0.12, 0.13 or 0.625 ms earlier than the trace puts it.
     const apart = (d: number): ReturnType<typeof dragVerdict> => dragVerdict(input({ events, fits, resizes: q.resizes.map((r, i) => (i !== 5 ? r : { ...r, start: r.start - d })) }))
     const steady = apart(0)
-    expect(steady.own.spread).toBe(0)
+    expect(steady.own).toMatchObject({ spread: 0, settled: true, fitsTraced: 9 })
     expect(steady.own.fitCpu).toBeCloseTo(7 + 6 * 0.1, 9)
-    expect(fails(steady, 'ms of the thread in all')).toEqual([])
+    expect(broken(steady)).toEqual([])
+    expect(apart(0.12).own).toMatchObject({ settled: true, fitsTraced: 9 })
     expect(apart(0.12).own.spread).toBeCloseTo(0.12, 6)
-    expect(apart(0.12).own.fitCpu).toBeCloseTo(7 + 6 * 0.1, 9)
     const drift = apart(0.13)
     expect(drift.own.spread).toBeCloseTo(0.13, 6)
-    expect(drift.own.fitCpu).toBeCloseTo(7 + 6 * 39.1, 9)
-    expect(fails(drift, 'ms of the thread in all')).toEqual(['242 (9/9)'])
-    expect(drift.own.settled).toBe(false)
-    // Round 9 (Codex): a resize the 0.5 ms window leaves out (0.625 ms off) is drift, though the nine paired agree; and
-    // one resize paired alone is never settled. Either puts every fit in doubt; two paired and agreeing do not.
+    expect(drift.own).toMatchObject({ settled: false, fitsTraced: 9 })
+    expect(drift.own.fitCpu).toBeCloseTo(7 + 6 * 0.1, 9)
+    expect(broken(drift)).toEqual([])
+    // A resize the 0.5 ms window leaves out (0.625 ms off): unpaired, so unsettled; the fits are still their measures'.
     const out = apart(0.625)
-    expect(out.own).toMatchObject({ spread: 0, traced: 9, settled: false })
-    expect(out.own.fitCpu).toBeCloseTo(7 + 6 * 39.1, 9)
-    const one = dragVerdict(input({ events, fits, resizes: [q.resizes[0]], resizeCount: 1 }))
-    expect(one.own).toMatchObject({ spread: 0, traced: 1, settled: false })
-    expect(one.own.fitCpu).toBeCloseTo(7 + 6 * 39.1, 9)
+    expect(out.own).toMatchObject({ spread: 0, traced: 9, settled: false, fitsTraced: 9 })
+    expect(out.own.fitCpu).toBeCloseTo(7 + 6 * 0.1, 9)
+    // Two resizes paired and agreeing: settled.
     const two = dragVerdict(input({ events, fits, resizes: q.resizes.slice(0, 2), resizeCount: 2 }))
     expect(two.own).toMatchObject({ spread: 0, traced: 2, settled: true })
     expect(two.own.fitCpu).toBeCloseTo(7 + 6 * 0.1, 9)
+    // One resize of the page's against the trace's ten alike: which it is is in doubt (R10-4), so there is no clock, no
+    // fit is paired (each 50, nine) and the drag fails.
+    const one = dragVerdict(input({ events, fits, resizes: [q.resizes[0]], resizeCount: 1 }))
+    expect(one.own).toMatchObject({ traced: 0, settled: false, fitsTraced: 0, unmeasured: { dropped: 0, unmatched: 9 } })
+    expect(one.own.spread).toBeNaN()
+    expect(one.own.fitCpu).toBe(9 * 50)
+    expect(fails(one, 'ms of the thread in all')).toEqual(['450 (0/9)'])
   })
 
   // Round 6, Codex: a fit's long task [4000,4200], the task the trace holds over most of it from 4000 to 4150 (125 ms of
@@ -959,11 +976,10 @@ describe('the drag trace (dragTrace)', () => {
     // Its task of little thread time (10): its score still, 10 and the 50 outside, more than the fit's task (25).
     const heavy = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 150, 10), X('ThreadControllerImpl::RunTask', 'toplevel', 4100, 25, 25), ...fitNamed(4110, 1)]
     expect(dragVerdict(input({ events: heavy, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4110, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 60, 9)
-    // A fit the trace dropped the measure of, at its long task's task's end (within FIT_SLACK of it, where the page puts
-    // it): the task around it on the thread's clock runs past the long task's window, so the floor (60 and the 0.6 ms of
-    // the window after its task) holds only 0.15 ms of it; the long task's task and that one are charged both, 80, not 60.6.
+    // A fit the trace dropped the measure of, at its long task's task's end: 50 (Round 10; Round 6 to 9 charged the tasks
+    // around where the page puts it, 80), and the long task holds no fit, so it is judged as a task with none.
     const edge = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 99.4, 60), X('ThreadControllerImpl::RunTask', 'toplevel', 4099.45, 1.55, 20)]
-    expect(dragVerdict(input({ events: edge, tasks: [FIT, { start: 4000, ms: 100, fit: true }], fits: [...q.fits, { start: 4099.5, ms: 0.1 }] })).own.fitCpu).toBeCloseTo(7 + 80, 9)
+    expect(dragVerdict(input({ events: edge, tasks: [FIT, { start: 4000, ms: 100, fit: true }], fits: [...q.fits, { start: 4099.5, ms: 0.1 }] })).own).toMatchObject({ fitCpu: 7 + 50, taskFit: [true, false] })
   })
 
   // Round 7, Codex and Opus: the page tags a long task the fit's when a fit lies within 1 ms of it, and the check took
@@ -991,26 +1007,26 @@ describe('the drag trace (dragTrace)', () => {
     expect(broken(v)).toHaveLength(2)
     expect(v.fits).toEqual([dragVerdict(input()).fits[0]])
     expect(v.retagged).toEqual([{ start: 3000, ms: 400, page: true }])
-    // The residual (note (10), Round 7): a measure begun within FIT_SLACK after the task's end still tags it, and the
-    // stall passes as the fit's; 0.26 ms after, it does not.
-    expect(at(0.2).own.taskFit).toEqual([true, true])
-    expect(broken(at(0.2))).toEqual([])
-    expect(at(0.26).own.taskFit).toEqual([true, false])
+    // Round 7 to 9's residual (note (10)): a measure begun within FIT_SLACK after the stall's end tagged it, and the stall
+    // passed as the fit's. Round 10 (R10-1): the measure lies whole in its own task too, so it lies across two tasks to
+    // the grain, straddles, and tags neither; the stall fails. 0.26 ms after, it is its own task's alone.
+    const near = at(0.2)
+    expect(near.own).toMatchObject({ taskFit: [true, false], withheld: [{ start: 3000, ms: 400, fit: 3400.2, reason: 'straddles' }], unplaced: { straddles: 1, untasked: 0 } })
+    expect(fails(near, "of its own, the fit's left out")).toEqual(['400/399'])
+    expect(at(0.26).own).toMatchObject({ taskFit: [true, false], withheld: [], unplaced: { straddles: 0, untasked: 0 } })
     // The measure dropped: the fit gives the long task none (Round 9; Round 7 and 8 put the page's number on the
     // thread's clock, so in the task it tagged it), after the task (0.4 ms), in it, or ending past it.
     const dropped = (start: number, ms = 0.03): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: stall, tasks: [FIT, STALL], fits: [...q.fits, { start, ms }] }))
     expect(dropped(3400.4).own.taskFit).toEqual([true, false])
     expect(dropped(3399.9).own.taskFit).toEqual([true, false])
     expect(dropped(3399.5, 0.6).own.taskFit).toEqual([true, false])
-    // A long task the trace does not hold: the page's 1 ms decides for a fit the trace holds the measure of, as both
-    // rule sets charge it its wall. (Tagged no fit's here, so input adds it none.) A fit whose measure the trace dropped
-    // gives it none (Round 9).
-    const lost = (start: number, measured = true): boolean[] => dragVerdict(input({ events: [...q.events, ...(measured ? fitNamed(start, 0.03) : [])], tasks: [FIT, { start: 9000, ms: 400, fit: false }], fits: [...q.fits, { start, ms: 0.03 }] })).own.taskFit
-    expect(lost(9400.9)).toEqual([true, true])
-    expect(lost(9401.1)).toEqual([true, false])
-    expect(lost(8999)).toEqual([true, true])
-    expect(lost(8998.9)).toEqual([true, false])
-    expect(lost(9200, false)).toEqual([true, false])
+    // A long task the trace does not hold: no fit is its (Round 10: a fit is only a task's the trace holds; Round 7 to 9
+    // let the page's 1 ms decide), measured or not, and it is judged on the wall as a task with none. (Tagged no fit's
+    // here, so input adds it none.)
+    const lost = (start: number, measured = true): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: [...q.events, ...(measured ? fitNamed(start, 0.03) : [])], tasks: [FIT, { start: 9000, ms: 400, fit: false }], fits: [...q.fits, { start, ms: 0.03 }] }))
+    for (const [start, measured] of [[9400.9, true], [9200, true], [8999, true], [9200, false]] as const) expect(lost(start, measured).own.taskFit).toEqual([true, false])
+    expect(lost(9200).own.unplaced).toEqual({ straddles: 0, untasked: 1 })
+    expect(fails(lost(9200), "of its own, the fit's left out")).toEqual(['400/400'])
     // A quiet drag retags nothing; one the page tags wrongly the other way is the fit's by the trace, and logged.
     expect(dragVerdict(input()).retagged).toEqual([])
     const other = dragVerdict(input({ tasks: [{ ...FIT, fit: false }] }))
@@ -1045,12 +1061,15 @@ describe('the drag trace (dragTrace)', () => {
     failsOnTheStall(a)
     expect(a.own.withheld).toEqual([{ start: 3000, ms: 400, fit: 3400.35, reason: 'dropped' }])
     expect(a.own.unmeasured).toEqual({ dropped: 1, unmatched: 0 })
-    // (b) One resize named and paired: a spread of 0, never settled; a dropped fit 0.15 ms after the stall.
+    // (b) One resize named: never settled (Round 10: against the trace's ten alike, which it is is in doubt, so none is
+    // paired, and there is no clock); a dropped fit 0.15 ms after the stall.
     const b = run({ start: 3400.15, ms: 0.03 }, { resizes: [q.resizes[0]], resizeCount: 1 })
-    expect(b.own.spread).toBe(0)
+    expect(b.own.spread).toBeNaN()
     expect(b.own.settled).toBe(false)
-    failsOnTheStall(b)
-    expect(b.own.withheld).toEqual([{ start: 3000, ms: 400, fit: 3400.15, reason: 'dropped' }])
+    // With no clock the quiet drag's fits are unpaired too, its FIT among them (unmatched): the stall fails all the same.
+    expect(b.own.taskFit).toEqual([false, false])
+    expect(fails(b, "of its own, the fit's left out")).toContain('400/400') // no clock: its window on the wall
+    expect(b.own.withheld).toEqual([{ start: 2500, ms: 80, fit: 2500.5, reason: 'unmatched' }, { start: 3000, ms: 400, fit: 3400.15, reason: 'dropped' }])
     // (c) The page's sixth resize 0.625 ms early: out of the 0.5 ms window, unpaired, so the nine paired agree (spread
     // 0), and the clock is not settled. A dropped fit 0.15 ms after the stall; then the fit's own measure, 0.6 ms after
     // where the page's number puts it (as far off as that resize), outside the window: unmatched, in a task of its own.
@@ -1076,13 +1095,15 @@ describe('the drag trace (dragTrace)', () => {
     expect(both.own.taskFit).toEqual([true, true])
     expect(both.own.withheld).toEqual([])
     expect(both.own.unmeasured).toEqual({ dropped: 1, unmatched: 0 })
-    // A fit with two measures in the window, one in the stall's task and one past it, is the task's by the one inside.
+    // A fit with two measures in the window, one in the stall's task and one past it: which is its is in doubt, so neither
+    // (Round 10, R10-4; Round 9 took the one inside), and the stall fails.
     const two = run({ start: 3399.9, ms: 0.03 }, {}, [...stall, ...fitNamed(3399.9, 0.03), X('ThreadControllerImpl::RunTask', 'toplevel', 3400.3, 0.2, 0.1), ...fitNamed(3400.32, 0.03)])
-    expect(two.own.taskFit).toEqual([true, true])
-    expect(two.own.withheld).toEqual([])
+    failsOnTheStall(two)
+    expect(two.own.withheld).toEqual([{ start: 3000, ms: 400, fit: 3399.9, reason: 'unmatched' }])
     // A fit traced and paired, its measure in the stall's task, is still the fit's on each clock, and nothing is withheld.
+    // (With one resize there is no clock to pair it on: above, b.)
     const inside = [...stall, ...fitNamed(3399.9, 0.03)]
-    for (const over of [{}, drift, { resizes: [q.resizes[0]], resizeCount: 1 }]) {
+    for (const over of [{}, drift, { resizes: q.resizes.slice(3, 5), resizeCount: 2 }]) {
       const v = run({ start: 3399.9, ms: 0.03 }, over, inside)
       expect(v.own.taskFit).toEqual([true, true])
       expect(v.own.withheld).toEqual([])
@@ -1094,6 +1115,150 @@ describe('the drag trace (dragTrace)', () => {
     expect(outside.own.withheld).toEqual([])
     expect(outside.own.unmeasured).toEqual({ dropped: 1, unmatched: 0 })
     expect(dragVerdict(input()).own).toMatchObject({ withheld: [], unmeasured: { dropped: 0, unmatched: 0 }, settled: true })
+  })
+
+  // Round 10, Codex (a21-codex-review.md "Round 10", job d07a14d72cfc13ab-8127b6e5f18f), each probe rebuilt by name.
+  describe('Round 10 probes (signoff-decisions.md "A2.1 R10")', () => {
+    const STALL = { start: 3000, ms: 400, fit: true }
+    const stallOf = (): TraceEvent[] => [...quiet().events, X('ThreadControllerImpl::RunTask', 'toplevel', 3000, 400, 4), X('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 3002, 395, 0.01)]
+
+    // MAJOR dragTrace.ts:399: a fit 0.15 ms into the task after the stall, 0.05 ms long, tagged both tasks, so the 400 ms
+    // stall passed under the fit's limits. R10-1: a measure across a task's edge to the grain straddles, tags neither.
+    it('adjacent: a fit 0.15 ms into the next task straddles the stall\'s edge, tags neither, and the stall fails both limits of a task with none', () => {
+      const q = quiet()
+      const v = dragVerdict(input({ events: [...stallOf(), X('ThreadControllerImpl::RunTask', 'toplevel', 3400, 0.5, 0.3), ...fitNamed(3400.15, 0.05)], tasks: [FIT, STALL], fits: [...q.fits, { start: 3400.15, ms: 0.05 }] }))
+      expect(v.own.taskFit).toEqual([true, false])
+      expect(fails(v, "of its own, the fit's left out")).toEqual(['400/399'])
+      expect(fails(v, "on the wall, the fit's left out")).toEqual(['400'])
+      expect(v.own.withheld).toEqual([{ start: 3000, ms: 400, fit: 3400.15, reason: 'straddles' }])
+      // Both tasks charged to the fits (4 and 0.3), as either may be its.
+      expect(v.own.fitCpu).toBeCloseTo(7 + 4 + 0.3, 9)
+    })
+
+    // A measure of no length (an async instant, as Chromium traces one) on the instant one task ends and the next begins.
+    it('a zero-length measure on the instant two tasks share straddles both', () => {
+      const q = quiet()
+      const instant: TraceEvent = { name: BUFFER_FIT_MEASURE, cat: 'blink.user_timing', ph: 'n', ts: us(3400), pid: 1, tid: 1, id2: { local: '0xfeed' } }
+      const v = dragVerdict(input({ events: [...stallOf(), X('ThreadControllerImpl::RunTask', 'toplevel', 3400, 0.5, 0.3), instant], tasks: [FIT, STALL], fits: [...q.fits, { start: 3400, ms: 0 }] }))
+      expect(v.own).toMatchObject({ taskFit: [true, false], unplaced: { straddles: 1, untasked: 0 } })
+      expect(broken(v)).toHaveLength(2)
+    })
+
+    // MAJOR dragTrace.ts:373: a real 400 ms fit bound on the GPU (4 ms of thread time) whose measure lies 0.625 ms from
+    // where the page puts it is unmatched, and fails; a dropped measure the same. R10-2: no change, as ruled in R9.
+    it('late and dropped: a real fit whose measure the window leaves out, or the trace drops, fails as a task with none (R10-2)', () => {
+      const q = quiet()
+      const late = dragVerdict(input({ events: [...stallOf(), ...fitNamed(3000.625, 0.03)], tasks: [FIT, STALL], fits: [...q.fits, { start: 3000, ms: 0.03 }] }))
+      expect(late.own).toMatchObject({ taskFit: [true, false], withheld: [{ start: 3000, ms: 400, fit: 3000, reason: 'unmatched' }] })
+      expect(fails(late, "of its own, the fit's left out")).toEqual(['400/399'])
+      const dropped = dragVerdict(input({ events: stallOf(), tasks: [FIT, STALL], fits: [...q.fits, { start: 3000.5, ms: 0.03 }] }))
+      expect(dropped.own).toMatchObject({ taskFit: [true, false], withheld: [{ start: 3000, ms: 400, fit: 3000.5, reason: 'dropped' }] })
+      expect(fails(dropped, "of its own, the fit's left out")).toEqual(['400/399'])
+      // Its measure where the page puts it: the fit's, under the fit's limits.
+      const real = dragVerdict(input({ events: [...stallOf(), ...fitNamed(3000.5, 0.03)], tasks: [FIT, STALL], fits: [...q.fits, { start: 3000.5, ms: 0.03 }] }))
+      expect(real.own.taskFit).toEqual([true, true])
+      expect(broken(real)).toEqual([])
+    })
+
+    // MAJOR dragTrace.ts:425: with the clock unsettled, a measured short fit pulled in the 198 ms task beside it: 206 ms
+    // against the fits' 200. R10-3: only the task the measure lies in is charged.
+    it('projected: an unsettled clock pulls no task beside a measured fit into the fits\' thread time (Codex: 206 of 200, now 7.6)', () => {
+      const q = quiet()
+      // The fit's measure in a 0.6 ms task, the 198 ms task beginning 0.1 ms after it ends (inside the window Round 9 put
+      // around where the page puts a fit, 0.75 ms).
+      const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 6000, 0.6, 0.6), ...fitNamed(6000.2, 0.3), X('ThreadControllerImpl::RunTask', 'toplevel', 6000.6, 198, 198)]
+      // The page's sixth resize 0.625 ms off: unpaired, the clock unsettled.
+      const v = dragVerdict(input({ events, fits: [...q.fits, { start: 6000.2, ms: 0.3 }], resizes: q.resizes.map((r, i) => (i !== 5 ? r : { ...r, start: r.start - 0.625 })) }))
+      expect(v.own).toMatchObject({ settled: false, fitsTraced: 4 })
+      expect(v.own.fitCpu).toBeCloseTo(7 + 0.6, 9)
+      expect(fails(v, 'ms of the thread in all')).toEqual([])
+    })
+
+    // MINOR dragTrace.ts:284: a resize before the drag's marker, as long as the page's, paired with the page's at a false
+    // offset that two resizes agreed on, so the clock read settled though the real second resize drifted 0.625 ms.
+    // R10-4: only the resizes inside the marker are paired, and an ambiguous pairing is none.
+    it('markerAlias: a resize before the marker is never paired, so the drifted pair is not settled', () => {
+      const q = quiet(2)
+      // The trace's second resize 0.625 ms after the page puts it; the alias as far before the first as the page's two
+      // resizes are apart, so (alias, first) and (first, second) agree on one false offset.
+      const resizes = [q.resizes[0], { ...q.resizes[1], start: q.resizes[1].start - 0.625 }]
+      const alias = named(q.resizes[0].start - (resizes[1].start - resizes[0].start), 2)
+      const v = dragVerdict({ ...input(), resizes, resizeCount: 2, events: [...q.events, ...alias, ...mark(us(950), us(3000))] })
+      expect(v.own.settled).toBe(false)
+      // The page's two resizes against the trace's two inside the marker: each pairing as likely as the other, so none.
+      expect(v.own.traced).toBe(0)
+    })
+
+    // R10-6: the look's check after a settle is a task like any other, judged by the ordinary limits; it is logged apart.
+    it('logs each look check the page names, its wall and the thread time of the task it lies in (NaN in none), and judges none of it apart', () => {
+      const q = quiet()
+      const events = [
+        ...q.events,
+        X('ThreadControllerImpl::RunTask', 'toplevel', 2600, 30, 24), ...named(2600.1, 29.8, 1, LOOK_CHECK_MEASURE),
+        ...named(2900, 12, 1, LOOK_CHECK_MEASURE), // in no task the trace holds
+        X('ThreadControllerImpl::RunTask', 'toplevel', 2960, 3, 2), ...named(2959.8, 3.1, 1, LOOK_CHECK_MEASURE), // its task's to the page clock's grain
+        X('ThreadControllerImpl::RunTask', 'toplevel', 2950, 5, 5, 2), ...named(2950, 4, 1, LOOK_CHECK_MEASURE).map((e) => ({ ...e, tid: 2 })), // another thread's
+      ]
+      const own = ownTimes(events, q.resizes, [FIT], q.fits)
+      expect(own.looks).toHaveLength(3)
+      expect(own.looks[0]).toEqual({ own: 24, wall: 29.8 })
+      expect(own.looks[1].own).toBeNaN()
+      expect(own.looks[1].wall).toBe(12)
+      expect(own.looks[2].own).toBe(2)
+      expect(own.looks[2].wall).toBeCloseTo(3.1, 9)
+      expect(own.fitCpu).toBe(7) // no fit's
+      expect(broken(dragVerdict(input({ events })))).toEqual([])
+    })
+
+    // The vote's tie (PENDING SIGN-OFF): one page resize against two the trace holds alike, each in a task of its own, gives
+    // two votes as well supported. Under 1 ms apart the middle leader's (the later of two) is the offset; 1 ms or more apart
+    // there is none, nothing is paired, and the resize is timed on the wall.
+    it("one page resize against two alike: the middle leader's offset under 1 ms apart, none at 1 ms or more", () => {
+      const two = (gap: number): ReturnType<typeof ownTimes> =>
+        ownTimes([META, X('ThreadControllerImpl::RunTask', 'toplevel', 1000.3, 0.6, 0.3), ...named(1000.6, 0.2), X('ThreadControllerImpl::RunTask', 'toplevel', 1000.4 + gap, 0.8, 0.7), ...named(1000.6 + gap, 0.2)], [{ start: 1000.6, ms: 0.2 }], [])
+      const close = two(0.6)
+      expect(close).toMatchObject({ traced: 1, spread: 0 })
+      expect(close.resizes[0].by).toMatch(/ 0\.8\/0\.7$/)
+      const apart = two(1.5)
+      expect(apart.traced).toBe(0)
+      expect(apart.resizes[0].matched).toBe(false)
+    })
+
+    // Two tasks with the very same bounds (PENDING SIGN-OFF): neither is inside the other but by the trace's order, so the
+    // first the trace gives is the outer one and the fit's; the fit neither straddles nor goes to the second.
+    it('of two tasks with the very same bounds holding a fit, the first the trace gives is its', () => {
+      const q = quiet()
+      const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 60, 2), X('ThreadPool_RunTask', 'toplevel', 4000, 60, 1.5), ...fitNamed(4000.5, 0.5)]
+      const v = ownTimes(events, q.resizes, [FIT, { start: 4000, ms: 60 }], [...q.fits, { start: 4000.5, ms: 0.5 }])
+      expect(v).toMatchObject({ taskFit: [true, true], unplaced: { straddles: 0, untasked: 0 }, withheld: [] })
+    })
+
+    // A fit in a task inside another is the outer one's, and charged every task that holds it (heldAll): the inner's
+    // thread time when the trace's clocks give it more than the outer's.
+    it("a fit in a task inside another is the outer one's, charged the inner's thread time when that is more", () => {
+      const q = quiet()
+      const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 5, 1), X('ThreadPool_RunTask', 'toplevel', 4001, 3, 3), ...fitNamed(4001.5, 0.5)]
+      const v = ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 4001.5, ms: 0.5 }])
+      expect(v).toMatchObject({ fitsTraced: 4, unplaced: { straddles: 0, untasked: 0 } })
+      expect(v.fitCpu).toBeCloseTo(7 + 3, 9)
+    })
+
+    // A straddling fit is charged the tasks it may be in, floored by no long task's: not by one the trace holds no task for.
+    it("a straddling fit is charged the tasks it may be in, not a long task's the trace holds no task for", () => {
+      const q = quiet()
+      const events = [...stallOf(), X('ThreadControllerImpl::RunTask', 'toplevel', 3400, 0.5, 0.3), ...fitNamed(3400.15, 0.05)]
+      const v = ownTimes(events, q.resizes, [FIT, { start: 9000, ms: 100 }], [...q.fits, { start: 3400.15, ms: 0.05 }])
+      expect(v).toMatchObject({ taskFit: [true, false], unplaced: { straddles: 1, untasked: 0 } })
+      expect(v.fitCpu).toBeCloseTo(7 + 4 + 0.3, 9)
+    })
+
+    // The limit of the page clock's grain (PENDING SIGN-OFF; a guard, as Round 9 did the same with a settled clock): a
+    // measure as far as 0.3 ms past the work it times, beyond FIT_SLACK, is charged the task its measure lies in alone.
+    it('a measure past the grain is charged only the task it lies in', () => {
+      const q = quiet()
+      const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 5000, 1, 1), X('ThreadControllerImpl::RunTask', 'toplevel', 5001, 2, 0.5), ...fitNamed(5001.3, 0.2)]
+      expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 5001.3, ms: 0.2 }])).toMatchObject({ fitCpu: 7 + 0.5, fitsTraced: 4 })
+    })
   })
 
   // Round 7: the worst a fit's measure lies outside every task the trace holds whole, logged by the e2e (the margin FIT_SLACK keeps).
@@ -1110,7 +1275,8 @@ describe('the drag trace (dragTrace)', () => {
 
   // Round 6, Opus m6-2: a fit in a task the trace cut, its begin never ended (the trace stopped in it) or its end with
   // no begin (it began before the trace), is in no task the trace holds whole: such a task holds only the part of it
-  // inside the trace, so it is charged as one the trace does not hold, 50 ms, or its long task's score.
+  // inside the trace, so it is charged as one the trace does not hold, 50 ms (Round 6 to 9: or its long task's score;
+  // Round 10: a fit in no task is 50, and tags no long task).
   it('charges a fit in a task the trace cut at its edge as one it does not hold (Opus m6-2)', () => {
     const q = quiet()
     const B = (name: string, start: number, tts: number): TraceEvent => ({ name, cat: 'toplevel', ph: 'B', ts: us(start), tts: us(tts), pid: 1, tid: 1 })
@@ -1125,8 +1291,10 @@ describe('the drag trace (dragTrace)', () => {
     const start = at([E('ThreadControllerImpl::RunTask', 905, 4)], 901)
     expect(start.own).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3 })
     expect(start.own.unpaired).toEqual([{ kind: 'lone', name: 'ThreadControllerImpl::RunTask', at: 905 }])
-    // In a long task: its score, the trace's task for it cut too, so its window on the wall (60).
-    expect(at([B('ThreadControllerImpl::RunTask', 2950, 0)], 2950.5, [{ start: 2950, ms: 60, fit: true }]).own).toMatchObject({ fitCpu: 7 + 60, fitsTraced: 3 })
+    // In a long task, the trace's task for it cut too: 50, and the long task holds no fit, judged on the wall (60).
+    const cut = at([B('ThreadControllerImpl::RunTask', 2950, 0)], 2950.5, [{ start: 2950, ms: 60, fit: true }])
+    expect(cut.own).toMatchObject({ fitCpu: 7 + 50, fitsTraced: 3, taskFit: [true, false], unplaced: { straddles: 0, untasked: 1 } })
+    expect(cut.others).toEqual([expect.objectContaining({ wall: 60, own: 60, matched: false })])
   })
 
   // Round 6, Codex: an end the trace logs with no name (the JSON trace format lets an end leave it out) closing a
@@ -1156,6 +1324,7 @@ describe('the drag trace (dragTrace)', () => {
     expect(fails(dragVerdict(input()), 'lost no events')).toEqual([])
   })
 
+  // Round 10: each measure lies across the two tasks to the grain, so it straddles: both charged, the fit neither's.
   it('charges every task around a fit within the slack (Codex: six fits on the edge of a 40 ms task, 7.6 ms, now 241.6)', () => {
     const q = quiet()
     const events = [...q.events]
@@ -1167,8 +1336,8 @@ describe('the drag trace (dragTrace)', () => {
     }
     const v = dragVerdict(input({ events, fits }))
     expect(v.own.fitCpu).toBeCloseTo(7 + 6 * 39.1, 9)
-    expect(v.own.fitsTraced).toBe(9)
-    expect(fails(v, 'ms of the thread in all')).toEqual(['242 (9/9)'])
+    expect(v.own).toMatchObject({ fitsTraced: 3, unplaced: { straddles: 6, untasked: 0 } })
+    expect(fails(v, 'ms of the thread in all')).toEqual(['242 (3/9)'])
   })
 
   // Round 5, Codex (b): a fit's long task [5400,6550] in a task the trace holds from 5000, 25 ms of thread time, 400 ms
@@ -1192,11 +1361,12 @@ describe('the drag trace (dragTrace)', () => {
     const own = ownTimes(events, q.resizes, [{ start: 5000, ms: 300 }])
     expect(own.tasks).toEqual([{ wall: 300, own: 80, cpu: 80, waited: 0, gpu: 0, matched: true }])
     // One with no thread time given is timed on the wall; a fit in it is charged the task's wall (240), and at least the
-    // long task's own charge, its window's wall (300, Round 6).
-    const bare = [...q.events, { ...X('ThreadControllerImpl::RunTask', 'toplevel', 5010, 240, 0), tdur: undefined }]
+    // long task's own charge, its window's wall (300, Round 6). A fit the trace names no measure of, 50 (Round 10).
+    const bare = [...q.events, U(5010, 240), ...fitNamed(5100, 1)]
     const fit = ownTimes(bare, q.resizes, [{ start: 5000, ms: 300 }], [{ start: 5100, ms: 1 }])
     expect(fit.tasks[0]).toMatchObject({ own: 300, matched: false })
-    expect(fit).toMatchObject({ fitCpu: 300, fitsTraced: 1 })
+    expect(fit).toMatchObject({ fitCpu: 300, fitsTraced: 1, taskFit: [true] })
+    expect(ownTimes(bare.filter((e) => e.name !== BUFFER_FIT_MEASURE), q.resizes, [{ start: 5000, ms: 300 }], [{ start: 5100, ms: 1 }])).toMatchObject({ fitCpu: 50, fitsTraced: 0, taskFit: [false] })
   })
 
   // Round 5: a seeded brute force. Each trace is a thread's timeline cut in 10 us cells, each one thread time, a wait on
@@ -1340,8 +1510,10 @@ describe('the drag trace (dragTrace)', () => {
         // The fits.
         for (let f = rnd() < 0.5 ? int(1, 2) : 0; f > 0; f--) {
           const span = sub(t)
-          const fs = span.a + (mode === 'skew' ? int(-40, 40) : skew())
-          const fe = Math.max(fs + 1, span.b + (mode === 'skew' ? int(-40, 40) : skew()))
+          // The measure as far outside the span as the page clock's grain (FIT_SLACK, 25 cells) at most, in every mode: past
+          // it, nothing outside the measure is pulled in (Round 10; the test of a measure past the grain is its own).
+          const fs = span.a + skew()
+          const fe = Math.max(fs + 1, span.b + skew())
           if (rnd() >= 0.05) {
             const id = `0x${(++ids).toString(16)}`
             events.push({ name: BUFFER_FIT_MEASURE, cat: 'blink.user_timing', ph: 'b', ts: at(fs), pid: 1, tid: 1, id }, { name: BUFFER_FIT_MEASURE, cat: 'blink.user_timing', ph: 'e', ts: at(fe), pid: 1, tid: 1, id })

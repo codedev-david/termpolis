@@ -1080,6 +1080,66 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     }
   })
 
+  // Round 10, Codex (MINOR threeRenderer.ts:2642): the host hidden after the fit, the check's task ran before the
+  // ResizeObserver told of it and searched at the old size. R10-5: the check reads the host when it runs.
+  it('the host hidden between the fit and the check, the observer not yet told: no search, the check still owed, and run once the host is back at the fitted size', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      vi.advanceTimersToNextTimer() // the fit's task
+      expect(n.count()).toBe(0)
+      resizeHost(h.host, 0, 0) // the pane hidden: the observer is told after the next task
+      vi.advanceTimersToNextTimer() // the check's task
+      settle()
+      expect(n.count()).toBe(0) // nothing searched at a size the host no longer has
+      expect(vi.getTimerCount()).toBe(1) // the settle armed again, the check still owed
+      vi.advanceTimersByTime(HELD_MS * 3)
+      settle()
+      expect(n.count()).toBe(0) // still hidden: still owed, never searched
+      expect(vi.getTimerCount()).toBe(1)
+      // Shown again at the fitted size before the observer ever told of the hide: the owed check runs, p searched for.
+      resizeHost(h.host, 440, 600)
+      vi.advanceTimersByTime(HELD_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  // Its width or its height alone (440x600 fitted).
+  it.each([[430, 600], [440, 590]])('the host resized to %ix%i between the fit and the check, the observer not yet told: no search at the fitted size, the check owed until the new size holds', async (w, ht) => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      vi.advanceTimersToNextTimer() // the fit's task, at 440x600
+      resizeHost(h.host, w, ht) // the divider moves on: the observer is told after the next task
+      vi.advanceTimersToNextTimer() // the check's task
+      settle()
+      expect(n.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1)
+      resized(w, ht) // the observer tells of it
+      h.frames.step()
+      settle()
+      expect(n.count()).toBe(0)
+      vi.advanceTimersByTime(HELD_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at ${w}x${ht}`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('a pane hidden and shown again at another size is checked at once: an end the new size hides searches again', async () => {
     const n = searches()
     const { r, resized } = await dragged(800, 600)
