@@ -729,6 +729,80 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     r.dispose()
   })
 
+  /**
+   * A line 80 long in a 400x600 view, framed under a short card (380x100) from straight across it at lift 0.7 (the
+   * search's first look). With `tower`, a tower stands behind that spot, where a line card that grows to 380x420 re-aims
+   * the camera along the same look, about twice as far out: there it stands in front of p.
+   */
+  const longLine = async (tower: boolean): Promise<ThreeRenderer> => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 400, 600)
+    r.draw({
+      districts: [district('d1', [0, 0, 0], 120)],
+      buildings: [bldg('p', [-40, 0, 0]), bldg('q', [40, 0, 0]), ...(tower ? [bldg('t', [-5.6, 0, 95.3], { floors: 10, height: 80 })] : [])],
+      conduits: [conduit('e', [-40, 0, 0], [40, 0, 0])],
+      orbs: [],
+    }, smallText(), false)
+    h.frames.step()
+    look(r, [0, 40, 120], [0, 0, 0])
+    r.setCardReserve(380, 100)
+    r.setSelected('e')
+    await r.frame(['e'], true)
+    settle()
+    for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the short card`).not.toBeNull()
+    return r
+  }
+
+  it('a card that grows after the search and re-aims the camera to where a tower hides an end searches again: both ends stay in view (CI: headroomAdaptiveSteering.test -> mcpAdapterDataDir.test)', async () => {
+    // The building card gives way to the taller line card after the search ran: the camera backed out along the kept
+    // look, unchecked, and an end stood behind a tower in the close-up (world-visual, this repository's world on Ubuntu).
+    const n = searches()
+    const r = await longLine(true)
+    const searched = pose(r)
+    n.count()
+    r.setCardReserve(380, 420)
+    settle()
+    for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the tall card`).not.toBeNull()
+    expect(n.count()).toBeGreaterThan(0) // the re-aimed look hides p: dropped, and the search runs again
+    expect(angle(pose(r).dir, searched.dir)).toBeGreaterThan(3) // another look, not the kept one further out
+    r.dispose()
+  })
+
+  it('a panel change that keeps both ends in view, or a close-up that could not show both, is only re-aimed: no search', async () => {
+    const n = searches()
+    const r = await longLine(false)
+    const searched = pose(r)
+    n.count()
+    r.setCardReserve(380, 420)
+    settle()
+    expect(n.count()).toBe(0)
+    expect(pose(r).dist).toBeGreaterThan(1.5 * searched.dist) // the same look, further out
+    expect(angle(pose(r).dir, searched.dir)).toBeLessThan(1e-6)
+    for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} under the tall card`).not.toBeNull()
+    r.dispose()
+    // p walled in by towers taller than any look sees over: the close-up shows q only, and a panel change does not
+    // search again for a view of p that the search already found nowhere.
+    const walled = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(walled.canvas, 800, 600)
+    walled.draw({
+      districts: [district('d1', [0, 0, 0], 40)],
+      buildings: [bldg('p', [-12, 0, 0]), bldg('q', [12, 0, 0]), ...ring('w', -12, 0, 200)],
+      conduits: [conduit('f', [-12, 0, 0], [12, 0, 0])],
+      orbs: [],
+    }, smallText(), false)
+    h.frames.step()
+    walled.setSelected('f')
+    await walled.frame(['f'], true)
+    settle()
+    expect(walled.screenPoint('p')).toBeNull()
+    n.count()
+    walled.setCardReserve(300, 300)
+    settle()
+    expect(n.count()).toBe(0)
+    expect(walled.screenPoint('q')).not.toBeNull()
+    walled.dispose()
+  })
+
   it('the reaimed shot matches a fresh search within 2% distance and 3 degrees direction at the original aspect', async () => {
     const { r, resized } = await open()
     settle()

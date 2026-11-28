@@ -12,6 +12,7 @@ const LINE: CachedLineShot = {
   target: [0, 4, 0],
   points: [[-30, 2, 0], [-15, 9, 1], [0, 12, 0], [15, 9, -1], [30, 2, 0], [-30, 14, 0], [30, 14, 0]],
   stretch: 1.15,
+  clear: true,
 }
 
 /** Whether `p` is inside a camera's picture: at `pos` looking at `target`, `fov` high and `aspect` wide. */

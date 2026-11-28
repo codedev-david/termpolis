@@ -19,6 +19,11 @@ export interface CachedLineShot {
    * back to clear the towers, and that step is kept at any size.
    */
   stretch: number
+  /**
+   * Whether the search's look showed both ends beside the card (a look that hides one, the best the search found, or
+   * the look from high above does not): only such a look is checked again when a panel moves the camera along it.
+   */
+  clear: boolean
 }
 
 /** The cache's key: a line in one layout of the city. */
