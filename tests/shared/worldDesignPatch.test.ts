@@ -387,6 +387,19 @@ describe('setRuntimeNames', () => {
     expect(parseDesignReply('```design-patch\n[{"op":"setRuntimeNames","id":"api","names":["a",3,"b"]}]\n```').ops).toEqual([{ op: 'setRuntimeNames', id: 'api', names: ['a', 'b'] }])
     expect(DESIGN_PROTOCOL).toContain('setRuntimeNames')
   })
+
+  it('a names list with entries and no usable string is not read as a clear (D6)', () => {
+    // [null] once became [] and cleared the building's names; only an explicit [] clears.
+    const reply = (names: string): string => '```design-patch\n[{"op":"setRuntimeNames","id":"api","names":' + names + '}]\n```'
+    expect(parseDesignReply(reply('[null]'))).toEqual({ text: '', ops: [], dropped: 1 })
+    expect(parseDesignReply(reply('[3, "  "]'))).toEqual({ text: '', ops: [], dropped: 1 })
+    expect(parseDesignReply(reply('[]')).ops).toEqual([{ op: 'setRuntimeNames', id: 'api', names: [] }])
+    const named = applyDesignPatch(base(), [{ op: 'setRuntimeNames', id: 'api', names: ['orders.api'] }]).doc
+    const r = applyDesignPatch(named, [{ op: 'setRuntimeNames', id: 'api', names: [null] as unknown as string[] }])
+    expect(r.applied).toBe(0)
+    expect(r.doc.runtimeNames.api).toEqual(['orders.api'])
+    expect(r.skipped.map((s) => s.reason)).toEqual(['not a change Lumopolis understands'])
+  })
 })
 
 describe('which way a design line runs', () => {
