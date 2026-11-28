@@ -42,11 +42,19 @@ export function LumopolisSidebarEntry(): JSX.Element {
   const [typable, setTypable] = useState<Record<string, boolean>>({})
   const asked = useRef(new Set<string>())
   const toldNo = useRef(new Set<string>())
+  // Each terminal's latest ask not yet answered (main could not say counts as not answered), numbered: only the answer to the
+  // latest ask is kept, so an answer main worked out before a ready mark never lands over the one asked after it
+  // (holdb-codex-review round 2).
+  const pending = useRef(new Map<string, number>())
+  const seq = useRef(0)
   const ask = useCallback((id: string): void => {
+    const n = ++seq.current
+    pending.current.set(id, n)
     // Through a promise, so a build or a test bridge without the call keeps the whole hint.
     Promise.resolve().then(() => window.termpolis.worldTerminalTypable(id)).then(
       (res) => {
-        if (!res.success) return
+        if (pending.current.get(id) !== n || !res.success) return
+        pending.current.delete(id)
         if (res.data) toldNo.current.delete(id)
         else toldNo.current.add(id)
         setTypable((t) => ({ ...t, [id]: res.data }))
@@ -59,12 +67,12 @@ export function LumopolisSidebarEntry(): JSX.Element {
     asked.current.add(active)
     ask(active)
   }, [hint, active, ask])
-  // A no, asked again when that terminal's shell prints the ready mark (holdb-review M3).
+  // A no, or an ask main has not answered yet, asked again when that terminal's shell prints the ready mark (holdb-review M3).
   useEffect(() => {
     if (!hint) return
     const onReady = (e: Event): void => {
       const id = (e as CustomEvent<string>).detail
-      if (toldNo.current.has(id)) ask(id)
+      if (toldNo.current.has(id) || pending.current.has(id)) ask(id)
     }
     window.addEventListener(LUMOPOLIS_READY_EVENT, onReady)
     return () => window.removeEventListener(LUMOPOLIS_READY_EVENT, onReady)
