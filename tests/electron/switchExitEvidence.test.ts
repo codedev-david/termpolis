@@ -132,7 +132,7 @@ describe('Codex R3 MAJOR (accountSwitch.ts:971): the Codex fallback types only w
       write: (id, key) => {
         if (errorAt !== undefined) writesWhileLive.push(key)
         base.write(id, key)
-        if (key === '\r' && errorAt === undefined && t.ran.length >= 1) {
+        if (key === '\r' && errorAt === undefined && t.ran.some((line) => line.includes(' resume '))) {
           t.out += '\r\nNo saved session found with ID 123\r\n'
           errorAt = t.out.length
         }
