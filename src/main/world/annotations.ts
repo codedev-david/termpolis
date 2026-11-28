@@ -356,7 +356,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
       const first = !had && unread.length > 0
       if (first && !(await keepPending(pendingFile, record))) return []
       if (found.length > 0) {
-        await carryMoved(dir, target, own, found.map(([old]) => old))
+        await carryMoved(dir, target, own, found)
         const merged: Record<string, Claim[]> = Object.create(null)
         for (const claims of [...found.map(([, c]) => c), ...(own ? [own] : [])]) {
           for (const [id, list] of Object.entries(claims)) {
@@ -422,16 +422,22 @@ async function writeMoved(file: string, moved: Moved): Promise<void> {
 
 /** holdb-review M4: the record beside the new key's file (`target`) with each older key's record added, written before the
  *  merged file, so what an older key hid under an id stays hidden under the new key. A claim the new key's own file (`own`)
- *  shows under that id is newer than that record and stays shown. Rejects when the record cannot be written; adoption then
- *  writes nothing and tries again later. */
-async function carryMoved(dir: string, target: string, own: Record<string, Claim[]> | null, olds: string[]): Promise<void> {
+ *  shows under that id is newer than that record and stays shown, and so does one another older key in `found` shows there
+ *  (holdb-codex-review round 2: the same note added there on its own): only the key that renamed it away hid it. Rejects when
+ *  the record cannot be written; adoption then writes nothing and tries again later. */
+async function carryMoved(dir: string, target: string, own: Record<string, Claim[]> | null, found: ReadonlyArray<[string, Record<string, Claim[]>]>): Promise<void> {
   const file = `${target}${MOVED_SUFFIX}`
   const have = await readMoved(file)
-  const ownShown = shownClaims(own ?? {}, have)
+  const records: Array<[Record<string, Claim[]>, Moved]> = [[own ?? {}, have]]
+  for (const [old, claims] of found) records.push([claims, await readMoved(`${annotationsFileOf(dir, old)}${MOVED_SUFFIX}`)])
+  const shown = new Map<string, Set<string>>()
+  for (const [claims, moved] of records) {
+    for (const [id, list] of Object.entries(shownClaims(claims, moved))) shown.set(id, new Set([...(shown.get(id) ?? []), ...list.map(claimKey)]))
+  }
   const out: Moved = Object.assign(Object.create(null), have)
-  for (const old of olds) {
-    for (const [id, keys] of Object.entries(await readMoved(`${annotationsFileOf(dir, old)}${MOVED_SUFFIX}`))) {
-      const mine = new Set((ownShown[id] ?? []).map(claimKey))
+  for (const [, moved] of records.slice(1)) {
+    for (const [id, keys] of Object.entries(moved)) {
+      const mine = shown.get(id) ?? new Set<string>()
       const add = keys.filter((k) => !mine.has(k))
       if (add.length > 0) out[id] = [...new Set([...(out[id] ?? []), ...add])]
     }
