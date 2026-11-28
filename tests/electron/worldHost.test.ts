@@ -2318,7 +2318,7 @@ describe('annotate', () => {
       if (tries.length === 1) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
       return readFile(f, 'utf8')
     }
-    const h = harness({ createAnnotations: () => memAnnotations(), readWorldText } as never, memStore({}))
+    const h = harness({ createAnnotations: () => memAnnotations(), readWorldText }, memStore({}))
     await h.send({ kind: 'init', userDataPath: dir, labelling: false })
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(join(dir, 'world', 'design_d1.json'), JSON.stringify({ ...doc(), projectKey: 'design:d1', version: 99 }))

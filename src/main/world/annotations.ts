@@ -38,6 +38,13 @@ export interface AnnotationStore {
    * write fails.
    */
   copyRenamed(key: string, renames: Record<string, string>): Promise<void>
+  /**
+   * Adds, after each part's own and in the order given, the claims a part does not hold yet: a design file saved before
+   * DSN R3-2 carried its notes, and a load moves the ones the store lacks into it. A claim the part holds, or one copied
+   * away from it (MOVED_SUFFIX), is left out, so two loads at once add each once. The part is capped as an add caps it.
+   * Writes only when a claim was added, and rejects, writing nothing, when the stored annotations cannot be read.
+   */
+  addMissing(key: string, byItem: Record<string, Claim[]>): Promise<void>
 }
 
 const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
@@ -558,6 +565,29 @@ export function createAnnotationStore(dir: string, deps: AnnotationStoreDeps = {
           await writeAtomic(fileOf(key), JSON.stringify(all))
         })
       }),
+    addMissing: (key, byItem) =>
+      lock(key, async () => {
+        await mkdir(folder, { recursive: true })
+        await withAnnotationFileLock(fileOf(key), async () => {
+          const all = await readForWrite(key)
+          const moved = await readMoved(movedOf(key))
+          let added = false
+          for (const [id, list] of Object.entries(byItem)) {
+            const have = all[id] ?? []
+            const held = new Set([...have.map(claimKey), ...(moved[id] ?? [])])
+            const more: Claim[] = []
+            for (const claim of list.map(cleanClaim)) {
+              if (claim === null || held.has(claimKey(claim))) continue
+              held.add(claimKey(claim))
+              more.push(claim)
+            }
+            if (more.length === 0) continue
+            all[id] = capClaims([...have, ...more])
+            added = true
+          }
+          if (added) await writeAtomic(fileOf(key), JSON.stringify(all))
+        })
+      }),
     copyRenamed: (key, renames) =>
       lock(key, async () => {
         const map = new Map(Object.entries(renames))
@@ -638,28 +668,109 @@ export function addClaim(doc: WorldDoc, itemId: string, claim: Claim): WorldDoc 
   return { ...doc, buildings: doc.buildings.map(add), edges: doc.edges.map(add) }
 }
 
+/**
+ * The design as its file keeps it (DSN R3-2): without the claims the annotation store holds, so the store's cap and a
+ * failed store write decide what shows. Each part's person and runtime-names claims are left out (a load puts the stored
+ * ones back), as is any other claim equal to one `byItem` gives the part (an agent's note), and so are the service names
+ * of a part `byItem` gives a runtime-names claim, and the hand-set list (a load makes it again from the store). A claim
+ * the store lacks stays, for a load to move into the store.
+ */
+export function withoutStored(doc: WorldDoc, byItem: Record<string, Claim[]>): WorldDoc {
+  const runtimeNames: Record<string, string[]> = { ...doc.runtimeNames }
+  const strip = <T extends { id: string; claims: Claim[] }>(item: T): T => {
+    const own = Object.prototype.hasOwnProperty.call(byItem, item.id) ? byItem[item.id] : []
+    if (own.some(isRuntime)) delete runtimeNames[item.id]
+    return { ...item, claims: item.claims.filter((c) => !isPerson(c) && !isRuntime(c) && !own.some((n) => isDeepStrictEqual(n, c))) }
+  }
+  const base: WorldDoc = { ...doc }
+  delete base.runtimeHandSet
+  return { ...base, buildings: doc.buildings.map(strip), edges: doc.edges.map(strip), runtimeNames }
+}
+
+/**
+ * Each part's notes in a design file (claims neither a person's nor runtime names), each once, as `notes`, and those
+ * before the last MAX_ANNOTATIONS_PER_ITEM, past the store's cap already, as `past` (an empty list when none is).
+ */
+function fileNotes(doc: WorldDoc): { notes: Record<string, Claim[]>; past: Record<string, Claim[]> } {
+  const all: Record<string, Claim[]> = Object.create(null)
+  const past: Record<string, Claim[]> = Object.create(null)
+  for (const item of [...doc.buildings, ...doc.edges]) {
+    const notes: Claim[] = []
+    for (const c of item.claims) if (!isPerson(c) && !isRuntime(c) && !notes.some((n) => isDeepStrictEqual(n, c))) notes.push(c)
+    if (notes.length === 0) continue
+    all[item.id] = notes
+    past[item.id] = notes.slice(0, -MAX_ANNOTATIONS_PER_ITEM)
+  }
+  return { notes: all, past }
+}
+
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */
 export const hasPart = (doc: WorldDoc, id: string): boolean => doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id)
 
 /**
- * A store whose design worlds (keys `design:<id>`) always carry their annotations: they are merged on
- * load and on save, so a confirmation made while a designer run was saving a stale copy is still
- * shown, whatever order the writes landed in. Merging is idempotent. Other keys pass through (a
- * project world is recompiled, which merges them).
+ * A store whose design worlds (keys `design:<id>`) show the annotations the annotation store holds, and only those: a
+ * load merges them in, and a save leaves them out of the file (DSN R3-2), so the store's cap and a failed store write
+ * decide what shows, whatever order a designer run's save and an annotation landed in. A design file saved before that
+ * carried its notes: a load moves the ones the store lacks into it (of each part's newest MAX_ANNOTATIONS_PER_ITEM; older
+ * ones were past its cap already), and the next save leaves them out. A note this wrapper once saw stored is left out
+ * for good, so a doc loaded before the store dropped it (its cap) never writes it back or moves it back into the store.
+ * Other keys pass through (a project world is recompiled, which merges them).
  */
-export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationStore, 'list'>): WorldStore {
-  const merged = async (doc: WorldDoc): Promise<WorldDoc> =>
-    doc.projectKey.startsWith('design:') ? mergeAnnotations(doc, await annotations.list(doc.projectKey)) : doc
+export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationStore, 'list' | 'addMissing'>): WorldStore {
+  /** Per design key and part, every note (a claim not of runtime names) seen stored, or past the cap in a design file. */
+  const seen = new Map<string, Record<string, Claim[]>>()
+  const held = (key: string, byItem: Record<string, Claim[]>): Record<string, Claim[]> => {
+    const all = seen.get(key) ?? Object.create(null)
+    for (const [id, list] of Object.entries(byItem)) {
+      const have: Claim[] = all[id] ?? []
+      all[id] = [...have, ...list.filter((c) => !isRuntime(c) && !have.some((h) => isDeepStrictEqual(h, c)))]
+    }
+    seen.set(key, all)
+    return all
+  }
+  /**
+   * What a save leaves out: every note seen, and the runtime-names claims the store holds now. Service names are left out
+   * only while the store holds a claim to make them again, never because it once did.
+   */
+  const leftOut = (key: string, now: Record<string, Claim[]>): Record<string, Claim[]> => {
+    // held(key, now) gave every part `now` names an entry.
+    const out: Record<string, Claim[]> = Object.assign(Object.create(null), held(key, now))
+    for (const [id, list] of Object.entries(now)) out[id] = [...out[id], ...list.filter(isRuntime)]
+    return out
+  }
+  const isDesign = (key: string): boolean => key.startsWith('design:')
   return {
     ...store,
     load: async (key) => {
       const doc = await store.load(key)
-      return doc ? merged(doc) : null
+      if (!doc || !isDesign(key)) return doc
+      let byItem = await annotations.list(key)
+      const { notes, past } = fileNotes(doc)
+      // Notes past the cap are held as seen, so only the newest MAX_ANNOTATIONS_PER_ITEM can be missing.
+      held(key, past)
+      const known = held(key, byItem)
+      const missing: Record<string, Claim[]> = Object.create(null)
+      for (const [id, list] of Object.entries(notes)) {
+        // held(key, past) gave every part with notes in the file an entry, an empty one when none is past the cap.
+        const lacking = list.filter((c) => !known[id].some((h) => isDeepStrictEqual(h, c)))
+        if (lacking.length > 0) missing[id] = lacking
+      }
+      if (Object.keys(missing).length > 0) {
+        try {
+          await annotations.addMissing(key, missing)
+          byItem = await annotations.list(key)
+          held(key, byItem)
+        } catch {
+          // Left in the file and shown from there: the next load tries again.
+        }
+      }
+      return mergeAnnotations(withoutStored(doc, leftOut(key, byItem)), byItem)
     },
     save: async (doc) => {
-      const out = await merged(doc)
+      if (!isDesign(doc.projectKey)) return store.save(doc)
+      const out = withoutStored(doc, leftOut(doc.projectKey, await annotations.list(doc.projectKey)))
       await store.save(out)
-      // A design key saves a merged copy: the newer-world mark the store puts on it belongs to the caller's doc too.
+      // A design key saves a copy: the newer-world mark the store puts on it belongs to the caller's doc too.
       if (out.savedByNewer) doc.savedByNewer = true
     }
   }

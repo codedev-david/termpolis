@@ -13,7 +13,7 @@ import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessEx
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
-import { addClaim, cleanClaim, hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
+import { addClaim, cleanClaim, hasPart, mergeAnnotations, NO_PART, withoutStored, type AnnotationStore } from './annotations'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
@@ -432,8 +432,17 @@ export function createDesigner(deps: DesignerDeps): Designer {
         if (!hasPart(doc, itemId)) throw new DesignFailure(NO_PART)
         const clean = cleanClaim(claim)
         if (clean === null) throw new DesignFailure(DESIGN_SAVE_FAILED)
+        // The design file holds none of the notes the store holds, the new one included (DSN R3-2): the store's cap and
+        // a failed store write decide what shows. What it holds now is left out of the answer's base too, so a note the
+        // add below drops past the cap is not answered.
+        let before: Record<string, Claim[]>
+        try {
+          before = await deps.annotations.list(key)
+        } catch {
+          throw new DesignFailure(DESIGN_SAVE_FAILED)
+        }
         // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
-        const saved = addClaim({ ...doc, generatedAt: Math.max(now(), doc.generatedAt + 1) }, itemId, clean)
+        const saved = { ...withoutStored(doc, before), generatedAt: Math.max(now(), doc.generatedAt + 1) }
         // The design is saved first, the note stored after (DSN Round 1, item 9): a save that fails, or that finds a
         // newer Termpolis saved the design, stores no note, so none turns up on the next load after a failure was shown.
         await save(saved)
@@ -445,8 +454,8 @@ export function createDesigner(deps: DesignerDeps): Designer {
         try {
           return mergeAnnotations(saved, await deps.annotations.list(key))
         } catch {
-          // The note is stored: a list that cannot be read back answers the saved design, which has the note.
-          return saved
+          // The note is stored: a list that cannot be read back answers the design with the notes read before, and this one.
+          return addClaim(mergeAnnotations(saved, before), itemId, clean)
         }
       })
     },

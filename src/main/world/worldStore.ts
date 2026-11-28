@@ -265,10 +265,11 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       shadow.delete(name)
       return null
     }
-    if (at) seen.set(name, at)
-    else seen.delete(name)
     const parsed = parseOrUndefined(text)
     if (isNewerWorld(parsed)) {
+      // Not taken as read (DSN R3-1): a save that looks at the file while this load runs reads it again, never going by
+      // this look and writing over the newer file.
+      seen.delete(name)
       // Never moved aside, never written over: this version shows its own copy, or reads what it can of the newer one.
       newerOnDisk.set(name, true)
       const own = shadow.get(name)
@@ -277,6 +278,8 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       const view = checked({ ...(parsed as Record<string, unknown>), version: WORLD_VERSION })
       return view ? { ...upgradeSavedWords(view.doc), savedByNewer: true } : null
     }
+    if (at) seen.set(name, at)
+    else seen.delete(name)
     // Safe to save over only once the backup or the move-aside below is done (M1).
     const ours = (): void => { newerOnDisk.set(name, false); shadow.delete(name) }
     const view = checked(migrateWorld(parsed))
@@ -316,24 +319,29 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       // it. Once the temp copy is written, just before the rename, the file is looked at again: read only when its size or
       // modified time changed since then (DSN R2, F4). A newer world found there is kept as it is, and this copy is not
       // kept in memory either (DSN R2, F2): a change refused there never shows later in the session, and the next load
-      // shows the newer file, as opening it afresh would. A gap remains between that look and the rename (a few
-      // microseconds on a local disk): a newer version writing in it is written over. The gap is accepted: only a later
-      // version can be that newer writer, and nothing this version does can make it wait.
+      // shows the newer file, as opening it afresh would. A gap remains between that look and the rename, up to about a
+      // second when the rename waits out a file another program holds (retryLocked: 100 + 200 + 300 + 400 ms): a newer
+      // version writing in it is written over. The gap is accepted: only a later version can be that newer writer, and
+      // nothing this version does can make it wait.
       let wrote = null as FileSeen | null
       await writeAtomic(file, JSON.stringify(clean), async (tmp) => {
-        if (!same(await look(file), seen.get(name))) {
+        const there = await look(file)
+        // A load that ran meanwhile, during that look among others, and found a newer file decides too (DSN R3-1).
+        let newer = newerOnDisk.get(name) === true
+        if (!newer && !same(there, seen.get(name))) {
           let text: string | null = null
           try {
             text = await readText(file)
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
           }
-          if (text !== null && isNewerWorld(parseOrUndefined(text))) {
-            newerOnDisk.set(name, true)
-            shadow.delete(name)
-            doc.savedByNewer = true
-            return false
-          }
+          newer = text !== null && isNewerWorld(parseOrUndefined(text))
+        }
+        if (newer) {
+          newerOnDisk.set(name, true)
+          shadow.delete(name)
+          doc.savedByNewer = true
+          return false
         }
         // The rename keeps the temp copy's size and modified time: what the file will have once it is in place.
         wrote = await look(tmp)

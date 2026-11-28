@@ -18,7 +18,8 @@ import {
   MAX_ANNOTATIONS_PER_ITEM,
   mergeAnnotations,
   MOVED_SUFFIX,
-  withAnnotations
+  withAnnotations,
+  withoutStored
 } from '../../src/main/world/annotations'
 import { CLAIM_TRIES } from '../../src/main/world/storeFiles'
 import { createWorldStore, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
@@ -572,10 +573,13 @@ describe('withAnnotations', () => {
     expect(d.runtimeNames.b1).toEqual(['orders-api'])
     expect(d.runtimeHandSet).toEqual(['b1'])
     const disk = JSON.parse(await readFile(join(dir, 'world', worldFileName('design:x')), 'utf8')) as WorldDoc
-    expect(onB1(disk).filter((c) => c.text === agent.text)).toEqual([agent])
+    // The file holds none of what the store holds (DSN R3-2): not the note, the person's claim or the service names.
+    expect(onB1(disk)).toEqual(before)
+    expect(disk.runtimeNames.b1).toBeUndefined()
+    expect(disk.runtimeHandSet).toBeUndefined()
   })
 
-  it('a design file already holding four copies of an agent note loads as one and saves as one (DSN R2, F1)', async () => {
+  it('a design file already holding four copies of an agent note loads as one and saves none, the store holding it (DSN R2, F1; R3-2)', async () => {
     const annotations = createAnnotationStore(dir)
     const store = withAnnotations(createWorldStore(dir), annotations)
     await annotations.add('design:x', 'b1', agent)
@@ -587,7 +591,8 @@ describe('withAnnotations', () => {
     const loaded = (await store.load('design:x')) as WorldDoc
     expect(onB1(loaded).filter((c) => c.text === agent.text)).toEqual([agent])
     await store.save(loaded)
-    expect(onB1(JSON.parse(await readFile(file, 'utf8')) as WorldDoc).filter((c) => c.text === agent.text)).toEqual([agent])
+    expect(onB1(JSON.parse(await readFile(file, 'utf8')) as WorldDoc).filter((c) => c.text === agent.text)).toEqual([])
+    expect((await annotations.list('design:x')).b1).toEqual([agent])
   })
 })
 
@@ -616,5 +621,139 @@ describe('addClaim: one more stored note, as a merge with it shows it (DSN Round
     expect(cleared.runtimeNames).toEqual({ b1: ['orders-api', 'orders'] })
     expect(cleared.runtimeHandSet).toEqual(['b1', 'b2'])
     expect(addClaim(minimal(), 'b1', person(runtimeText(['x']))).runtimeHandSet).toEqual(['b1'])
+  })
+})
+
+describe('a design file without the notes the store holds (DSN R3-2)', () => {
+  const person = (text: string): Claim => ({ text, state: 'verified', evidence: [{ kind: 'person', ref: 'pane' }] })
+  const agent = (text: string): Claim => ({ text, state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }] })
+  const design = (claims: Record<string, Claim[]>): WorldDoc => {
+    const doc = { ...minimal(), projectKey: 'design:x' } as WorldDoc
+    doc.buildings = doc.buildings.map((b) => ({ ...b, claims: claims[b.id] ?? b.claims }))
+    doc.edges = doc.edges.map((e) => ({ ...e, claims: claims[e.id] ?? e.claims }))
+    return doc
+  }
+
+  describe('addMissing', () => {
+    it('adds after a part its own the claims it lacks, each once, and leaves out a held, a copied-away or a malformed one', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('k', 'b1', person('one'))
+      await writeFile(`${fileFor('k')}${MOVED_SUFFIX}`, JSON.stringify({ b1: [JSON.stringify(person('gone'))] }))
+      const malformed = { text: 'x', state: 'verified', evidence: [] } as unknown as Claim
+      await store.addMissing('k', { b1: [person('one'), person('two'), person('two'), person('gone'), malformed], b2: [agent('three')], e1: [] })
+      expect(await store.list('k')).toEqual({ b1: [person('one'), person('two')], b2: [agent('three')] })
+      expect(await readFile(fileFor('k'), 'utf8')).not.toContain('gone')
+    })
+
+    it('caps a part as an add caps it, keeping the newest', async () => {
+      const store = createAnnotationStore(dir)
+      for (let n = 1; n < MAX_ANNOTATIONS_PER_ITEM; n++) await store.add('k', 'b1', agent(`n${n}`))
+      await store.addMissing('k', { b1: [agent('a'), agent('b'), agent('c')] })
+      const texts = (await store.list('k')).b1.map((c) => c.text)
+      expect(texts).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
+      expect(texts.slice(0, 2)).toEqual(['n3', 'n4'])
+      expect(texts.slice(-3)).toEqual(['a', 'b', 'c'])
+    })
+
+    it('writes nothing when every claim is held already, nor for a world with no annotations yet and nothing to add', async () => {
+      const store = createAnnotationStore(dir)
+      await store.add('k', 'b1', person('one'))
+      // Laid out as the store never writes it: a write, even of the same claims, would show.
+      const before = JSON.stringify(JSON.parse(await readFile(fileFor('k'), 'utf8')), null, 2)
+      await writeFile(fileFor('k'), before)
+      const writes = (await readdir(folder())).length
+      await store.addMissing('k', { b1: [person('one')] })
+      expect(await readFile(fileFor('k'), 'utf8')).toBe(before)
+      expect((await readdir(folder())).length).toBe(writes)
+      await store.addMissing('fresh', { b1: [] })
+      expect(await readdir(folder())).not.toContain(`${hashOf('fresh')}.json`)
+    })
+
+    it('rejects, writing nothing, when the stored annotations cannot be read', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const store = createAnnotationStore(dir)
+        await mkdir(join(fileFor('k'), 'held'), { recursive: true }) // a folder where the file goes: it cannot be read
+        await expect(store.addMissing('k', { b1: [person('one')] })).rejects.toThrow(WORLD_READ_FAILED)
+        expect(await readdir(fileFor('k'))).toEqual(['held'])
+      } finally {
+        warn.mockRestore()
+      }
+    })
+  })
+
+  describe('withoutStored', () => {
+    it('leaves out person and runtime-names claims, the stored notes, the stored service names and the hand-set list', () => {
+      const names = person(runtimeText(['orders-api']))
+      const doc = design({ b1: [agent('stored'), person('Takes orders.'), names, agent('only in the file')], e1: [agent('on a line')] })
+      doc.runtimeNames = { b1: ['orders-api'], b2: ['orders-db'] }
+      doc.runtimeHandSet = ['b1', 'b2']
+      const out = withoutStored(doc, { b1: [agent('stored'), names], e1: [agent('on a line')] })
+      expect(out.buildings.find((b) => b.id === 'b1')!.claims).toEqual([agent('only in the file')])
+      expect(out.edges[0].claims).toEqual([])
+      // b2's names are not stored: they stay, for the store has no claim to make them again.
+      expect(out.runtimeNames).toEqual({ b2: ['orders-db'] })
+      expect(out.runtimeHandSet).toBeUndefined()
+      // The doc given is left as it was.
+      expect(doc.runtimeHandSet).toEqual(['b1', 'b2'])
+      expect(doc.buildings.find((b) => b.id === 'b1')!.claims).toHaveLength(4)
+    })
+
+    it('gives a doc without service names an empty list of them', () => {
+      const doc = design({})
+      delete (doc as Partial<WorldDoc>).runtimeNames
+      expect(withoutStored(doc, {}).runtimeNames).toEqual({})
+    })
+  })
+
+  describe('withAnnotations', () => {
+    it('moves a note on a part the store holds nothing for into the store, and the next save leaves it out', async () => {
+      const annotations = createAnnotationStore(dir)
+      const inner = createWorldStore(dir)
+      await inner.save(design({ b2: [agent('Holds the orders.')] }))
+      const store = withAnnotations(inner, annotations)
+      const loaded = (await store.load('design:x')) as WorldDoc
+      expect(loaded.buildings.find((b) => b.id === 'b2')!.claims).toEqual([agent('Holds the orders.')])
+      expect(await annotations.list('design:x')).toEqual({ b2: [agent('Holds the orders.')] })
+      await store.save(loaded)
+      expect(((await inner.load('design:x')) as WorldDoc).buildings.find((b) => b.id === 'b2')!.claims).toEqual([])
+    })
+
+    it('a move that fails leaves the note in the file and shows it from there, and the next load moves it', async () => {
+      const annotations = createAnnotationStore(dir)
+      const inner = createWorldStore(dir)
+      await inner.save(design({ b2: [agent('Holds the orders.')] }))
+      const failing = withAnnotations(inner, { list: annotations.list, addMissing: async () => { throw new Error('EIO') } })
+      const loaded = (await failing.load('design:x')) as WorldDoc
+      expect(loaded.buildings.find((b) => b.id === 'b2')!.claims).toEqual([agent('Holds the orders.')])
+      await failing.save(loaded)
+      expect(((await inner.load('design:x')) as WorldDoc).buildings.find((b) => b.id === 'b2')!.claims).toEqual([agent('Holds the orders.')])
+      expect(await annotations.list('design:x')).toEqual({})
+      await withAnnotations(inner, annotations).load('design:x')
+      expect(await annotations.list('design:x')).toEqual({ b2: [agent('Holds the orders.')] })
+    })
+
+    it('leaves service names out of a save only while the store holds a claim for them, never because it once did', async () => {
+      const annotations = createAnnotationStore(dir)
+      const inner = createWorldStore(dir)
+      await inner.save(design({}))
+      await annotations.add('design:x', 'b1', person(runtimeText(['orders-api'])))
+      const store = withAnnotations(inner, annotations)
+      const loaded = (await store.load('design:x')) as WorldDoc
+      expect(loaded.runtimeNames.b1).toEqual(['orders-api'])
+      // The stored claim goes with the part's notes to another id: b1's names are the design's own again.
+      await annotations.copyRenamed('design:x', { b1: 'b1--a' })
+      await store.save({ ...loaded, runtimeNames: { b1: ['set-in-the-design'] } })
+      expect(((await inner.load('design:x')) as WorldDoc).runtimeNames).toEqual({ b1: ['set-in-the-design'] })
+      expect(((await store.load('design:x')) as WorldDoc).runtimeNames.b1).toEqual(['set-in-the-design'])
+    })
+
+    it('passes a project world through on a load and a save, untouched', async () => {
+      const inner = createWorldStore(dir)
+      const store = withAnnotations(inner, createAnnotationStore(dir))
+      const project = { ...design({ b1: [agent('kept')] }), projectKey: 'C:/proj' }
+      await store.save(project)
+      expect(((await store.load('C:/proj')) as WorldDoc).buildings.find((b) => b.id === 'b1')!.claims).toEqual([agent('kept')])
+    })
   })
 })

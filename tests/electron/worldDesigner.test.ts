@@ -36,7 +36,8 @@ afterEach(async () => {
 function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'list'> } = {}) {
   const execFn = vi.fn(exec)
   const execDeps = { deliver: vi.fn() }
-  const store = over.store ?? createWorldStore(dir)
+  // As the app gives it (index.ts, worldHost.ts): a design shows the notes the annotation store holds (DSN R3-2).
+  const store = over.store ?? withAnnotations(createWorldStore(dir), createAnnotationStore(dir))
   const registry = over.registry ?? createSourceRegistry(dir, { exists: async () => true, now: () => 7 })
   const annotations = over.annotations ?? createAnnotationStore(dir)
   let n = 0
@@ -579,7 +580,9 @@ describe('design worlds keep their annotations', () => {
     }, { store })
     await stored(store)
     await s.designer.refine('design:id1', 'rename it', '')
-    const raw = (await inner.load('design:id1')) as WorldDoc
+    // The confirm shows from the store; the design file leaves it out (DSN R3-2).
+    expect((await inner.load('design:id1'))!.buildings.find((b) => b.id === 'api')!.claims).toEqual([])
+    const raw = (await store.load('design:id1')) as WorldDoc
     const api = raw.buildings.find((b) => b.id === 'api')!
     expect(api.claims.filter((c) => c.evidence.some((e) => e.kind === 'person'))).toEqual([confirm])
     expect(raw.buildings.find((b) => b.id === 'db')!.name).toBe('Orders DB')
@@ -628,7 +631,7 @@ describe('design annotations are written by the designer, under the design lock 
   /** The real store, with a slow load: a writer outside the lock would read the copy another writer is replacing. */
   const slowStore = (): WorldStore => {
     const real = createWorldStore(dir)
-    return { ...real, load: async (k) => { const d = await real.load(k); await new Promise((r) => setTimeout(r, 15)); return d } }
+    return withAnnotations({ ...real, load: async (k) => { const d = await real.load(k); await new Promise((r) => setTimeout(r, 15)); return d } }, createAnnotationStore(dir))
   }
 
   it('an annotation saved while a propose saves keeps both: the confirm and the new building', async () => {
@@ -908,7 +911,7 @@ describe('an agent\'s note on a design shows once, however often the design is s
   const count = (doc: WorldDoc, id: string, text: string): number =>
     [...doc.buildings, ...doc.edges].find((p) => p.id === id)!.claims.filter((c) => c.text === text).length
 
-  it('an agent note stays one through a second annotate and three proposes, on the card and in the file', async () => {
+  it('an agent note stays one through a second annotate and three proposes, on the card, and the file holds none (R3-2)', async () => {
     const real = createWorldStore(dir)
     await stored(real)
     const annotations = createAnnotationStore(dir)
@@ -925,8 +928,8 @@ describe('an agent\'s note on a design shows once, however often the design is s
     expect(count(doc, 'db', 'Holds the orders.')).toBe(1)
     expect(personClaims(doc, 'api')).toEqual([person('Takes orders.')])
     const file = JSON.parse(await readFile(join(dir, 'world', 'design_id1.json'), 'utf8')) as WorldDoc
-    expect(count(file, 'api', 'Calls the bank.')).toBe(1)
-    expect(count(file, 'db', 'Holds the orders.')).toBe(1)
+    expect(count(file, 'api', 'Calls the bank.')).toBe(0)
+    expect(count(file, 'db', 'Holds the orders.')).toBe(0)
   })
 })
 
@@ -964,11 +967,28 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     const real = createWorldStore(dir)
     await stored(real)
     const annotations = createAnnotationStore(dir)
-    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list: async () => { throw new Error('EIO') } } })
+    await annotations.add('design:id1', 'db', person('Holds the orders.'))
+    // The read before the save works; the read back after the note is stored fails.
+    let reads = 0
+    const list = async (key: string): Promise<Record<string, Claim[]>> => {
+      if (reads++ > 0) throw new Error('EIO')
+      return annotations.list(key)
+    }
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list } })
     const doc = await designer.annotate('design:id1', 'api', note)
     expect(personClaims(doc, 'api')).toEqual([note])
-    expect(personClaims(doc, 'db')).toEqual([])
+    expect(personClaims(doc, 'db')).toEqual([person('Holds the orders.')])
     expect((await annotations.list('design:id1')).api).toEqual([note])
+  })
+
+  it('a list that cannot be read before the save is a friendly error, and nothing is saved or stored', async () => {
+    const real = createWorldStore(dir)
+    const first = await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list: async () => { throw new Error('EIO') } } })
+    expect(await failure(designer.annotate('design:id1', 'api', note))).toBe(DESIGN_SAVE_FAILED)
+    expect(await real.load('design:id1')).toEqual(first)
+    expect(await annotations.list('design:id1')).toEqual({})
   })
 })
 

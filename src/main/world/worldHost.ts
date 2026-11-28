@@ -46,6 +46,7 @@ import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoA
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
 import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, worldFileName, type WorldStore } from './worldStore'
+import { retryLocked, sleepMs } from './storeFiles'
 import { isNewerWorld, validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
@@ -466,6 +467,8 @@ export interface WorldHostDeps {
   readFile?: (p: string) => Promise<string | null>
   /** Reads source for the boundary scan and labelling excerpts (default: readCapped up to MAX_SOURCE_READ_BYTES). */
   readSource?: (p: string) => Promise<string | null>
+  /** Reads a design's file for its version (default: fs readFile as utf8); retried while another program holds it. */
+  readWorldText?: (file: string) => Promise<string>
   glob?: CompileDeps['glob']
   now?: () => number
   /** The watcher recompile's debounce (default WATCH_RECOMPILE_MS). */
@@ -634,6 +637,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const createAnnotations = deps.createAnnotations ?? createAnnotationStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
   const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
+  const readWorldText = deps.readWorldText ?? ((file: string) => fsp.readFile(file, 'utf8'))
   const glob = deps.glob ?? ((root: string, patterns: string[], opts: { signal: AbortSignal }) => globFiles(root, patterns, undefined, opts.signal))
   const now = deps.now ?? Date.now
   const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
@@ -1132,11 +1136,13 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   /**
    * Whether a design's file holds a newer Termpolis's world (DSN R2, F5). Only its version is read: a design is main's
    * designer's, so nothing here loads it through the store, which could back it up or move it aside. A file that is
-   * missing, cannot be read or does not parse says no.
+   * missing, cannot be read or does not parse says no. A file another program holds for a moment (Defender, the indexer,
+   * a sync client) is read again, as the store reads it (DSN R3-5).
    */
   const designSavedByNewer = async (userDataPath: string, key: string): Promise<boolean> => {
+    const file = join(userDataPath, 'world', worldFileName(key))
     try {
-      return isNewerWorld(JSON.parse(await fsp.readFile(join(userDataPath, 'world', worldFileName(key)), 'utf8')))
+      return isNewerWorld(JSON.parse(await retryLocked(() => readWorldText(file), sleepMs)))
     } catch {
       return false
     }
