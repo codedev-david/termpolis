@@ -1,3 +1,4 @@
+import { posix } from 'path'
 import { describe, expect, it } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import type { Boundary } from '../../src/main/world/detectors'
@@ -34,6 +35,8 @@ function home(g: Grouping, file: string): Grouping['buildings'][number] {
 }
 
 const ids = (g: Grouping): string[] => g.buildings.map((b) => b.id)
+// How many seeded random projects the building cap's churn guard groups (WORLD_GROUP_SEEDS for a longer run).
+const SEEDS = Number(process.env.WORLD_GROUP_SEEDS ?? 400)
 
 /** Structural invariants every grouping must satisfy. */
 function checkInvariants(g: Grouping, files: string[]): void {
@@ -1025,6 +1028,215 @@ describe('groupProject', () => {
       // aa's only link is the bb worker; its path neighbour bb is a process too, so it skips to cc.
       expect(home(g, 'src/m/bb.ts').members).toEqual(['src/m/bb.ts'])
       expect(home(g, 'src/m/aa.ts').members).toEqual(['src/m/aa.ts', 'src/m/cc.ts'])
+    })
+  })
+
+  // GROUPCAP R6: step 4 is the plan's rule. Passing over a link whose merge would dissolve a part is deferred until after
+  // 2.0, since every map-wide rule tried for it (review rounds 1 to 5) had a constructed edit that regrouped most of the
+  // map. These guard the plan's rule against the cases those rounds found, and keep the .d.ts naming fix (review R3-m1).
+  describe('building cap stability and names (groupcap)', () => {
+    const largest = (g: Grouping): number => Math.max(...g.buildings.map((b) => b.members.length))
+    /** How many of a's buildings no building of b holds exactly the same files as. */
+    const churn = (a: Grouping, b: Grouping): number => {
+      const after = new Set(b.buildings.map((x) => x.members.join()))
+      return a.buildings.filter((x) => !after.has(x.members.join())).length
+    }
+    const rng = (seed: number): (() => number) => {
+      let a = seed >>> 0
+      return () => {
+        a = (a + 0x6d2b79f5) >>> 0
+        let t = a
+        t = Math.imul(t ^ (t >>> 15), t | 1)
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+      }
+    }
+    const spec = (a: string, b: string): string => {
+      const to = posix.relative(posix.dirname(a), b).replace(/(\.d)?\.ts$/, '')
+      return to.startsWith('.') ? to : `./${to}`
+    }
+    // A seeded project: one to four districts of name families, small sub-folders and loose files (some tests and
+    // declarations), dense or sparse inside, with links between them and some hubs that draw more.
+    const randomProject = (seed: number): GraphSnapshot => {
+      const r = rng(seed)
+      const int = (n: number): number => Math.floor(r() * n)
+      const word = (len: number): string => Array.from({ length: len }, () => 'abcdefghijklmnopqrstuvwxyz'[int(26)]).join('')
+      const upper = (s: string): string => s[0].toUpperCase() + s.slice(1)
+      const groups: string[][] = []
+      const seen = new Set<string>()
+      const add = (f: string, g: string[]): void => {
+        if (seen.has(f)) return
+        seen.add(f)
+        g.push(f)
+      }
+      const nDist = 1 + int(4)
+      for (let d = 0; d < nDist; d++) {
+        const base = `src/${word(4)}`
+        const nGroups = 6 + int(60)
+        for (let k = 0; k < nGroups; k++) {
+          const g: string[] = []
+          const roll = r()
+          const n = roll < 0.1 ? 15 + int(40) : 1 + int(roll < 0.5 ? 4 : 12)
+          if (roll < 0.35) {
+            const stem = word(4 + int(3))
+            for (let i = 0; i < n; i++) add(`${base}/${stem}${upper(word(2 + int(3)))}.ts`, g)
+          } else if (roll < 0.6) {
+            const sub = `${base}/${word(5)}`
+            for (let i = 0; i < Math.min(n, 18); i++) add(`${sub}/${word(4 + int(4))}.ts`, g)
+          } else {
+            for (let i = 0; i < n; i++) add(`${base}/${word(5 + int(4))}${r() < 0.15 ? '.test' : r() < 0.05 ? '.d' : ''}.ts`, g)
+          }
+          if (g.length) groups.push(g)
+        }
+      }
+      const imports: Record<string, string[]> = {}
+      for (const f of seen) imports[f] = []
+      const join = (a: string, b: string): void => {
+        if (a !== b) imports[a].push(spec(a, b))
+      }
+      const pick = (g: string[]): string => g[int(g.length)]
+      for (const g of groups) {
+        const density = r()
+        for (const a of g) for (const b of g) if (r() < density * 0.6) join(a, b)
+      }
+      const hubs = groups.filter(() => r() < 0.1)
+      const nEdges = int(groups.length * 4)
+      for (let e = 0; e < nEdges; e++) {
+        const a = groups[int(groups.length)]
+        const b = hubs.length && r() < 0.35 ? hubs[int(hubs.length)] : groups[int(groups.length)]
+        const w = 1 + int(r() < 0.2 ? 8 : 3)
+        for (let j = 0; j < w; j++) join(pick(a), pick(b))
+      }
+      return { root: '/repo', files: [...seen].sort(), symbols: [], callEdges: [], fileImports: imports }
+    }
+    // One-file edits: two additions (a new file near a random one, importing one to three files mostly in its folder,
+    // and imported back half the time) and two removals per seed.
+    const edits = (s: GraphSnapshot, seed: number): GraphSnapshot[] => {
+      const r = rng(seed * 7919 + 13)
+      const int = (n: number): number => Math.floor(r() * n)
+      return [0, 1, 2, 3].map((e) => {
+        if (e % 2 === 1) {
+          const f = s.files[int(s.files.length)]
+          const fileImports = { ...s.fileImports }
+          delete fileImports[f]
+          return { ...s, files: s.files.filter((x) => x !== f), fileImports }
+        }
+        const dir = posix.dirname(s.files[int(s.files.length)])
+        const f = `${dir}/zq${seed}x${e}${'abcdefghij'[int(10)]}.ts`
+        const near = s.files.filter((x) => posix.dirname(x) === dir)
+        const to = Array.from({ length: 1 + int(3) }, () => (r() < 0.7 ? near[int(near.length)] : s.files[int(s.files.length)]))
+        const fileImports: Record<string, string[]> = { ...s.fileImports, [f]: [...new Set(to.map((b) => spec(f, b)))] }
+        if (r() < 0.5) {
+          const by = near[int(near.length)]
+          fileImports[by] = [...fileImports[by], spec(by, f)]
+        }
+        return { ...s, files: [...s.files, f].sort(), fileImports }
+      })
+    }
+
+    it('changes few buildings on any one-file edit (gate b, a guard on the plan\'s rule)', () => {
+      const o = { maxBuildings: 60 }
+      let n = 0
+      let sum = 0
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const s = randomProject(seed)
+        const g = groupProject(s, [], o)
+        for (const e of edits(s, seed)) {
+          const c = churn(g, groupProject(e, [], o))
+          // A quarter of the cap; the pass-over rules of rounds 4 and 5 changed 51 and 59 of 60 on one edit.
+          if (c > 15) throw new Error(`seed ${seed}: one edit changed ${c} buildings`)
+          n++
+          sum += c
+        }
+      }
+      expect(n).toBe(SEEDS * 4)
+      // Round 5 measured a mean of 1.47 buildings an edit over 3,000 seeds.
+      expect(sum / n).toBeLessThanOrEqual(2)
+    }, SEEDS * 1_000)
+
+    // Codex's repros (review rounds 4 and 5): `copies` modules in src/a, each a part (code, guard), a wave of w files and a
+    // leaf of four (alpha) linking both (and `links` wave files from its second file); a later family of laterSize linking
+    // the first wave; extra families to fill the cap; and a ballast clique of `ballast` files in src/z.
+    const codexProject = (w: number, ballast: number, links: number, copies: number, laterSize = 0): GraphSnapshot => {
+      const m: Record<string, string[]> = {}
+      const clique = (dir: string, names: string[]): void => {
+        for (const x of names) m[`${dir}/${x}.ts`] = names.filter((y) => y !== x).map((y) => `./${y}`)
+      }
+      for (let i = 0; i < copies; i++) {
+        const part = [0, 1, 2].map((j) => `code${i}File${j}`).concat([0, 1, 2].map((j) => `guard${i}x${j}File`))
+        const wave = Array.from({ length: w - 2 }, (_, j) => `wave${i}File${j}`).concat([0, 1].map((j) => `helper${i}x${j}File`))
+        const leaf = [0, 1, 2, 3].map((j) => `alpha${i}x${j}File`)
+        for (const names of [part, wave, leaf]) clique('src/a', names)
+        m[`src/a/${leaf[0]}.ts`].push(`./${part[0]}`, `./${wave[0]}`)
+        m[`src/a/${leaf[1]}.ts`].push(`./${part[1]}`, ...wave.slice(1, links).map((x) => `./${x}`))
+        if (i === 0 && laterSize) {
+          const later = Array.from({ length: laterSize }, (_, j) => `zeta${j}File`)
+          clique('src/a', later)
+          m[`src/a/${later[0]}.ts`].push(`./${wave[0]}`)
+        }
+      }
+      for (let i = 0; i < 59 - 2 * copies; i++) clique('src/a', Array.from({ length: 8 }, (_, j) => `extra${i}File${j}`))
+      clique('src/z', Array.from({ length: ballast }, (_, j) => `ballastFile${j}`))
+      return { root: '/repo', files: Object.keys(m).sort(), symbols: [], callEdges: [], fileImports: m }
+    }
+    /** s with one more ballast file, ballastFile<k>, importing the first. */
+    const grow = (s: GraphSnapshot, k: number): GraphSnapshot => {
+      const f = `src/z/ballastFile${k}.ts`
+      return { ...s, files: [...s.files, f].sort(), fileImports: { ...s.fileImports, [f]: ['./ballastFile0'] } }
+    }
+    const o = { maxBuildings: 60 }
+
+    it('changes one building when ballastFile14 joins the largest building (Codex round 4)', () => {
+      const before = codexProject(7, 14, 1, 25, 4)
+      const after = grow(before, 14)
+      const [g, g2] = [groupProject(before, [], o), groupProject(after, [], o)]
+      checkInvariants(g2, after.files)
+      expect([largest(g), largest(g2)]).toEqual([14, 15])
+      // The whole-map fallback of round 4 replaced 51 of these 60 buildings, and 25 ids.
+      expect([churn(g, g2), churn(g2, g)]).toEqual([1, 1])
+      expect(g2.buildings.filter((b) => !g.buildings.some((x) => x.id === b.id))).toHaveLength(0)
+    })
+
+    it('changes one building when ballastFile10 joins the largest building, and one when it leaves (Codex round 5)', () => {
+      const before = codexProject(7, 10, 1, 29)
+      const after = grow(before, 10)
+      const [g, g2] = [groupProject(before, [], o), groupProject(after, [], o)]
+      checkInvariants(g2, after.files)
+      expect([g.buildings.length, g2.buildings.length]).toEqual([60, 60])
+      expect([largest(g), largest(g2)]).toEqual([10, 11])
+      // Round 5's ceiling rose from 10 to 11 here and let 29 links be passed over: 59 of 60 buildings changed.
+      expect([churn(g, g2), churn(g2, g)]).toEqual([1, 1])
+      expect(g2.buildings.filter((b) => !g.buildings.some((x) => x.id === b.id))).toHaveLength(0)
+    })
+
+    it('keeps the wave hub at 11 files where a pass-over grew it to 15 (Codex round 5)', () => {
+      const s = codexProject(7, 11, 2, 25, 4)
+      const g = groupProject(s, [], o)
+      const hub = g.buildings.find((b) => b.members.includes('src/a/wave0File0.ts')) as Grouping['buildings'][number]
+      expect([largest(g), hub.members.length]).toEqual([11, 11])
+      expect(hub.members).toContain('src/a/zeta0File.ts')
+    })
+
+    it('names a building after its code before a type declaration, as after a test (review R3-m1)', () => {
+      // No code runs in a .d.ts file: like a test, it names the building only when nothing else can.
+      const at = (names: string[]): string[] => names.map((x) => `src/a/${x}.ts`)
+      const clique = (fs: string[], to: (f: string) => string): GraphSnapshot =>
+        snap(Object.fromEntries(fs.map((f) => [f, fs.filter((x) => x !== f).map(to)])))
+      const plainTo = (f: string): string => `./${f.slice(6, -3)}`
+      const tests = ['mnemeAlpha.test', 'mnemeBeta.test', 'mnemeGamma.test']
+      const six = at([...tests, 'env.d', 'guardTwo', 'hostThree'])
+      const g = groupProject(clique(six, plainTo), [])
+      expect(home(g, 'src/a/env.d.ts').members).toEqual([...six].sort())
+      expect(home(g, 'src/a/env.d.ts').name).toBe('guardTwo')
+      // With nothing but tests and a declaration, the declaration ranks with the tests: path order decides.
+      expect(home(groupProject(clique(at([...tests, 'aaa.d']), plainTo), []), 'src/a/aaa.d.ts').name).toBe('aaa.d')
+      expect(home(groupProject(clique(at([...tests, 'zzz.d']), plainTo), []), 'src/a/zzz.d.ts').name).toBe('mnemeAlpha.test')
+      // The ESM and CommonJS declarations too (.d.mts, .d.cts), imported as .d.mjs and .d.cjs.
+      const decl: Record<string, string> = { 'src/a/aaa.d.mts': './aaa.d.mjs', 'src/a/aab.d.cts': './aab.d.cjs' }
+      const all = [...Object.keys(decl), ...at([...tests, 'guardTwo', 'hostThree'])]
+      const m = groupProject(clique(all, (f) => decl[f] ?? plainTo(f)), [])
+      expect(home(m, 'src/a/aaa.d.mts').members).toEqual([...all].sort())
+      expect(home(m, 'src/a/aaa.d.mts').name).toBe('guardTwo')
     })
   })
 

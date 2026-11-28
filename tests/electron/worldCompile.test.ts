@@ -1479,6 +1479,21 @@ describe('compileWorldStaged', () => {
     expect(out.doc).toEqual(first.doc)
   })
 
+  it('a cache written before declarations ranked after code in naming (version 9) is not reused for grouping', async () => {
+    expect(STAGE_CACHE_VERSION).toBeGreaterThan(9)
+    const first = await staged(FIXTURE)
+    // The same files and structure, so only the version tells the grouping is stale; renamed so a reuse would show.
+    const g = first.cache.grouping as NonNullable<StageCache['grouping']>
+    const renamed = { ...g, buildings: g.buildings.map((b) => ({ ...b, name: `old ${b.name}` })) }
+    const old: StageCache = { ...first.cache, version: 9, grouping: renamed }
+    const out = await staged(FIXTURE, { cache: old, changed: [] })
+    expect(out.cache.grouping).toEqual(first.cache.grouping)
+    expect(out.doc).toEqual(first.doc)
+    // The control: at the current version the same cache's grouping is reused, names and all.
+    const kept = await staged(FIXTURE, { cache: { ...old, version: STAGE_CACHE_VERSION }, changed: [] })
+    expect(kept.cache.grouping?.buildings.map((b) => b.name)).toEqual(renamed.buildings.map((b) => b.name))
+  })
+
   it('an edit the changed list never named is still found by a full read, and its building is re-labelled', async () => {
     const first = await staged(FIXTURE)
     const edited = { ...FIXTURE, 'src/main/ipc.ts': "export const CHANNEL = 'checkout:run'\nspawn('gemini', [])\n" }

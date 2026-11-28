@@ -188,7 +188,9 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
    cross-edge density > 0.35 within the same district.
 4. If buildings > maxBuildings: repeatedly merge the smallest building into its most-connected
    neighbour in the same district. If districts > maxDistricts: merge the smallest district into its
-   most-connected one.
+   most-connected one. (Passing over a link whose merge would dissolve a recognisable part is
+   deferred until after 2.0, groupcap R6: every map-wide rule tried for it let one edit regroup most
+   of the map. The building cap stays this rule.)
 5. Building id = 'b-' + slug(shortest common dir of members) + (suffix -2, -3 on collision, ordered by path).
 6. Edges = building pairs with any import or a matched boundary pair (same kind and key, provide<->consume).
 ```

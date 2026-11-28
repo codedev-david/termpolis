@@ -17,9 +17,13 @@
 // 4. Buildings are capped by merging the smallest into its densest neighbour (link weight over
 //    the neighbour's size) in the same district, never into a process building or channel service;
 //    with no link, its nearest plain building in path order. Those fixed buildings go last.
+//    Passing over a link whose merge would dissolve a recognisable part is deferred until after 2.0
+//    (groupcap R6): every map-wide rule for it tried in five review rounds had a constructed case
+//    where one edit regroups most of the map, so this step stays the plan's rule.
 // 5. Names: a process building is named after its process; any other after its front door, the
-//    non-test member reaching most of the building, then most imported from outside it, skipping
-//    names that would pass for the district or a main/renderer/preload entry.
+//    member reaching most of the building that is no test or type declaration (.d.ts, .d.mts,
+//    .d.cts), then most imported from outside it, skipping names that would pass for the district
+//    or a main/renderer/preload entry.
 // 6. Ids are slugs of member paths (a name with no letter or digit a slug keeps, such as an emoji or
 //    a non-Latin script, is 'u' plus a short hash of the name, never 'root', which is the repository
 //    root's alone). A base no other building shares is used as is; colliding bases get '--' plus the
@@ -100,6 +104,8 @@ export const COHESIVE_WEIGHT = 2
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
+/** A type declaration file: no code runs there, so it names a building only after the code (groupcap review R3-m1). */
+const DECLARATION = /\.d\.[cm]?ts$/
 /** How many imports naming one building's front door may examine (review K6; WP5 fix M2 counts each import looked at, so a
  *  barrel file with thousands of imports costs what it reads): a search from every member is quadratic on a long chain.
  *  Members with the fewest importers inside the building are searched first, as they reach the most, each in import order;
@@ -1018,7 +1024,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       }
       // A walk the budget cut short leaves nothing on the shared stack for the next one.
       stack.length = 0
-      plain[i] = TEST_NAME.test(files[i]) ? 0 : 1
+      plain[i] = TEST_NAME.test(files[i]) || DECLARATION.test(files[i]) ? 0 : 1
       reach[i] = seen
       outside[i] = importers[i].length - inner[i]
     }

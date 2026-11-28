@@ -223,6 +223,14 @@ describe('Lumopolis acceptance on the Termpolis repository', () => {
     }
   })
 
+  // The code graph is no process, so with labelling off it is known by the name its building is given. A building its
+  // code tools dominate is called after one of them, not after a helper it took in ("layout", with look-b's files).
+  it('names the code graph building after one of its own code files', () => {
+    const { b } = shares('src/main/codeGraph.ts')
+    const own = b.members.filter(OWN['src/main/codeGraph.ts']).map((m) => m.slice(m.lastIndexOf('/') + 1).replace(/\.[^.]+$/, ''))
+    expect(own, `${b.id} "${b.name}"`).toContain(b.name)
+  })
+
   it('has main fork the memory host', () => {
     const host = ownerOf('src/main/memoryHost.ts') as Building
     const forks = world.edges.filter((e) => e.to === host.id && carries(e, 'fork'))
