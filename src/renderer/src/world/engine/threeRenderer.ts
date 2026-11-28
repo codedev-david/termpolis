@@ -1774,7 +1774,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    recheck = true
+    // While a resize's size has yet to hold (its settle pending), the panel's change only re-aims: the settle checks
+    // the look once, at the size the view comes to rest at, not at each size a divider passes on the way.
+    recheck = settleTimer === null
     try {
       rig.refit()
     } finally {
@@ -2102,7 +2104,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * Whether a kept close-up's look, re-aimed to `shot`, passes the search's own test of a look where it now stands:
    * the camera clear of every building, orb and other line (insideAny, clearOf), and both ends showing beside the card
-   * (endsHidden). The world is measured as it stands now (an open tower's floors may have risen since the search):
+   * (endsHidden). At a close-up's distance clearOf, which tests the camera's whole way to the target, already fails a
+   * camera inside a building; insideAny is the search's own backstop to it, kept so the two tests stay the same. The world is measured as it stands now (an open tower's floors may have risen since the search):
    * its matrices, the pick shapes' balls and the ends' probe points are taken again. The line's middle is not tested
    * again: the search's best look may already hide it (the wide pass keeps one that shows both ends), and testing it
    * would search again, on every check, for a look the search already found the best.
@@ -2546,19 +2549,32 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (settleTimer !== null) clearTimeout(settleTimer)
     settleTimer = null
   }
-  const fitBufferFor = (drawn: boolean): void => {
+  /**
+   * The buffer for the new size, and whether the look is owed its check at once (after the city's fit and the camera's
+   * framing for the size): a pane shown again at a size, drawn at once with no settle to wait for, is a size that has
+   * held. A pane hidden (1 by 1) or a view not yet drawn is not checked.
+   */
+  const fitBufferFor = (drawn: boolean): boolean => {
     settleBuffer()
     // A hidden pane's view is 1 by 1 (size): from it or to it there is no picture to stretch.
     if (!drawn || Math.min(width, height, shown.width, shown.height) <= 1) {
       fitBuffer()
-      return
+      return drawn && Math.min(width, height) > 1
     }
     breakChain() // the next frames draw the new shape: not a frame of the old one
     renderer.domElement.style.width = `${width}px`
     renderer.domElement.style.height = `${height}px`
+    armSettle(true)
+    return false
+  }
+  /**
+   * Once the size has held for BUFFER_SETTLE_MS: the buffer fitted (`fit`; a new pixel ratio has already fitted it) and
+   * the look checked (settleCheck).
+   */
+  const armSettle = (fit: boolean): void => {
     settleTimer = setTimeout(() => {
       settleTimer = null
-      fitBuffer()
+      if (fit) fitBuffer()
       settleCheck()
       wake()
     }, BUFFER_SETTLE_MS)
@@ -2580,7 +2596,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     solids = null
     ;[width, height] = size()
     applyView()
-    fitBufferFor(drawn)
+    const held = fitBufferFor(drawn)
     labelRenderer.setSize(width, height)
     panelBoxes = null
     // The city is fitted again to the new shape; a camera at the overview moves to the new one, a
@@ -2589,6 +2605,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fitOverview(lastModel)
     fogTarget = fogFor()
     rig.resized()
+    if (held) settleCheck()
   }
   // One observer watches the host and the panels over it (setPanels): any change has the panels'
   // boxes measured again; the host's own changes resize the view.
@@ -2618,8 +2635,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   const onRatio = (): void => {
     watchRatio()
+    // A resize's settle still pending owes the look its check: the settle is put off again, never dropped (the buffer,
+    // fitted here, is not fitted again by it).
+    const owed = settleTimer !== null
     settleBuffer()
     fitBuffer()
+    if (owed) armSettle(false)
     wake()
   }
   const dropRatioQuery = (): void => { ratioQuery?.removeEventListener('change', onRatio) }
