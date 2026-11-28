@@ -446,3 +446,27 @@ describe('which way a design line runs', () => {
     expect(back.doc.edges.find((e) => e.id === 'e-ui--db')?.twoWay).toBe(false)
   })
 })
+
+describe('districts removed with buildings in them (D3)', () => {
+  it('names each district a patch removes while it holds buildings, with how many it held then', () => {
+    // base(): core holds api and db, web holds ui.
+    const r = applyDesignPatch(base(), [
+      { op: 'addDistrict', id: 'empty', name: 'Empty' },
+      { op: 'remove', id: 'empty' },
+      { op: 'move', id: 'ui', districtId: 'core' },
+      { op: 'remove', id: 'web' },
+      { op: 'remove', id: 'core' },
+      { op: 'remove', id: 'ghost' }
+    ])
+    expect(r.applied).toBe(5)
+    expect(r.removed).toEqual([{ id: 'core', name: 'Core', buildings: 3 }])
+    expect(applyDesignPatch(base(), [{ op: 'remove', id: 'api' }, { op: 'remove', id: 'web' }]).removed).toEqual([{ id: 'web', name: 'Web', buildings: 1 }])
+  })
+
+  it('a patch that removes no district, or applies nothing, names none', () => {
+    expect(applyDesignPatch(base(), [{ op: 'remove', id: 'api' }]).removed).toEqual([])
+    // A new building the placer gives no place makes the design invalid, so nothing applies.
+    expect(applyDesignPatch(base(), [{ op: 'remove', id: 'core' }, { op: 'addBuilding', id: 'cache', districtId: 'web', name: 'Cache' }], () => ({})).removed).toEqual([])
+    expect(applyDesignPatch(base(), [{ op: 'nope' } as unknown as DesignOp]).removed).toEqual([])
+  })
+})
