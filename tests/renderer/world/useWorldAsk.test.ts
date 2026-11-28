@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useWorldAsk, ASK_UNREACHABLE, REFINE_UNREACHABLE } from '../../../src/renderer/src/components/World/useWorldAsk'
+import { useWorldAsk, ASK_UNREACHABLE, REFINE_UNREACHABLE, DESIGN_LEFT_AS_IT_WAS } from '../../../src/renderer/src/components/World/useWorldAsk'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
@@ -416,6 +416,93 @@ describe('useWorldAsk on a design', () => {
     await act(async () => { result.current.ask('b') })
     expect(result.current.state).toBe('error')
     expect(result.current.error).toBe(REFINE_UNREACHABLE)
+  })
+})
+
+describe('useWorldAsk: a change that removes a district with buildings in it waits for a yes (D3)', () => {
+  const removals = [{ id: 'core', name: 'Core', buildings: 2 }]
+  const held = { success: true, data: { doc: { projectKey: 'design:d1', v: 'before' }, text: 'Removed Core.', applied: 1, skipped: 0, summary: 'sum:held', tokens: 900, confirm: { removals } } }
+  const made = { success: true, data: { doc: { projectKey: 'design:d1', v: 'after' }, text: 'Removed Core.', applied: 1, skipped: 0, summary: 'sum:held', tokens: 0 } }
+  const api = (over: Record<string, unknown> = {}) => {
+    const t = { worldDesignRefine: vi.fn(async () => held), worldDesignConfirm: vi.fn(async () => made), worldDesignCancel: vi.fn(async () => ({ success: true, data: true })), ...over }
+    ;(window as any).termpolis = t
+    return t
+  }
+
+  it('asks the pane with the removals; a yes makes the change, draws it and counts the agent run once', async () => {
+    const t = api()
+    const onDesign = vi.fn()
+    const ask = vi.fn(async () => true)
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign, undefined, undefined, ask))
+    await act(async () => { result.current.ask('remove Core') })
+    expect(ask).toHaveBeenCalledWith(removals)
+    expect(t.worldDesignConfirm).toHaveBeenCalledWith('design:d1')
+    expect(t.worldDesignCancel).not.toHaveBeenCalled()
+    expect(onDesign).toHaveBeenCalledTimes(1)
+    expect(onDesign).toHaveBeenCalledWith(made.data.doc)
+    expect(result.current.state).toBe('answered')
+    expect(result.current.answer?.text).toBe('Removed Core.')
+    expect(result.current.cost).toEqual({ answer: 900, session: 900 })
+    // The next change carries the summary the confirmed change returned.
+    t.worldDesignRefine.mockResolvedValueOnce({ success: true, data: { ...made.data, summary: 'sum:2', tokens: 5 } } as never)
+    await act(async () => { result.current.ask('next') })
+    expect(t.worldDesignRefine).toHaveBeenLastCalledWith('design:d1', 'next', 'sum:held', undefined)
+  })
+
+  it('a no lets main drop the held change, draws nothing and says the design was left as it was', async () => {
+    const t = api()
+    const onDesign = vi.fn()
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign, undefined, undefined, async () => false))
+    await act(async () => { result.current.ask('remove Core') })
+    expect(t.worldDesignConfirm).not.toHaveBeenCalled()
+    expect(t.worldDesignCancel).toHaveBeenCalledWith('design:d1')
+    expect(onDesign).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('answered')
+    expect(result.current.answer?.text).toBe(DESIGN_LEFT_AS_IT_WAS)
+    expect(result.current.cost).toEqual({ answer: 900, session: 900 })
+    // The summary is not moved on by a change that was not made.
+    await act(async () => { result.current.ask('again') })
+    expect(t.worldDesignRefine).toHaveBeenLastCalledWith('design:d1', 'again', '', undefined)
+  })
+
+  it('with no one to ask (the box on its own) the change is never made, and a cancel that fails is not shown', async () => {
+    const t = api({ worldDesignCancel: vi.fn(async () => { throw new Error('gone') }) })
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1'))
+    await act(async () => { result.current.ask('remove Core') })
+    expect(t.worldDesignConfirm).not.toHaveBeenCalled()
+    expect(result.current.answer?.text).toBe(DESIGN_LEFT_AS_IT_WAS)
+  })
+
+  it('a change cancelled or replaced while the question is up is dropped, whatever the answer', async () => {
+    const t = api()
+    const d = deferred<boolean>()
+    const onDesign = vi.fn()
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign, undefined, undefined, () => d.promise))
+    await act(async () => { result.current.ask('remove Core') })
+    expect(result.current.state).toBe('thinking')
+    act(() => { result.current.cancel() })
+    await act(async () => { d.resolve(true) })
+    expect(t.worldDesignConfirm).not.toHaveBeenCalled()
+    expect(onDesign).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('idle')
+  })
+
+  it("a yes whose change main then refuses shows main's reason, one that throws a fixed message, and a late one is dropped", async () => {
+    const t = api({ worldDesignConfirm: vi.fn().mockResolvedValueOnce({ success: false, error: 'The design changed.' }).mockRejectedValueOnce(new Error('x')) })
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', undefined, undefined, undefined, async () => true))
+    await act(async () => { result.current.ask('a') })
+    expect(result.current.error).toBe('The design changed.')
+    await act(async () => { result.current.ask('b') })
+    expect(result.current.error).toBe(REFINE_UNREACHABLE)
+    const late = deferred<typeof made>()
+    t.worldDesignConfirm.mockImplementationOnce(() => late.promise)
+    const onDesign = vi.fn()
+    const r2 = renderHook(() => useWorldAsk(null, 'design:d1', onDesign, undefined, undefined, async () => true))
+    await act(async () => { r2.result.current.ask('c') })
+    act(() => { r2.result.current.cancel() })
+    await act(async () => { late.resolve(made) })
+    expect(onDesign).not.toHaveBeenCalled()
+    expect(r2.result.current.state).toBe('idle')
   })
 })
 
