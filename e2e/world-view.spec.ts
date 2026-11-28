@@ -27,6 +27,7 @@
  * e2e/helpers/world.ts, which e2e/world-export.spec.ts shares.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { spawn } from 'child_process'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
 import { closeMore, toolbarControl } from './helpers/worldToolbar'
@@ -513,6 +514,24 @@ test.describe.serial('Lumopolis in the real app', () => {
     }, { root: loadProject, min: MIN_SAMPLES, max: MAX_COMPILES })
     await newLine()
     const compiling = (): Promise<boolean> => page.evaluate(() => (window as unknown as { __echo: { compiling: boolean } }).__echo.compiling)
+    // DIAG typeflake2: the whole machine's top consumers each second (macOS CI only), from the test process.
+    const topRows: { t: number; rows: string[] }[] = []
+    const topProc = process.platform === 'darwin' && process.env.CI ? spawn('top', ['-l', '0', '-s', '1', '-n', '14', '-o', 'cpu', '-stats', 'pid,command,cpu,threads'], { stdio: ['ignore', 'pipe', 'ignore'] }) : null
+    {
+      let buf = ''
+      topProc?.stdout?.on('data', (d: Buffer) => {
+        buf += d.toString()
+        let at: number
+        while ((at = buf.indexOf('\nProcesses:', 1)) >= 0) {
+          const block = buf.slice(0, at)
+          buf = buf.slice(at + 1)
+          const lines = block.split('\n')
+          const head = lines.findIndex((l) => /^PID\s+COMMAND/.test(l))
+          const load = lines.find((l) => l.startsWith('CPU usage')) ?? ''
+          topRows.push({ t: performance.timeOrigin + performance.now(), rows: [load.trim(), ...(head >= 0 ? lines.slice(head + 1).filter((l) => l.trim()).map((l) => l.trim().replace(/\s+/g, ' ')) : [])] })
+        }
+      })
+    }
     const deadline = Date.now() + 60_000
     let onLine = 0
     const lineKey = async (): Promise<void> => {
@@ -526,6 +545,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     for (let i = 0; i < 5; i++) await lineKey()
     await until('every key to echo', allEchoed)
     await clearLine()
+    topProc?.kill()
 
     const r = await page.evaluate(() => {
       const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compiling: boolean; runs: { start: number; end: number }[]; compileError?: string; done: boolean } }).__echo
@@ -637,6 +657,14 @@ test.describe.serial('Lumopolis in the real app', () => {
     const firstVsRest = `first compile ${worst(during.filter((x) => x.run === 0))}, recompiles ${worst(during.filter((x) => x.run > 0))}`
     const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms; by quarter of the compile: ${quarters}; ${firstVsRest}; no compile running: ${idleStats}`
     console.log(`[typing while compiling] ${summary}`)
+    {
+      // DIAG typeflake2: each top sample in or out of a compile (top's first sample has no CPU deltas).
+      const first = origin + r.runs[0].start
+      for (const x of topRows.slice(1)) {
+        const during = r.runs.some((w) => x.t - 1000 >= origin + w.start && x.t <= origin + (w.end || Infinity))
+        console.log(`[typeflake top] at=${(x.t - first).toFixed(0)} ${during ? 'COMPILE' : 'idle'} ${x.rows.slice(0, 12).join(' | ')}`)
+      }
+    }
     expect(n, `too few keys pressed during the compiles: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
     expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)
   })
