@@ -30,7 +30,7 @@ import {
 } from '../../src/main/world/worldGatewayTransport'
 import type { Claim, WorldDoc, WorldQuery, WorldReadResult } from '../../src/shared/world/types'
 import { MAX_DESIGN_OPS } from '../../src/shared/world/designPatch'
-import { createDesigner, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
+import { createDesigner, DESIGN_NEEDS_PERSON, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import { keyForSource, type SourceRegistry, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
 import type { WorldStore } from '../../src/main/world/worldStore'
 import type { ExecDeps } from '../../src/main/headlessExec'
@@ -329,6 +329,27 @@ describe('world_propose and design reads', () => {
     expect(r.key).toBe('design:n1')
     expect(reg.get(key)?.source).toEqual({ kind: 'folder', root: ROOT, linkedDesign: 'design:n1' })
     expect(reg.get(key)?.title).toBe('App')
+  })
+
+  it("world_propose refuses removing a district that still has buildings, with the person's-OK sentence, and applies none of that change (DSN 2026-11-28)", async () => {
+    const { transport, saved, reg } = proposeSetup()
+    expect(JSON.parse(await transport.callTool('world_propose', { cwd: ROOT, ops: OPS }))).toEqual({ key: 'design:n1', applied: 3, skipped: 0 })
+    const before = structuredClone(saved.get('design:n1'))
+    await expect(transport.callTool('world_propose', {
+      designKey: 'design:n1', ops: [{ op: 'addBuilding', id: 'pay', districtId: 'core', name: 'Payments' }, { op: 'remove', id: 'core' }]
+    })).rejects.toThrow(DESIGN_NEEDS_PERSON)
+    expect(saved.get('design:n1')).toEqual(before)
+    // An empty district is still removed.
+    await transport.callTool('world_propose', { designKey: 'design:n1', ops: [{ op: 'addDistrict', id: 'spare', name: 'Spare' }] })
+    expect(JSON.parse(await transport.callTool('world_propose', { designKey: 'design:n1', ops: [{ op: 'remove', id: 'spare' }] })))
+      .toEqual({ key: 'design:n1', applied: 1, skipped: 0 })
+    expect(saved.get('design:n1')?.districts.map((d) => d.id)).toEqual(['core'])
+    // A first propose for a folder that fills a district and removes it makes and links no design.
+    const fresh = proposeSetup()
+    await expect(fresh.transport.callTool('world_propose', { cwd: ROOT, ops: [...OPS, { op: 'remove', id: 'core' }] })).rejects.toThrow(DESIGN_NEEDS_PERSON)
+    expect(fresh.saved.size).toBe(0)
+    expect(fresh.reg.size).toBe(0)
+    expect(reg.size).toBe(2)
   })
 
   it('world_propose skips bad ops', async () => {

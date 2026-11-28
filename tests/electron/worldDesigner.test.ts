@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildDesignPrompt, createDesigner, DESIGN_AGENT_FAILED, DESIGN_CHANGED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
-  DESIGN_KEY_RE, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
+  DESIGN_KEY_RE, DESIGN_NEEDS_PERSON, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
 } from '../../src/main/world/designer'
 import { applyDesignPatch, emptyDesignDoc, type DesignOp } from '../../src/shared/world/designPatch'
 import type { WorldDoc } from '../../src/shared/world/types'
@@ -348,6 +348,29 @@ describe('createDesigner propose', () => {
     expect((await registry.get('design:id2'))?.title).toBe('Plan for /')
     expect(await failure(designer.propose({ linkRoot: '/srv/app' }, [{ op: 'bogus' }]))).toBe(DESIGN_NOTHING_APPLIED)
     expect(await store.load('design:id3')).toBeNull()
+  })
+
+  it('refuses an agent removing a district that still has buildings, applying none of that change; an empty district goes (DSN 2026-11-28)', async () => {
+    expect(DESIGN_NEEDS_PERSON).toBe(
+      "Removing a district that has buildings needs the person's OK, so Lumopolis didn't make this change. Ask them to make it in the Change the design box."
+    )
+    const { designer, store, registry } = setup(noAgent, { now: () => 80 })
+    const before = await stored(store)
+    // The other edits in the same change are not applied either, and nothing waits on a pane.
+    expect(await failure(designer.propose({ key: 'design:id1' }, [
+      { op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }, { op: 'remove', id: 'core' }
+    ]))).toBe(DESIGN_NEEDS_PERSON)
+    expect(await store.load('design:id1')).toEqual(before)
+    // A district with nothing in it is removed as before.
+    expect(await designer.propose({ key: 'design:id1' }, [{ op: 'addDistrict', id: 'spare', name: 'Spare' }])).toEqual({ key: 'design:id1', applied: 1, skipped: 0 })
+    expect(await designer.propose({ key: 'design:id1' }, [{ op: 'remove', id: 'spare' }])).toEqual({ key: 'design:id1', applied: 1, skipped: 0 })
+    const after = (await store.load('design:id1')) as WorldDoc
+    expect(after.districts.map((d) => d.id)).toEqual(['core'])
+    expect(after.buildings.map((b) => b.id)).toEqual(['api', 'db'])
+    // A new design whose ops fill a district and then remove it makes no design and records nothing.
+    expect(await failure(designer.propose({ linkRoot: '/srv/app' }, [...DRAFT_OPS, { op: 'remove', id: 'core' }]))).toBe(DESIGN_NEEDS_PERSON)
+    expect(await store.load('design:id2')).toBeNull()
+    expect(await registry.get('design:id2')).toBeNull()
   })
 })
 
