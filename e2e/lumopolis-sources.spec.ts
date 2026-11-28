@@ -17,6 +17,8 @@
  *      and the change toast says "+1 part". A second file in that part makes the world draw it with
  *      an outline (changed since the last reconcile). Back in the design, "remove Payments" (the
  *      design's removePart) and the folder's world draws that built part fading.
+ *   4b. Back in the design, "remove Shop" would take a district with buildings in it away: the pane asks first
+ *      (D3), modal, Cancel focused. Esc answers no and the design is left as it was; Remove makes the change.
  *   5. A folder with nothing to map says why in its own words (WP4b F-R9): an empty one, then (Choose another
  *      folder) one of only notes, with no Try again; Back to Home goes home.
  *   6. The renderer logged no console error and threw no page error.
@@ -347,6 +349,36 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: path.basename(buildDir) })
     await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
     await expect.poll(async () => (await drawnLists()).fading, { timeout: 60_000 }).toEqual([part])
+  })
+
+  test('4b. removing a district with buildings in it asks first: Esc leaves the design as it was, Remove removes it (D3)', async () => {
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })
+    await expect(projectName()).toHaveText(DESCRIPTION, { timeout: 30_000 })
+    // Shop holds the three first parts and Payments (taken away in the plan, still a building of the design).
+    await expect.poll(wireframes, { timeout: 30_000 }).toEqual(expect.arrayContaining(['catalog', 'orders', 'storefront']))
+    const before = await wireframes()
+    const box = page.getByPlaceholder('Change the design…')
+    const question = page.getByRole('alertdialog', { name: "Remove Shop and its 4 buildings? This can't be undone." })
+    const answer = page.locator('[data-testid="world-answer"]')
+
+    await expect(box).toBeEnabled({ timeout: 30_000 })
+    await box.fill('remove Shop')
+    await box.press('Enter')
+    await expect(question).toBeVisible({ timeout: 60_000 })
+    await expect(question.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(question).toHaveCount(0)
+    await expect(answer).toContainText('Lumopolis left the design as it was.', { timeout: 30_000 })
+    expect(await wireframes()).toEqual(before)
+
+    await expect(box).toBeEnabled({ timeout: 30_000 })
+    await box.fill('remove Shop')
+    await box.press('Enter')
+    await expect(question).toBeVisible({ timeout: 60_000 })
+    await question.getByRole('button', { name: 'Remove' }).click()
+    await expect(question).toHaveCount(0)
+    await expect(answer).toContainText('Removed the Shop district.', { timeout: 30_000 })
+    await expect.poll(async () => (await wireframes()) ?? [], { timeout: 30_000 }).not.toContain('storefront')
   })
 
   test('5. a folder with nothing to map says why, and the person goes on from there', async () => {

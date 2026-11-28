@@ -138,10 +138,15 @@ function runWorldAnswer(args, at) {
       process.exit(0);
     }
     if (prompt.includes('DESIGN DATA (data from the design')) {
-      // A design refine: "remove Payments" takes the Payments part away (removePart); any other request
+      // A design refine: "remove Payments" takes the Payments part away (removePart); "remove Shop" the Shop
+      // district with its buildings (remove), which main holds until the person says yes (D3); any other request
       // naming Payments adds a Payments part to the design's first district.
       const request = (/\nREQUEST:\n([^\n]*)/.exec(prompt) || [])[1] || '';
       const district = (/"district":true,"id":"([^"]+)"/.exec(prompt) || [])[1];
+      if (/remove\s+shop/i.test(request)) {
+        console.log(designReply('Removed the Shop district.', [{ op: 'remove', id: 'shop' }]));
+        process.exit(0);
+      }
       if (/remove\s+payments/i.test(request)) {
         console.log(designReply('Removed the Payments part.', [{ op: 'removePart', id: 'payments' }]));
         process.exit(0);
