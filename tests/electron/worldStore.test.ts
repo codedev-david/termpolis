@@ -1065,6 +1065,33 @@ describe('a save over a newer world never puts its copy in place unchecked, nor 
     expect(await readFile(file(), 'utf8')).toBe(newer())
   })
 
+  it("the store's record of a newer file, set while the save looks, refuses the rename though the file looked unchanged (D4-1)", async () => {
+    // DSN R4 (Opus NIT 3 seam): what a load that found a newer file leaves in the record, set after the save's look at
+    // the world file said it was unchanged. Only the check asked with no wait before the rename can see it.
+    const known = new Map<string, boolean>()
+    let armed = false
+    const store = createWorldStore(dir, {
+      newerOnDisk: known,
+      stat: (async (f: string) => {
+        const seen = await stat(f)
+        if (armed && f === file()) {
+          armed = false
+          known.set('demo.json', true)
+        }
+        return seen
+      }) as never
+    })
+    await store.save(doc())
+    const before = await readFile(file(), 'utf8')
+    armed = true
+    const mine = { ...doc(), generatedAt: 5 }
+    await store.save(mine)
+    expect(armed).toBe(false)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(before)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+  })
+
   it('a held file that stays one of ours is looked at again and written on the next try', async () => {
     let held = false
     const looks: string[] = []

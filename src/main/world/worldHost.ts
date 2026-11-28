@@ -45,7 +45,7 @@ import {
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
-import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, worldFileName, type WorldStore } from './worldStore'
+import { createWorldStore, WORLD_SAVE_FAILED, WorldReadError, WorldSavedByNewerError, worldFileName, type WorldStore } from './worldStore'
 import { retryLocked, sleepMs } from './storeFiles'
 import { isNewerWorld, validateWorld } from '../../shared/world/validate'
 
@@ -893,7 +893,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   /** Saves a compiled world and its stage cache, records what it came from, and pushes `updated` (`statusOnly`: the
    *  world changed test status only). */
   const saveCompiled = async (st: HostState, key: string, out: { doc: WorldDoc; cache: StageCache | null }, from: Latest, statusOnly = false): Promise<void> => {
-    await st.store.save(out.doc)
+    // A compile's world: over a newer version's file it is kept in memory, so the world is compiled once per run (#16).
+    await st.store.save(out.doc, { compiled: true })
     await keepStages(st, key, out.cache)
     bump(key)
     compiledFrom.set(key, from)
@@ -1134,18 +1135,24 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
 
   type Handler = (...args: never[]) => Promise<unknown>
   /**
-   * Whether a design's file holds a newer Termpolis's world (DSN R2, F5). Only its version is read: a design is main's
-   * designer's, so nothing here loads it through the store, which could back it up or move it aside. A file that is
-   * missing, cannot be read or does not parse says no. A file another program holds for a moment (Defender, the indexer,
-   * a sync client) is read again, as the store reads it (DSN R3-5).
+   * Why the host refuses a design's annotate (a design is main's designer's): the error naming what its file holds (DSN
+   * R2, F5). Only its version is read: nothing here loads it through the store, which could back it up or move it aside.
+   * A file another program holds for a moment (Defender, the indexer, a sync client) is read again, as the store reads it
+   * (DSN R3-5). Only a missing file says there is no such world (DSN R4, D4-8): one still held after the retries, that
+   * cannot be read or does not parse says it could not be read (WorldReadError, the store's words), the raw error going
+   * to the log; a newer Termpolis's says so.
    */
-  const designSavedByNewer = async (userDataPath: string, key: string): Promise<boolean> => {
+  const designRefusal = async (userDataPath: string, key: string): Promise<Error> => {
     const file = join(userDataPath, 'world', worldFileName(key))
+    let parsed: unknown
     try {
-      return isNewerWorld(JSON.parse(await retryLocked(() => readWorldText(file), sleepMs)))
-    } catch {
-      return false
+      parsed = JSON.parse(await retryLocked(() => readWorldText(file), sleepMs))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return new Error('No world with that key.')
+      console.warn(`[world host] a design's world could not be read: ${String(err)}`)
+      return new WorldReadError()
     }
+    return isNewerWorld(parsed) ? new WorldSavedByNewerError() : new Error('No world with that key.')
   }
 
   const handlers = (st: HostState): Record<string, Handler> => ({
@@ -1252,8 +1259,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const key = needKey(projectKey)
       if (key.startsWith('design:')) {
         // A design a newer Termpolis saved says so, as the designer would (DSN Round 1, item 10), not that it is missing.
-        return designSavedByNewer(st.userDataPath, key).then((newer) => {
-          throw newer ? new WorldSavedByNewerError() : new Error('No world with that key.')
+        return designRefusal(st.userDataPath, key).then((refusal) => {
+          throw refusal
         })
       }
       return serial(key, async () => {

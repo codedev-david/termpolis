@@ -35,9 +35,11 @@ export interface WorldStore {
   /** The stored world (marked savedByNewer when a newer Termpolis wrote it); null when there is none or it was broken
    *  and is now moved aside. Rejects with WorldReadError when the file cannot be read, backed up or moved aside. */
   load(projectKey: string): Promise<WorldDoc | null>
-  /** Stores a world. Over a newer Termpolis's world it keeps the doc in memory only and marks it savedByNewer. A file
-   *  this store has not loaded is loaded first, so a save rejects (WorldReadError) wherever that load would. */
-  save(doc: WorldDoc): Promise<void>
+  /** Stores a world. Over a newer Termpolis's world it writes nothing and marks the doc savedByNewer: a compile's world
+   *  (`compiled`) is kept in memory, what a load then shows, so the world is compiled once per run (sign-off #16); any
+   *  other save is refused and drops that copy, so the next load shows the newer file (DSN R4, D4-2). A file this store
+   *  has not loaded is loaded first, so a save rejects (WorldReadError) wherever that load would. */
+  save(doc: WorldDoc, opts?: WorldSaveOptions): Promise<void>
   labelCache: LabelCache
   /** The project's stage cache; null when there is none or it has the wrong shape. Never rejects. */
   loadStages?(projectKey: string): Promise<StageCache | null>
@@ -45,7 +47,14 @@ export interface WorldStore {
   saveStages?(projectKey: string, cache: StageCache): Promise<void>
 }
 
+/** How a world is saved: `compiled` for the world a compile made (WorldStore.save). */
+export interface WorldSaveOptions {
+  compiled?: boolean
+}
+
 export interface WorldStoreDeps {
+  /** The store's record of which world files hold a newer version's world (a seam for tests); a new map when not given. */
+  newerOnDisk?: Map<string, boolean>
   sleep?: Sleep
   now?: () => number
   readFile?: typeof fsp.readFile
@@ -178,7 +187,7 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
    *  A name is here only after a load that ended well, set once its backup or move-aside is done; a save of a name not
    *  here loads it first, so no save writes over a file this store could not read, could not back up, or could not move
    *  aside. */
-  const newerOnDisk = new Map<string, boolean>()
+  const newerOnDisk = deps.newerOnDisk ?? new Map<string, boolean>()
   /** WP3 round 3 (M1): per world file name, the load running now. Loads of one name run one after another (a second
    *  load of a broken file finds it moved aside, never races the first one's rename), and a save waits for the running
    *  load's outcome before it looks at newerOnDisk. */
@@ -203,17 +212,20 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   const readText = (file: string): Promise<string> => retryLocked(() => read(file, 'utf8'), sleep)
 
   /** Writes `text` to `target` through a temp file, removing the temp file when the write fails. With `beforeRename`,
-   *  the temp file is put in place only when it answers true once the temp file (its path given) is written; false
-   *  removes it instead. */
-  async function writeAtomic(target: string, text: string, beforeRename?: (tmp: string) => Promise<boolean>): Promise<void> {
+   *  the temp file is put in place only when it answers true once the temp file (its path given) is written, and then
+   *  `ready`, asked with no wait between it and the rename, answers true too; false removes it instead. Both are asked
+   *  again before each try of a rename that waits out a held file (DSN R4, D4-1). */
+  async function writeAtomic(target: string, text: string, beforeRename?: (tmp: string) => Promise<boolean>, ready?: () => boolean): Promise<void> {
     const tmp = tmpFor(target)
     try {
       await fsp.writeFile(tmp, text, 'utf8')
-      if (beforeRename && !(await beforeRename(tmp))) {
-        await fsp.rm(tmp, { force: true })
-        return
-      }
-      await retryLocked(() => rename(tmp, target), sleep)
+      const placed = await retryLocked(async () => {
+        if (beforeRename && !(await beforeRename(tmp))) return false
+        if (ready && !ready()) return false
+        await rename(tmp, target)
+        return true
+      }, sleep)
+      if (!placed) await fsp.rm(tmp, { force: true })
     } catch (err) {
       await fsp.rm(tmp, { force: true })
       throw err
@@ -301,14 +313,17 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
   return {
     load: (projectKey) => load(projectKey),
 
-    async save(doc) {
+    async save(doc, opts) {
       const name = worldFileName(doc.projectKey)
       const clean = forDisk(doc)
       // A load running now decides first (M1): its outcome is what this save goes by, or, refused, this save's own load.
       await loading.get(name)?.catch(ignore)
       if (!newerOnDisk.has(name)) await load(doc.projectKey, true)
       if (newerOnDisk.get(name) === true) {
-        shadow.set(name, structuredClone(clean))
+        // A compile's world is what a load shows until the next restart (#16). Any other save is refused, and drops that
+        // copy too (DSN R4, D4-2): the newer-file rule drops the copy in memory, so the next load shows what is on disk.
+        if (opts?.compiled === true) shadow.set(name, structuredClone(clean))
+        else shadow.delete(name)
         // The caller's doc is marked as well, so a compile that hands it on says what load would.
         doc.savedByNewer = true
         return
@@ -319,34 +334,33 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
       // it. Once the temp copy is written, just before the rename, the file is looked at again: read only when its size or
       // modified time changed since then (DSN R2, F4). A newer world found there is kept as it is, and this copy is not
       // kept in memory either (DSN R2, F2): a change refused there never shows later in the session, and the next load
-      // shows the newer file, as opening it afresh would. A gap remains between that look and the rename, up to about a
-      // second when the rename waits out a file another program holds (retryLocked: 100 + 200 + 300 + 400 ms): a newer
-      // version writing in it is written over. The gap is accepted: only a later version can be that newer writer, and
-      // nothing this version does can make it wait.
+      // shows the newer file, as opening it afresh would. DSN R4 (D4-1): that look comes before every try of the rename,
+      // a try after a held file's wait included, and a load that found a newer file meanwhile (during the temp copy's
+      // look, the file's, its read, or the wait) refuses the save too, asked last with no wait before the rename.
+      // Two gaps are accepted. A newer file of the same size and modified time as this store last saw is not read, so it
+      // is written over: one Termpolis runs per profile (its single-instance lock), so only a later version could write
+      // it, and it would have to match both (R3-4). And a newer version writing between that last look and the rename,
+      // which no look of this version can see.
       let wrote = null as FileSeen | null
+      const refused = (): false => {
+        newerOnDisk.set(name, true)
+        shadow.delete(name)
+        doc.savedByNewer = true
+        wrote = null
+        return false
+      }
       await writeAtomic(file, JSON.stringify(clean), async (tmp) => {
-        const there = await look(file)
-        // A load that ran meanwhile, during that look among others, and found a newer file decides too (DSN R3-1).
-        let newer = newerOnDisk.get(name) === true
-        if (!newer && !same(there, seen.get(name))) {
-          let text: string | null = null
-          try {
-            text = await readText(file)
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
-          }
-          newer = text !== null && isNewerWorld(parseOrUndefined(text))
-        }
-        if (newer) {
-          newerOnDisk.set(name, true)
-          shadow.delete(name)
-          doc.savedByNewer = true
-          return false
-        }
         // The rename keeps the temp copy's size and modified time: what the file will have once it is in place.
         wrote = await look(tmp)
-        return true
-      })
+        if (same(await look(file), seen.get(name))) return true
+        let text: string | null = null
+        try {
+          text = await readText(file)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
+        }
+        return text !== null && isNewerWorld(parseOrUndefined(text)) ? refused() : true
+      }, () => newerOnDisk.get(name) !== true || refused())
       if (wrote) seen.set(name, wrote)
       else seen.delete(name)
     },

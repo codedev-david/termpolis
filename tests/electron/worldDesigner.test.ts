@@ -1160,6 +1160,15 @@ describe('a person\'s service names, a note added twice and a note read back aft
     expect((await designFile()).runtimeNames.api).toBeUndefined()
   })
 
+  it("a person's service names whose store write and restoring save both fail give the save-failed words, not the restore's error", async () => {
+    const { store, annotations } = await app()
+    const save = vi.fn(store.save).mockImplementationOnce(store.save).mockRejectedValueOnce(new Error('EIO on restore'))
+    const failing = setup(noRun, { store: { ...store, save }, annotations: { add: async () => { throw new Error('EIO') }, listStrict: annotations.listStrict } })
+    expect(await failure(failing.designer.annotate('design:id1', 'api', names('other')))).toBe(DESIGN_SAVE_FAILED)
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(await annotations.list('design:id1')).toEqual({})
+  })
+
   it('a tidying save that fails after the names are stored still answers them, and they show from the file or the store', async () => {
     const real = createWorldStore(dir)
     await stored(real)

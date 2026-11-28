@@ -7,13 +7,14 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignOp, type DesignPatchResult, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
+import { isRuntimeText, namesOfRuntimeText } from '../../shared/world/runtimeNames'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
-import { addClaim, cleanClaim, hasPart, mergeAnnotations, NO_PART, withoutStored, type AnnotationStore } from './annotations'
+import { cleanClaim, hasPart, mergeDesign, NO_PART, stripNotes, withClaim, type AnnotationStore } from './annotations'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
@@ -34,7 +35,7 @@ export interface DesignerDeps {
   runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
   newId(): string
   /** Where a design's confirmations live: the designer adds them, so every write to a design is made under its lock (D1). */
-  annotations: Pick<AnnotationStore, 'add' | 'list'>
+  annotations: Pick<AnnotationStore, 'add' | 'listStrict'>
   now?(): number
   timeoutMs?: number
 }
@@ -434,28 +435,40 @@ export function createDesigner(deps: DesignerDeps): Designer {
         if (clean === null) throw new DesignFailure(DESIGN_SAVE_FAILED)
         // The design file holds none of the notes the store holds, the new one included (DSN R3-2): the store's cap and
         // a failed store write decide what shows. What it holds now is left out of the answer's base too, so a note the
-        // add below drops past the cap is not answered.
+        // add below drops past the cap is not answered. Read strictly (DSN R4, D4-7): notes that cannot be read are not
+        // taken for none.
         let before: Record<string, Claim[]>
         try {
-          before = await deps.annotations.list(key)
+          before = (await deps.annotations.listStrict(key)).byItem
         } catch {
           throw new DesignFailure(DESIGN_SAVE_FAILED)
         }
         // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
-        const saved = { ...withoutStored(doc, before), generatedAt: Math.max(now(), doc.generatedAt + 1) }
+        const generatedAt = Math.max(now(), doc.generatedAt + 1)
+        // A person's service names go in the file first, as a design edit's would (DSN R4, D4-5), so names the design set
+        // since never win over them; once the claim below is stored with the same names, a save leaves them out again.
+        const runtime = isRuntimeText(clean.text)
+        const saved = { ...(runtime ? { ...doc, runtimeNames: { ...doc.runtimeNames, [itemId]: namesOfRuntimeText(clean.text) } } : doc), generatedAt }
         // The design is saved first, the note stored after (DSN Round 1, item 9): a save that fails, or that finds a
         // newer Termpolis saved the design, stores no note, so none turns up on the next load after a failure was shown.
         await save(saved)
         try {
           await deps.annotations.add(key, itemId, clean)
         } catch {
+          // The names saved above were never stored: the design goes back to the ones it showed.
+          if (runtime) await save({ ...doc, generatedAt: generatedAt + 1 }).catch(() => undefined)
           throw new DesignFailure(DESIGN_SAVE_FAILED)
         }
+        // The store holds the names now: the file leaves them out (DSN R3-2). Best effort: a file that keeps them shows them
+        // all the same, for they equal the stored claim's.
+        if (runtime) await save(saved).catch(() => undefined)
+        const base = stripNotes(saved, before)
         try {
-          return mergeAnnotations(saved, await deps.annotations.list(key))
+          return mergeDesign(base, (await deps.annotations.listStrict(key)).byItem)
         } catch {
-          // The note is stored: a list that cannot be read back answers the design with the notes read before, and this one.
-          return addClaim(mergeAnnotations(saved, before), itemId, clean)
+          // The note is stored: notes that cannot be read back answer with the ones read before and this one, as the
+          // store keeps them (once, newest MAX_ANNOTATIONS_PER_ITEM).
+          return mergeDesign(base, withClaim(before, itemId, clean))
         }
       })
     },

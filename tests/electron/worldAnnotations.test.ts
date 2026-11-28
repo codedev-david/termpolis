@@ -987,6 +987,24 @@ describe("a design's notes move into the store once, and the store is then their
       expect(again.runtimeHandSet).toEqual(['b1'])
     })
 
+    it('a part a person cleared by hand in a file from before (hand-set, no names) moves as an empty claim and stays clear', async () => {
+      const inner = createWorldStore(dir)
+      await inner.save(design({}, { runtimeNames: {}, runtimeHandSet: ['b1'] }))
+      const annotations = createAnnotationStore(dir)
+      const loaded = (await withAnnotations(inner, annotations).load('design:x')) as WorldDoc
+      expect(loaded.runtimeNames.b1).toBeUndefined()
+      expect(await annotations.listStrict('design:x')).toEqual({ byItem: { b1: [person(runtimeText([]))] }, migrated: true })
+      const again = (await withAnnotations(createWorldStore(dir), createAnnotationStore(dir)).load('design:x')) as WorldDoc
+      expect(again.runtimeNames.b1).toBeUndefined()
+    })
+
+    it('mergeDesign takes a design with no service names at all as one with none', () => {
+      const bare = { ...design({}), runtimeNames: undefined } as unknown as WorldDoc
+      const shown = mergeDesign(bare, stored(['orders-api']))
+      expect(shown.runtimeNames).toEqual({ b1: ['orders-api'] })
+      expect(shown.runtimeHandSet).toEqual(['b1'])
+    })
+
     it('a hand-set name whose move fails stays in the file and shown hand-set, through a save and a reload, and moves on a later load', async () => {
       const inner = createWorldStore(dir)
       await inner.save(design({}, { runtimeNames: { b1: ['legacy-api'] }, runtimeHandSet: ['b1'] }))

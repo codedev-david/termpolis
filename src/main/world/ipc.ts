@@ -46,7 +46,7 @@
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import { NO_PART } from './annotations'
-import { WORLD_SAVED_BY_NEWER } from './worldStore'
+import { WORLD_READ_FAILED, WORLD_SAVED_BY_NEWER } from './worldStore'
 import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
@@ -79,8 +79,9 @@ export const SETTINGS_FAILED = "Lumopolis couldn't change that setting. Try agai
 /** PENDING SIGN-OFF (M4): what a settings read that failed answers; the reason goes to the log. */
 export const SETTINGS_LOAD_FAILED = "Lumopolis couldn't load its settings. Try again."
 
-/** The host's coded refusals of annotate the window is told by name, because a Try again would not help. */
-const ANNOTATE_REFUSALS: Record<string, string> = { WORLD_SAVED_BY_NEWER }
+/** The host's coded refusals of annotate the window is told by name: a Try again would not help, or (a world that could
+ *  not be read, DSN R4 D4-8) the store's own words say what happened better than a save that failed. */
+const ANNOTATE_REFUSALS: Record<string, string> = { WORLD_SAVED_BY_NEWER, WORLD_READ_FAILED }
 
 /** The words for a failure of annotate that is a host refusal (the host marked it and gave a known code), else null. */
 const refusalOf = (e: unknown): string | null => {
