@@ -597,6 +597,16 @@ function needKey(projectKey: unknown): string {
   return projectKey
 }
 
+/**
+ * The key of a world the host compiles and saves. A design (`design:<id>`) is refused: main's designer writes it under
+ * its lock, after its own checks (DSN Round 1, item 5), so no compile or watcher recompile here saves over one.
+ */
+function compiledKey(projectKey: unknown): string {
+  const key = needKey(projectKey)
+  if (key.startsWith('design:')) throw new Error('worldHost: a design is written by its designer')
+  return key
+}
+
 interface HostState {
   store: WorldStore
   annotations: AnnotationStore
@@ -1121,7 +1131,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   type Handler = (...args: never[]) => Promise<unknown>
   const handlers = (st: HostState): Record<string, Handler> => ({
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean; plan?: unknown }) => {
-      const key = needKey(projectKey)
+      const key = compiledKey(projectKey)
       const plan = planArg(opts?.plan)
       // Labelling on: the model's questions can outlast the RPC's timeout while the user sees nothing. So
       // this pass labels from the label cache only (a miss keeps the code-derived label and asks no model);
@@ -1221,7 +1231,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     // lock, so a refine's save there never drops a confirmation made here (DSN D1): its key is refused.
     annotate: (projectKey: unknown, itemId: unknown, claim: unknown) => {
       const key = needKey(projectKey)
-      if (key.startsWith('design:')) return Promise.reject(new Error('No world with that key.'))
+      if (key.startsWith('design:')) {
+        // A design a newer Termpolis saved says so, as the designer would (DSN Round 1, item 10), not that it is missing.
+        return st.store.load(key).then((doc) => {
+          throw doc?.savedByNewer ? new WorldSavedByNewerError() : new Error('No world with that key.')
+        })
+      }
       return serial(key, async () => {
         const doc = await st.store.load(key)
         if (!doc || !isStr(itemId) || !hasPart(doc, itemId)) throw new Error(NO_PART)
@@ -1236,7 +1251,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
     },
     notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown, plan?: unknown) => {
-      const key = needKey(projectKey)
+      const key = compiledKey(projectKey)
       latest.set(key, { snap, head, ...planArg(plan) })
       schedulerFor(st, key).notify(Array.isArray(files) ? files.filter(isStr) : [])
       return true

@@ -13,7 +13,7 @@ import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessEx
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
-import { hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
+import { addClaim, cleanClaim, hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
@@ -53,8 +53,11 @@ export interface Designer {
   draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
   /** A refine that would remove a district with buildings in it saves nothing and answers `confirm`, for confirm() (D3). */
   refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
-  /** Makes the change the last refine for the design held for a yes; DESIGN_REPLACED when none is waiting (D3). */
-  confirm(key: string): Promise<DesignRefineResult>
+  /**
+   * Makes the change the last refine for the design held for a yes, when `id` is that change's (its confirm.id);
+   * DESIGN_REPLACED, applying nothing, when none is waiting or another one is (D3, DSN Round 1 item 2).
+   */
+  confirm(key: string, id: string): Promise<DesignRefineResult>
   /** Adds a person's or an agent's note to a building or line of a design and returns the design with it (D1). */
   annotate(key: string, itemId: string, claim: Claim): Promise<WorldDoc>
   /** Applies an agent's design ops directly (no agent run): to the named design, or to a new one linked to a folder. */
@@ -170,26 +173,53 @@ function namedIds(op: DesignOp): string[] {
   return [op.id]
 }
 
+/** A building's service names and whether a person set them by hand (they are kept outside its own object). */
+const serviceNames = (doc: WorldDoc, id: string): [string[] | null, boolean] => [doc.runtimeNames[id] ?? null, doc.runtimeHandSet?.includes(id) === true]
+/** The lines with an end in `ids`, or (`both`) with both ends there, apart from their notes, in id order. */
+function linesAt(doc: WorldDoc, ids: Set<string>, both: boolean): unknown[] {
+  const at = (e: WorldDoc['edges'][number]): boolean => (both ? ids.has(e.from) && ids.has(e.to) : ids.has(e.from) || ids.has(e.to))
+  return doc.edges.filter(at).map((e) => ({ ...e, claims: [] })).sort((a, b) => a.id.localeCompare(b.id))
+}
+
 /**
- * What a part is, apart from its notes (claims); '' when there is none. With `held`, also what goes with it when it is
- * removed: a district's buildings, a building's lines. Only a remove reads those: a building added beside another in a
- * district changes nothing a move into that district relies on.
+ * What a part is, apart from its notes (claims), as `op` relies on it; '' when there is none. A remove also relies on
+ * what goes with the part (DSN Round 1, item 3): a district's buildings, as they are with their names, their service
+ * names and their lines; a building's service names and lines. A setRuntimeNames relies on the building's service
+ * names. Other ops read neither: a building added beside another in a district changes nothing a move into that
+ * district relies on, and service names an agent set meanwhile change nothing a describe relies on.
  */
-function partState(doc: WorldDoc, id: string, held: boolean): string {
+function partState(doc: WorldDoc, id: string, op: DesignOp['op']): string {
+  const removing = op === 'remove'
   const district = doc.districts.find((d) => d.id === id)
-  if (district) return JSON.stringify([district, held ? doc.buildings.filter((b) => b.districtId === id).map((b) => b.id) : []])
+  if (district) {
+    if (!removing) return JSON.stringify([district])
+    const members = doc.buildings.filter((b) => b.districtId === id)
+    const ids = new Set(members.map((b) => b.id))
+    return JSON.stringify([district, members.map((b) => [{ ...b, claims: [] }, serviceNames(doc, b.id)]), linesAt(doc, ids, false)])
+  }
   const building = doc.buildings.find((b) => b.id === id)
-  if (building) return JSON.stringify([{ ...building, claims: [] }, held ? doc.edges.filter((e) => e.from === id || e.to === id).map((e) => e.id) : []])
+  if (building) {
+    const names = removing || op === 'setRuntimeNames' ? serviceNames(doc, id) : null
+    return JSON.stringify([{ ...building, claims: [] }, names, removing ? linesAt(doc, new Set([id]), false) : []])
+  }
   const edge = doc.edges.find((e) => e.id === id)
   return edge ? JSON.stringify({ ...edge, claims: [] }) : ''
 }
 
-/** Throws DESIGN_CHANGED when a part the ops name is not as it was in `read`, the design the agent was shown (D2). */
+/**
+ * Throws DESIGN_CHANGED when a part the ops name is not as it was in `read`, the design the agent was shown (D2), or
+ * when the lines between the parts they name are not (DSN Round 1, item 3): a line added meanwhile that the reply also
+ * adds, or one drawn between two buildings the reply changes.
+ */
 function unchangedSince(read: WorldDoc, now: WorldDoc, ops: DesignOp[]): void {
+  const named = new Set<string>()
   for (const op of ops) {
-    const held = op.op === 'remove'
-    for (const id of namedIds(op)) if (partState(read, id, held) !== partState(now, id, held)) throw new DesignFailure(DESIGN_CHANGED)
+    for (const id of namedIds(op)) {
+      named.add(id)
+      if (partState(read, id, op.op) !== partState(now, id, op.op)) throw new DesignFailure(DESIGN_CHANGED)
+    }
   }
+  if (JSON.stringify(linesAt(read, named, true)) !== JSON.stringify(linesAt(now, named, true))) throw new DesignFailure(DESIGN_CHANGED)
 }
 
 /** A design a newer Termpolis saved is shown, never changed (WP3). */
@@ -200,6 +230,8 @@ function writable(doc: WorldDoc): WorldDoc {
 
 /** A refine's change held until the person says yes, because it removes a district with buildings in it (D3). */
 interface Held {
+  /** Names this change: a yes carries it, so it never makes another change held since (DSN Round 1, item 2). */
+  id: string
   mine: number
   read: WorldDoc
   ops: DesignOp[]
@@ -237,6 +269,8 @@ export function createDesigner(deps: DesignerDeps): Designer {
   /** One writer at a time per design key: load, patch and save never interleave (propose, refine). */
   const designLock = createKeyedLock()
   const held = new Map<string, Held>()
+  /** Counts the changes held for a yes, for their ids. */
+  let heldCount = 0
   const now = (): number => (deps.now ? deps.now() : Date.now())
 
   /** Makes the design's folder, runs the agent there and parses its reply. */
@@ -281,12 +315,14 @@ export function createDesigner(deps: DesignerDeps): Designer {
     }
   }
 
+  /** Saves a design; WORLD_SAVED_BY_NEWER when the store found a newer Termpolis saved it just before (DSN Round 1, item 4). */
   const save = async (doc: WorldDoc): Promise<void> => {
     try {
       await deps.store.save(doc)
     } catch {
       throw new DesignFailure(DESIGN_SAVE_FAILED)
     }
+    if (doc.savedByNewer) throw new DesignFailure(WORLD_SAVED_BY_NEWER)
   }
 
   /** The stored design for a key, or a DesignFailure (bad key or none stored: not found; a read error: open failed). */
@@ -370,13 +406,16 @@ export function createDesigner(deps: DesignerDeps): Designer {
       const skipped = patch.skipped.length + reply.dropped
       const result: DesignRefineResult = { doc: out, text: reply.text, applied: patch.applied, skipped, summary: next, tokens: reply.tokens }
       if (patch.removed.length === 0) return result
-      held.set(key, { mine, read: doc, ops: reply.ops, text: reply.text, dropped: reply.dropped, summary: next })
-      return { ...result, confirm: { removals: patch.removed } }
+      const heldId = `held-${++heldCount}`
+      held.set(key, { id: heldId, mine, read: doc, ops: reply.ops, text: reply.text, dropped: reply.dropped, summary: next })
+      // applied 0: nothing is made until the yes (DSN Round 1, item 11).
+      return { ...result, applied: 0, confirm: { removals: patch.removed, id: heldId } }
     },
 
-    async confirm(key) {
+    async confirm(key, id) {
       const h = held.get(key)
-      if (!h) throw new DesignFailure(DESIGN_REPLACED)
+      // A yes for a change no longer held (one replaced since) makes nothing, and leaves the one held waiting.
+      if (!h || h.id !== id) throw new DesignFailure(DESIGN_REPLACED)
       held.delete(key)
       const check = (current: WorldDoc): void => {
         stillMine(key, h.mine)
@@ -391,16 +430,24 @@ export function createDesigner(deps: DesignerDeps): Designer {
       return designLock(key, async () => {
         const doc = writable((await open(key)).doc)
         if (!hasPart(doc, itemId)) throw new DesignFailure(NO_PART)
-        let merged: WorldDoc
+        const clean = cleanClaim(claim)
+        if (clean === null) throw new DesignFailure(DESIGN_SAVE_FAILED)
+        // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
+        const saved = addClaim({ ...doc, generatedAt: Math.max(now(), doc.generatedAt + 1) }, itemId, clean)
+        // The design is saved first, the note stored after (DSN Round 1, item 9): a save that fails, or that finds a
+        // newer Termpolis saved the design, stores no note, so none turns up on the next load after a failure was shown.
+        await save(saved)
         try {
-          await deps.annotations.add(key, itemId, claim)
-          // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
-          merged = { ...mergeAnnotations(doc, await deps.annotations.list(key)), generatedAt: Math.max(now(), doc.generatedAt + 1) }
+          await deps.annotations.add(key, itemId, clean)
         } catch {
           throw new DesignFailure(DESIGN_SAVE_FAILED)
         }
-        await save(merged)
-        return merged
+        try {
+          return mergeAnnotations(saved, await deps.annotations.list(key))
+        } catch {
+          // The note is stored: a list that cannot be read back answers the saved design, which has the note.
+          return saved
+        }
       })
     },
 

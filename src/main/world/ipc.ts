@@ -156,8 +156,8 @@ export interface WorldDesigner {
   draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
   refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
   cancel(key: string): boolean
-  /** Makes the change a refine held for a yes (D3): removing a district that has buildings in it. */
-  confirm(key: string): Promise<DesignRefineResult>
+  /** Makes the change a refine held for a yes (D3), named by its id: removing a district that has buildings in it. */
+  confirm(key: string, id: string): Promise<DesignRefineResult>
   /** A person's confirmation on a design, written by the designer under its lock (D1). */
   annotate(key: string, itemId: string, claim: Claim): Promise<WorldDoc>
 }
@@ -424,8 +424,10 @@ export function registerWorldIpc(
     ipc.handle('world:design-confirm', async (_event: unknown, args?: unknown) => {
       const key = field(args, 'key')
       if (typeof key !== 'string' || !DESIGN_KEY_RE.test(key)) return err('design key required')
+      // The id of the change the yes answers: none, or not a string, matches no held change, so nothing is made.
+      const id = field(args, 'id')
       try {
-        return ok(await designer.confirm(key))
+        return ok(await designer.confirm(key, typeof id === 'string' ? id : ''))
       } catch (e) {
         return designErr(e)
       }

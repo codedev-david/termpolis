@@ -17,6 +17,9 @@
 // A design change that removes a district with buildings in it comes back held (its result carries `confirm`): the
 // pane asks the user through `confirmRemoval`, and a yes makes it (world:design-confirm), a no, or no one to ask, lets
 // main drop it (world:design-cancel). The box stays thinking meanwhile, so a cancel or a newer change drops it too (D3).
+// The yes names the change it answers by its id, so it never makes one held since (DSN Round 1, item 2). A cancel, a
+// newer change or another world while the question is up takes the question down through `dropRemoval`: that is a no
+// (DSN Round 1, item 8).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
 import { cleanQuestion, questionFits } from '../../../../shared/world/askLimits'
@@ -71,6 +74,8 @@ export const DESIGN_LEFT_AS_IT_WAS = 'Lumopolis left the design as it was.'
 
 /** Asks the user whether to remove these districts and their buildings; true for a yes. */
 export type ConfirmRemoval = (removals: DistrictRemoval[]) => Promise<boolean>
+/** Takes down the question ConfirmRemoval put up, as a no. */
+export type DropRemoval = () => void
 
 const noop = (): void => undefined
 
@@ -85,7 +90,7 @@ function reducedMotion(): boolean {
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>, confirmRemoval?: ConfirmRemoval): UseWorldAsk {
+export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string, whenComplete?: () => Promise<boolean | void>, confirmRemoval?: ConfirmRemoval, dropRemoval?: DropRemoval): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
@@ -104,6 +109,10 @@ export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (
   whenCompleteRef.current = whenComplete
   const confirmRemovalRef = useRef(confirmRemoval)
   confirmRemovalRef.current = confirmRemoval
+  const dropRemovalRef = useRef(dropRemoval)
+  dropRemovalRef.current = dropRemoval
+  /** The design change whose question is up now, waiting for the user's answer; null when none is. */
+  const asking = useRef<string | null>(null)
   /** Bumped by every question, a dismissal and a root change: an answer whose tour waited plays only if none came since. */
   const answerGen = useRef(0)
   /** The design proposal on show; read when a question is sent, so a change of proposal never recreates `ask`. */
@@ -145,6 +154,11 @@ export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (
     const id = current.current
     current.current = null
     if (id !== null) void Promise.resolve(stopCurrent.current()).catch(noop)
+    // Its question is up: it is taken down, as a no (DSN Round 1, item 8).
+    if (asking.current !== null) {
+      asking.current = null
+      dropRemovalRef.current?.()
+    }
   }, [])
 
   /** Shows the answer sentence by sentence, playing each one's steps as it appears. */
@@ -221,14 +235,16 @@ export function useWorldAsk(viewer: AskPlayer | null, root: string, onDesign?: (
           const held = res.data.confirm
           if (held === undefined) return made(res.data)
           const confirmIt = confirmRemovalRef.current
+          asking.current = confirmIt ? askId : null
           const yes = confirmIt ? await confirmIt(held.removals) : false
           // Cancelled or replaced while the question was up: its own cancel already let main drop the change.
           if (current.current !== askId) return
+          asking.current = null
           if (!yes) {
             void Promise.resolve(window.termpolis.worldDesignCancel(root)).catch(noop)
             return show(DESIGN_LEFT_AS_IT_WAS)
           }
-          const done = await window.termpolis.worldDesignConfirm(root)
+          const done = await window.termpolis.worldDesignConfirm(root, held.id)
           if (current.current !== askId) return
           if (!done.success) return fail(done.error)
           made(done.data)

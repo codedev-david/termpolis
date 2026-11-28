@@ -688,6 +688,11 @@ describe('design annotations are written by the designer, under the design lock 
     expect(await failure(noAdd.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
     const noSave = setup(noRun, { store: { ...real, save: async () => { throw new Error('ENOSPC') } } })
     expect(await failure(noSave.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
+    // A note that is not well formed is refused before the design is saved, so nothing is written.
+    const save = vi.fn(real.save)
+    const bad = setup(noRun, { store: { ...real, save } })
+    expect(await failure(bad.designer.annotate('design:id1', 'api', { text: 'x', state: 'verified', evidence: [] }))).toBe(DESIGN_SAVE_FAILED)
+    expect(save).not.toHaveBeenCalled()
   })
 })
 

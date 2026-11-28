@@ -294,7 +294,7 @@ const api: TermpolisAPI = {
   worldDesignDraft: (description: string, cancelKey?: string, model?: string) => ipcRenderer.invoke('world:design-draft', { description, ...(cancelKey === undefined ? {} : { cancelKey }), ...(model === undefined ? {} : { model }) }),
   worldDesignRefine: (key: string, message: string, summary: string, model?: string) => ipcRenderer.invoke('world:design-refine', { key, message, summary, ...(model === undefined ? {} : { model }) }),
   worldDesignCancel: (key: string) => ipcRenderer.invoke('world:design-cancel', { key }),
-  worldDesignConfirm: (key: string) => ipcRenderer.invoke('world:design-confirm', { key }),
+  worldDesignConfirm: (key: string, id: string) => ipcRenderer.invoke('world:design-confirm', { key, id }),
   worldDesignGet: (key: string) => ipcRenderer.invoke('world:design-get', { key }),
   worldSourcesList: () => ipcRenderer.invoke('world:sources-list'),
   worldMapProject: (root: string) => ipcRenderer.invoke('world:map-project', { root }),

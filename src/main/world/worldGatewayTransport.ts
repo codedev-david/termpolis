@@ -26,6 +26,7 @@ import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure, typ
 import { createKeyedLock } from './keyedLock'
 import { keyForSource, type SourceRegistry, type WorldSource } from './sources'
 import type { WorldClient } from './worldClient'
+import { WORLD_SAVED_BY_NEWER } from './worldStore'
 
 export const WORLD_GATEWAY_ID = 'lumopolis'
 export const WORLD_READ_TOOL = 'world_read'
@@ -309,6 +310,8 @@ export function createWorldGatewayTransport(
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       if (m === NO_PART_MESSAGE) fail(NO_PART_MESSAGE)
+      // A world a newer Termpolis saved is refused in its own words, as the pane says it (DSN Round 1, item 10).
+      if (m === WORLD_SAVED_BY_NEWER) fail(WORLD_SAVED_BY_NEWER)
       fail(m === 'No world with that key.' ? (p.designKey === undefined ? NO_WORLD_MESSAGE : NO_DESIGN_MESSAGE) : ANNOTATE_FAILED_MESSAGE)
     }
     return JSON.stringify({ ok: true, id: p.id, state: claim.state, evidence: claim.evidence.length, dropped })

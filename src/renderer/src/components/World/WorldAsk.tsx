@@ -17,6 +17,7 @@ import { formatTokens } from '../../../../shared/world/tokens'
 import { spokenText } from '../../../../shared/world/answerMarkdown'
 import { MAX_QUESTION_CHARS } from '../../../../shared/world/askLimits'
 import { isDesignKey, useWorldAsk, type AskPlayer } from './useWorldAsk'
+import { savedByNewerNotice } from './worldNotes'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { useTerminalStore } from '../../store/terminalStore'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction } from '../../lib/voice/voicePipeline'
@@ -87,7 +88,7 @@ const pieceBudget = (piece: string): number => {
 }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined, link?.whenComplete, link?.confirmRemoval)
+  const { ask, cancel, retry, replay, dismiss, stop, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined, link?.whenComplete, link?.confirmRemoval, link?.dropRemoval)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -287,8 +288,17 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     said.current.count = revealed
   }, [state, answer, revealed])
 
+  // A design a newer Termpolis saved since it opened: main refused a change or a yes for it (DSN Round 1, item 6). The
+  // box goes off for that design from then on, and the pane is told once, so its cards lose Confirm and Edit too.
+  const [newerAt, setNewerAt] = useState<string | null>(null)
+  const refusedAsNewer = design && error === savedByNewerNotice()
+  useEffect(() => {
+    if (!refusedAsNewer || newerAt === root) return
+    setNewerAt(root)
+    link?.readOnly?.()
+  }, [refusedAsNewer, newerAt, root, link])
   // A design a newer Termpolis saved is read-only: main refuses every change to it, so none is asked for (WP3).
-  const disabled = root === '' || (viewer === null && !design) || (design && doc?.savedByNewer === true)
+  const disabled = root === '' || (viewer === null && !design) || (design && (doc?.savedByNewer === true || newerAt === root))
   const placeholder = design ? 'Change the design…' : 'Ask about this project…'
   // A disabled button gets no release, so a press in progress ends here rather than firing late.
   useEffect(() => { if (disabled) endPressRef.current() }, [disabled])

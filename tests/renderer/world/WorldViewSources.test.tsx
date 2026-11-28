@@ -201,6 +201,7 @@ describe('WorldView: the question before a design change removes a district with
     const m = await mount('/repo')
     switchTo('design:d1')
     await settle()
+    act(() => { viewer().opts.renderCard('<h2>Shop</h2>') })
     openIt()
     await settle()
     expect(other()).not.toBeNull()

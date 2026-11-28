@@ -177,11 +177,16 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
 
   const readText = (file: string): Promise<string> => retryLocked(() => read(file, 'utf8'), sleep)
 
-  /** Writes `text` to `target` through a temp file, removing the temp file when the write fails. */
-  async function writeAtomic(target: string, text: string): Promise<void> {
+  /** Writes `text` to `target` through a temp file, removing the temp file when the write fails. With `beforeRename`,
+   *  the temp file is put in place only when it answers true once the temp file is written; false removes it instead. */
+  async function writeAtomic(target: string, text: string, beforeRename?: () => Promise<boolean>): Promise<void> {
     const tmp = tmpFor(target)
     try {
       await fsp.writeFile(tmp, text, 'utf8')
+      if (beforeRename && !(await beforeRename())) {
+        await fsp.rm(tmp, { force: true })
+        return
+      }
       await retryLocked(() => rename(tmp, target), sleep)
     } catch (err) {
       await fsp.rm(tmp, { force: true })
@@ -275,7 +280,26 @@ export function createWorldStore(dir: string, deps: WorldStoreDeps = {}): WorldS
         return
       }
       await fsp.mkdir(folder, { recursive: true })
-      await writeAtomic(join(folder, name), JSON.stringify(clean))
+      const file = join(folder, name)
+      // DSN Round 1, item 4: another Termpolis, a newer one, may have saved this world since the load above. The file is
+      // read again once the temp copy is written, just before the rename, and a newer world found there is kept: this
+      // copy goes in memory only, as when the load had found it. A gap remains between that read and the rename (a few
+      // microseconds on a local disk): a newer version writing in that gap is still written over. Closing it would take
+      // an OS file lock both versions honour, which older versions do not take; the gap is noted in dsn-report.md.
+      await writeAtomic(file, JSON.stringify(clean), async () => {
+        let text: string
+        try {
+          text = await readText(file)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(name, `could not be read before a save: ${String(err)}`)
+          return true
+        }
+        if (!isNewerWorld(parseOrUndefined(text))) return true
+        newerOnDisk.set(name, true)
+        shadow.set(name, structuredClone(clean))
+        doc.savedByNewer = true
+        return false
+      })
     },
 
     async loadStages(projectKey) {

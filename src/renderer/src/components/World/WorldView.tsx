@@ -115,9 +115,18 @@ export interface WorldAskLink {
   whenComplete?(): Promise<boolean>
   /**
    * Asks the user, in the pane, whether to make a design change that removes these districts with their buildings;
-   * true for Remove. It answers false when the pane closes or opens another world meanwhile (D3).
+   * true for Remove. It answers false when the pane closes or opens another world meanwhile (D3). With Build it, Export
+   * or Documentation open, the question waits and shows once that dialog closes: never two dialogs at once (DSN Round 1,
+   * item 7).
    */
   confirmRemoval?(removals: DistrictRemoval[]): Promise<boolean>
+  /** Takes down the question confirmRemoval put up, answering it no: its change was cancelled or replaced (DSN Round 1, item 8). */
+  dropRemoval?(): void
+  /**
+   * Main refused the box a change or a yes because a newer Termpolis saved the design since the pane opened it: the
+   * design shown is marked so, as one opened so is, and its cards lose Confirm and Edit (DSN Round 1, item 6).
+   */
+  readOnly?(): void
 }
 
 /** The question before a design change removes districts with buildings in them, and how it is answered (D3). */
@@ -416,6 +425,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const heldDocRef = useRef<WorldDoc | null>(null)
   /** The doc a status-only push brought (CI's late answer, WP4b fix round 1, M6): the viewer restyles it in place. */
   const statusOnlyRef = useRef<WorldDoc | null>(null)
+  /** Shows `d` marked as saved by a newer Termpolis (WP3), restyled in place: the parts are the ones the viewer holds. */
+  const markReadOnly = (d: WorldDoc): void => {
+    const marked = { ...d, savedByNewer: true }
+    statusOnlyRef.current = marked
+    setDoc(marked)
+  }
   /** Tours waiting for the complete world to be shown (askLink.whenComplete): let go when the pane's doc is no first map. */
   const completeWaitersRef = useRef<Array<() => void>>([])
   /** Lets every waiting tour go (each then checks whether the pane is still on its world). */
@@ -438,6 +453,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       removingRef.current = r
       setRemoving(r)
     }),
+    dropRemoval: () => answerRemoval(false),
+    readOnly: () => {
+      const d = docRef.current
+      if (mountedRef.current && d !== null && d.savedByNewer !== true) markReadOnly(d)
+    },
     setBusy: (b) => {
       askBusyRef.current = b
       const held = heldDocRef.current
@@ -1033,12 +1053,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
    * doc shown so, as one opened so is: its note stays up and its cards lose Confirm and Edit (WP3).
    */
   const refused = (d: WorldDoc, error: string, sentence: string): void => {
-    if (error === savedByNewerNotice()) {
-      // Restyled in place: the parts are the ones the viewer holds.
-      const marked = { ...d, savedByNewer: true }
-      statusOnlyRef.current = marked
-      setDoc(marked)
-    }
+    if (error === savedByNewerNotice()) markReadOnly(d)
     setNotice(annotateFailed(error, sentence))
   }
   /** Confirm on an inferred claim: a person's verified copy is stored and the pane shows the doc that comes back. */
@@ -1130,7 +1145,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (tokenOpen) { closeToken(); return }
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
-    if (removing !== null) { answerRemoval(false); return }
+    if (removalShown) { answerRemoval(false); return }
     if (building) { setBuilding(false); return }
     if (exporting !== null) { setExporting(null); return }
     // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
@@ -1224,12 +1239,18 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** Export or Build it is open: the toolbar's buttons for both are off, so a running export is never cut short. */
   const dialogOpen = building || exporting !== null
   /**
+   * The question before a design change removes districts is on screen: it waits while another dialog of the pane is up,
+   * and shows once that one closes, so two are never up together and an Esc on the other never answers it (DSN Round 1,
+   * item 7). The re-layout question and the token dialog are a repository world's, never up on a design.
+   */
+  const removalShown = removing !== null && !dialogOpen
+  /**
    * A dialog of the pane is up (Build it, Export, Documentation, the re-layout question, the token dialog): the pane
    * behind it is inert under a scrim, so a click on the map, the Ask box, the card or the toolbar does nothing, and two
    * of them are never up together (A11Y fix round 1, I1). The terminals beside the pane are left alone: the dialogs
    * are no aria-modal ones, which would hide them from VoiceOver too.
    */
-  const paneModal = dialogOpen || confirmRelayout || removing !== null || (repoUpdate !== null && tokenOpen)
+  const paneModal = dialogOpen || confirmRelayout || removalShown || (repoUpdate !== null && tokenOpen)
   // With a dialog of the pane up, everything on the stage but the dialogs on it (the re-layout question, the token
   // dialog) is inert: the map, its 2D stand-in, the card, the notices and the Ask box (A11Y fix round 1, I1). Each child
   // is set apart, as the stage's children are the panels the map's labels keep clear of. React 18 does not pass
@@ -1403,7 +1424,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {legendShown && doc && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} solid={solid} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && <RelayoutConfirm zoom={zoom} onCancel={() => setConfirmRelayout(false)} onConfirm={relayout} />}
-        {removing && <RemoveDistrictConfirm zoom={zoom} removals={removing.removals} onCancel={() => answerRemoval(false)} onConfirm={() => answerRemoval(true)} />}
+        {removing !== null && removalShown && <RemoveDistrictConfirm zoom={zoom} removals={removing.removals} onCancel={() => answerRemoval(false)} onConfirm={() => answerRemoval(true)} />}
         {(repoUpdate || busy || notice || saved || recompileShown) && (
           <div style={{ position: 'absolute', ...noticeAt, transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (

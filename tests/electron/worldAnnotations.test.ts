@@ -8,6 +8,7 @@ import { cardText } from '../../src/main/world/cardText'
 import { filterWorld } from '../../src/main/world/worldHost'
 import { minimal } from '../renderer/world/helpers'
 import {
+  addClaim,
   createAnnotationStore,
   hasPart,
   MAX_ANNOTATION_EVIDENCE,
@@ -22,6 +23,7 @@ import {
 import { CLAIM_TRIES } from '../../src/main/world/storeFiles'
 import { createWorldStore, WORLD_READ_FAILED, WorldReadError, worldFileName } from '../../src/main/world/worldStore'
 import type { Claim, WorldDoc } from '../../src/shared/world/types'
+import { runtimeText } from '../../src/shared/world/runtimeNames'
 
 const person = (text: string): Claim => ({
   text,
@@ -540,5 +542,33 @@ describe('withAnnotations', () => {
     const own = { ...minimal(), projectKey: 'design:y' } as WorldDoc
     await store.save(own)
     expect(own.savedByNewer).toBeUndefined()
+  })
+})
+
+describe('addClaim: one more stored note, as a merge with it shows it (DSN Round 1, item 9)', () => {
+  const person = (text: string): Claim => ({ text, state: 'verified', evidence: [{ kind: 'person', ref: 'pane' }] })
+
+  it('a note goes on the card of the building or line it names, and on no other part', () => {
+    const doc = minimal()
+    const onBuilding = addClaim(doc, 'b1', person('Takes orders.'))
+    expect(onBuilding.buildings.find((b) => b.id === 'b1')?.claims.slice(-1)).toEqual([person('Takes orders.')])
+    expect(onBuilding.buildings.filter((b) => b.id !== 'b1')).toEqual(doc.buildings.filter((b) => b.id !== 'b1'))
+    expect(onBuilding.edges).toEqual(doc.edges)
+    const onLine = addClaim(doc, doc.edges[0].id, person('Every order.'))
+    expect(onLine.edges[0].claims.slice(-1)).toEqual([person('Every order.')])
+    expect(onLine.buildings).toEqual(doc.buildings)
+    expect(doc.buildings.find((b) => b.id === 'b1')?.claims).not.toContainEqual(person('Takes orders.'))
+  })
+
+  it('a runtime-names note sets the service names by hand, and an empty one clears them; the cards are left alone', () => {
+    const doc = { ...minimal(), runtimeNames: { b2: ['other'] }, runtimeHandSet: ['b2'] }
+    const set = addClaim(doc, 'b1', person(runtimeText(['orders-api', 'orders'])))
+    expect(set.runtimeNames).toEqual({ b2: ['other'], b1: ['orders-api', 'orders'] })
+    expect(set.runtimeHandSet).toEqual(['b1', 'b2'])
+    expect(set.buildings).toEqual(doc.buildings)
+    const cleared = addClaim(set, 'b2', person(runtimeText([])))
+    expect(cleared.runtimeNames).toEqual({ b1: ['orders-api', 'orders'] })
+    expect(cleared.runtimeHandSet).toEqual(['b1', 'b2'])
+    expect(addClaim(minimal(), 'b1', person(runtimeText(['x']))).runtimeHandSet).toEqual(['b1'])
   })
 })

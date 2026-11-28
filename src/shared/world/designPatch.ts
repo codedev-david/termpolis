@@ -25,8 +25,13 @@ type Pos = [number, number, number]
 /** Given a doc whose layout holds only the positions to keep, returns positions for every district and building. */
 export type DesignPlacer = (doc: WorldDoc) => Record<string, Pos>
 
-/** A district a patch removed while it still held buildings, and how many it held then (they go with it). */
+/**
+ * A district a patch removed with buildings in it, and how many go with it: those it held when it was removed, and
+ * those of the design before the change that earlier ops of the same change took out of it (DSN Round 1, item 1).
+ */
 export interface DistrictRemoval { id: string; name: string; buildings: number }
+/** A district removed by a patch: its name, and the buildings it held when it was removed. */
+type Taken = Map<string, { name: string; ids: Set<string> }>
 export interface DesignPatchResult {
   doc: WorldDoc
   applied: number
@@ -221,7 +226,7 @@ function removeItem(doc: WorldDoc, id: string): string | null {
 }
 
 /** Applies one checked op to `doc` in place; returns why it can't apply, or null once applied. */
-function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>, removed: DistrictRemoval[]): string | null {
+function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>, taken: Taken): string | null {
   const claim = (text: string): Claim => ({ text, state: 'proposed', evidence: [{ kind: 'memory', ref }] })
   const district = (id: string) => doc.districts.find((d) => d.id === id)
   const building = (id: string) => doc.buildings.find((b) => b.id === id)
@@ -299,11 +304,34 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>, 
     }
     default: {
       const d = district(op.id)
-      const held = d ? doc.buildings.filter((b) => b.districtId === op.id).length : 0
-      if (d && held > 0) removed.push({ id: d.id, name: d.name, buildings: held })
+      if (d) {
+        const t = taken.get(d.id) ?? { name: d.name, ids: new Set<string>() }
+        for (const b of doc.buildings) if (b.districtId === d.id) t.ids.add(b.id)
+        taken.set(d.id, t)
+      }
       return removeItem(doc, op.id)
     }
   }
+}
+
+/**
+ * The districts a patch removed with buildings in them, in the order the ops removed them, each counted against the
+ * design before the change (DSN Round 1, item 1): a building of `before` that the change took away and that no removed
+ * district held when it went counts for its district in `before`, when the change removed that district. So a reply
+ * that takes a district's buildings out one by one and then removes it still asks first, as one removing it whole does.
+ * A building the change added to a district before removing it counts too: it was in the district when it went.
+ */
+function removals(before: WorldDoc, after: WorldDoc, taken: Taken): DistrictRemoval[] {
+  const left = new Set(after.buildings.map((b) => b.id))
+  const held = new Set<string>()
+  for (const t of taken.values()) for (const id of t.ids) held.add(id)
+  for (const b of before.buildings) {
+    const t = taken.get(b.districtId)
+    if (t && !left.has(b.id) && !held.has(b.id)) t.ids.add(b.id)
+  }
+  const out: DistrictRemoval[] = []
+  for (const [id, t] of taken) if (t.ids.size > 0) out.push({ id, name: t.name, buildings: t.ids.size })
+  return out
 }
 
 /**
@@ -316,15 +344,16 @@ export function applyDesignPatch(doc: WorldDoc, ops: DesignOp[], place: DesignPl
   const ref = doc.projectKey.startsWith('design:') ? doc.projectKey : `design:${doc.projectKey}`
   const moved = new Set<string>()
   const skipped: DesignPatchResult['skipped'] = []
-  const removed: DistrictRemoval[] = []
+  const taken: Taken = new Map()
   let applied = 0
   for (const raw of ops) {
     const op = normalizeOp(raw)
-    const reason = op ? applyOne(work, op, ref, moved, removed) : 'not a change Lumopolis understands'
+    const reason = op ? applyOne(work, op, ref, moved, taken) : 'not a change Lumopolis understands'
     if (reason === null) applied++
     else skipped.push({ op: raw, reason })
   }
   if (applied === 0) return { doc, applied, skipped, removed: [] }
+  const removed = removals(doc, work, taken)
   // A line whose reverse is in the design runs both ways; an explicit true an agent wrote is kept.
   work.edges = markTwoWay(work.edges)
 

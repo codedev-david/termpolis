@@ -710,7 +710,7 @@ export interface TermpolisAPI {
   worldDesignCancel: (key: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: makes the change a refine held back because it removes a district with buildings in it (its result
    *  carried `confirm`), once the user said yes; worldDesignCancel drops it instead (D3). */
-  worldDesignConfirm: (key: string) => Promise<IpcResponse<DesignRefineResult>>
+  worldDesignConfirm: (key: string, id: string) => Promise<IpcResponse<DesignRefineResult>>
   /** Lumopolis: a stored design world. */
   worldDesignGet: (key: string) => Promise<IpcResponse<WorldDoc>>
   /** Lumopolis home: recent worlds, newest first; `missing` marks one whose folder, clone or design is gone. */

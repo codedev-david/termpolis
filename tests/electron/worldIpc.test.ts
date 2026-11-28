@@ -495,7 +495,7 @@ describe('registerWorldIpc design handlers', () => {
     for (const args of [undefined, 'design:d1', {}, { key: 'C:/repo' }, { key: 'design:..' }, { key: 'draft:t1' }, { key: 7 }]) {
       expect(await s.invoke('world:design-confirm', args)).toEqual({ success: false, error: 'design key required' })
     }
-    expect(d.confirm).toHaveBeenCalledTimes(1)
+    expect(d.confirm).not.toHaveBeenCalled()
     d.confirm.mockRejectedValueOnce(new DesignFailure(DESIGN_REPLACED))
     expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: false, error: DESIGN_REPLACED })
     d.confirm.mockRejectedValueOnce(new DesignFailure(DESIGN_CHANGED))

@@ -44,7 +44,7 @@ export const EVIDENCE_KINDS = new Set<string>(['file', 'symbol', 'test', 'transc
 const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** A well-formed, capped claim from whatever was given (or read back from disk), else null. */
-function cleanClaim(v: unknown): Claim | null {
+export function cleanClaim(v: unknown): Claim | null {
   if (!isRec(v) || typeof v.text !== 'string' || !STATES.has(v.state as string) || !Array.isArray(v.evidence)) return null
   const evidence: Evidence[] = []
   for (const e of v.evidence) {
@@ -613,6 +613,23 @@ export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>)
   const base: WorldDoc = { ...doc }
   delete base.runtimeHandSet
   return { ...base, buildings, edges, runtimeNames, ...(handSet.size > 0 ? { runtimeHandSet: [...handSet].sort() } : {}) }
+}
+
+/**
+ * The doc with one more stored note on the part `itemId`, as a merge with it would show it: a hand-edited runtime-names
+ * note sets the part's service names (an empty one clears them); any other note goes on the part's card. For a design
+ * whose stored notes cannot be read back just after one was added (DSN Round 1, item 9).
+ */
+export function addClaim(doc: WorldDoc, itemId: string, claim: Claim): WorldDoc {
+  if (isRuntime(claim)) {
+    const runtimeNames = { ...doc.runtimeNames }
+    const names = namesOfRuntimeText(claim.text)
+    if (names.length > 0) runtimeNames[itemId] = names
+    else delete runtimeNames[itemId]
+    return { ...doc, runtimeNames, runtimeHandSet: [...new Set([...(doc.runtimeHandSet ?? []), itemId])].sort() }
+  }
+  const add = <T extends { id: string; claims: Claim[] }>(item: T): T => (item.id === itemId ? { ...item, claims: [...item.claims, claim] } : item)
+  return { ...doc, buildings: doc.buildings.map(add), edges: doc.edges.map(add) }
 }
 
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */

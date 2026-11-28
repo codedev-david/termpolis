@@ -175,10 +175,10 @@ export type AskResult =
 export interface DesignDraftResult { key: string; doc: WorldDoc; text: string; tokens: number }
 /** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary.
  *  `confirm`: the change would remove these districts with buildings in them, so nothing was saved and doc is the design
- *  as it is; world:design-confirm makes the change (DSN D3). */
+ *  as it is and applied is 0; world:design-confirm with its id makes the change (DSN D3, Round 1 items 2 and 11). */
 export interface DesignRefineResult {
   doc: WorldDoc; text: string; applied: number; skipped: number; summary: string; tokens: number
-  confirm?: { removals: import('./designPatch').DistrictRemoval[] }
+  confirm?: { removals: import('./designPatch').DistrictRemoval[]; id: string }
 }
 
 // ---- Lumopolis sources (renderer <-> main): the worlds the user has opened, newest first ----
