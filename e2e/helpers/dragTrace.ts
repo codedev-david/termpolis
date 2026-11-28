@@ -252,7 +252,7 @@ export function heldAll(xs: TraceEvent[]): number {
  * (in a long task the trace does not hold, its wall) or, in none, 50 ms (a task as long would be a long task);
  * `fitsTraced` counts the fits in a task.
  */
-export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[], marker: string): { traced: number; spread: number; thread: string; marker: { held: boolean; from: number; to: number; threads: string[] }; resizes: OwnTime[]; tasks: OwnTime[]; taskFit: boolean[]; fitSkew: number; fitCpu: number; fitsTraced: number; pairs: Record<string, number>; unpaired: Array<{ kind: Unpaired['kind']; name: string; at: number }> } {
+export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSpan[], fits: PageSpan[], marker: string): { traced: number; spread: number; thread: string; marker: { held: boolean; from: number; to: number; threads: string[] }; resizes: OwnTime[]; tasks: OwnTime[]; taskFit: boolean[]; withheld: number; fitSkew: number; fitCpu: number; fitsTraced: number; pairs: Record<string, number>; unpaired: Array<{ kind: Unpaired['kind']; name: string; at: number }> } {
   const { events, open, pairs: allPairs, unpaired } = paired(raw)
   const key = (e: { pid: number; tid: number }): string => `${e.pid}:${e.tid}`
   const asyncId = (e: TraceEvent): string => e.id ?? e.id2?.local ?? e.id2?.global ?? ''
@@ -379,15 +379,20 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   // measure begun within FIT_SLACK after the task's end still tags it (the residual, as note (10) (f)'s). Else, as the
   // page tags it, the fit within 1 ms of it on the page's clock (a long task's numbers may be whole ms): a task the trace
   // does not hold is charged its wall by both rule sets. The trace holds a long task only on a clock put from the page's
-  // (`off`), so the fit's place there is defined.
-  const holds = (t: number, j: number): boolean => {
+  // (`off`), so the fit's place there is defined. Round 8 (Codex and Opus): the page's number is put there only on a
+  // settled clock, the resizes agreeing to FIT_SLACK / 2 (the residual for it FIT_SLACK plus the spread, 0.375 ms at
+  // most); on a clock they show drifting (a spread of 0.25 put a measure the trace dropped, 0.4 ms after a 400 ms stall,
+  // 0.15 ms after it, and the stall passed as the fit's) a dropped measure gives no long task a fit (fail closed), and
+  // `withheld` counts the long tasks that alone kept from one, which the e2e logs. `free` asks as if it were settled.
+  const holds = (t: number, j: number, free = false): boolean => {
     const run = taskRuns[t]
     if (!run) return fits[j].start >= longTasks[t].start - 1 && fits[j].start + fits[j].ms <= longTasks[t].start + longTasks[t].ms + 1
-    const at = near[j].length ? near[j] : [{ s: (fits[j].start + off) * 1000, e: (fits[j].start + off + fits[j].ms) * 1000 }]
+    const at = near[j].length ? near[j] : settled || free ? [{ s: (fits[j].start + off) * 1000, e: (fits[j].start + off + fits[j].ms) * 1000 }] : []
     return at.some((x) => x.s >= run.ts - FIT_SLACK && x.e <= end(run) + FIT_SLACK)
   }
   // Each long task a fit's or not, by `holds` (dragVerdict judges each by the rules this gives it).
   const taskFit = longTasks.map((_, t) => fits.some((_, j) => holds(t, j)))
+  const withheld = longTasks.filter((_, t) => !taskFit[t] && fits.some((_, j) => holds(t, j, true))).length
   // How far a fit's measure lies outside the nearest task the trace holds whole, the worst (ms; 0 with none, or no task):
   // the margin FIT_SLACK keeps, logged by the e2e (Round 7).
   const fitSkew = runs.length ? Math.max(0, ...near.flat().map((x) => Math.min(...runs.map((r) => Math.max(0, r.ts - x.s, x.e - end(r)))) / 1000)) : 0
@@ -417,7 +422,7 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   // Each long task once, at least its thread time; the groups are not taken together, as a task in two is charged twice.
   const fitCpu = [...held].reduce((t, [at, xs]) => t + Math.max(heldAll([...xs]) / 1000, at < 0 ? 0 : tasks[at].cpu), 0) + fitWalls
   const onPage = allPairs.get(main) ?? new Map<string, number>()
-  return { traced: offs.length, spread, thread: names.get(main) ?? main, marker: { held: !!mark, from: marks.from.length, to: marks.to.length, threads: markThreads.map((k) => names.get(k) || k) }, resizes, tasks, taskFit, fitSkew, fitCpu, fitsTraced, pairs: Object.fromEntries(onPage), unpaired: unpaired.filter((u) => u.thread === main).map((u) => ({ kind: u.kind, name: u.name, at: u.ts / 1000 - off })) }
+  return { traced: offs.length, spread, thread: names.get(main) ?? main, marker: { held: !!mark, from: marks.from.length, to: marks.to.length, threads: markThreads.map((k) => names.get(k) || k) }, resizes, tasks, taskFit, withheld, fitSkew, fitCpu, fitsTraced, pairs: Object.fromEntries(onPage), unpaired: unpaired.filter((u) => u.thread === main).map((u) => ({ kind: u.kind, name: u.name, at: u.ts / 1000 - off })) }
 }
 
 /**

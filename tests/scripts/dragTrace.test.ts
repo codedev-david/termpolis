@@ -1005,6 +1005,42 @@ describe('the drag trace (dragTrace)', () => {
     expect(broken(other)).toEqual([])
   })
 
+  // Round 8, Codex and Opus (Codex's clock probe): the page's number for a fit whose measure the trace dropped was put on
+  // the trace's clock however far the resizes disagreed on it; at a spread of 0.25 ms a fit 0.4 ms after a 400 ms stall
+  // could land 0.15 ms after it, within FIT_SLACK, and the stall passed as the fit's. Here the resizes disagree by d
+  // and the page puts the dropped fit 0.15 ms past the stall: on a settled clock (d <= FIT_SLACK / 2) it still tags the
+  // stall (the residual, FIT_SLACK plus the spread), on a drifting one it gives no long task a fit (fail closed) and
+  // the drag counts the long task it withheld; a measure the trace holds is still placed by the trace.
+  it("gives a fit the trace dropped no long task on a clock the resizes show drifting (Codex Round 8: spread 0.25, the stall passed as the fit's)", () => {
+    const q = quiet()
+    const STALL = { start: 3000, ms: 400, fit: true }
+    const stall = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 3000, 400, 4), X('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 3002, 395, 0.01)]
+    const resizes = (d: number): DragInput['resizes'] => q.resizes.map((r, i) => (i !== 5 ? r : { ...r, start: r.start - d }))
+    const dropped = (d: number): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: stall, tasks: [FIT, STALL], fits: [...q.fits, { start: 3400.15, ms: 0.03 }], resizes: resizes(d) }))
+    const drift = dropped(0.25)
+    expect(drift.own.spread).toBeCloseTo(0.25, 6)
+    expect(drift.own.taskFit).toEqual([true, false])
+    expect(drift.own.withheld).toBe(1)
+    expect(fails(drift, "of its own, the fit's left out")).toEqual(['400/399'])
+    expect(fails(drift, "on the wall, the fit's left out")).toEqual(['400'])
+    expect(drift.retagged).toEqual([{ start: 3000, ms: 400, page: true }])
+    // Settled, at a spread up to FIT_SLACK / 2: the projection tags it (the residual) and nothing is withheld.
+    for (const d of [0, 0.12, 0.125]) {
+      expect(dropped(d).own.taskFit).toEqual([true, true])
+      expect(dropped(d).own.withheld).toBe(0)
+      expect(broken(dropped(d))).toEqual([])
+    }
+    expect(dropped(0.126).own.taskFit).toEqual([true, false])
+    // A projection that would not have tagged it withholds nothing; nor does the trace's own measure on the drifting clock.
+    const far = dragVerdict(input({ events: stall, tasks: [FIT, STALL], fits: [...q.fits, { start: 3400.4, ms: 0.03 }], resizes: resizes(0.25) }))
+    expect(far.own.taskFit).toEqual([true, false])
+    expect(far.own.withheld).toBe(0)
+    const kept = dragVerdict(input({ events: [...stall, X('ThreadControllerImpl::RunTask', 'toplevel', 3400.05, 0.5, 0.3), ...fitNamed(3400.15, 0.03)], tasks: [FIT, STALL], fits: [...q.fits, { start: 3400.15, ms: 0.03 }], resizes: resizes(0.25) }))
+    expect(kept.own.taskFit).toEqual([true, true])
+    expect(kept.own.withheld).toBe(0)
+    expect(dragVerdict(input()).own.withheld).toBe(0)
+  })
+
   // Round 7: the worst a fit's measure lies outside every task the trace holds whole, logged by the e2e (the margin FIT_SLACK keeps).
   it("gives how far a fit's measure lies outside the nearest task the trace holds, the worst", () => {
     const q = quiet()
