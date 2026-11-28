@@ -20,6 +20,7 @@ import { DocumentDialog } from '../../../src/renderer/src/components/World/Docum
 import { ExportDialog } from '../../../src/renderer/src/components/World/ExportDialog'
 import { RepoAccessDialog } from '../../../src/renderer/src/components/World/RepoAccessDialog'
 import { RelayoutConfirm } from '../../../src/renderer/src/components/World/RelayoutConfirm'
+import { RemoveDistrictConfirm } from '../../../src/renderer/src/components/World/RemoveDistrictConfirm'
 
 const ok = <T,>(data: T) => ({ success: true as const, data })
 const never = () => new Promise<never>(() => undefined)
@@ -43,6 +44,7 @@ const dialogs: [string, Dialog, boolean][] = [
   ['Export', (onClose) => <ExportDialog onSaved={vi.fn()} onClose={onClose} />, true],
   ['Document', (onClose) => <DocumentDialog projectName="p" picture={() => null} onSaved={vi.fn()} onClose={onClose} />, true],
   ['Relayout', (onClose) => <RelayoutConfirm zoom={{}} onCancel={onClose} onConfirm={vi.fn()} />, true],
+  ['Remove district', (onClose) => <RemoveDistrictConfirm zoom={{}} removals={[{ id: 'c', name: 'Core', buildings: 2 }]} onCancel={onClose} onConfirm={vi.fn()} />, true],
   ['Design', (onClose) => <DesignStart onDrafted={vi.fn()} onClose={onClose} />, false],
   ['Clone', (onClose) => <CloneDialog onCloned={vi.fn()} onClose={onClose} />, false],
   ['Token', (onClose) => <RepoAccessDialog host="github.com" busy={false} error={null} onSubmit={vi.fn()} onCancel={onClose} />, false],
