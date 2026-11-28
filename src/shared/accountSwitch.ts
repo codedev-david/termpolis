@@ -369,7 +369,8 @@ export type SwitchOutcome =
   /** Termpolis can't tell whether the agent still runs: has it exited? Nothing was typed. `osSees`: the operating system
    *  itself still showed a program running in the terminal (not merely nothing readable on the screen). */
   | { kind: 'unknown-exit'; osSees?: true }
-  /** The exit command went in, but no exit showed within 8 s: nothing more was typed. `osSees` as above. */
+  /** The exit command went in, but no exit showed within 8 s; or the resume line went in, the target couldn't see the
+   *  conversation, and nothing proves the program that said so exited: nothing more was typed. `osSees` as above. */
   | { kind: 'exit-unconfirmed'; osSees?: true }
   /** The line landed in the agent's own box (it never exited): it was cleared, and not entered. */
   | { kind: 'agent-alive' }
@@ -378,8 +379,8 @@ export type SwitchOutcome =
    *  it), so there is no line to type; the agent has exited. */
   | { kind: 'didnt-start'; line: string; otherShell?: true }
   /** The target couldn't see the conversation, and the shell is proven back at its prompt: Claude Code, which exits on it,
-   *  or Codex whose fallback could not start its new session. A Codex that said so with nothing proving it exited is
-   *  unknown-exit, its resume line typed and nothing after it (HOLD-C R1 F1). */
+   *  or Codex whose fallback could not start its new session. An agent that said so with nothing proving it exited is
+   *  exit-unconfirmed, its resume line typed and nothing more after it (HOLD-C R1 F1 and its residual). */
   | { kind: 'resume-not-found' }
   /** The target shows its sign-in screen, which Termpolis never answers. */
   /** `sessionId`: the conversation that was being relaunched, which a new terminal on the account can

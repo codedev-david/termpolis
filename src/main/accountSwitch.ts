@@ -955,13 +955,15 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   let watched = await watchOutcome(io, id, agent, enterAt, typed.line, until)
   // The conversation the line resumed; none once Codex's path (c) starts a new session instead.
   let relaunched = sessionId
-  const unknownExit = (): SwitchOutcome => ({ kind: 'unknown-exit', ...(os.known ? { osSees: true as const } : {}) })
+  // The resume line was typed, so a program that may still be up after it is exit-unconfirmed ("typed nothing more"), never
+  // unknown-exit's "typed nothing" (HOLD-C R1 residual).
+  const exitUnconfirmed = (): SwitchOutcome => ({ kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) })
   if (watched.seen === 'not-found' && agent === 'codex') {
     // Codex's path (c): the target can't see the session. A new session in place, and said so, where the shell is back; where
-    // nothing says so the Codex that said it may still be up, and is sent nothing. That is unknown-exit, not resume-not-found:
-    // resume-not-found's card says the shell is at its prompt, and a swarm restart answers it with "it has exited" on its own
-    // (HOLD-C R1 F1).
-    if (!(await shellBack(io, id, enterAt, typed.line, os))) return unknownExit()
+    // nothing says so the Codex that said it may still be up, and is sent nothing more. That is exit-unconfirmed, not
+    // resume-not-found: resume-not-found's card says the shell is at its prompt, and a swarm restart answers it with "it has
+    // exited" on its own (HOLD-C R1 F1 and its residual).
+    if (!(await shellBack(io, id, enterAt, typed.line, os))) return exitUnconfirmed()
     const freshSpec: RelaunchSpec = { ...spec, id: null }
     typed = await run(freshSpec)
     if (typed.outcome !== 'entered') return notEntered(typed)
@@ -974,7 +976,7 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   // before resume-not-found says it is at its prompt (HOLD-C R1 F1).
   if (watched.seen === 'not-found') {
     const last = typed as { enterAt: number; line: string }
-    return (await shellBack(io, id, last.enterAt, last.line, os)) ? { kind: 'resume-not-found' } : unknownExit()
+    return (await shellBack(io, id, last.enterAt, last.line, os)) ? { kind: 'resume-not-found' } : exitUnconfirmed()
   }
   if (watched.seen === 'sign-in') return { kind: 'sign-in', ...(relaunched ? { sessionId: relaunched } : {}) }
   if (watched.seen === 'no-outcome') return { kind: 'no-outcome' }

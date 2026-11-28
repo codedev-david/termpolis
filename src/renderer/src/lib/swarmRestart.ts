@@ -687,7 +687,7 @@ async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: Acco
   try {
     outcome = await runSwitch(term, agent, target, confirmed ? { confirmedCarry: true } : {}, deps, 'usage limit, swarm worker')
     // The target can't see the conversation and the shell is proven back at its prompt (main says resume-not-found only then;
-    // a Codex that may still be up is unknown-exit, HOLD-C R1 F1): a new session in place, as Codex's path (c).
+    // an agent that may still be up is exit-unconfirmed, HOLD-C R1 F1 and its residual): a new session in place, as Codex's path (c).
     if (outcome.kind === 'resume-not-found') outcome = await runSwitch(term, agent, target, { assumeExited: true, fresh: true, ...(confirmed ? { confirmedCarry: true } : {}) }, deps, 'usage limit, swarm worker')
   } finally {
     deps.store().endRelaunch(w.terminalId)
