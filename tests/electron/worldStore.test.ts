@@ -584,7 +584,7 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     await writeFile(file(), text)
     const shown = await store.load('demo')
     expect([shown?.savedByNewer, shown?.buildings[0].techLabel, shown?.edges[0].tech]).toEqual([true, 'Message port', ['Message port']])
-    await store.save({ ...portWorld(), generatedAt: 5, savedByNewer: true })
+    await store.save({ ...portWorld(), generatedAt: 5, savedByNewer: true }, { compiled: true })
     const own = await store.load('demo')
     expect([own?.generatedAt, own?.savedByNewer, own?.buildings[0].techLabel, own?.edges[0].tech]).toEqual([5, true, 'Message port', ['Message port']])
     expect(await readFile(file(), 'utf8')).toBe(text)
@@ -599,7 +599,7 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     expect(shown).toEqual({ ...doc(), futureField: { kept: true }, version: 1, savedByNewer: true })
     // what this version compiles is kept in memory only, and the doc handed back says so
     const compiled: WorldDoc = { ...doc(), generatedAt: 5, savedByNewer: true }
-    await store.save(compiled)
+    await store.save(compiled, { compiled: true })
     expect(compiled.savedByNewer).toBe(true)
     expect(await readFile(file(), 'utf8')).toBe(text)
     expect(await store.load('demo')).toEqual({ ...doc(), generatedAt: 5, savedByNewer: true })
@@ -620,7 +620,7 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     await writeFile(file(), JSON.stringify(newer()))
     await store.load('demo')
     const saved: WorldDoc = { ...doc(), generatedAt: 6 }
-    await store.save(saved)
+    await store.save(saved, { compiled: true })
     saved.layout.positions = {}
     const first = await store.load('demo') as WorldDoc
     first.layout.positions = {}
@@ -633,7 +633,7 @@ describe('worldStore and a world written by a newer Termpolis (C13)', () => {
     const text = JSON.stringify({ version: 3, everything: 'different' })
     await writeFile(file(), text)
     expect(await store.load('demo')).toBeNull()
-    await store.save(doc())
+    await store.save(doc(), { compiled: true })
     expect(await readFile(file(), 'utf8')).toBe(text)
     expect(await store.load('demo')).toEqual({ ...doc(), savedByNewer: true })
     expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
@@ -934,26 +934,170 @@ describe('a save looks at the file again just before it puts its copy in place (
 
     it('a load that found a newer file is not taken as having read it: a later save reads the file again', async () => {
       const reads: string[] = []
-      const store = createWorldStore(dir, { readFile: (async (f: string, enc: 'utf8') => { reads.push(f); return readFile(f, enc) }) as never })
+      /** DSN R4 (Opus NIT 3): the store's own record of newer files, made to forget demo.json's for one save. */
+      class Forgetful extends Map<string, boolean> {
+        forget = false
+        override get(k: string): boolean | undefined {
+          const v = super.get(k)
+          return this.forget && k === 'demo.json' && v === true ? false : v
+        }
+      }
+      const known = new Forgetful()
+      const store = createWorldStore(dir, { newerOnDisk: known, readFile: (async (f: string, enc: 'utf8') => { reads.push(f); return readFile(f, enc) }) as never })
       await store.save(doc())
       await writeFile(file(), newer())
       expect(await store.load('demo')).toMatchObject({ savedByNewer: true })
+      expect(known.get('demo.json')).toBe(true)
       // Whatever this store remembers of that newer file, the save goes by the file: read here, it is kept.
-      const real = Map.prototype.get
-      const flip = vi.spyOn(Map.prototype, 'get').mockImplementation(function (this: Map<unknown, unknown>, k: unknown) {
-        const v = real.call(this, k)
-        return k === 'demo.json' && v === true ? false : v
-      })
+      known.forget = true
       reads.length = 0
       const mine = { ...doc(), generatedAt: 5 }
-      try {
-        await store.save(mine)
-      } finally {
-        flip.mockRestore()
-      }
+      await store.save(mine)
+      known.forget = false
       expect(reads).toEqual([file()])
       expect(mine.savedByNewer).toBe(true)
       expect(await readFile(file(), 'utf8')).toBe(newer())
     })
+  })
+})
+
+describe('a save over a newer world never puts its copy in place unchecked, nor keeps a refused one (DSN R4)', () => {
+  const file = (): string => join(dir, 'world', 'demo.json')
+  const newer = (): string => JSON.stringify({ ...doc(), version: 99, generatedAt: 99, futureField: 'a later version' })
+  const busy = (): Error => Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+
+  it('a refused save is not kept in memory: the next load shows the newer file, as on disk (D4-2, Codex probe :26)', async () => {
+    const store = createWorldStore(dir)
+    await store.save(doc())
+    await writeFile(file(), newer())
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 99, savedByNewer: true })
+    const mine = { ...doc(), generatedAt: 5 }
+    await store.save(mine)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 99, savedByNewer: true })
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+  })
+
+  it("a compile's world over a newer world is kept in memory until a refused save drops it (D4-2; sign-off #16)", async () => {
+    const store = createWorldStore(dir)
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(file(), newer())
+    await store.load('demo')
+    const compiled = { ...doc(), generatedAt: 6 }
+    await store.save(compiled, { compiled: true })
+    expect(compiled.savedByNewer).toBe(true)
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 6, savedByNewer: true })
+    await store.save({ ...doc(), generatedAt: 7 })
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 99, savedByNewer: true })
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+  })
+
+  it('a load that finds a newer file while the save looks at its temp copy is not written over (D4-1, Codex probe :46)', async () => {
+    let store = null as unknown as ReturnType<typeof createWorldStore>
+    let armed = false
+    store = createWorldStore(dir, {
+      stat: (async (f: string) => {
+        if (armed && f.endsWith('.tmp')) {
+          armed = false
+          await writeFile(file(), newer())
+          await store.load('demo')
+        }
+        return stat(f)
+      }) as never
+    })
+    await store.save(doc())
+    armed = true
+    const mine = { ...doc(), generatedAt: 5 }
+    await store.save(mine)
+    expect(armed).toBe(false)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+  })
+
+  it('a newer file that lands while a rename waits out a held file is looked at again before the next try (D4-1, Codex probe :63)', async () => {
+    let held = false
+    const store = createWorldStore(dir, {
+      sleep: async () => undefined,
+      rename: (async (from: string, to: string) => {
+        if (held) {
+          held = false
+          await writeFile(file(), newer())
+          throw busy()
+        }
+        return rename(from, to)
+      }) as never
+    })
+    await store.save(doc())
+    held = true
+    const mine = { ...doc(), generatedAt: 5 }
+    await store.save(mine)
+    expect(held).toBe(false)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+  })
+
+  it('a load that finds a newer file while a rename waits out a held file stops the next try, though the file looks unchanged (D4-1)', async () => {
+    let store = null as unknown as ReturnType<typeof createWorldStore>
+    let held = false
+    let fixed = false
+    store = createWorldStore(dir, {
+      sleep: async () => undefined,
+      // The world file and its temp copies report one size and time, so the file looks unchanged: only the load can tell.
+      stat: (async (f: string) => (fixed && f.startsWith(file()) ? { size: 1, mtimeMs: 1 } : stat(f))) as never,
+      rename: (async (from: string, to: string) => {
+        if (held) {
+          held = false
+          await writeFile(file(), newer())
+          await store.load('demo')
+          throw busy()
+        }
+        return rename(from, to)
+      }) as never
+    })
+    fixed = true
+    await store.save(doc())
+    held = true
+    const mine = { ...doc(), generatedAt: 5 }
+    await store.save(mine)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(newer())
+  })
+
+  it('a held file that stays one of ours is looked at again and written on the next try', async () => {
+    let held = false
+    const looks: string[] = []
+    const store = createWorldStore(dir, {
+      sleep: async () => undefined,
+      stat: (async (f: string) => { looks.push(f); return stat(f) }) as never,
+      rename: (async (from: string, to: string) => {
+        if (held) {
+          held = false
+          throw busy()
+        }
+        return rename(from, to)
+      }) as never
+    })
+    await store.save(doc())
+    held = true
+    looks.length = 0
+    await store.save({ ...doc(), generatedAt: 5 })
+    expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(5)
+    // The world file is looked at before each of the two tries.
+    expect(looks.filter((f) => f === file())).toHaveLength(2)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+  })
+
+  it('the documented limit: a newer file of the same size and modified time, never loaded, is written over (D4-1, R3-4; Codex probe :37)', async () => {
+    // One Termpolis runs per profile (its single-instance lock), so only a later version could write such a file, and it
+    // would have to match both the size and the modified time this store last saw. The save then does not read it again.
+    const store = createWorldStore(dir, {
+      stat: (async (f: string) => (f.startsWith(file()) ? { size: 1, mtimeMs: 1 } : stat(f))) as never
+    })
+    await store.save(doc())
+    await writeFile(file(), newer())
+    await store.save({ ...doc(), generatedAt: 5 })
+    expect(JSON.parse(await readFile(file(), 'utf8'))).toMatchObject({ version: 1, generatedAt: 5 })
   })
 })

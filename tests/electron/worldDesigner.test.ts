@@ -33,7 +33,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'list'> } = {}) {
+function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number; annotations?: Pick<AnnotationStore, 'add' | 'listStrict'> } = {}) {
   const execFn = vi.fn(exec)
   const execDeps = { deliver: vi.fn() }
   // As the app gives it (index.ts, worldHost.ts): a design shows the notes the annotation store holds (DSN R3-2).
@@ -675,11 +675,11 @@ describe('design annotations are written by the designer, under the design lock 
 
   it('refuses a key that is not a stored design, a part it does not have, and a design it cannot open, writing nothing', async () => {
     const add = vi.fn(async () => undefined)
-    const { designer, store } = setup(noRun, { annotations: { add, list: async () => ({}) } })
+    const { designer, store } = setup(noRun, { annotations: { add, listStrict: async () => ({ byItem: {}, migrated: false }) } })
     await stored(store)
     for (const key of ['design:missing', 'design:..', 'C:/repo']) expect(await failure(designer.annotate(key, 'api', person('x')))).toBe(DESIGN_NOT_FOUND)
     expect(await failure(designer.annotate('design:id1', 'nope', person('x')))).toBe(NO_PART)
-    const broken = setup(noRun, { store: { ...createWorldStore(dir), load: async () => { throw new Error('EPERM') } }, annotations: { add, list: async () => ({}) } })
+    const broken = setup(noRun, { store: { ...createWorldStore(dir), load: async () => { throw new Error('EPERM') } }, annotations: { add, listStrict: async () => ({ byItem: {}, migrated: false }) } })
     expect(await failure(broken.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_OPEN_FAILED)
     expect(add).not.toHaveBeenCalled()
   })
@@ -687,7 +687,7 @@ describe('design annotations are written by the designer, under the design lock 
   it('a failed annotation write or design save is a friendly error', async () => {
     const real = createWorldStore(dir)
     await stored(real)
-    const noAdd = setup(noRun, { annotations: { add: async () => { throw new Error('EIO') }, list: async () => ({}) } })
+    const noAdd = setup(noRun, { annotations: { add: async () => { throw new Error('EIO') }, listStrict: async () => ({ byItem: {}, migrated: false }) } })
     expect(await failure(noAdd.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
     const noSave = setup(noRun, { store: { ...real, save: async () => { throw new Error('ENOSPC') } } })
     expect(await failure(noSave.designer.annotate('design:id1', 'api', person('x')))).toBe(DESIGN_SAVE_FAILED)
@@ -864,7 +864,7 @@ describe('a design saved by a newer Termpolis is never changed here (WP3)', () =
   it('refine, propose and annotate refuse it with the B7 note, run no agent and write nothing', async () => {
     const n = newerStore(true)
     const add = vi.fn(async () => undefined)
-    const { designer, execFn } = setup(async () => okRes(reply('ok', [{ op: 'rename', id: 'api', name: 'X' }])), { store: n.store, annotations: { add, list: async () => ({}) } })
+    const { designer, execFn } = setup(async () => okRes(reply('ok', [{ op: 'rename', id: 'api', name: 'X' }])), { store: n.store, annotations: { add, listStrict: async () => ({ byItem: {}, migrated: false }) } })
     await stored(n.real)
     n.save.mockClear()
     expect(await failure(designer.refine('design:id1', 'Rename it', ''))).toBe(WORLD_SAVED_BY_NEWER)
@@ -970,11 +970,11 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     await annotations.add('design:id1', 'db', person('Holds the orders.'))
     // The read before the save works; the read back after the note is stored fails.
     let reads = 0
-    const list = async (key: string): Promise<Record<string, Claim[]>> => {
+    const listStrict = async (key: string): Promise<{ byItem: Record<string, Claim[]>; migrated: boolean }> => {
       if (reads++ > 0) throw new Error('EIO')
-      return annotations.list(key)
+      return annotations.listStrict(key)
     }
-    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list } })
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, listStrict } })
     const doc = await designer.annotate('design:id1', 'api', note)
     expect(personClaims(doc, 'api')).toEqual([note])
     expect(personClaims(doc, 'db')).toEqual([person('Holds the orders.')])
@@ -985,7 +985,7 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     const real = createWorldStore(dir)
     const first = await stored(real)
     const annotations = createAnnotationStore(dir)
-    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list: async () => { throw new Error('EIO') } } })
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, listStrict: async () => { throw new Error('EIO') } } })
     expect(await failure(designer.annotate('design:id1', 'api', note))).toBe(DESIGN_SAVE_FAILED)
     expect(await real.load('design:id1')).toEqual(first)
     expect(await annotations.list('design:id1')).toEqual({})
@@ -1019,7 +1019,7 @@ describe('a design file leaves out the notes the annotation store holds, so the 
     await stored(real)
     const annotations = createAnnotationStore(dir)
     const store = withAnnotations(real, annotations)
-    const { designer } = setup(noRun, { store, annotations: { add: async () => { throw new Error('EIO') }, list: annotations.list } })
+    const { designer } = setup(noRun, { store, annotations: { add: async () => { throw new Error('EIO') }, listStrict: annotations.listStrict } })
     expect(await failure(designer.annotate('design:id1', 'api', agentNote('Calls the bank.')))).toBe(DESIGN_SAVE_FAILED)
     expect(await failure(designer.annotate('design:id1', 'api', names('orders-api')))).toBe(DESIGN_SAVE_FAILED)
     const doc = (await store.load('design:id1')) as WorldDoc
@@ -1099,5 +1099,109 @@ describe('a design file leaves out the notes the annotation store holds, so the 
     expect(personClaims(file, 'api')).toEqual([])
     expect(file.runtimeNames).toEqual({ db: ['orders-db'] })
     expect(file.runtimeHandSet).toBeUndefined()
+  })
+})
+
+describe('a person\'s service names, a note added twice and a note read back after a full part (DSN R4, D4-5 to D4-7)', () => {
+  const agentNote = (text: string): Claim => ({ text, state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }] })
+  const names = (list: string): Claim => ({ text: `runtime:${list}`, state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] })
+  const notesOn = (doc: WorldDoc, id: string): string[] =>
+    [...doc.buildings, ...doc.edges].find((p) => p.id === id)!.claims.filter((c) => c.evidence.some((e) => e.kind === 'transcriptStep')).map((c) => c.text)
+  const designFile = async (): Promise<WorldDoc> => JSON.parse(await readFile(join(dir, 'world', 'design_id1.json'), 'utf8')) as WorldDoc
+  const texts = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => `Note ${from + i}.`)
+  const reopened = async (): Promise<WorldDoc> => (await withAnnotations(createWorldStore(dir), createAnnotationStore(dir)).load('design:id1')) as WorldDoc
+  const app = async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(real, annotations)
+    return { ...setup(noRun, { store, annotations }), annotations }
+  }
+
+  it('a design edit of service names a person set is saved and shown after a restart, and so is a clear (probe :111)', async () => {
+    const { designer, store } = await app()
+    await designer.annotate('design:id1', 'api', names('orders-api'))
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: ['edited'] }])
+    expect(((await store.load('design:id1')) as WorldDoc).runtimeNames.api).toEqual(['edited'])
+    expect((await designFile()).runtimeNames.api).toEqual(['edited'])
+    expect((await reopened()).runtimeNames.api).toEqual(['edited'])
+    // A later change elsewhere in the design keeps the edit.
+    await designer.propose({ key: 'design:id1' }, [{ op: 'rename', id: 'db', name: 'Ledger' }])
+    expect((await reopened()).runtimeNames.api).toEqual(['edited'])
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: [] }])
+    expect((await reopened()).runtimeNames.api).toBeUndefined()
+    expect((await designFile()).runtimeNames.api).toEqual([])
+  })
+
+  it('a person setting service names after a design edit shows them, the same names the store holds included', async () => {
+    const { designer, store, annotations } = await app()
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: ['edited'] }])
+    const named = await designer.annotate('design:id1', 'api', names('orders-api'))
+    expect(named.runtimeNames.api).toEqual(['orders-api'])
+    expect(named.runtimeHandSet).toEqual(['api'])
+    expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+    expect((await designFile()).runtimeNames.api).toBeUndefined()
+    // The design edits them again, and the person sets the names the store holds once more: an add that stores nothing new.
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'api', names: ['edited'] }])
+    const again = await designer.annotate('design:id1', 'api', names('orders-api'))
+    expect(again.runtimeNames.api).toEqual(['orders-api'])
+    expect(((await store.load('design:id1')) as WorldDoc).runtimeNames.api).toEqual(['orders-api'])
+    expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+    expect((await annotations.list('design:id1')).api).toEqual([names('orders-api')])
+  })
+
+  it('a person\'s service names whose store write fails leave the names shown before', async () => {
+    const { designer, store, annotations } = await app()
+    await designer.annotate('design:id1', 'api', names('orders-api'))
+    const failing = setup(noRun, { store, annotations: { add: async () => { throw new Error('EIO') }, listStrict: annotations.listStrict } })
+    expect(await failure(failing.designer.annotate('design:id1', 'api', names('other')))).toBe(DESIGN_SAVE_FAILED)
+    expect(((await store.load('design:id1')) as WorldDoc).runtimeNames.api).toEqual(['orders-api'])
+    expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+    expect((await designFile()).runtimeNames.api).toBeUndefined()
+  })
+
+  it('a tidying save that fails after the names are stored still answers them, and they show from the file or the store', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const inner = withAnnotations(real, annotations)
+    const save = vi.fn(inner.save).mockImplementationOnce(inner.save).mockRejectedValueOnce(new Error('EIO'))
+    const { designer } = setup(noRun, { store: { ...inner, save }, annotations })
+    const named = await designer.annotate('design:id1', 'api', names('orders-api'))
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(named.runtimeNames.api).toEqual(['orders-api'])
+    expect((await designFile()).runtimeNames.api).toEqual(['orders-api'])
+    expect((await reopened()).runtimeNames.api).toEqual(['orders-api'])
+  })
+
+  it('the same note annotated twice is stored and shown once, and takes no second slot under the cap (probe :125)', async () => {
+    const { designer, annotations } = await app()
+    for (const text of texts(1, 20)) await designer.annotate('design:id1', 'api', agentNote(text))
+    const card = await designer.annotate('design:id1', 'api', agentNote('Note 1.'))
+    expect(notesOn(card, 'api')).toEqual(texts(1, 20))
+    expect((await annotations.list('design:id1')).api.map((c) => c.text)).toEqual(texts(1, 20))
+    expect(notesOn(await reopened(), 'api')).toEqual(texts(1, 20))
+  })
+
+  it('a note added to a full part whose notes cannot be read back answers the newest 20, the new one included (probe :132)', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    for (const text of texts(1, 20)) await annotations.add('design:id1', 'api', agentNote(text))
+    const listStrict = vi.fn(annotations.listStrict).mockImplementationOnce(annotations.listStrict).mockRejectedValue(new Error('EIO'))
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, listStrict } })
+    const card = await designer.annotate('design:id1', 'api', agentNote('Note 21.'))
+    expect(notesOn(card, 'api')).toEqual(texts(2, 21))
+    expect((await annotations.list('design:id1')).api.map((c) => c.text)).toEqual(texts(2, 21))
+  })
+
+  it('a note the part holds already, annotated again while the notes cannot be read back, is answered once', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    for (const text of texts(1, 20)) await annotations.add('design:id1', 'api', agentNote(text))
+    const listStrict = vi.fn(annotations.listStrict).mockImplementationOnce(annotations.listStrict).mockRejectedValue(new Error('EIO'))
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, listStrict } })
+    expect(notesOn(await designer.annotate('design:id1', 'api', agentNote('Note 1.')), 'api')).toEqual(texts(1, 20))
   })
 })

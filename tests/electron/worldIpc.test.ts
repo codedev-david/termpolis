@@ -5,7 +5,7 @@ import { NO_PART } from '../../src/main/world/annotations'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 import { shownAsIs, shownError, WORLD_CALL_FAILED } from '../../src/main/world/windowError'
-import { WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER } from '../../src/main/world/worldStore'
+import { WORLD_READ_FAILED, WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER } from '../../src/main/world/worldStore'
 
 const DOC = { projectKey: 'k', version: 1 } as unknown as WorldDoc
 
@@ -613,6 +613,15 @@ describe('world:annotate', () => {
     expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: WORLD_SAVED_BY_NEWER })
     // The code alone is not enough: an error main never marked fit to show (it did not come from the host) is fixed text.
     annotated(s).annotate.mockRejectedValueOnce(Object.assign(new Error('raw'), { code: 'WORLD_SAVED_BY_NEWER' }))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
+  })
+
+  it("a world the host could not read says so in the store's words, not that it is missing or a failed save (DSN R4, D4-8)", async () => {
+    const s = setup()
+    annotated(s).annotate.mockRejectedValueOnce(Object.assign(shownError('the host words'), { code: 'WORLD_READ_FAILED' }))
+    expect(await s.invoke('world:annotate', { key: 'design:d1', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: WORLD_READ_FAILED })
+    // A store's notes that cannot be read stay a failed save: their code is not the world's.
+    annotated(s).annotate.mockRejectedValueOnce(Object.assign(shownError('the host words'), { code: 'ANNOTATIONS_READ_FAILED' }))
     expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: ANNOTATE_FAILED })
   })
 

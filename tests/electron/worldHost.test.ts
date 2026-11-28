@@ -50,6 +50,7 @@ import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, NO_GIT_MES
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, WORLD_READ_FAILED, WORLD_SAVE_FAILED, WORLD_SAVED_BY_NEWER, WorldReadError, type WorldStore } from '../../src/main/world/worldStore'
+import { LOCKED_ATTEMPTS } from '../../src/main/world/storeFiles'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { emptyDesignDoc } from '../../src/shared/world/designPatch'
@@ -2268,6 +2269,20 @@ describe('annotate', () => {
     expect(ann.added).toHaveLength(3)
   })
 
+  it("saves a compile's world as compiled, kept in memory over a newer version's file (#16), and a person's note as a plain save, refused there (DSN R4, D4-2)", async () => {
+    const ann = memAnnotations()
+    const store = memStore({ k1: doc() })
+    const save = vi.spyOn(store, 'save')
+    const h = harness({ createAnnotations: () => ann, compile: async (input) => doc(input.projectKey) }, store)
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap('/repo'), HEAD] })
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0][1]).toEqual({ compiled: true })
+    await h.send({ kind: 'call', id: 2, fn: 'annotate', args: ['k1', 'b-api', person('Front door')] })
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(save.mock.calls[1][1]).toBeUndefined()
+  })
+
   it('refuses to annotate a world a newer Termpolis saved, adding and saving nothing (M6)', async () => {
     const ann = memAnnotations()
     const h = harness({ createAnnotations: () => ann }, memStore({ k1: { ...doc(), savedByNewer: true } }))
@@ -2301,10 +2316,23 @@ describe('annotate', () => {
     await writeFile(join(dir, 'world', 'design_d3.json'), '{ not json')
     await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
     expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
-    // Missing, one of this version's, not parsing, or not readable (a folder): the design is not the host's to annotate.
-    for (const [id, key] of [[2, 'design:gone'], [3, 'design:d2'], [4, 'design:d3'], [5, 'design:d4']] as const) {
+    // Missing, or one of this version's: the design is not the host's to annotate.
+    for (const [id, key] of [[2, 'design:gone'], [3, 'design:d2']] as const) {
       await h.send({ kind: 'call', id, fn: 'annotate', args: [key, 'b-api', person('x')] })
       expect(h.last()).toEqual({ kind: 'result', id, ok: false, error: { message: 'No world with that key.', name: 'Error' } })
+    }
+    // Not parsing, or not readable (a folder): the world is there, so the store's words say it could not be read, and the
+    // raw error goes to the log only (DSN R4, D4-8).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      for (const [id, key] of [[4, 'design:d3'], [5, 'design:d4']] as const) {
+        await h.send({ kind: 'call', id, fn: 'annotate', args: [key, 'b-api', person('x')] })
+        expect(h.last()).toEqual({ kind: 'result', id, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
+      }
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(String(warn.mock.calls[1][0])).toContain("a design's world could not be read")
+    } finally {
+      warn.mockRestore()
     }
     expect(loads).not.toHaveBeenCalled()
     expect(ann.added).toEqual([])
@@ -2325,6 +2353,27 @@ describe('annotate', () => {
     await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
     expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
     expect(tries).toEqual([join(dir, 'world', 'design_d1.json'), join(dir, 'world', 'design_d1.json')])
+  })
+
+  it('a design file still held after every retry says it could not be read, not "No world with that key." (DSN R4, D4-8)', async () => {
+    let tries = 0
+    const readWorldText = async (): Promise<string> => {
+      tries++
+      throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    }
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann, readWorldText }, memStore({}))
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+      expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_READ_FAILED, name: 'WorldReadError', code: 'WORLD_READ_FAILED' } })
+    } finally {
+      warn.mockRestore()
+    }
+    expect(tries).toBe(LOCKED_ATTEMPTS)
+    expect(ann.added).toEqual([])
+    expect(h.store.saves).toEqual([])
   })
 
   it("never compiles a design: a design is main's designer's to write (DSN Round 1, item 5)", async () => {
