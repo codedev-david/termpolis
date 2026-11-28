@@ -657,6 +657,10 @@ describe('threeRenderer line close-up, kept across resizes', () => {
   }
   let canvasOf: HTMLCanvasElement | null = null
   const cameraCanvas = (): HTMLCanvasElement => canvasOf as HTMLCanvasElement
+  /**
+   * The searches run since the last count: each search measures a ball round each line's path (Sphere.setFromPoints);
+   * nothing else on a framing's path does (a kept look's check and the ends' balls use Box3), so a call counts one.
+   */
   const searches = (): { count: () => number } => {
     const spy = vi.spyOn(THREE.Sphere.prototype, 'setFromPoints')
     let from = 0
@@ -910,6 +914,97 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       }
     })
   }
+
+  /** The drag from 800x600 to 440x600, a resize each frame 10 ms apart, short of the settle: the kept look re-aimed to where the tower hides p. */
+  const dragTo440 = (r: ThreeRenderer, resized: (w: number, hgt: number) => void): void => {
+    for (let k = 1; k <= 10; k++) {
+      resized(Math.round(800 - (360 * k) / 10), 600)
+      h.frames.step()
+      vi.advanceTimersByTime(10)
+    }
+    settle()
+    expect(r.screenPoint('p')).toBeNull()
+  }
+
+  it('a panel change while a resize has yet to hold only re-aims: the look is checked once, by the settle, at the size the view rests at', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      // In one frame the divider moves and the card grows (the building card giving way to the taller line card).
+      resized(440, 600)
+      r.setCardReserve(380, 420)
+      settle()
+      expect(n.count()).toBe(0) // no search before the size holds
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600 under the tall card`).not.toBeNull()
+      // With no resize pending, a panel's change is checked at once, as before.
+      r.setCardReserve(380, 100)
+      settle()
+      r.setCardReserve(380, 420)
+      settle()
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} with the card grown again`).not.toBeNull()
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('a pixel ratio change during a drag puts the settle off without dropping its check: an end the drag hid searches again once the size holds', async () => {
+    const changes: Array<() => void> = []
+    vi.stubGlobal('matchMedia', (media: string) => ({
+      media,
+      matches: true,
+      addEventListener: (_: string, f: () => void) => { changes.push(f) },
+      removeEventListener: (_: string, f: () => void) => { changes.splice(changes.indexOf(f), 1) },
+    }))
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      expect(changes).toHaveLength(1)
+      changes[0]() // the window moved to another display
+      settle()
+      expect(n.count()).toBe(0)
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      // A ratio change with no resize pending owes no check: none is armed.
+      changes[0]()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a pane hidden and shown again at another size is checked at once: an end the new size hides searches again', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      resized(1, 1) // the pane hidden
+      settle()
+      expect(n.count()).toBe(0) // a hidden view is not checked
+      resized(440, 600) // shown again, narrower: drawn at once, no settle to wait for
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      settle()
+      expect(n.count()).toBe(0)
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
 
   it('the reaimed shot matches a fresh search within 2% distance and 3 degrees direction at the original aspect', async () => {
     const { r, resized } = await open()
