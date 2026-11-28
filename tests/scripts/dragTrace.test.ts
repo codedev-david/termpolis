@@ -60,11 +60,22 @@ function quiet(n = 10): { events: TraceEvent[]; resizes: Array<{ start: number; 
   return { events, resizes, fits: [{ start: 2500.5, ms: 1 }, { start: 2700.5, ms: 0.5 }, { start: 2800.5, ms: 0.5 }] }
 }
 const FIT = { start: 2500, ms: 80, fit: true }
-/** A drag's input, the quiet drag's but for `over`, with the page's marker around its trace (markOf). */
+/**
+ * A drag's input, the quiet drag's but for `over`, with the page's marker around its trace (markOf). The page tags a
+ * long task the fit's when a fit it named lies in it (within 1 ms), and the check asks the trace (Round 7): so each
+ * long task tagged the fit's that holds none of the fits named gets one, 1 ms from 0.5 ms into it, named and in the
+ * trace, where its task is the long task's own.
+ */
 const input = (over: Partial<DragInput> = {}): DragInput => {
   const q = quiet()
   const v = { events: q.events, resizes: q.resizes, resizeCount: q.resizes.length, tasks: [FIT], fits: q.fits, widestGap: 600, platform: 'linux', marker: MARKER, dataLoss: false, ...over }
-  return { ...v, events: [...v.events, ...markOf(v.events, [...v.resizes, ...v.tasks, ...v.fits])] }
+  const fits = [...v.fits]
+  const events = [...v.events]
+  for (const t of v.tasks) if (t.fit && !fits.some((f) => f.start >= t.start - 1 && f.start + f.ms <= t.start + t.ms + 1)) {
+    fits.push({ start: t.start + 0.5, ms: 1 })
+    events.push(...fitNamed(t.start + 0.5, 1))
+  }
+  return { ...v, fits, events: [...events, ...markOf(events, [...v.resizes, ...v.tasks, ...fits])] }
 }
 /** A wait on the page's main thread with no thread time given. */
 const W = (name: string, cat: string, start: number, dur: number): TraceEvent => ({ name, cat, ph: 'X', ts: us(start), dur: Math.round(dur * 1000), pid: 1, tid: 1 })
@@ -616,7 +627,7 @@ describe('the drag trace (dragTrace)', () => {
 
   // Round 2, Opus m2-2, Codex minor: one 7000 ms gap for every OS, and the release after the last move not counted.
   it("wants a fit named, and the pointer moves answered no more than each OS's gap apart, the release too", () => {
-    expect(fails(dragVerdict(input({ fits: [] })), 'its fit named')).toEqual(['no fit'])
+    expect(fails(dragVerdict(input({ fits: [], tasks: [] })), 'its fit named')).toEqual(['no fit'])
     const gap = (platform: string, widest: number): string[] => fails(dragVerdict(input({ platform, widestGap: widest })), 'pointer moves')
     expect(gap('linux', 2001)).toEqual(['2001'])
     expect(gap('linux', 2000)).toEqual([])
@@ -827,14 +838,15 @@ describe('the drag trace (dragTrace)', () => {
       X('ThreadControllerImpl::RunTask', 'toplevel', 4999.95, 0.2, 0.1), X('ThreadControllerImpl::RunTask', 'toplevel', 5000.15, 0.35, 2), ...fitNamed(5000, 0.4),
       // A measure the trace drops, in a long task whose own task the trace holds: that task's thread time (6).
       X('ThreadControllerImpl::RunTask', 'toplevel', 5999, 152, 6),
-      // A measure 0.3 ms before its task: in no task; its long task's own task (4).
+      // A measure 0.3 ms before its task: in no task, and (Round 7) not in the long task whose task the trace holds, so
+      // that long task holds no fit and the fit in none is charged 50 (Round 4 to 6: its long task's charge, 5.2).
       X('ThreadControllerImpl::RunTask', 'toplevel', 7000.3, 99.8, 4), ...fitNamed(7000, 100)]
     const long = [FIT, { start: 4000, ms: 130 }, { start: 5999, ms: 152 }, { start: 7000, ms: 101 }]
     // The fits in a long task are charged at least its own charge (Round 6, Codex: the tasks found 25, the long task 175):
-    // its task's thread time and the part of its window outside that task, 3 + 0.17 + 10.07 for [4000,4130] and 4 + 0.3 +
-    // 0.9 for [7000,7101]. Without the floor, 7 + 3 + 2.1 + 6 + 4.
-    expect(ownTimes(events, q.resizes, long, fits).fitCpu).toBeCloseTo(7 + 13.24 + 2.1 + 6 + 5.2, 9)
-    expect(ownTimes(events, q.resizes, long, fits).fitsTraced).toBe(7)
+    // its task's thread time and the part of its window outside that task, 3 + 0.17 + 10.07 for [4000,4130]. Without the
+    // floor, 7 + 3 + 2.1 + 6 + 50.
+    expect(ownTimes(events, q.resizes, long, fits).fitCpu).toBeCloseTo(7 + 13.24 + 2.1 + 6 + 50, 9)
+    expect(ownTimes(events, q.resizes, long, fits)).toMatchObject({ fitsTraced: 6, taskFit: [true, true, true, false] })
     // 0.26 ms before and after: in no task, and its long task's wall (none of the trace's tasks hold half of it).
     const far = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000.26, 49, 3), ...fitNamed(4000, 49.52)]
     expect(ownTimes(far, q.resizes, [FIT, { start: 4000, ms: 110 }], [...q.fits, { start: 4000, ms: 49.52 }])).toMatchObject({ fitCpu: 7 + 110, fitsTraced: 3 })
@@ -852,13 +864,16 @@ describe('the drag trace (dragTrace)', () => {
     expect(ownTimes(events, q.resizes, [FIT], fits)).toMatchObject({ fitCpu: 7 + 0.38 + 0.29, fitsTraced: 5 })
     // A measure that is one fit's alone charges only the tasks around it (0.29); the dropped one far off, its wall (50).
     expect(ownTimes(events, q.resizes, [FIT], [...q.fits, { start: 5001, ms: 0.01 }, { start: 9000, ms: 0.01 }])).toMatchObject({ fitCpu: 7 + 0.29 + 50, fitsTraced: 4 })
-    // In its long task, one in doubt is charged that task's too, though the tasks near it are found.
+    // A task the trace holds that ends 0.06 ms after where the page puts the dropped one: one in doubt is charged that
+    // task's too (within the 0.75 ms around it), though the tasks near it are found.
     const long = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 50.5, 30)]
     expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 50.5 }], fits).fitCpu).toBeCloseTo(7 + 30 + 0.38 + 0.29, 9)
-    // And so when that task the trace holds ends before it, around nothing it may be in (the page's runs 0.5 ms on): the
-    // long task's own charge, 30 and the 1.5 ms of its window outside its task, is more than the tasks found (30.67).
+    // Round 7: the trace holds the long task's task and puts the one measure 0.5 ms past its end (beyond FIT_SLACK), so
+    // the long task holds no fit, though the page's window runs past the measure: it is judged by the rules of a task
+    // with none, and the fits are charged the tasks near them alone (Round 6: the long task's 31.5).
+    expect(ownTimes(long, q.resizes, [FIT, { start: 4950, ms: 51.1 }], fits).taskFit).toEqual([true, false])
     const short = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4950, 49.5, 30)]
-    expect(ownTimes(short, q.resizes, [FIT, { start: 4950, ms: 51 }], fits).fitCpu).toBeCloseTo(7 + 31.5, 9)
+    expect(ownTimes(short, q.resizes, [FIT, { start: 4950, ms: 51 }], fits)).toMatchObject({ fitCpu: 7 + 0.38 + 0.29, taskFit: [true, false] })
   })
 
   // Round 5: where a fit in doubt may be. Its measure dropped, every task around it on the thread's clock within the
@@ -916,24 +931,90 @@ describe('the drag trace (dragTrace)', () => {
   // Round 6, Codex: a fit's long task [4000,4200], the task the trace holds over most of it from 4000 to 4150 (125 ms of
   // thread time), and the fit's measure in another task the trace holds, of 25: the fit's task was charged (25), though
   // the long task scored 175 (its task's 125 and the 50 ms of its window outside it). The fits in a long task are now
-  // charged at least what it scores.
+  // charged at least what it scores. Round 7: a fit is in a long task the trace holds only if its measure is in that
+  // task (FIT_SLACK), so the fits here lie in tasks inside the long task's; Codex's own case, the measure in a task
+  // after it, is the trace saying the long task holds no fit (the stall's case, below).
   it('charges the fits in a long task at least what the long task scores (Codex: 25, now 175)', () => {
     const q = quiet()
-    const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 150, 125), X('ThreadControllerImpl::RunTask', 'toplevel', 4160, 25, 25), ...fitNamed(4170, 1)]
-    const v = dragVerdict(input({ events, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4170, ms: 1 }] }))
+    const events = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 150, 125), X('ThreadControllerImpl::RunTask', 'toplevel', 4100, 25, 25), ...fitNamed(4110, 1)]
+    const v = dragVerdict(input({ events, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4110, ms: 1 }] }))
     expect(v.fits[1]).toMatchObject({ cpu: 175, matched: true })
     expect(v.own).toMatchObject({ fitCpu: 7 + 175, fitsTraced: 4 })
     // Two fits in it, each sure of its task: the long task once, at least its score.
-    const two = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4186, 10, 10), ...fitNamed(4190, 1)]
-    expect(dragVerdict(input({ events: two, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4170, ms: 1 }, { start: 4190, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 175, 9)
+    const two = [...events, X('ThreadControllerImpl::RunTask', 'toplevel', 4130, 10, 10), ...fitNamed(4135, 1)]
+    expect(dragVerdict(input({ events: two, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4110, ms: 1 }, { start: 4135, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 175, 9)
     // Its task of little thread time (10): its score still, 10 and the 50 outside, more than the fit's task (25).
-    const heavy = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 150, 10), X('ThreadControllerImpl::RunTask', 'toplevel', 4160, 25, 25), ...fitNamed(4170, 1)]
-    expect(dragVerdict(input({ events: heavy, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4170, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 60, 9)
-    // A fit the trace dropped the measure of, at its long task's end: the task around where it is put on the thread's
-    // clock runs past the long task's window, so the floor (60 and the 1 ms of the window after its task) holds only
-    // 0.8 ms of it; the long task's task and that one are charged both, 80, not 61.
-    const edge = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 99, 60), X('ThreadControllerImpl::RunTask', 'toplevel', 4099.2, 1.8, 20)]
-    expect(dragVerdict(input({ events: edge, tasks: [FIT, { start: 4000, ms: 100, fit: true }], fits: [...q.fits, { start: 4099.5, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 80, 9)
+    const heavy = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 150, 10), X('ThreadControllerImpl::RunTask', 'toplevel', 4100, 25, 25), ...fitNamed(4110, 1)]
+    expect(dragVerdict(input({ events: heavy, tasks: [FIT, { start: 4000, ms: 200, fit: true }], fits: [...q.fits, { start: 4110, ms: 1 }] })).own.fitCpu).toBeCloseTo(7 + 60, 9)
+    // A fit the trace dropped the measure of, at its long task's task's end (within FIT_SLACK of it, where the page puts
+    // it): the task around it on the thread's clock runs past the long task's window, so the floor (60 and the 0.6 ms of
+    // the window after its task) holds only 0.15 ms of it; the long task's task and that one are charged both, 80, not 60.6.
+    const edge = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000, 99.4, 60), X('ThreadControllerImpl::RunTask', 'toplevel', 4099.45, 1.55, 20)]
+    expect(dragVerdict(input({ events: edge, tasks: [FIT, { start: 4000, ms: 100, fit: true }], fits: [...q.fits, { start: 4099.5, ms: 0.1 }] })).own.fitCpu).toBeCloseTo(7 + 80, 9)
+  })
+
+  // Round 7, Codex and Opus: the page tags a long task the fit's when a fit lies within 1 ms of it, and the check took
+  // the page's tag. A 400 ms task, 4 ms of thread time and 395 waiting on the GPU, with a timer's fit begun 0.4 ms after
+  // it (as one begins after a stall) was judged by the fit's limits and passed: 4 ms of thread time, 9 on the wall beyond
+  // its waits on the GPU. The trace holds the task, and the fit's measure lies outside it: it is judged by the limits of
+  // a task that holds none, 399 of its own and 400 on the wall, and fails both.
+  it("judges a long task the trace holds by the trace, not the page's 1 ms (Codex Round 7: a 400 ms stall passed as a fit's, 4 / 9; now 400/399 and 400)", () => {
+    const q = quiet()
+    const STALL = { start: 3000, ms: 400, fit: true }
+    const stall = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 3000, 400, 4), X('CommandBufferProxyImpl::WaitForGetOffset', 'gpu', 3002, 395, 0.01)]
+    // The timer's fit after it in a task of its own, its measure `after` ms past the stall's end.
+    const at = (after: number, over: Partial<DragInput> = {}): ReturnType<typeof dragVerdict> => dragVerdict(input({
+      events: [...stall, X('ThreadControllerImpl::RunTask', 'toplevel', 3400 + after - 0.1, 0.5, 0.3), ...fitNamed(3400 + after, 0.03)],
+      tasks: [FIT, STALL],
+      fits: [...q.fits, { start: 3400 + after, ms: 0.03 }],
+      ...over,
+    }))
+    const v = at(0.4)
+    expect(v.own.taskFit).toEqual([true, false])
+    expect(v.others).toEqual([expect.objectContaining({ wall: 400, matched: true })])
+    expect(v.others[0].own).toBeCloseTo(399, 1)
+    expect(fails(v, "of its own, the fit's left out")).toEqual(['400/399'])
+    expect(fails(v, "on the wall, the fit's left out")).toEqual(['400'])
+    expect(broken(v)).toHaveLength(2)
+    expect(v.fits).toEqual([dragVerdict(input()).fits[0]])
+    expect(v.retagged).toEqual([{ start: 3000, ms: 400, page: true }])
+    // The residual (note (10), Round 7): a measure begun within FIT_SLACK after the task's end still tags it, and the
+    // stall passes as the fit's; 0.26 ms after, it does not.
+    expect(at(0.2).own.taskFit).toEqual([true, true])
+    expect(broken(at(0.2))).toEqual([])
+    expect(at(0.26).own.taskFit).toEqual([true, false])
+    // The measure dropped: the fit where the page's number puts it on the thread's clock, after the task (0.4 ms) or in it.
+    const dropped = (start: number, ms = 0.03): ReturnType<typeof dragVerdict> => dragVerdict(input({ events: stall, tasks: [FIT, STALL], fits: [...q.fits, { start, ms }] }))
+    expect(dropped(3400.4).own.taskFit).toEqual([true, false])
+    expect(dropped(3399.9).own.taskFit).toEqual([true, true])
+    // Its end too: begun in the task, it ends 0.1 ms past it (within FIT_SLACK) or 0.5 ms past it.
+    expect(dropped(3399.5, 0.6).own.taskFit).toEqual([true, true])
+    expect(dropped(3399.5, 1).own.taskFit).toEqual([true, false])
+    // A long task the trace does not hold: the page's 1 ms decides, as both rule sets charge it its wall.
+    // (Tagged no fit's here, so input adds it none.)
+    const lost = (start: number): boolean[] => dragVerdict(input({ tasks: [FIT, { start: 9000, ms: 400, fit: false }], fits: [...q.fits, { start, ms: 0.03 }] })).own.taskFit
+    expect(lost(9400.9)).toEqual([true, true])
+    expect(lost(9401.1)).toEqual([true, false])
+    expect(lost(8999)).toEqual([true, true])
+    expect(lost(8998.9)).toEqual([true, false])
+    // A quiet drag retags nothing; one the page tags wrongly the other way is the fit's by the trace, and logged.
+    expect(dragVerdict(input()).retagged).toEqual([])
+    const other = dragVerdict(input({ tasks: [{ ...FIT, fit: false }] }))
+    expect(other.retagged).toEqual([{ start: 2500, ms: 80, page: false }])
+    expect(other.fits).toHaveLength(1)
+    expect(broken(other)).toEqual([])
+  })
+
+  // Round 7: the worst a fit's measure lies outside every task the trace holds whole, logged by the e2e (the margin FIT_SLACK keeps).
+  it("gives how far a fit's measure lies outside the nearest task the trace holds, the worst", () => {
+    const q = quiet()
+    expect(ownTimes(q.events, q.resizes, [FIT], q.fits).fitSkew).toBe(0)
+    const late = [...q.events, X('ThreadControllerImpl::RunTask', 'toplevel', 4000.17, 119.76, 3), ...fitNamed(4000, 120.01)]
+    expect(ownTimes(late, q.resizes, [FIT], [...q.fits, { start: 4000, ms: 120.01 }]).fitSkew).toBeCloseTo(0.17, 6)
+    const early = [...late, X('ThreadControllerImpl::RunTask', 'toplevel', 7000, 10, 4), ...fitNamed(7009.7, 0.6)]
+    expect(ownTimes(early, q.resizes, [FIT], [...q.fits, { start: 4000, ms: 120.01 }, { start: 7009.7, ms: 0.6 }]).fitSkew).toBeCloseTo(0.3, 6)
+    // No task the trace holds: none to lie outside.
+    expect(ownTimes([META, ...named(1000, 2), ...fitNamed(1500, 1)], [{ start: 1000, ms: 2 }], [], [{ start: 1500, ms: 1 }]).fitSkew).toBe(0)
   })
 
   // Round 6, Opus m6-2: a fit in a task the trace cut, its begin never ended (the trace stopped in it) or its end with
@@ -1034,7 +1115,7 @@ describe('the drag trace (dragTrace)', () => {
   // them, their thread time dropped now and then, and begins and ends of other names, lone ends and begins never ended.
   // The measures (the resizes', the fits', the long tasks') are off by up to 0.25 ms at each end, and a fit's is dropped
   // now and then. Whatever the trace, the charge is never less than the truth.
-  // Round 6 (PENDING SIGN-OFF): of every eight traces, four are as above, and one each:
+  // Round 6 (approved 2026-11-28, controller): of every eight traces, four are as above, and one each:
   // - loses a tenth of its events (Tracing.tracingComplete's dataLossOccurred): the drag must fail that rule;
   // - is cut at both edges: the trace begins in a task (that task's end alone, a lone end) and stops in one (its begin
   //   alone, never ended), the page's marker from a task's start after the first cut to a moment no task runs, before

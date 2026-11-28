@@ -1352,7 +1352,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // drag's fits take no more than DRAG_LIMITS.fitCpuTotal ms of thread time in all, each once (fits too short to be long
     // tasks too); and the page handles the drag's pointer moves, and its release, no more than 5 s
     // apart on Windows, 7 s on macOS and 2 s on ubuntu. The trace loses no events, and holds the page's marker once, on
-    // one thread (Round 6, PENDING SIGN-OFF). Long animation frames cannot time this (look plan Task 5 deviation, PENDING
+    // one thread (Round 6, approved 2026-11-28). Long animation frames cannot time this (look plan Task 5 deviation, PENDING
     // SIGN-OFF): the app's pages are file:// pages, whose long animation frames name no scripts. The frame drawn right after
     // a fit once waited inside the page for the GPU process to make the new buffer; the fit now puts in a fence that frame
     // waits for. On ubuntu-24.04 a shader program freed with a batch outgrown was built again for its replacement; the
@@ -1438,7 +1438,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
     // Whether the trace lost events (its buffer full): it may have dropped any task or wait, which the drag fails.
     const traceDone = new Promise<boolean>((resolve) => trace.once('Tracing.tracingComplete', (e) => resolve(!!(e as { dataLossOccurred?: boolean }).dataLossOccurred)))
     await trace.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: DRAG_TRACE } } as never)
-    // The page's marker for this drag (look plan A2.1 note (10), Round 6, PENDING SIGN-OFF): a name of its own, its
+    // The page's marker for this drag (look plan A2.1 note (10), Round 6, approved 2026-11-28): a name of its own, its
     // \`:from\` measure named in a task of its own once the trace runs, from an instant to the same instant, before the
     // first move, and its \`:to\` measure from that instant to the drag's end, named last. The thread that names both is
     // the page's (ownTimes), whatever else the trace holds (another renderer's measures, a second page), and only the
@@ -1476,7 +1476,9 @@ test.describe.serial('Lumopolis at every screen size', () => {
       const upAt = (window as unknown as { __upAt: number }).__upAt
       const fits = performance.getEntriesByName(fitName, 'measure').map((m) => ({ start: m.startTime, end: m.startTime + m.duration }))
       const first = w.__moves[0]
-      // A task from the first move to DRAG_AFTER_MS after the mouse-up is the drag's; one that holds a fit's measure is the fit.
+      // A task from the first move to DRAG_AFTER_MS after the mouse-up is the drag's; one that holds a fit's measure (to 1
+      // ms) is the fit, as the page tags it: the check asks the trace where it holds the task (look plan A2.1 note (10),
+      // Round 7) and logs the tasks it tags otherwise.
       const tasks = w.__longTasks.filter((x) => x.start + x.ms > first && x.start < upAt + afterMs)
         .map((x) => ({ start: x.start, ms: x.ms, fit: fits.some((f) => f.start >= x.start - 1 && f.end <= x.start + x.ms + 1) }))
       // The resizes named in the frame-time window, as the renderer counts them (resizeCount).
@@ -1500,6 +1502,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
     const doubt = own.unpaired.map((u) => `${u.kind} ${u.name || '(unnamed)'} at ${u.at.toFixed(1)}`).join(', ') || 'none'
     console.log(`[world-responsive] divider drag trace: ${dataLoss ? 'events lost' : 'no events lost'}; the marker ${own.marker.held ? 'held' : 'not held'} (${own.marker.from} from, ${own.marker.to} to, on ${own.marker.threads.join(', ') || 'no thread'})`)
     console.log(`[world-responsive] divider drag fits: ${own.fitCpu.toFixed(1)} ms of the thread in all, ${own.fitsTraced} of ${named.length} fits in a task the trace holds; begin/end pairs on the page's thread: ${be}; unpaired: ${doubt}`)
+    // The long tasks the trace tags otherwise than the page (its 1 ms), and the worst a fit's measure lies outside every
+    // task the trace holds (the margin FIT_SLACK, 0.25 ms, keeps), Round 7.
+    const retagged = verdict.retagged.map((t) => `${t.start.toFixed(1)}+${t.ms.toFixed(0)} ms (the page: ${t.page ? 'a fit\'s' : 'no fit\'s'})`).join(', ') || 'none'
+    console.log(`[world-responsive] divider drag tags: long tasks the trace tags otherwise ${retagged}; a fit's measure at most ${own.fitSkew.toFixed(3)} ms outside a task the trace holds`)
     expect((await paneState()).pane, 'the drag narrowed the pane').toBeLessThan((width as number) - 200)
     for (const c of verdict.checks) softly(c.fails, c.rule).toEqual([])
     await glideDone('the divider dragged')
