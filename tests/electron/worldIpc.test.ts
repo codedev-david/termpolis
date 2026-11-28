@@ -484,8 +484,14 @@ describe('registerWorldIpc design handlers', () => {
   it('world:design-confirm makes the change a refine held for a yes, by design key (D3)', async () => {
     const d = fakeDesigner()
     const s = withDesigner(d)
-    expect(await s.invoke('world:design-confirm', { key: 'design:d1' })).toEqual({ success: true, data: refineResult })
-    expect(d.confirm).toHaveBeenCalledWith('design:d1')
+    expect(await s.invoke('world:design-confirm', { key: 'design:d1', id: 'c7' })).toEqual({ success: true, data: refineResult })
+    expect(d.confirm).toHaveBeenCalledWith('design:d1', 'c7')
+    // DSN Round 1, item 2: a yes with no id, or one that is not a string, matches no held change, so the designer refuses it.
+    await s.invoke('world:design-confirm', { key: 'design:d1' })
+    expect(d.confirm).toHaveBeenLastCalledWith('design:d1', '')
+    await s.invoke('world:design-confirm', { key: 'design:d1', id: 7 })
+    expect(d.confirm).toHaveBeenLastCalledWith('design:d1', '')
+    d.confirm.mockClear()
     for (const args of [undefined, 'design:d1', {}, { key: 'C:/repo' }, { key: 'design:..' }, { key: 'draft:t1' }, { key: 7 }]) {
       expect(await s.invoke('world:design-confirm', args)).toEqual({ success: false, error: 'design key required' })
     }

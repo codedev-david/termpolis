@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -697,7 +697,15 @@ describe('a refine never overwrites a change made to the parts it names after it
     ['a building added to the district it removes', [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }], [{ op: 'remove', id: 'core' }]],
     ['a line added to the building it removes', [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }], [{ op: 'remove', id: 'api' }]],
     ['a district added that it moves a building into', [{ op: 'addDistrict', id: 'edge', name: 'Edge' }], [{ op: 'move', id: 'api', districtId: 'edge' }]],
-    ['a building removed that it draws a line from', [{ op: 'remove', id: 'db' }], [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }]]
+    ['a building removed that it draws a line from', [{ op: 'remove', id: 'db' }], [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }]],
+    // DSN Round 1, item 3: what goes with a removed district, service names, and the lines between the parts it names.
+    ['a rename of a building in the district it removes', [{ op: 'rename', id: 'api', name: 'Checkout API' }], [{ op: 'remove', id: 'core' }]],
+    ['a line added between buildings of the district it removes', [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }], [{ op: 'remove', id: 'core' }]],
+    ['service names set on a building of the district it removes', [{ op: 'setRuntimeNames', id: 'api', names: ['orders-api'] }], [{ op: 'remove', id: 'core' }]],
+    ['service names set on the building it removes', [{ op: 'setRuntimeNames', id: 'api', names: ['orders-api'] }], [{ op: 'remove', id: 'api' }]],
+    ['service names set on the building it sets them on', [{ op: 'setRuntimeNames', id: 'api', names: ['other'] }], [{ op: 'setRuntimeNames', id: 'api', names: ['agent'] }]],
+    ['the line it adds, made meanwhile', [{ op: 'addEdge', from: 'db', to: 'api', label: 'Other' }], [{ op: 'rename', id: 'db', name: 'Should not apply' }, { op: 'addEdge', from: 'db', to: 'api', label: 'Agent' }]],
+    ['a line added between two buildings it renames', [{ op: 'addEdge', from: 'db', to: 'api', label: 'replies' }], [{ op: 'rename', id: 'api', name: 'A' }, { op: 'rename', id: 'db', name: 'B' }]]
   ])('%s: the refine applies nothing and asks for a try again', async (_label, meanwhile, ops) => {
     const agent = heldAgent(ops)
     const { designer, store } = setup(agent.exec)
@@ -747,12 +755,14 @@ describe('a refine that removes a district with buildings in it waits for a yes 
     const { designer, store, execFn } = setup(async () => okRes(reply('Removed Core.', removeCore)), { now: () => 90 })
     const before = await stored(store)
     const res = await designer.refine('design:id1', 'Remove the core', 'earlier')
-    expect(res.confirm).toEqual({ removals: [{ id: 'core', name: 'Core', buildings: 2 }] })
+    expect(res.confirm).toEqual({ removals: [{ id: 'core', name: 'Core', buildings: 2 }], id: expect.any(String) })
+    // Nothing was made yet (DSN Round 1, item 11).
+    expect(res.applied).toBe(0)
     expect(res.doc).toEqual(before)
     expect(res.text).toBe('Removed Core.')
     expect(res.tokens).toBeGreaterThan(0)
     expect(await store.load('design:id1')).toEqual(before)
-    const done = await designer.confirm('design:id1')
+    const done = await designer.confirm('design:id1', res.confirm!.id)
     expect(done.confirm).toBeUndefined()
     expect(done.applied).toBe(1)
     expect(done.skipped).toBe(0)
@@ -763,7 +773,7 @@ describe('a refine that removes a district with buildings in it waits for a yes 
     expect(done.doc.generatedAt).toBe(90)
     expect(await store.load('design:id1')).toEqual(done.doc)
     expect(execFn).toHaveBeenCalledTimes(1)
-    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED) // nothing is waiting any more
+    expect(await failure(designer.confirm('design:id1', res.confirm!.id))).toBe(DESIGN_REPLACED) // nothing is waiting any more
   })
 
   it('an empty district is removed without asking', async () => {
@@ -777,23 +787,60 @@ describe('a refine that removes a district with buildings in it waits for a yes 
   it('a cancel or a newer refine drops the change waiting for a yes', async () => {
     const { designer, store } = setup(async (req) => okRes(reply('ok', req.task.includes('Remove the core') ? removeCore : [{ op: 'rename', id: 'api', name: 'Checkout API' }])))
     const before = await stored(store)
-    expect((await designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    const first = (await designer.refine('design:id1', 'Remove the core', '')).confirm!
     designer.cancel('design:id1')
-    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED)
+    expect(await failure(designer.confirm('design:id1', first.id))).toBe(DESIGN_REPLACED)
     expect(await store.load('design:id1')).toEqual(before)
-    expect((await designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    const second = (await designer.refine('design:id1', 'Remove the core', '')).confirm!
     expect((await designer.refine('design:id1', 'Rename the API', '')).applied).toBe(1)
-    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_REPLACED)
+    expect(await failure(designer.confirm('design:id1', second.id))).toBe(DESIGN_REPLACED)
     expect(((await store.load('design:id1')) as WorldDoc).districts.map((d) => d.id)).toEqual(['core'])
   })
 
   it('a yes after the district changed applies nothing and asks for a try again', async () => {
     const { designer, store } = setup(async () => okRes(reply('ok', removeCore)))
     await stored(store)
-    await designer.refine('design:id1', 'Remove the core', '')
+    const res = await designer.refine('design:id1', 'Remove the core', '')
     await designer.propose({ key: 'design:id1' }, [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }])
-    expect(await failure(designer.confirm('design:id1'))).toBe(DESIGN_CHANGED)
+    expect(await failure(designer.confirm('design:id1', res.confirm!.id))).toBe(DESIGN_CHANGED)
     expect(((await store.load('design:id1')) as WorldDoc).buildings.map((b) => b.id)).toEqual(['api', 'db', 'mail'])
+  })
+
+  it('a yes carries the id of the change it answers: a stale id, or none, is refused and applies nothing (DSN Round 1, item 2)', async () => {
+    const { designer, store } = setup(async (req) => okRes(reply('ok', [{ op: 'remove', id: req.task.includes('First') ? 'core' : 'other' }])))
+    await stored(store)
+    await designer.propose({ key: 'design:id1' }, [{ op: 'addDistrict', id: 'other', name: 'Other' }, { op: 'addBuilding', id: 'worker', districtId: 'other', name: 'Worker' }])
+    const first = (await designer.refine('design:id1', 'First', '')).confirm!
+    const second = (await designer.refine('design:id1', 'Second', '')).confirm!
+    expect(first.removals.map((r) => r.id)).toEqual(['core'])
+    expect(second.removals.map((r) => r.id)).toEqual(['other'])
+    expect(second.id).not.toBe(first.id)
+    const before = await store.load('design:id1')
+    // The stale yes for Core never removes Other, and the question that is up still waits for its own answer.
+    for (const stale of [first.id, '', undefined]) expect(await failure(designer.confirm('design:id1', stale as string))).toBe(DESIGN_REPLACED)
+    expect(await store.load('design:id1')).toEqual(before)
+    const done = await designer.confirm('design:id1', second.id)
+    expect(done.applied).toBe(1)
+    expect(done.doc.districts.map((d) => d.id)).toEqual(['core'])
+  })
+})
+
+describe("a change that takes a district's buildings out first and then removes it counts the buildings it had before the change (DSN Round 1, item 1)", () => {
+  const emptyThenRemove: DesignOp[] = [{ op: 'remove', id: 'api' }, { op: 'remove', id: 'db' }, { op: 'remove', id: 'core' }]
+
+  it('a refine holds it for a yes, naming both buildings, and saves nothing', async () => {
+    const { designer, store } = setup(async () => okRes(reply('ok', emptyThenRemove)))
+    const before = await stored(store)
+    const res = await designer.refine('design:id1', 'Remove the core', '')
+    expect(res.confirm?.removals).toEqual([{ id: 'core', name: 'Core', buildings: 2 }])
+    expect(await store.load('design:id1')).toEqual(before)
+  })
+
+  it("an agent's world_propose is refused, applying none of it", async () => {
+    const { designer, store } = setup(async () => { throw new Error('propose never runs the agent') })
+    const before = await stored(store)
+    expect(await failure(designer.propose({ key: 'design:id1' }, emptyThenRemove))).toBe(DESIGN_NEEDS_PERSON)
+    expect(await store.load('design:id1')).toEqual(before)
   })
 })
 
@@ -833,9 +880,57 @@ describe('a design saved by a newer Termpolis is never changed here (WP3)', () =
     expect(await refining).toBe(WORLD_SAVED_BY_NEWER)
     n.state.newer = false
     const waiting = setup(async () => okRes(reply('ok', [{ op: 'remove', id: 'core' }])), { store: n.store })
-    expect((await waiting.designer.refine('design:id1', 'Remove the core', '')).confirm).toBeDefined()
+    const held = (await waiting.designer.refine('design:id1', 'Remove the core', '')).confirm!
     n.state.newer = true
-    expect(await failure(waiting.designer.confirm('design:id1'))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(await failure(waiting.designer.confirm('design:id1', held.id))).toBe(WORLD_SAVED_BY_NEWER)
     expect(n.save).not.toHaveBeenCalled()
+  })
+
+  it("a newer version's design written after the last load and before the save is not written over (DSN Round 1, item 4)", async () => {
+    const real = createWorldStore(dir)
+    const file = join(dir, 'world', 'design_id1.json')
+    // Another Termpolis, a newer one, saves the design between this one's last load and its write.
+    const store: WorldStore = { ...real, save: async (doc) => { await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), version: 99 })); await real.save(doc) } }
+    const { designer } = setup(async () => okRes(reply('ok', [{ op: 'rename', id: 'api', name: 'X' }])), { store })
+    await stored(real)
+    expect(await failure(designer.refine('design:id1', 'Rename it', ''))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(99)
+  })
+})
+
+describe('a note is stored only once the design it goes on is saved (DSN Round 1, item 9)', () => {
+  const note = person('Takes orders.')
+
+  it('a design save that fails stores no note, so the note is not there on the next load', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const { designer } = setup(noRun, { store: withAnnotations({ ...real, save: async () => { throw new Error('ENOSPC') } }, annotations), annotations })
+    expect(await failure(designer.annotate('design:id1', 'api', note))).toBe(DESIGN_SAVE_FAILED)
+    expect(await annotations.list('design:id1')).toEqual({})
+    expect(personClaims((await withAnnotations(real, annotations).load('design:id1')) as WorldDoc, 'api')).toEqual([])
+  })
+
+  it('a design a newer Termpolis saved just before the write stores no note', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const file = join(dir, 'world', 'design_id1.json')
+    const annotations = createAnnotationStore(dir)
+    const racing: WorldStore = { ...real, save: async (doc) => { await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), version: 99 })); await real.save(doc) } }
+    const { designer } = setup(noRun, { store: withAnnotations(racing, annotations), annotations })
+    expect(await failure(designer.annotate('design:id1', 'api', note))).toBe(WORLD_SAVED_BY_NEWER)
+    expect(await annotations.list('design:id1')).toEqual({})
+    expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(99)
+  })
+
+  it('a note stored after the save is answered on its part even when the list read back fails', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const { designer } = setup(noRun, { store: real, annotations: { add: annotations.add, list: async () => { throw new Error('EIO') } } })
+    const doc = await designer.annotate('design:id1', 'api', note)
+    expect(personClaims(doc, 'api')).toEqual([note])
+    expect(personClaims(doc, 'db')).toEqual([])
+    expect((await annotations.list('design:id1')).api).toEqual([note])
   })
 })

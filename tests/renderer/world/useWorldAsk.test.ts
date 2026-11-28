@@ -421,7 +421,7 @@ describe('useWorldAsk on a design', () => {
 
 describe('useWorldAsk: a change that removes a district with buildings in it waits for a yes (D3)', () => {
   const removals = [{ id: 'core', name: 'Core', buildings: 2 }]
-  const held = { success: true, data: { doc: { projectKey: 'design:d1', v: 'before' }, text: 'Removed Core.', applied: 1, skipped: 0, summary: 'sum:held', tokens: 900, confirm: { removals } } }
+  const held = { success: true, data: { doc: { projectKey: 'design:d1', v: 'before' }, text: 'Removed Core.', applied: 0, skipped: 0, summary: 'sum:held', tokens: 900, confirm: { removals, id: 'c1' } } }
   const made = { success: true, data: { doc: { projectKey: 'design:d1', v: 'after' }, text: 'Removed Core.', applied: 1, skipped: 0, summary: 'sum:held', tokens: 0 } }
   const api = (over: Record<string, unknown> = {}) => {
     const t = { worldDesignRefine: vi.fn(async () => held), worldDesignConfirm: vi.fn(async () => made), worldDesignCancel: vi.fn(async () => ({ success: true, data: true })), ...over }
@@ -436,7 +436,8 @@ describe('useWorldAsk: a change that removes a district with buildings in it wai
     const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign, undefined, undefined, ask))
     await act(async () => { result.current.ask('remove Core') })
     expect(ask).toHaveBeenCalledWith(removals)
-    expect(t.worldDesignConfirm).toHaveBeenCalledWith('design:d1')
+    // The yes names the change it answers, so it never makes a newer one (DSN Round 1, item 2).
+    expect(t.worldDesignConfirm).toHaveBeenCalledWith('design:d1', 'c1')
     expect(t.worldDesignCancel).not.toHaveBeenCalled()
     expect(onDesign).toHaveBeenCalledTimes(1)
     expect(onDesign).toHaveBeenCalledWith(made.data.doc)
@@ -503,6 +504,36 @@ describe('useWorldAsk: a change that removes a district with buildings in it wai
     await act(async () => { late.resolve(made) })
     expect(onDesign).not.toHaveBeenCalled()
     expect(r2.result.current.state).toBe('idle')
+  })
+
+  it.each(['a newer ask', 'a cancel', 'another world'])('%s while the question is up takes the question down, as a no (DSN Round 1, item 8)', async (what) => {
+    const t = api()
+    const d = deferred<boolean>()
+    const drop = vi.fn(() => d.resolve(false))
+    const { result, rerender } = renderHook(({ key }) => useWorldAsk(null, key, undefined, undefined, undefined, () => d.promise, drop), { initialProps: { key: 'design:d1' } })
+    await act(async () => { result.current.ask('remove Core') })
+    expect(drop).not.toHaveBeenCalled()
+    t.worldDesignRefine.mockResolvedValueOnce(made as never)
+    await act(async () => {
+      if (what === 'a newer ask') result.current.ask('rename the API')
+      else if (what === 'a cancel') result.current.cancel()
+      else rerender({ key: 'design:d2' })
+    })
+    expect(drop).toHaveBeenCalledTimes(1)
+    expect(t.worldDesignConfirm).not.toHaveBeenCalled()
+    // Once the question is down, another cancel asks the pane nothing more.
+    act(() => { result.current.cancel() })
+    expect(drop).toHaveBeenCalledTimes(1)
+  })
+
+  it('an ask with no question up asks the pane to take nothing down', async () => {
+    api()
+    const drop = vi.fn()
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', undefined, undefined, undefined, async () => false, drop))
+    await act(async () => { result.current.ask('remove Core') })
+    await act(async () => { result.current.ask('again') })
+    act(() => { result.current.cancel() })
+    expect(drop).not.toHaveBeenCalled()
   })
 })
 

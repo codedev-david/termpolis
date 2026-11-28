@@ -24,6 +24,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 import { ANSWER_TEXT_CEILING, ANSWER_TEXT_MAX_HEIGHT, NO_MEMORY_NOTE, answerTextMaxHeight, evidenceReach } from '../../../src/renderer/src/components/World/WorldAnswer'
+import { savedByNewerNotice } from '../../../src/renderer/src/components/World/worldNotes'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 import { spokenText } from '../../../src/shared/world/answerMarkdown'
@@ -1370,7 +1371,7 @@ describe('WorldAsk on a design', () => {
   it("asks the pane before a change that removes a district with buildings in it, through the link's confirmRemoval (D3)", async () => {
     const doc = { ...minimal(), projectKey: 'design:d1' }
     const removals = [{ id: 'core', name: 'Core', buildings: 2 }]
-    const refine = vi.fn(async () => ({ success: true, data: { doc, text: 'Removed Core.', applied: 1, skipped: 0, summary: 's1', tokens: 1, confirm: { removals } } }))
+    const refine = vi.fn(async () => ({ success: true, data: { doc, text: 'Removed Core.', applied: 0, skipped: 0, summary: 's1', tokens: 1, confirm: { removals, id: 'c1' } } }))
     const confirm = vi.fn(async () => ({ success: true, data: { doc, text: 'Removed Core.', applied: 1, skipped: 0, summary: 's1', tokens: 0 } }))
     ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignConfirm: confirm, worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
     const confirmRemoval = vi.fn(async () => true)
@@ -1382,8 +1383,44 @@ describe('WorldAsk on a design', () => {
     fireEvent.keyDown(box, { key: 'Enter' })
     await settle()
     expect(confirmRemoval).toHaveBeenCalledWith(removals)
-    expect(confirm).toHaveBeenCalledWith('design:d1')
+    expect(confirm).toHaveBeenCalledWith('design:d1', 'c1')
     expect(setDoc).toHaveBeenCalledWith(doc)
+  })
+
+  // DSN Round 1, item 6: a change or a yes main refuses because a newer Termpolis saved the design since it opened turns
+  // the box off, as a design opened so has it, and tells the pane, whose cards then lose Confirm and Edit (WP3).
+  it.each(['a change', 'a yes'])('%s refused because a newer Termpolis saved the design turns the box off and tells the pane', async (what) => {
+    const doc = { ...minimal(), projectKey: 'design:d1' }
+    const refused = { success: false, error: savedByNewerNotice() }
+    const held = { success: true, data: { doc, text: 'Removed Core.', applied: 0, skipped: 0, summary: 's1', tokens: 1, confirm: { removals: [{ id: 'core', name: 'Core', buildings: 2 }], id: 'c1' } } }
+    const refine = vi.fn(async () => (what === 'a change' ? refused : held))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignConfirm: vi.fn(async () => refused), worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    const readOnly = vi.fn()
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" link={{ onEscape: vi.fn(), setBusy: vi.fn(), setDoc: vi.fn(), confirmRemoval: async () => true, readOnly }} />)
+    await settle()
+    const box = screen.getByPlaceholderText('Change the design…')
+    fireEvent.change(box, { target: { value: 'remove Core' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    expect(screen.getByText(savedByNewerNotice())).toBeInTheDocument()
+    expect(box).toBeDisabled()
+    expect(readOnly).toHaveBeenCalledTimes(1)
+  })
+
+  it('the box on its own, with no pane to tell, still turns off on that refusal; another refusal leaves it on', async () => {
+    const doc = { ...minimal(), projectKey: 'design:d1' }
+    const refine = vi.fn().mockResolvedValueOnce({ success: false, error: 'The designer is busy.' }).mockResolvedValueOnce({ success: false, error: savedByNewerNotice() })
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" />)
+    await settle()
+    const box = screen.getByPlaceholderText('Change the design…')
+    for (const text of ['one', 'two']) {
+      fireEvent.change(box, { target: { value: text } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await settle()
+      if (text === 'one') expect(box).not.toBeDisabled()
+    }
+    expect(box).toBeDisabled()
   })
 })
 

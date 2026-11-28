@@ -469,4 +469,20 @@ describe('districts removed with buildings in them (D3)', () => {
     expect(applyDesignPatch(base(), [{ op: 'remove', id: 'core' }, { op: 'addBuilding', id: 'cache', districtId: 'web', name: 'Cache' }], () => ({})).removed).toEqual([])
     expect(applyDesignPatch(base(), [{ op: 'nope' } as unknown as DesignOp]).removed).toEqual([])
   })
+
+  it.each<[string, DesignOp[], { id: string; name: string; buildings: number }[]]>([
+    // DSN Round 1, item 1: buildings taken out by earlier ops of the same change still count for the district.
+    ['its buildings removed one by one first', [{ op: 'remove', id: 'api' }, { op: 'remove', id: 'db' }, { op: 'remove', id: 'core' }], [{ id: 'core', name: 'Core', buildings: 2 }]],
+    ['one building removed first', [{ op: 'remove', id: 'api' }, { op: 'remove', id: 'core' }], [{ id: 'core', name: 'Core', buildings: 2 }]],
+    ['a building moved out first, which stays', [{ op: 'move', id: 'api', districtId: 'web' }, { op: 'remove', id: 'core' }], [{ id: 'core', name: 'Core', buildings: 1 }]],
+    ['a building moved out and then removed', [{ op: 'move', id: 'api', districtId: 'web' }, { op: 'remove', id: 'api' }, { op: 'remove', id: 'core' }], [{ id: 'core', name: 'Core', buildings: 2 }]],
+    ['a building added first', [{ op: 'addBuilding', id: 'cache', districtId: 'core', name: 'Cache' }, { op: 'remove', id: 'core' }], [{ id: 'core', name: 'Core', buildings: 3 }]],
+    ['a new district a building is moved into', [{ op: 'addDistrict', id: 'spare', name: 'Spare' }, { op: 'move', id: 'api', districtId: 'spare' }, { op: 'remove', id: 'spare' }], [{ id: 'spare', name: 'Spare', buildings: 1 }]],
+    ['two districts emptied, each counted once', [{ op: 'remove', id: 'ui' }, { op: 'remove', id: 'db' }, { op: 'remove', id: 'web' }, { op: 'remove', id: 'core' }], [{ id: 'web', name: 'Web', buildings: 1 }, { id: 'core', name: 'Core', buildings: 2 }]],
+    ['a building removed alone, its district kept', [{ op: 'remove', id: 'api' }, { op: 'remove', id: 'web' }], [{ id: 'web', name: 'Web', buildings: 1 }]]
+  ])('a district removed after %s counts the buildings the change takes from it', (_label, ops, removed) => {
+    const r = applyDesignPatch(base(), ops)
+    expect(r.skipped).toEqual([])
+    expect(r.removed).toEqual(removed)
+  })
 })

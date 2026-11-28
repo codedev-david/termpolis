@@ -1908,11 +1908,26 @@ describe('WorldView card actions', () => {
     // From that refusal on, the pane shows the world as one a newer Termpolis saved: the note stays, and its cards are
     // read-only (WP3), so no further change is made and then refused.
     expect(viewer().load).toHaveBeenLastCalledWith({ ...doc, savedByNewer: true }, expect.anything())
-    act(() => { viewer().opts.renderCard(buildingCard({ ...doc, savedByNewer: true }, 'b1')) })
+    expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
+    expect(CONFIRM_FAILED).toBe("Lumopolis couldn't save your confirmation. Try again.")
+  })
+
+  // DSN Round 1, item 12: the pane's own card, the one it builds in 2D and had open, loses Confirm and Edit on that
+  // refusal; a card the test built itself would pass whatever the pane drew.
+  it('in 2D the open card the pane built loses Confirm and Edit once main refuses for a newer Termpolis', async () => {
+    h.webgl = false
+    const doc = infer()
+    bridge({ worldGet: vi.fn(async () => ok(doc)), worldAnnotate: vi.fn(async () => fail(savedByNewerNotice())) })
+    await mount()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    const card = () => screen.getByTestId('world-card')
+    expect(card().querySelector('[data-confirm="b1|0"]')).not.toBeNull()
+    expect(card().querySelector('[data-runtime-edit]')).not.toBeNull()
+    fireEvent.click(card().querySelector('[data-confirm="b1|0"]') as Element)
     await settle()
     expect(screen.getByTestId('world-notice').textContent).toBe(savedByNewerNotice())
-    expect(screen.getByTestId('world-card').querySelector('[data-confirm]')).toBeNull()
-    expect(CONFIRM_FAILED).toBe("Lumopolis couldn't save your confirmation. Try again.")
+    expect(card().querySelector('[data-confirm]')).toBeNull()
+    expect(card().querySelector('[data-runtime-edit]')).toBeNull()
   })
 
   it('an evidence button shows what it points at under the card, and closing the card or the evidence clears it', async () => {

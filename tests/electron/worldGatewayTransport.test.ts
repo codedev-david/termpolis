@@ -32,7 +32,7 @@ import type { Claim, WorldDoc, WorldQuery, WorldReadResult } from '../../src/sha
 import { MAX_DESIGN_OPS } from '../../src/shared/world/designPatch'
 import { createDesigner, DESIGN_NEEDS_PERSON, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import { keyForSource, type SourceRegistry, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
-import type { WorldStore } from '../../src/main/world/worldStore'
+import { WORLD_SAVED_BY_NEWER, type WorldStore } from '../../src/main/world/worldStore'
 import type { ExecDeps } from '../../src/main/headlessExec'
 import { MAX_EVIDENCE_EXCERPT, MAX_EVIDENCE_REF } from '../../src/main/world/annotations'
 
@@ -582,6 +582,9 @@ describe('world_annotate', () => {
     await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
     annotate.mockRejectedValueOnce('odd')
     await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
+    // DSN Round 1, item 10: the host's refusal of a world a newer Termpolis saved keeps its own words.
+    annotate.mockRejectedValueOnce(Object.assign(new Error(WORLD_SAVED_BY_NEWER), { code: 'WORLD_SAVED_BY_NEWER' }))
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(WORLD_SAVED_BY_NEWER)
   })
 
   describe("a design's note goes to main's designer, which writes the design under its lock (DSN D1)", () => {
@@ -608,7 +611,9 @@ describe('world_annotate', () => {
       [new DesignFailure(DESIGN_NOT_FOUND), NO_DESIGN_MESSAGE],
       [new DesignFailure(NO_PART_MESSAGE), NO_PART_MESSAGE],
       [new DesignFailure(DESIGN_SAVE_FAILED), ANNOTATE_FAILED_MESSAGE],
-      [new Error('disk full: C:/some/path'), ANNOTATE_FAILED_MESSAGE]
+      [new Error('disk full: C:/some/path'), ANNOTATE_FAILED_MESSAGE],
+      // DSN Round 1, item 10: a design a newer Termpolis saved says so, as the pane does.
+      [new DesignFailure(WORLD_SAVED_BY_NEWER), WORLD_SAVED_BY_NEWER]
     ])('answers the designer refusal %s with the message the host path gives', async (e, message) => {
       const { transport } = withDesign(vi.fn(async () => { throw e }))
       await expect(transport.callTool('world_annotate', { designKey: 'design:n1', id: 'b1', text: 't' })).rejects.toThrow(message)

@@ -780,3 +780,51 @@ describe('worldStore stage cache', () => {
     expect(await store.loadStages?.('demo')).toBeNull()
   })
 })
+
+describe('a save looks at the file again just before it puts its copy in place (DSN Round 1, item 4)', () => {
+  const file = (): string => join(dir, 'world', 'demo.json')
+
+  it('a newer world written after the last load is not written over: the doc is marked and the temp file removed', async () => {
+    const store = createWorldStore(dir)
+    await store.save(doc())
+    const text = JSON.stringify({ ...doc(), version: 2, generatedAt: 9 })
+    await writeFile(file(), text)
+    const mine = { ...doc(), generatedAt: 3 }
+    await store.save(mine)
+    expect(mine.savedByNewer).toBe(true)
+    expect(await readFile(file(), 'utf8')).toBe(text)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+    // From then on the store knows: this version's copy is shown, marked, and the file stays the newer one's.
+    expect(await store.load('demo')).toMatchObject({ generatedAt: 3, savedByNewer: true })
+    await store.save({ ...doc(), generatedAt: 4 })
+    expect(await readFile(file(), 'utf8')).toBe(text)
+  })
+
+  it('a file that cannot be read just before the rename is not written over, and the save is refused', async () => {
+    let fail = false
+    const log = vi.fn()
+    const store = createWorldStore(dir, {
+      sleep: async () => undefined, log,
+      readFile: (async (f: string, enc: 'utf8') => { if (fail) throw Object.assign(new Error('EIO'), { code: 'EIO' }); return readFile(f, enc) }) as never
+    })
+    await store.save(doc())
+    const before = await readFile(file(), 'utf8')
+    fail = true
+    await expect(store.save({ ...doc(), generatedAt: 5 })).rejects.toBeInstanceOf(WorldReadError)
+    expect(await readFile(file(), 'utf8')).toBe(before)
+    expect(await readdir(join(dir, 'world'))).toEqual(['demo.json'])
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('could not be read before a save'))
+    // Refused, it forgets what the disk held: the next save loads first, and with the file readable again it writes.
+    fail = false
+    await store.save({ ...doc(), generatedAt: 6 })
+    expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(6)
+  })
+
+  it('a file removed since the last load is written again', async () => {
+    const store = createWorldStore(dir)
+    await store.save(doc())
+    await rm(file())
+    await store.save({ ...doc(), generatedAt: 7 })
+    expect(JSON.parse(await readFile(file(), 'utf8')).generatedAt).toBe(7)
+  })
+})

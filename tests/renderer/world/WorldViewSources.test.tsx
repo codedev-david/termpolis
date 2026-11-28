@@ -189,6 +189,66 @@ describe('WorldView: the question before a design change removes a district with
     await expect(third).resolves.toBe(false)
     await expect(link.confirmRemoval!(removals)).resolves.toBe(false)
   })
+
+  // DSN Round 1, item 7: never two dialogs up together. A change held while Build it, Export or Documentation is open
+  // waits; its question comes up once that dialog closes, and Esc on that dialog closes it without answering.
+  it.each([
+    ['Build it', () => fireEvent.click(screen.getByTestId('world-build-it-open')), () => screen.queryByRole('dialog', { name: 'Build it' })],
+    ['Export', () => { fireEvent.click(screen.getByTestId('world-export')); fireEvent.click(screen.getByTestId('world-export-world')) }, () => screen.queryByTestId('world-export-dialog')],
+    ['Documentation', () => { fireEvent.click(screen.getByTestId('world-export')); fireEvent.click(screen.getByTestId('world-export-document')) }, () => screen.queryByTestId('world-document-dialog')]
+  ])('a question that comes while %s is open waits until it closes; Esc there does not answer it', async (_name, openIt, other) => {
+    bridge(exportBits())
+    const m = await mount('/repo')
+    switchTo('design:d1')
+    await settle()
+    openIt()
+    await settle()
+    expect(other()).not.toBeNull()
+    let answered: boolean | null = null
+    const answer = askIt(m)
+    void answer.then((yes) => { answered = yes })
+    await settle()
+    expect(question()).toBeNull()
+    expect(screen.queryAllByRole('alertdialog')).toHaveLength(0)
+    expectModal(other())
+    fireEvent.keyDown(screen.getByRole('region', { name: 'Lumopolis' }), { key: 'Escape' })
+    await settle()
+    expect(other()).toBeNull()
+    expect(answered).toBeNull()
+    expect(question()).toHaveTextContent(QUESTION)
+    expectModal(question())
+    fireEvent.click(screen.getByTestId('world-remove-district-go'))
+    await expect(answer).resolves.toBe(true)
+  })
+
+  it('the link takes a question down as a no when the box drops its change (DSN Round 1, item 8)', async () => {
+    const m = await openDesign()
+    const answer = askIt(m)
+    expect(question()).not.toBeNull()
+    act(() => { (lastSlot(m)[3] as WorldAskLink).dropRemoval!() })
+    await expect(answer).resolves.toBe(false)
+    expect(question()).toBeNull()
+    expectModal(null)
+    // With none up it does nothing.
+    act(() => { (lastSlot(m)[3] as WorldAskLink).dropRemoval!() })
+    expect(question()).toBeNull()
+  })
+
+  it('the link marks the design read-only when main refused the box for a newer Termpolis (DSN Round 1, item 6)', async () => {
+    const m = await openDesign()
+    const shown = viewer().load.mock.calls[viewer().load.mock.calls.length - 1][0]
+    expect(shown.savedByNewer).not.toBe(true)
+    act(() => { (lastSlot(m)[3] as WorldAskLink).readOnly!() })
+    await settle()
+    const marked = viewer().load.mock.calls[viewer().load.mock.calls.length - 1]
+    expect(marked[0]).toEqual({ ...shown, savedByNewer: true })
+    // Restyled in place: the parts are the ones the viewer holds.
+    expect(marked[1]).toEqual(expect.objectContaining({ statusOnly: true }))
+    const loads = viewer().load.mock.calls.length
+    act(() => { (lastSlot(m)[3] as WorldAskLink).readOnly!() })
+    await settle()
+    expect(viewer().load.mock.calls.length).toBe(loads)
+  })
 })
 
 describe('WorldView sources', () => {

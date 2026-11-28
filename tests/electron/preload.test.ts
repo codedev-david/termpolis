@@ -1337,7 +1337,7 @@ describe('preload — workflow orchestrator bridge', () => {
     const calls: [() => Promise<unknown>, string, unknown?][] = [
       [() => api.worldDesignDraft('A shop', 'draft:t1'), 'world:design-draft', { description: 'A shop', cancelKey: 'draft:t1' }],
       [() => api.worldDesignCancel('draft:t1'), 'world:design-cancel', { key: 'draft:t1' }],
-      [() => api.worldDesignConfirm('design:d1'), 'world:design-confirm', { key: 'design:d1' }],
+      [() => api.worldDesignConfirm('design:d1', 'c7'), 'world:design-confirm', { key: 'design:d1', id: 'c7' }],
       [() => api.worldSourcesList(), 'world:sources-list'],
       [() => api.worldMapProject('C:/repo'), 'world:map-project', { root: 'C:/repo' }],
       [() => api.worldOpenFolder(), 'world:open-folder'],

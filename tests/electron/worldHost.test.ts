@@ -2288,6 +2288,31 @@ describe('annotate', () => {
     expect(h.store.saves).toEqual([])
   })
 
+  it('a design a newer Termpolis saved is refused with the B7 words, not "No world with that key." (DSN Round 1, item 10)', async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann }, memStore({ 'design:d1': { ...doc(), projectKey: 'design:d1', savedByNewer: true } }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+    expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
+    await h.send({ kind: 'call', id: 2, fn: 'annotate', args: ['design:gone', 'b-api', person('x')] })
+    expect(h.last()).toMatchObject({ id: 2, ok: false, error: { message: 'No world with that key.' } })
+    expect(ann.added).toEqual([])
+    expect(h.store.saves).toEqual([])
+  })
+
+  it("never compiles a design: a design is main's designer's to write (DSN Round 1, item 5)", async () => {
+    const plan = { ...doc(), projectKey: 'design:d1' }
+    const h = harness({}, memStore({ 'design:d1': plan }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['design:d1', snap('/repo'), HEAD] })
+    expect(h.last()).toMatchObject({ id: 1, ok: false, error: { message: 'worldHost: a design is written by its designer' } })
+    await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['design:d1', snap(), HEAD, ['src/a.ts']] })
+    expect(h.last()).toMatchObject({ id: 2, ok: false, error: { message: 'worldHost: a design is written by its designer' } })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(h.store.saves).toEqual([])
+    expect(h.store.docs.get('design:d1')).toBe(plan)
+  })
+
   it('rejects an unknown part, an unknown world and a non-string id with "No part with that id."', async () => {
     const ann = memAnnotations()
     const h = harness({ createAnnotations: () => ann }, memStore({ k1: doc() }))
