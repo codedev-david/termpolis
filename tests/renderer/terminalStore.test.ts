@@ -1007,6 +1007,15 @@ describe('the usage-limit chooser and its banners (§8.4)', () => {
     st().putSwitchRun(run)
     st().noteHeldKey('t1')
     expect(st().switchRuns.t1.heldAt).toEqual(expect.any(Number))
+    // The run's next step keeps the held key, so the overlay's hint stays its time (it vanished on a step that came while
+    // the keys were typed); a run that ended, and a switch after it, has none.
+    const heldAt = st().switchRuns.t1.heldAt
+    st().putSwitchRun({ ...run, steps: ['done', 'working', 'pending'] })
+    expect(st().switchRuns.t1.heldAt).toBe(heldAt)
+    st().putSwitchRun({ ...run, status: 'done' as const, steps: ['done', 'done', 'done'] as ['done', 'done', 'done'] })
+    expect(st().switchRuns.t1.heldAt).toBeUndefined()
+    st().putSwitchRun({ ...run, status: 'checking' as const })
+    expect(st().switchRuns.t1.heldAt).toBeUndefined()
     st().dropSwitchRun('t1')
     expect(st().switchRuns).toEqual({})
     st().queueSwitch('t1', { targetId: 'b', reason: 'by hand' })
