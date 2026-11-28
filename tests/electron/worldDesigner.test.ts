@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  createDesigner, DESIGN_AGENT_FAILED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
+  buildDesignPrompt, createDesigner, DESIGN_AGENT_FAILED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
   DESIGN_KEY_RE, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
 } from '../../src/main/world/designer'
 import { applyDesignPatch, emptyDesignDoc, type DesignOp } from '../../src/shared/world/designPatch'
@@ -422,6 +422,35 @@ describe('layoutPlacer', () => {
     expect(out.a).toEqual(p.a)
     expect(out.a1).toEqual([1, 0, 1])
     expect(Object.keys(out).sort()).toEqual(['a', 'a1', 'a2', 'b', 'b1'])
+  })
+})
+
+describe('buildDesignPrompt on a big design (D7)', () => {
+  it('fits the lines in a few passes, not one pass per line dropped', () => {
+    const doc = emptyDesignDoc('design:big', 1)
+    doc.districts.push({ id: 'core', name: 'Core', subtitle: '', hue: 0, members: [], nameState: 'observed' })
+    for (let i = 0; i < 3000; i++) {
+      doc.buildings.push({
+        id: `b${i}`, districtId: 'core', name: `Building ${i}`, techLabel: '', process: '', floors: [], stack: [],
+        how: [{ text: 'x'.repeat(100), state: 'proposed', evidence: [] }], why: [], status: 'proposed', members: [], claims: [], nameState: 'observed'
+      })
+    }
+    // Every pass joins the shown lines once; dropping one line per pass made thousands of passes over thousands of lines.
+    const join = vi.spyOn(Array.prototype, 'join')
+    let prompt: string
+    let joins: number
+    try {
+      prompt = buildDesignPrompt(doc, 'Add a cache', '')
+    } finally {
+      // A join over many lines is one pass over the shown parts; the short joins build each part's own line.
+      joins = join.mock.contexts.filter((list) => (list as unknown[]).length > 100).length
+      join.mockRestore()
+    }
+    expect(joins).toBeLessThan(30)
+    expect(prompt.length).toBeLessThanOrEqual(12_000)
+    const shown = prompt.split('\n').filter((l) => l.startsWith('{"building"')).length
+    expect(prompt).toContain(`(${3000 - shown} more parts not shown)`)
+    expect(shown).toBeGreaterThan(0)
   })
 })
 
