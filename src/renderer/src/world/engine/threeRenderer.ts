@@ -2622,11 +2622,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /**
    * Once the size has held for BUFFER_SETTLE_MS: the buffer fitted, only to a size or ratio it does not have (a new
    * pixel ratio may have fitted it to this size already, and each fit clears it, a blank frame), and the look checked
-   * (settleCheck) either way.
+   * (settleCheck) either way, in a task of its own right after the fit's. The check measures the world again (10 to 30
+   * ms of the thread on the runners, a new search 66 to 179) and kept in the fit's task it made that task the check's
+   * too: the fit's own work stays the fit's (BUFFER_FIT_MEASURE's task), the check is a task like any other. Until the
+   * check has run the settle is still pending (settleTimer): a resize puts both off, a new pixel ratio or tier puts the
+   * check off again (onRatio, setTier), and a panel's change only re-aims (reframe).
    */
   const armSettle = (): void => {
     settleTimer = setTimeout(() => {
-      settleTimer = null
       if (width !== shown.width || height !== shown.height || pixelRatio() !== shown.ratio) {
         const start = performance.now()
         fitBuffer()
@@ -2636,7 +2639,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         // fit's task): it waits for this fence instead, held back as any frame is while the GPU is busy (animate).
         if (software) putFence()
       }
-      settleCheck()
+      settleTimer = setTimeout(() => {
+        settleTimer = null
+        settleCheck()
+        wake()
+      }, 0)
       wake()
     }, BUFFER_SETTLE_MS)
   }

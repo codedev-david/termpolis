@@ -849,6 +849,9 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     r.dispose()
   })
 
+  /** The size held: the settle's fit after BUFFER_SETTLE_MS, then the look's check in a task of its own (a 0 ms timer, 1 ms on the fake clock). */
+  const HELD_MS = BUFFER_SETTLE_MS + 1
+
   /**
    * The tower world under a short card in a `w` by `hgt` view the host's ResizeObserver reported, timers faked: the
    * close-up searched at that size, or (`late`) on the 400x600 canvas before the observer's first call, which then
@@ -875,7 +878,7 @@ describe('threeRenderer line close-up, kept across resizes', () => {
     settle()
     if (late) resized(w, hgt)
     else {
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
     }
     for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at ${w}x${hgt}`).not.toBeNull()
@@ -898,14 +901,14 @@ describe('threeRenderer line close-up, kept across resizes', () => {
         expect(n.count()).toBe(0) // no search while the divider moves
         expect(r.screenPoint('p')).toBeNull() // the re-aimed look hides p
         // The size holds: the look is checked once, p hidden there, and the search runs again.
-        vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+        vi.advanceTimersByTime(HELD_MS)
         settle()
         expect(n.count()).toBeGreaterThan(0)
         for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at ${w1}x${h1}`).not.toBeNull()
         // A look that holds is not searched again when the size next holds.
         resized(w1 + 2, h1)
         settle()
-        vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+        vi.advanceTimersByTime(HELD_MS)
         settle()
         expect(n.count()).toBe(0)
       } finally {
@@ -936,7 +939,7 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       r.setCardReserve(380, 420)
       settle()
       expect(n.count()).toBe(0) // no search before the size holds
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBeGreaterThan(0)
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600 under the tall card`).not.toBeNull()
@@ -946,6 +949,46 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       r.setCardReserve(380, 420)
       settle()
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} with the card grown again`).not.toBeNull()
+    } finally {
+      r.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('the settle fits the buffer in one task and checks the look in the next: a resize between them puts the check off, and once checked a panel change is checked at once', async () => {
+    const n = searches()
+    const { r, resized } = await dragged(800, 600)
+    try {
+      n.count()
+      dragTo440(r, resized)
+      expect(n.count()).toBe(0)
+      // The fit's task (the drag's last resize 10 ms ago): the buffer fitted and nothing more, the look's check (its
+      // search) left to a task of its own.
+      expect(vi.getTimerCount()).toBe(1)
+      vi.advanceTimersToNextTimer()
+      expect(r.canvas.width / r.canvas.height).toBeCloseTo(440 / 600, 2)
+      expect(n.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1) // the check, still owed
+      // The divider moves on before the check's task: the check is put off with the settle, never run at a size passed on the way.
+      resized(430, 600)
+      h.frames.step()
+      vi.advanceTimersByTime(BUFFER_SETTLE_MS - 1)
+      settle()
+      expect(n.count()).toBe(0)
+      expect(r.screenPoint('p')).toBeNull()
+      // The size holds: the fit's task, then the check's; the look searches again.
+      vi.advanceTimersToNextTimer()
+      settle()
+      expect(n.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1)
+      vi.advanceTimersToNextTimer()
+      settle()
+      expect(n.count()).toBeGreaterThan(0)
+      for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 430x600`).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+      // With the check run the settle is over: a tier changed now owes no check, and none is armed.
+      r.setTier('low')
+      expect(vi.getTimerCount()).toBe(0)
     } finally {
       r.dispose()
       vi.useRealTimers()
@@ -969,13 +1012,13 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       changes[0]() // the window moved to another display
       settle()
       expect(n.count()).toBe(0)
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBeGreaterThan(0)
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
       // A ratio change with no resize pending owes no check: none is armed.
       changes[0]()
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBe(0)
     } finally {
@@ -994,13 +1037,13 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       r.setTier('low') // Auto lowered the quality mid-drag: the waiting buffer fitted here, once
       settle()
       expect(n.count()).toBe(0)
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBeGreaterThan(0)
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
       // A tier change with no resize pending owes no check: none is armed.
       r.setTier('high')
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBe(0)
     } finally {
@@ -1026,7 +1069,7 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       resized(440, 600) // the same size again: the settle is armed anew
       settle()
       expect(n.count()).toBe(0)
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBeGreaterThan(0) // the buffer has the size; the look is still checked
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
@@ -1049,7 +1092,7 @@ describe('threeRenderer line close-up, kept across resizes', () => {
       settle()
       expect(n.count()).toBeGreaterThan(0)
       for (const id of ['p', 'q']) expect(r.screenPoint(id), `${id} at 440x600`).not.toBeNull()
-      vi.advanceTimersByTime(BUFFER_SETTLE_MS)
+      vi.advanceTimersByTime(HELD_MS)
       settle()
       expect(n.count()).toBe(0)
     } finally {
