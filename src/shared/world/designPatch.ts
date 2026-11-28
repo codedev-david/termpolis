@@ -103,8 +103,12 @@ function normalizeOp(raw: unknown): DesignOp | null {
       return str(raw.districtId) ? { op: 'move', id, districtId: raw.districtId.trim() } : null
     case 'removePart':
       return { op: 'removePart', id }
-    case 'setRuntimeNames':
-      return Array.isArray(raw.names) ? { op: 'setRuntimeNames', id, names: raw.names.filter(str).map((n) => n.trim()) } : null
+    case 'setRuntimeNames': {
+      if (!Array.isArray(raw.names)) return null
+      const names = raw.names.filter(str).map((n) => n.trim())
+      // Only an explicit [] clears: a list whose every entry is unusable ([null]) is not a change (D6).
+      return names.length > 0 || raw.names.length === 0 ? { op: 'setRuntimeNames', id, names } : null
+    }
     case 'describe':
       return str(raw.does) ? { op: 'describe', id, does: clip(raw.does, MAX_TEXT) } : null
     default:
