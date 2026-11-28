@@ -2110,23 +2110,24 @@ function writeShieldRepos(list: string[]): void {
   } catch { /* best effort */ }
 }
 
+// What the hook's `[ -x ]` asks of its node (I1). On Windows X_OK is only whether it is there. Named, as are the scanner
+// copy's file calls below, so the main-thread allowlist names each site (tests/electron/main-thread-allowlist.json).
+const hookNodeRuns = (p: string): boolean => { try { ghAccess(p, ghConstants.X_OK); return true } catch { return false } }
 const realHookDeps: HookDeps = {
   readFile: (p) => { try { return ipRead(p, 'utf8') } catch { return null } },
   writeFile: (p, d) => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') },
   exists: (p) => ghExists(p),
-  // What the hook's `[ -x ]` asks of its node (I1). On Windows X_OK is only whether it is there.
-  canRun: (p) => { try { ghAccess(p, ghConstants.X_OK); return true } catch { return false } },
+  canRun: hookNodeRuns,
   chmod: (p, m) => { try { ghChmod(p, m) } catch { /* windows has no exec bit */ } },
   remove: (p) => { try { unlinkSync(p) } catch { /* already gone */ } },
   // lstat, never stat: a hook that is a link is reported as one, not as the file it names (I1).
   fileKind: (p) => hookFileKind(() => ghLstat(p)),
 }
 
-const scannerCopyDeps: ScannerCopyDeps = {
-  read: (p) => { try { return ipRead(p, 'utf8') } catch { return null } },
-  write: (p, d) => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') },
-  rename: (from, to) => renameSync(from, to),
-}
+const readScannerCopy = (p: string): string | null => { try { return ipRead(p, 'utf8') } catch { return null } }
+const writeScannerCopy = (p: string, d: string): void => { mkdirSync(ghDirname(p), { recursive: true }); writeFileSync(p, d, 'utf8') }
+const renameScannerCopy = (from: string, to: string): void => renameSync(from, to)
+const scannerCopyDeps: ScannerCopyDeps = { read: readScannerCopy, write: writeScannerCopy, rename: renameScannerCopy }
 const shippedScannerDir = (): string => join(process.resourcesPath, 'mcp-adapter')
 const scannerCopyDir = (): string => join(app.getPath('userData'), SHIELD_SCANNER_DIR)
 
