@@ -868,7 +868,7 @@ export function drawn(text: string, size: ScreenSize | null): { lines: string[];
 /** Where the prompts a shell printed start in `text`: at their first report. A prompt of the
  *  user's own can write one of its own (oh-my-posh does, and Windows Terminal's docs show how), on
  *  the same line: a report starts a prompt only with a line break since the one before. */
-function promptsIn(text: string): number[] {
+export function promptsIn(text: string): number[] {
   const starts: number[] = []
   let last = -1
   for (const m of text.matchAll(PROMPT_REPORT)) {

@@ -18,7 +18,7 @@ import { EXIT_COMMAND, carryForSwitch, relaunchCommand } from '../shared/account
 import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
 import {
-  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, liveness, livenessNow, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
+  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, hintAtFoot, livenessNow, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
 } from './accountSwitch'
 import type { AgentStartRecord, OsMemo, SwitchIO } from './accountSwitch'
 
@@ -66,10 +66,7 @@ async function locked(io: SwitchIO, id: string, run: () => Promise<AgyStepOutcom
 
 /** Exits a live agy with its own /exit, or reads the hint of one gone already: the conversation's id. */
 async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undefined, assumeExited: boolean): Promise<AgyStepOutcome> {
-  if (assumeExited) {
-    const hint = liveness(io, id, 'agy', undefined)
-    return { kind: 'exited', conversationId: hint.state === 'gone' && hint.hint ? hint.hint.id : null }
-  }
+  if (assumeExited) return { kind: 'exited', conversationId: hintAtFoot(look(io, id), 'agy')?.id ?? null }
   const os: OsMemo = { known: false }
   const alive = await livenessNow(io, id, 'agy', start, os)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }

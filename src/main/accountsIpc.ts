@@ -137,8 +137,8 @@ function noteRestarted(terminalId: string): void {
   let restarted = false
   try { restarted = wiring.io?.restarted?.(terminalId) === true } catch { /* no sign read */ }
   if (restarted && !byHand.has(terminalId)) markByHand(terminalId)
-  // The banner is the wrapper's word that Claude Code started again here: a new run, which no typed line starts, while the old run's
-  // exit hint has ended its record. Watched from here like a launch whose options are unknown (CH4-3). The banner says it starts
+  // The banner is the wrapper's word that Claude Code started again here: a new run, which no typed line starts, after the old run's
+  // exit hint, which is no exit (HOLD-C). Watched from here like a launch whose options are unknown (CH4-3). The banner says it starts
   // Claude, so it is a sign seen, not a guess: the record is not `unseen`.
   if (restarted && agentStarts.get(terminalId)?.agent === 'claude') {
     const end = wiring.outputEnd?.(terminalId)
@@ -224,6 +224,9 @@ function startRecord(start: AgentStart, now: number): AgentStart {
  *  of the 32 KB window it retains loses the input box of an agent that has worked a while (F-R2-2). A
  *  terminal that cannot keep one still has its start recorded, and its window is replayed. */
 function setStart(terminalId: string, start: AgentStart): void {
+  // A shell that has reported a prompt before the line: its next report is the shell back, not its first prompt (promptSince).
+  const reported = wiring.io?.reported?.(terminalId)
+  if (reported && (reported.posix || reported.windows)) start.prompted = true
   agentStarts.set(terminalId, start)
   screenReleased.delete(terminalId)
   try { wiring.io?.watch?.(terminalId) } catch { /* replayed from the window then */ }

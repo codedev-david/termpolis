@@ -303,20 +303,6 @@ function composerEnd(rows: readonly string[], top: number): number {
   return codexFooter(rows, top) ? n - 1 : n
 }
 
-/** Whether the input box at row `top` is drawn to its end: its closing rule under it (Claude Code, agy), or, under Codex's
- *  composer, its footer below a blank row. An agent's box caught before that was drawn has neither, and nor has a prompt of
- *  the person's own drawn like a box (powerlevel10k's ruler over its ❯), whatever else is under it: the line typed at it,
- *  wrapped, a command's output, a status row. `rows` end at the last one drawn. */
-export function boxClosed(rows: readonly string[], top: number): boolean {
-  return /^›/.test(rows[top]) ? composerEnd(rows, top) < rows.length : closingRule(rows, top) > top
-}
-
-/** A row drawn like part of an agent's screen: a rule, a box's corner or side, an input box's glyph at its start, or the
- *  banner of one of the three agents. */
-const AGENT_SHAPED = /^[─━]{20,}$|^\s*[╭╰│]|^[❯>›](?:\s|$)|▐▛|Claude Code|OpenAI Codex|Antigravity/
-/** Whether any of `rows` is drawn like part of an agent's screen (AGENT_SHAPED). */
-export const agentShaped = (rows: readonly string[]): boolean => rows.some((row) => AGENT_SHAPED.test(row))
-
 /** The rows an agent's input box takes: from its first row (the screen's top for one taller than
  *  the screen) to its closing rule (Claude Code, agy) or, for a box with none (Codex's composer), to
  *  the screen's end, less Codex's footer; null with no input box. */

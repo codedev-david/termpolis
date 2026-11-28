@@ -7,19 +7,18 @@
 // screen a shell printed (`cat` of a capture), or the last frame an exited agent left above the
 // prompt.
 //
-// The agent is gone, and stays gone until the next start (a new agent typed there), at the first
-// of: its exit hint at the screen's foot with no box under it, printed since it started; its
-// shell's prompt report since, with no box drawn after it (sinceStarted, as submit reads it); on
-// macOS and Linux, the shell back in the PTY's foreground. Each is what the switch reads too.
+// The agent is gone, and stays gone until the next start (a new agent typed there), only on the
+// shell's own word, as the switch reads it (accountSwitch.ts promptSince): its prompt reported since
+// the start, with no box drawn after it; on macOS and Linux, the shell back in the PTY's foreground.
+// An exit hint, a footer or a closing rule not drawn yet, a quiet screen are never an exit (HOLD-C).
 import { detectAgentStatus, limitWords, stopKind } from '../shared/agentStatusDetector'
 import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
 import { CODEX_STARTING } from '../shared/accountSwitch'
-import { HINT_HEAD, firstPromptRead, hintAtFoot, indexOf, look, plain, settledQuiet } from './accountSwitch'
-import type { Look, QuietLook, SwitchIO } from './accountSwitch'
-import { PROMPT_REPORT, sinceStarted } from './mcpServer'
+import { look, plain, promptSince } from './accountSwitch'
+import type { Look, SwitchIO } from './accountSwitch'
 
 /** Where a terminal's agent was started, as main recorded it (accountsIpc.ts AgentStart). */
 export interface LiveStart {
@@ -38,8 +37,9 @@ export interface LiveStart {
   unseen?: boolean
   /** Seen gone since: latched until the next start. */
   ended?: boolean
-  /** The first look that read the shell's first prompt since as quiet (accountSwitch.ts settledQuiet). */
-  quiet?: QuietLook
+  /** The shell had reported a prompt when the line was entered, or the agent's own /resume moved `at`: the first prompt report
+   *  since is the shell back (accountSwitch.ts promptSince). */
+  prompted?: true
   /** Took a turn since: a prompt entered in its box, or seen at work. */
   turned?: boolean
   /** Where in its output that turn began (the Enter, or the first look that saw it at work). */
@@ -72,45 +72,17 @@ export { agentOfLaunch }
 
 /** Has the agent `start` recorded exited (or never started)? The look `l` is the screen now. */
 export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: number, l: Look = look(io, id)): boolean {
-  if (start.ended) return true
-  if (start.agent && hintAtFoot(l, start.agent) && HINT_HEAD[start.agent].test(plain(io.outputFrom(id, start.at)))) return true
-  const fresh = now - (start.time ?? 0) < FOREGROUND_GRACE_MS
-  const from = indexOf(l, start.at)
-  // The replay is read only once a shell reported a prompt since the start: David's Git Bash, zsh
-  // and fish report none.
-  const since = l.raw.slice(from)
-  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell) {
-    // At the shell's first prompt, a screen one look can't tell from an agent's first frame caught half drawn is gone only on a
-    // second look a moment on, nothing more printed (holdb-review R2-2): latched gone, the agent stayed gone for good.
-    const first = firstPromptRead(since, start.commands, io.size(id))
-    if (first !== 'ran' && (first !== 'quiet' || settledQuiet(start, l.end, now))) return true
-  }
-  return !fresh && io.atShell?.(id) === true
+  if (start.ended || promptSince(io, id, l, start.at, start.commands, start.prompted)) return true
+  return now - (start.time ?? 0) >= FOREGROUND_GRACE_MS && io.atShell?.(id) === true
 }
 
-/** Nothing printed between the start and the shell's last prompt report since: the shell printed one more prompt
- *  after the line was entered and before it echoed that line (Git Bash on Windows CI did), not an agent that ran and
- *  exited. A look in that moment latched the agent gone before it started; in the moment the shell takes to start
- *  the agent (FOREGROUND_GRACE_MS) it is no exit. */
-function quietUpToPrompt(since: string): boolean {
-  const reports = [...since.matchAll(PROMPT_REPORT)]
-  return plain(since.slice(0, reports[reports.length - 1].index)).trim() === ''
-}
-
-/** Can this terminal ever show an agent's exit? A shell that reports its prompts, or a PTY whose foreground can be read
- *  (macOS, Linux). Git Bash on Windows with a PROMPT_COMMAND of its own shows neither: a guessed start there would stay
- *  live for the life of the terminal, so a `cat` of a limit screen, or another agent's limit, would read as its stop. */
-function exitVisible(io: SwitchIO, id: string): boolean {
-  const r = io.reported?.(id)
-  return !!(r && (r.posix || r.windows)) || io.atShell?.(id) != null
-}
 
 /** What a look reads off the terminal itself; accountsIpc.ts adds main's account record. */
 export type LimitLookResult = Omit<LimitLook, 'accountId' | 'byHand'>
 
 /**
  * Looks at a terminal for the chooser: the screen, judged once; the agent's lifecycle, latched gone
- * at the first sign of an exit; a turn, once it is seen at work. `start` is main's record of the
+ * at the shell's or the OS's word of its exit; a turn, once it is seen at work. `start` is main's record of the
  * agent started there, or undefined for none: then nothing counts.
  */
 export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefined, now: number): LimitLookResult {
@@ -118,7 +90,7 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
   const status = detectAgentStatus(l.lines.join('\n'), start?.agent ? ACCOUNT_AGENT_LABEL[start.agent] : '', 'idle', { screen: true, title: l.title })
   if (!start) return { agent: null, live: false, turned: false, startAt: null, status, words: null }
   if (agentGone(io, id, start, now, l)) start.ended = true
-  const live = !start.ended && !(start.unseen === true && !exitVisible(io, id))
+  const live = !start.ended
   // Codex says "model: loading" in its header until it is up, with its box already drawn, and the detector reads
   // that as work (the real fresh-launch streams do, at 0.7 s): no prompt was taken, so it is no turn.
   const starting = start.agent === 'codex' && CODEX_STARTING.test(l.lines.join('\n'))
@@ -160,12 +132,15 @@ export function noteEnteredLine(
     start.turnedAt = undefined
     start.at = at
     start.time = now
+    start.prompted = true
     return null
   }
   if (!launched && (!start || start.ended || start.turned || line.startsWith('/'))) return null
   const l = lookNow()
-  // A guessed start (unseen) gives way to a launch typed after it wherever its exit could never be seen, or no agent box is up.
-  const gone = !start || (start.unseen === true && (l.box < 0 || !exitVisible(io, id))) || agentGone(io, id, start, now, l)
+  // A guessed start (unseen) is made only where the agent before it was seen gone (accountsIpc.ts noteUnseenLaunch): its own
+  // exit is read as any start's. Where no exit is ever shown (Git Bash on Windows with a PROMPT_COMMAND of its own), the record
+  // stays the agent's until the OS or the shell says otherwise, and a launch typed after it starts none (HOLD-C).
+  const gone = !start || agentGone(io, id, start, now, l)
   if (start && gone) start.ended = true
   // A line the shell edited is an agent started, but not the one the keys say: its flags are left as unknown.
   if (launched && gone) return edited ? { at, commands: [launched], agent: launched, time: now, unsure: true } : { at, commands: [line], agent: launched, time: now }
