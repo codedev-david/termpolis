@@ -173,8 +173,13 @@ export type AskResult =
 // ---- Lumopolis design (renderer <-> main): a planned system drafted and refined by conversation ----
 /** A new design world, keyed design:<id>, and the agent's plain-language note about it. */
 export interface DesignDraftResult { key: string; doc: WorldDoc; text: string; tokens: number }
-/** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary. */
-export interface DesignRefineResult { doc: WorldDoc; text: string; applied: number; skipped: number; summary: string; tokens: number }
+/** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary.
+ *  `confirm`: the change would remove these districts with buildings in them, so nothing was saved and doc is the design
+ *  as it is; world:design-confirm makes the change (DSN D3). */
+export interface DesignRefineResult {
+  doc: WorldDoc; text: string; applied: number; skipped: number; summary: string; tokens: number
+  confirm?: { removals: import('./designPatch').DistrictRemoval[] }
+}
 
 // ---- Lumopolis sources (renderer <-> main): the worlds the user has opened, newest first ----
 /** Where a world comes from: this project, a folder, a cloned repository, or a design (keyed design:<id>). */

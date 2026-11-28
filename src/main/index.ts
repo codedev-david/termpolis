@@ -2849,7 +2849,9 @@ const worldSources = createSourceRegistry(worldUserData, {
   now: () => Date.now(),
 })
 // Design worlds always carry their stored annotations, merged on load and save (a confirm during a refine survives).
-const worldDesignStore = withAnnotations(createWorldStore(worldUserData), createAnnotationStore(worldUserData))
+// Design worlds are written in main only, by the designer, annotations included (DSN D1); the world host refuses design keys.
+const worldDesignAnnotations = createAnnotationStore(worldUserData)
+const worldDesignStore = withAnnotations(createWorldStore(worldUserData), worldDesignAnnotations)
 const worldDesigner = createDesigner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
@@ -2859,6 +2861,7 @@ const worldDesigner = createDesigner({
   registry: worldSources,
   designsDir: join(worldUserData, 'world', 'designs'),
   newId: () => randomUUID(),
+  annotations: worldDesignAnnotations,
 })
 const worldLabelContext = createLabelContext({
   git: (args, cwd) => safeGitAsync(args, { cwd, timeout: GIT_TIMEOUT_MS }),

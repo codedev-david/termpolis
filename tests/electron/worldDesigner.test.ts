@@ -703,6 +703,18 @@ describe('a refine never overwrites a change made to the parts it names after it
     expect(personClaims(saved, 'api')).toEqual([person('Takes orders.')])
     expect(saved.runtimeNames?.api).toEqual(['orders-api'])
   })
+
+  it('a line it removes is compared without its notes: a confirm on it meanwhile, then the remove applies', async () => {
+    const agent = heldAgent([{ op: 'remove', id: 'e-api--db' }])
+    const { designer, store } = setup(agent.exec)
+    await stored(store)
+    const refining = designer.refine('design:id1', 'Drop the line', '')
+    await agent.running
+    await designer.annotate('design:id1', 'e-api--db', person('Writes each order.'))
+    agent.release()
+    expect((await refining).applied).toBe(1)
+    expect(((await store.load('design:id1')) as WorldDoc).edges).toEqual([])
+  })
 })
 
 describe('a refine that removes a district with buildings in it waits for a yes (D3)', () => {

@@ -8,17 +8,18 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignOp, type DesignPatchResult, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
 import { estimateTokens } from '../../shared/world/tokens'
-import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
+import type { Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import { ISOLATION_SETUP_FAILED } from '../readOnlyIsolation'
 import { LUMOPOLIS_RUN } from './agentProfile'
+import { hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
 import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
 import { districtRadius, layoutWorld, placeBuilding } from './layout'
 import type { SourceRegistry, WorldSource } from './sources'
-import type { WorldStore } from './worldStore'
+import { WORLD_SAVED_BY_NEWER, type WorldStore } from './worldStore'
 
 export interface DesignerDeps {
   exec: (req: ExecRequest, deps: ExecDeps) => Promise<ExecResult>
@@ -32,6 +33,8 @@ export interface DesignerDeps {
   /** The environment (and, for Codex, the proxy base URL) a run in `cwd` gets. A failure never blocks a design. */
   runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
   newId(): string
+  /** Where a design's confirmations live: the designer adds them, so every write to a design is made under its lock (D1). */
+  annotations: Pick<AnnotationStore, 'add' | 'list'>
   now?(): number
   timeoutMs?: number
 }
@@ -48,10 +51,15 @@ export interface ProposeResult {
 export interface Designer {
   /** `cancelKey` (draft:<token>, from the renderer) lets cancel() stop a draft whose design key is not known yet. */
   draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
+  /** A refine that would remove a district with buildings in it saves nothing and answers `confirm`, for confirm() (D3). */
   refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
+  /** Makes the change the last refine for the design held for a yes; DESIGN_REPLACED when none is waiting (D3). */
+  confirm(key: string): Promise<DesignRefineResult>
+  /** Adds a person's or an agent's note to a building or line of a design and returns the design with it (D1). */
+  annotate(key: string, itemId: string, claim: Claim): Promise<WorldDoc>
   /** Applies an agent's design ops directly (no agent run): to the named design, or to a new one linked to a folder. */
   propose(target: ProposeTarget, ops: unknown[]): Promise<ProposeResult>
-  /** Stops the running draft (by its cancel key) or refine (by its design key); false when none runs. */
+  /** Stops the running draft (by its cancel key) or refine (by its design key), and drops a change waiting for a yes; false when none runs. */
   cancel(key: string): boolean
 }
 
@@ -70,6 +78,8 @@ export const DESIGN_OPEN_FAILED = "Lumopolis couldn't open that design. Try agai
 export const DESIGN_SAVE_FAILED = "Lumopolis couldn't save the design. Try again."
 export const DESIGN_REPLACED = 'Lumopolis stopped that change for your newer one.'
 export const DESIGN_NOTHING_APPLIED = 'None of those changes could be applied, so Lumopolis made no design.'
+/** PENDING SIGN-OFF (DSN D2): a refine whose parts changed after its agent read them, or after it asked for a yes. */
+export const DESIGN_CHANGED = "The design changed after your agent read it, so Lumopolis didn't make this change. Try again."
 export const DEFAULT_DESIGN_TIMEOUT_MS = 90_000
 
 export const DESIGN_KEY_RE = /^design:([A-Za-z0-9][A-Za-z0-9._-]*)$/ // a leading letter or digit: never '..'
@@ -147,6 +157,51 @@ export function buildDesignPrompt(doc: WorldDoc | null, request: string, summary
   return assemble(lo)
 }
 
+/** The ids an op reads or changes: its part, the district it puts a building in, a line's two ends. */
+function namedIds(op: DesignOp): string[] {
+  if (op.op === 'addEdge') return [op.from, op.to]
+  if (op.op === 'addBuilding' || op.op === 'move') return [op.id, op.districtId]
+  return [op.id]
+}
+
+/**
+ * What a part is, apart from its notes (claims); '' when there is none. With `held`, also what goes with it when it is
+ * removed: a district's buildings, a building's lines. Only a remove reads those: a building added beside another in a
+ * district changes nothing a move into that district relies on.
+ */
+function partState(doc: WorldDoc, id: string, held: boolean): string {
+  const district = doc.districts.find((d) => d.id === id)
+  if (district) return JSON.stringify([district, held ? doc.buildings.filter((b) => b.districtId === id).map((b) => b.id) : []])
+  const building = doc.buildings.find((b) => b.id === id)
+  if (building) return JSON.stringify([{ ...building, claims: [] }, held ? doc.edges.filter((e) => e.from === id || e.to === id).map((e) => e.id) : []])
+  const edge = doc.edges.find((e) => e.id === id)
+  return edge ? JSON.stringify({ ...edge, claims: [] }) : ''
+}
+
+/** Throws DESIGN_CHANGED when a part the ops name is not as it was in `read`, the design the agent was shown (D2). */
+function unchangedSince(read: WorldDoc, now: WorldDoc, ops: DesignOp[]): void {
+  for (const op of ops) {
+    const held = op.op === 'remove'
+    for (const id of namedIds(op)) if (partState(read, id, held) !== partState(now, id, held)) throw new DesignFailure(DESIGN_CHANGED)
+  }
+}
+
+/** A design a newer Termpolis saved is shown, never changed (WP3). */
+function writable(doc: WorldDoc): WorldDoc {
+  if (doc.savedByNewer) throw new DesignFailure(WORLD_SAVED_BY_NEWER)
+  return doc
+}
+
+/** A refine's change held until the person says yes, because it removes a district with buildings in it (D3). */
+interface Held {
+  mine: number
+  read: WorldDoc
+  ops: DesignOp[]
+  text: string
+  dropped: number
+  summary: string
+}
+
 /** The last segment of a folder path, either separator. */
 function folderName(root: string): string {
   const parts = root.split(/[\\/]/).filter((p) => p !== '')
@@ -175,6 +230,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
   }
   /** One writer at a time per design key: load, patch and save never interleave (propose, refine). */
   const designLock = createKeyedLock()
+  const held = new Map<string, Held>()
   const now = (): number => (deps.now ? deps.now() : Date.now())
 
   /** Makes the design's folder, runs the agent there and parses its reply. */
@@ -244,13 +300,18 @@ export function createDesigner(deps: DesignerDeps): Designer {
   /**
    * Load, patch and (when anything applied) save one stored design. Callers run it under the design's
    * lock (designLock), so two writers never patch the same stale copy and the last save never drops one.
+   * `hold` sees the patch first: true leaves the design as it is, and out is the stored design (D3).
    */
-  const mutate = async (key: string, ops: DesignOp[], check?: () => void): Promise<{ patch: DesignPatchResult; out: WorldDoc }> => {
-    const { doc } = await open(key)
-    // A refine checks here, after the last wait before its save, that it was not cancelled meanwhile.
-    check?.()
+  const mutate = async (
+    key: string, ops: DesignOp[], check?: (doc: WorldDoc) => void, hold?: (patch: DesignPatchResult) => boolean
+  ): Promise<{ patch: DesignPatchResult; out: WorldDoc }> => {
+    const doc = writable((await open(key)).doc)
+    // A refine checks here, after the last wait before its save, that it was not cancelled meanwhile and that the
+    // parts it changes are as its agent saw them (D2).
+    check?.(doc)
     const patch = applyDesignPatch(doc, ops, layoutPlacer)
     if (patch.applied === 0) return { patch, out: patch.doc }
+    if (hold?.(patch)) return { patch, out: doc }
     const out = { ...patch.doc, generatedAt: now() }
     await save(out)
     return { patch, out }
@@ -280,16 +341,55 @@ export function createDesigner(deps: DesignerDeps): Designer {
     async refine(key, message, summary, model) {
       // Taken before the first wait, so a cancel at any point after the request arrived is seen.
       const mine = bump(key)
+      held.delete(key)
       const { id, doc } = await open(key)
       stillMine(key, mine)
+      writable(doc)
       // The agent run holds no lock (it can take minutes). Its ops are applied to the design as it is
-      // after the run, under the design's lock, so a propose saved meanwhile is kept, not overwritten.
+      // after the run, under the design's lock, so a propose saved meanwhile is kept, not overwritten,
+      // unless it changed a part these ops name (D2).
       const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(doc, message, summary), model)
-      const { patch, out } = await designLock(key, () => mutate(key, reply.ops, () => stillMine(key, mine)))
-      return {
-        doc: out, text: reply.text, applied: patch.applied, skipped: patch.skipped.length + reply.dropped,
-        summary: summarize(summary, message, reply.text), tokens: reply.tokens
+      const check = (current: WorldDoc): void => {
+        stillMine(key, mine)
+        unchangedSince(doc, current, reply.ops)
       }
+      const { patch, out } = await designLock(key, () => mutate(key, reply.ops, check, (p) => p.removed.length > 0))
+      const next = summarize(summary, message, reply.text)
+      const skipped = patch.skipped.length + reply.dropped
+      const result: DesignRefineResult = { doc: out, text: reply.text, applied: patch.applied, skipped, summary: next, tokens: reply.tokens }
+      if (patch.removed.length === 0) return result
+      held.set(key, { mine, read: doc, ops: reply.ops, text: reply.text, dropped: reply.dropped, summary: next })
+      return { ...result, confirm: { removals: patch.removed } }
+    },
+
+    async confirm(key) {
+      const h = held.get(key)
+      if (!h) throw new DesignFailure(DESIGN_REPLACED)
+      held.delete(key)
+      const check = (current: WorldDoc): void => {
+        stillMine(key, h.mine)
+        unchangedSince(h.read, current, h.ops)
+      }
+      const { patch, out } = await designLock(key, () => mutate(key, h.ops, check))
+      // tokens 0: the agent's run was counted when the refine answered.
+      return { doc: out, text: h.text, applied: patch.applied, skipped: patch.skipped.length + h.dropped, summary: h.summary, tokens: 0 }
+    },
+
+    annotate(key, itemId, claim) {
+      return designLock(key, async () => {
+        const doc = writable((await open(key)).doc)
+        if (!hasPart(doc, itemId)) throw new DesignFailure(NO_PART)
+        let merged: WorldDoc
+        try {
+          await deps.annotations.add(key, itemId, claim)
+          // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
+          merged = { ...mergeAnnotations(doc, await deps.annotations.list(key)), generatedAt: Math.max(now(), doc.generatedAt + 1) }
+        } catch {
+          throw new DesignFailure(DESIGN_SAVE_FAILED)
+        }
+        await save(merged)
+        return merged
+      })
     },
 
     async propose(target, ops) {
@@ -311,6 +411,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
 
     cancel(key) {
       bump(key)
+      held.delete(key)
       const ctl = running.get(key)
       if (!ctl) return false
       ctl.abort()
