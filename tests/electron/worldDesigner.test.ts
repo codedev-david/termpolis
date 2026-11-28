@@ -971,3 +971,113 @@ describe('a note is stored only once the design it goes on is saved (DSN Round 1
     expect((await annotations.list('design:id1')).api).toEqual([note])
   })
 })
+
+describe('a design file leaves out the notes the annotation store holds, so the store decides what shows (DSN R3-2)', () => {
+  const agentNote = (text: string): Claim => ({ text, state: 'observed', evidence: [{ kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }] })
+  const names = (list: string): Claim => ({ text: `runtime:${list}`, state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] })
+  const notesOn = (doc: WorldDoc, id: string): string[] =>
+    [...doc.buildings, ...doc.edges].find((p) => p.id === id)!.claims.filter((c) => c.evidence.some((e) => e.kind === 'transcriptStep')).map((c) => c.text)
+  const designFile = async (): Promise<WorldDoc> => JSON.parse(await readFile(join(dir, 'world', 'design_id1.json'), 'utf8')) as WorldDoc
+  const texts = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => `Note ${from + i}.`)
+
+  it('21 agent notes on one part show the newest 20, on the card, on a load and in the stored notes; the design file holds none', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(real, annotations)
+    const { designer } = setup(noRun, { store, annotations })
+    let card = null as WorldDoc | null
+    for (const text of texts(1, 21)) card = await designer.annotate('design:id1', 'api', agentNote(text))
+    expect(notesOn(card as WorldDoc, 'api')).toEqual(texts(2, 21))
+    expect(notesOn((await store.load('design:id1')) as WorldDoc, 'api')).toEqual(texts(2, 21))
+    expect((await annotations.list('design:id1')).api.map((c) => c.text)).toEqual(texts(2, 21))
+    expect(notesOn(await designFile(), 'api')).toEqual([])
+  })
+
+  it('a store write that fails after the design save shows nothing on the next load: neither the note nor the service names', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(real, annotations)
+    const { designer } = setup(noRun, { store, annotations: { add: async () => { throw new Error('EIO') }, list: annotations.list } })
+    expect(await failure(designer.annotate('design:id1', 'api', agentNote('Calls the bank.')))).toBe(DESIGN_SAVE_FAILED)
+    expect(await failure(designer.annotate('design:id1', 'api', names('orders-api')))).toBe(DESIGN_SAVE_FAILED)
+    const doc = (await store.load('design:id1')) as WorldDoc
+    expect(notesOn(doc, 'api')).toEqual([])
+    expect(doc.runtimeNames?.api).toBeUndefined()
+    expect(doc.runtimeHandSet).toBeUndefined()
+    expect(await annotations.list('design:id1')).toEqual({})
+  })
+
+  it('a design file from before, carrying 3 agent notes, 1 of them not in the store, moves that one into the store, and the next save leaves all 3 out', async () => {
+    const real = createWorldStore(dir)
+    const base = await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const [a, b, c] = [agentNote('Calls the bank.'), agentNote('Retries twice.'), agentNote('Logs each order.')]
+    await annotations.add('design:id1', 'api', a)
+    await annotations.add('design:id1', 'api', b)
+    await real.save({ ...base, buildings: base.buildings.map((p) => (p.id === 'api' ? { ...p, claims: [a, b, c] } : p)) })
+    const store = withAnnotations(real, annotations)
+    const { designer } = setup(noRun, { store, annotations })
+    expect(notesOn((await store.load('design:id1')) as WorldDoc, 'api')).toEqual(['Calls the bank.', 'Retries twice.', 'Logs each order.'])
+    expect((await annotations.list('design:id1')).api).toEqual([a, b, c])
+    await designer.propose({ key: 'design:id1' }, [{ op: 'rename', id: 'db', name: 'Ledger' }])
+    expect(notesOn(await designFile(), 'api')).toEqual([])
+    const again = (await withAnnotations(createWorldStore(dir), createAnnotationStore(dir)).load('design:id1')) as WorldDoc
+    expect(notesOn(again, 'api')).toEqual(['Calls the bank.', 'Retries twice.', 'Logs each order.'])
+    expect(again.buildings.find((p) => p.id === 'db')!.name).toBe('Ledger')
+  })
+
+  it('a design file from before carrying 21 notes on a part, the store the newest 20, shows those 20 and moves nothing', async () => {
+    const real = createWorldStore(dir)
+    const base = await stored(real)
+    const annotations = createAnnotationStore(dir)
+    for (const text of texts(2, 21)) await annotations.add('design:id1', 'api', agentNote(text))
+    await real.save({ ...base, buildings: base.buildings.map((p) => (p.id === 'api' ? { ...p, claims: texts(1, 21).map(agentNote) } : p)) })
+    const store = withAnnotations(real, annotations)
+    const doc = (await store.load('design:id1')) as WorldDoc
+    expect(notesOn(doc, 'api')).toEqual(texts(2, 21))
+    expect((await annotations.list('design:id1')).api.map((c) => c.text)).toEqual(texts(2, 21))
+    await store.save(doc)
+    expect(notesOn(await designFile(), 'api')).toEqual([])
+  })
+
+  it('a note the store dropped past its cap while a design was open is neither written back by its save nor moved back into the store', async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    for (const text of texts(1, 20)) await annotations.add('design:id1', 'api', agentNote(text))
+    const store = withAnnotations(real, annotations)
+    const open = (await store.load('design:id1')) as WorldDoc
+    // An agent's note through the world gateway, while the design is open: the store drops Note 1.
+    await annotations.add('design:id1', 'api', agentNote('Note 21.'))
+    await store.save({ ...open, generatedAt: open.generatedAt + 1 })
+    expect(notesOn(await designFile(), 'api')).toEqual([])
+    const fresh = withAnnotations(createWorldStore(dir), createAnnotationStore(dir))
+    expect(notesOn((await fresh.load('design:id1')) as WorldDoc, 'api')).toEqual(texts(2, 21))
+    expect((await annotations.list('design:id1')).api.map((c) => c.text)).toEqual(texts(2, 21))
+  })
+
+  it("a person's note and a part's service names show as before, kept in the store and not in the design file", async () => {
+    const real = createWorldStore(dir)
+    await stored(real)
+    const annotations = createAnnotationStore(dir)
+    const store = withAnnotations(real, annotations)
+    const { designer } = setup(noRun, { store, annotations })
+    await designer.propose({ key: 'design:id1' }, [{ op: 'setRuntimeNames', id: 'db', names: ['orders-db'] }])
+    const card = await designer.annotate('design:id1', 'api', person('Takes orders.'))
+    expect(personClaims(card, 'api')).toEqual([person('Takes orders.')])
+    const named = await designer.annotate('design:id1', 'api', names('orders-api'))
+    expect(named.runtimeNames).toEqual({ api: ['orders-api'], db: ['orders-db'] })
+    expect(named.runtimeHandSet).toEqual(['api'])
+    expect(personClaims(named, 'api')).toEqual([person('Takes orders.')])
+    const doc = (await store.load('design:id1')) as WorldDoc
+    expect(personClaims(doc, 'api')).toEqual([person('Takes orders.')])
+    expect(doc.runtimeNames).toEqual({ api: ['orders-api'], db: ['orders-db'] })
+    expect(doc.runtimeHandSet).toEqual(['api'])
+    const file = await designFile()
+    expect(personClaims(file, 'api')).toEqual([])
+    expect(file.runtimeNames).toEqual({ db: ['orders-db'] })
+    expect(file.runtimeHandSet).toBeUndefined()
+  })
+})

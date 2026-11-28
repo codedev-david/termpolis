@@ -2311,6 +2311,22 @@ describe('annotate', () => {
     expect(h.store.saves).toEqual([])
   })
 
+  it('a design file held for a moment by another program is read again for its version, so it still gives the B7 words (DSN R3-5)', async () => {
+    const tries: string[] = []
+    const readWorldText = async (f: string): Promise<string> => {
+      tries.push(f)
+      if (tries.length === 1) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+      return readFile(f, 'utf8')
+    }
+    const h = harness({ createAnnotations: () => memAnnotations(), readWorldText } as never, memStore({}))
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'design_d1.json'), JSON.stringify({ ...doc(), projectKey: 'design:d1', version: 99 }))
+    await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['design:d1', 'b-api', person('x')] })
+    expect(h.last()).toEqual({ kind: 'result', id: 1, ok: false, error: { message: WORLD_SAVED_BY_NEWER, name: 'WorldSavedByNewerError', code: 'WORLD_SAVED_BY_NEWER' } })
+    expect(tries).toEqual([join(dir, 'world', 'design_d1.json'), join(dir, 'world', 'design_d1.json')])
+  })
+
   it("never compiles a design: a design is main's designer's to write (DSN Round 1, item 5)", async () => {
     const plan = { ...doc(), projectKey: 'design:d1' }
     const h = harness({}, memStore({ 'design:d1': plan }))

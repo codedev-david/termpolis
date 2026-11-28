@@ -904,4 +904,56 @@ describe('a save looks at the file again just before it puts its copy in place (
       expect(reads).toEqual([file()])
     })
   })
+
+  describe('a load that finds a newer file while a save runs leaves the save to refuse (DSN R3-1)', () => {
+    const newer = (): string => JSON.stringify({ ...doc(), version: 99 })
+
+    it('a newer file written and loaded just before the save looks at it again is kept', async () => {
+      let store = null as unknown as ReturnType<typeof createWorldStore>
+      let armed = false
+      let shown = null as WorldDoc | null
+      // The save's look before its rename: a newer Termpolis writes the file and this one loads it, both inside that look.
+      store = createWorldStore(dir, {
+        stat: (async (f: string) => {
+          if (armed && f === file()) {
+            armed = false
+            await writeFile(file(), newer())
+            shown = await store.load('demo')
+          }
+          return stat(f)
+        }) as never
+      })
+      await store.save(doc())
+      armed = true
+      const mine = { ...doc(), generatedAt: 5 }
+      await store.save(mine)
+      expect(shown).toMatchObject({ savedByNewer: true })
+      expect(mine.savedByNewer).toBe(true)
+      expect(await readFile(file(), 'utf8')).toBe(newer())
+    })
+
+    it('a load that found a newer file is not taken as having read it: a later save reads the file again', async () => {
+      const reads: string[] = []
+      const store = createWorldStore(dir, { readFile: (async (f: string, enc: 'utf8') => { reads.push(f); return readFile(f, enc) }) as never })
+      await store.save(doc())
+      await writeFile(file(), newer())
+      expect(await store.load('demo')).toMatchObject({ savedByNewer: true })
+      // Whatever this store remembers of that newer file, the save goes by the file: read here, it is kept.
+      const real = Map.prototype.get
+      const flip = vi.spyOn(Map.prototype, 'get').mockImplementation(function (this: Map<unknown, unknown>, k: unknown) {
+        const v = real.call(this, k)
+        return k === 'demo.json' && v === true ? false : v
+      })
+      reads.length = 0
+      const mine = { ...doc(), generatedAt: 5 }
+      try {
+        await store.save(mine)
+      } finally {
+        flip.mockRestore()
+      }
+      expect(reads).toEqual([file()])
+      expect(mine.savedByNewer).toBe(true)
+      expect(await readFile(file(), 'utf8')).toBe(newer())
+    })
+  })
 })
