@@ -809,7 +809,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     if (!viewer || !doc) return
     const held = loadedRef.current
-    if (held && held.projectKey === doc.projectKey && held.generatedAt === doc.generatedAt) return
+    // The same world marked as one a newer Termpolis saved (refused) is drawn again, so its open card loses Confirm and Edit.
+    if (held && held.projectKey === doc.projectKey && held.generatedAt === doc.generatedAt && held.savedByNewer === doc.savedByNewer) return
     loadedRef.current = doc
     // The same project grows from the world it showed: new parts rise, changed ones pulse. The viewer
     // keeps the camera, the open building and the selection across it (a labelled follow-up, a
@@ -1027,6 +1028,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     const at = rootRef.current
     return () => mountedRef.current && docRef.current?.projectKey === d.projectKey && rootRef.current === at
   }
+  /**
+   * An annotate main did not save. A refusal because a newer Termpolis saved the world since the pane opened it marks the
+   * doc shown so, as one opened so is: its note stays up and its cards lose Confirm and Edit (WP3).
+   */
+  const refused = (d: WorldDoc, error: string, sentence: string): void => {
+    if (error === savedByNewerNotice()) {
+      // Restyled in place: the parts are the ones the viewer holds.
+      const marked = { ...d, savedByNewer: true }
+      statusOnlyRef.current = marked
+      setDoc(marked)
+    }
+    setNotice(annotateFailed(error, sentence))
+  }
   /** Confirm on an inferred claim: a person's verified copy is stored and the pane shows the doc that comes back. */
   const confirmClaim = (itemId: string, text: string): void => {
     // A claim that reads as service names is changed with the Edit button, never confirmed into a hidden note.
@@ -1037,7 +1051,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .then((res) => {
         if (!still()) return
         if (res.success) setDoc(res.data)
-        else setNotice(annotateFailed(res.error, CONFIRM_FAILED))
+        else refused(d, res.error, CONFIRM_FAILED)
       })
       .catch((e: unknown) => { if (still()) { messageOf(e); setNotice(CONFIRM_FAILED) } })
   }
@@ -1049,7 +1063,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .then((res) => {
         if (!still()) return
         if (res.success) setDoc(res.data)
-        else setNotice(annotateFailed(res.error, NAMES_FAILED))
+        else refused(d, res.error, NAMES_FAILED)
       })
       .catch((e: unknown) => { if (still()) { messageOf(e); setNotice(NAMES_FAILED) } })
   }
