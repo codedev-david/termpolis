@@ -21,12 +21,13 @@ const named = (start: number, ms: number, pid = 1, name = RESIZE_MEASURE): Trace
 /** The page's marker for the drag (look plan A2.1 note (10), Round 6). */
 const MARKER = 'world-drag-test'
 /** The page's marker as the trace holds it, on the page's thread (or `pid`:`tid`): its start at `s`, its span to `e` (us). */
+// Its `:from` is one async instant, as Chromium 148 and Electron 43 trace a measure of no length; its `:to` a begin and an end.
 const mark = (s: number, e: number, pid = 1, tid = 1, name = MARKER): TraceEvent[] => {
   const one = (n: string, a: number, b: number): TraceEvent[] => {
     const id = `0x${(++ids).toString(16)}`
     return [{ name: n, cat: 'blink.user_timing', ph: 'b', ts: a, pid, tid, id }, { name: n, cat: 'blink.user_timing', ph: 'e', ts: b, pid, tid, id }]
   }
-  return [...one(`${name}:from`, s, s), ...one(`${name}:to`, s, e)]
+  return [{ name: `${name}:from`, cat: 'blink.user_timing', ph: 'n', ts: s, pid, tid, id2: { local: `0x${(++ids).toString(16)}` } }, ...one(`${name}:to`, s, e)]
 }
 /** The marker around a trace and the page's spans, from the first instant of either to the last; none on a trace of no events. */
 const markOf = (raw: TraceEvent[], spans: Array<{ start: number; ms: number }>): TraceEvent[] => {
@@ -578,19 +579,23 @@ describe('the drag trace (dragTrace)', () => {
     // Twice on one thread.
     expect(fails(at([...mark(a, b), ...mark(a, b)]), "the page's marker")).toEqual(['2/2 on CrRendererMain'])
     // Its start twice and its span once, or its span twice and its start once.
-    expect(fails(at([...mark(a, b), ...mark(a, b).slice(0, 2)]), "the page's marker")).toEqual(['2/1 on CrRendererMain'])
-    expect(fails(at([...mark(a, b), ...mark(a, b).slice(2)]), "the page's marker")).toEqual(['1/2 on CrRendererMain'])
+    expect(fails(at([...mark(a, b), ...mark(a, b).slice(0, 1)]), "the page's marker")).toEqual(['2/1 on CrRendererMain'])
+    expect(fails(at([...mark(a, b), ...mark(a, b).slice(1)]), "the page's marker")).toEqual(['1/2 on CrRendererMain'])
     // Its span without its start: the trace may have begun on the page's thread after it.
-    expect(fails(at(mark(a, b).slice(2)), "the page's marker")).toEqual(['0/1 on CrRendererMain'])
-    expect(fails(at(mark(a, b).slice(0, 2)), "the page's marker")).toEqual(['1/0 on CrRendererMain'])
+    expect(fails(at(mark(a, b).slice(1)), "the page's marker")).toEqual(['0/1 on CrRendererMain'])
+    expect(fails(at(mark(a, b).slice(0, 1)), "the page's marker")).toEqual(['1/0 on CrRendererMain'])
     // Its start on one thread and its span on another.
-    expect(fails(at([...mark(a, b).slice(0, 2), ...mark(a, b, 2).slice(2)]), "the page's marker")).toEqual(['1/1 on CrRendererMain, Other'])
+    expect(fails(at([...mark(a, b).slice(0, 1), ...mark(a, b, 2).slice(1)]), "the page's marker")).toEqual(['1/1 on CrRendererMain, Other'])
     // Its start at another instant than its span's: 0.05 ms apart holds, 0.06 not.
-    const apart = (d: number): TraceEvent[] => [...mark(a + d, a + d).slice(0, 2), ...mark(a, b).slice(2)]
+    const apart = (d: number): TraceEvent[] => [...mark(a + d, a + d).slice(0, 1), ...mark(a, b).slice(1)]
     expect(fails(at(apart(50)), "the page's marker")).toEqual([])
     expect(fails(at(apart(-50)), "the page's marker")).toEqual([])
     expect(fails(at(apart(60)), "the page's marker")).toEqual(['1/1 on CrRendererMain'])
     expect(fails(at(apart(-60)), "the page's marker")).toEqual(['1/1 on CrRendererMain'])
+    // Its start as a begin and an end at one instant, as a Chromium that traces a measure of no length so would.
+    const paired = (s: number, e: number): TraceEvent[] => [{ name: `${MARKER}:from`, cat: 'blink.user_timing', ph: 'b', ts: s, pid: 1, tid: 1, id: '0xf0' }, { name: `${MARKER}:from`, cat: 'blink.user_timing', ph: 'e', ts: s, pid: 1, tid: 1, id: '0xf0' }, ...mark(s, e).slice(1)]
+    expect(fails(at(paired(a, b)), "the page's marker")).toEqual([])
+    expect(at(paired(a, b)).own.traced).toBe(10)
     // A marker of another drag is not this one's.
     expect(fails(at(mark(a, b, 1, 1, 'world-drag-other')), "the page's marker")).toEqual(['0/0 on none'])
   })

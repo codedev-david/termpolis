@@ -256,12 +256,15 @@ export function ownTimes(raw: TraceEvent[], named: PageSpan[], longTasks: PageSp
   const { events, open, pairs: allPairs, unpaired } = paired(raw)
   const key = (e: { pid: number; tid: number }): string => `${e.pid}:${e.tid}`
   const asyncId = (e: TraceEvent): string => e.id ?? e.id2?.local ?? e.id2?.global ?? ''
-  // Each span the trace named `measure`, from its start to its end: a begin with the end of its process and id, or one complete event.
+  // Each span the trace named `measure`, from its start to its end: a begin with the end of its process and id, one
+  // complete event, or one instant, as Chromium names a measure of no length (an async instant, `n`; 148 and Electron 43,
+  // the Round 6 runs, where the marker's `:from` was never found).
   const spansOf = (measure: string): Array<{ key: string; s: number; e: number }> => {
     const timing = events.filter((e) => e.name === measure && e.cat.includes('blink.user_timing'))
     const ends = timing.filter((e) => e.ph === 'e').sort((p, q) => p.ts - q.ts)
     const taken = new Set<TraceEvent>()
-    return timing.filter((e) => e.ph === 'b' || (e.ph === 'X' && typeof e.dur === 'number')).sort((p, q) => p.ts - q.ts).flatMap((b) => {
+    return timing.filter((e) => e.ph === 'b' || e.ph === 'n' || (e.ph === 'X' && typeof e.dur === 'number')).sort((p, q) => p.ts - q.ts).flatMap((b) => {
+      if (b.ph === 'n') return [{ key: key(b), s: b.ts, e: b.ts }]
       if (b.ph === 'X') return [{ key: key(b), s: b.ts, e: b.ts + (b.dur as number) }]
       const found = ends.find((x) => !taken.has(x) && x.pid === b.pid && asyncId(x) === asyncId(b) && x.ts >= b.ts)
       if (!found) return []
