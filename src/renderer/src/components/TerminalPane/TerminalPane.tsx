@@ -71,7 +71,7 @@ import { useSessionRecording } from '../../hooks/useSessionRecording'
 import type { ShellType } from '../../types'
 import '@xterm/xterm/css/xterm.css'
 
-import { hasHardwareWebgl } from '../../lib/webglSupport'
+import { askHardwareWebgl, hardwareWebglNow } from '../../lib/webglSupport'
 import { noteMisroute, routedChipText, routedChipTitle, routerTuning } from '../../lib/autoModel'
 import { rerouteOffer, runningClaudeModel, type RerouteOffer } from '../../lib/earlyReroute'
 import { routeChipText, routeChipTitle, setRouteHome, teachRoute, type RouteEvent, type RouteLabel } from '../../lib/messageRoute'
@@ -1251,8 +1251,11 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // budget hands contexts to the panes actually on screen and takes them back from the
     // ones you looked at longest ago. Writes still reach xterm either way: only the GPU
     // renderer is leased, so a background agent's buffer, search and export stay live.
+    //
+    // The probe's answer is kept for the page and asked off this thread (lib/webglSupport.ts): a pane that mounts
+    // before it comes stays on the DOM renderer and takes its lease when it does (BUILDFLAKE).
     let releaseWebglPane: (() => void) | null = null
-    if (hasHardwareWebgl()) {
+    const leaseWebgl = (): void => {
       try {
         let addon: WebglAddon | null = null
         releaseWebglPane = registerWebglPane(terminalId, {
@@ -1273,6 +1276,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           },
         })
       } catch { /* WebGL load failed late — DOM renderer stays */ }
+    }
+    const hardwareNow = hardwareWebglNow()
+    if (hardwareNow) leaseWebgl()
+    else if (hardwareNow === null) {
+      void askHardwareWebgl().then((ok) => {
+        if (!ok || disposed) return
+        leaseWebgl()
+        // Registered after the visibility effect's first report, so it reports here (a pane registers unseen).
+        setWebglPaneVisible(terminalId, isVisibleRef.current)
+      })
     }
 
     // 5. Load Unicode11 addon

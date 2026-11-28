@@ -56,7 +56,10 @@ vi.mock('@xterm/addon-webgl', () => ({
     this.onContextLoss = vi.fn()
   },
 }))
-vi.mock('../../src/renderer/src/lib/webglSupport', () => ({ hasHardwareWebgl: () => h.webgl.enabled }))
+vi.mock('../../src/renderer/src/lib/webglSupport', () => ({
+  hardwareWebglNow: () => h.webgl.enabled,
+  askHardwareWebgl: async () => h.webgl.enabled,
+}))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid-1234') }))
 vi.mock('../../src/renderer/src/themes/terminalThemes', () => ({

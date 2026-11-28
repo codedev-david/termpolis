@@ -20,7 +20,7 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { MAX_WEBGL_CONTEXTS, resetWebglBudget } from '../../src/renderer/src/lib/webglBudget'
-import { forgetHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
+import { resetHardwareWebglForTests, warmHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 import { __setHomedirForTests } from '../../src/renderer/src/lib/platform'
 
 // ---------------------------------------------------------------------------
@@ -374,7 +374,7 @@ function setAgent(detectedAgent: any = null): void {
 
 beforeEach(() => {
   // The probe keeps its answer for the page; each test here stubs its own GPU, so each asks afresh.
-  forgetHardwareWebgl()
+  resetHardwareWebglForTests()
   // This suite drives the pane with a MOCK xterm whose write() never calls back, and asserts on write(data) with one
   // argument: the output throttle's call shape. It stays on that path (the kill switch's). The write scheduler, which
   // is the default and passes an ack callback, is tested against a REAL xterm in TerminalPaneScheduler.test.tsx.
@@ -543,6 +543,67 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       } finally {
         spy.mockRestore()
       }
+    })
+
+    // BUILDFLAKE, part two: the app asks in a worker, so the page never waits on the GPU. A pane mounted before the
+    // answer stays on the DOM renderer and takes its lease when the answer comes, and never after it is gone.
+    describe('asked in the probe worker', () => {
+      class ProbeWorker {
+        static made: ProbeWorker[] = []
+        onmessage: ((e: MessageEvent) => void) | null = null
+        onerror: ((e: Event) => void) | null = null
+        terminate = vi.fn()
+        constructor() { ProbeWorker.made.push(this) }
+        answer(data: unknown): void { this.onmessage?.({ data } as MessageEvent) }
+      }
+      const answered = (): Promise<void> => act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+      beforeEach(() => {
+        ProbeWorker.made = []
+        warmHardwareWebgl(ProbeWorker as unknown as new () => Worker)
+      })
+
+      it('makes no context on the page, and leases WebGL when a hardware answer comes', async () => {
+        const spy = stubWebgl({ renderer: 'ANGLE (NVIDIA GeForce RTX 4090 Direct3D11)' })
+        try {
+          render(<TerminalPane {...defaultProps} />)
+          expect(H.webglAddons).toHaveLength(0)
+          ProbeWorker.made[0].answer('ANGLE (Apple M2)')
+          await answered()
+          expect(H.webglAddons).toHaveLength(1)
+          expect(spy).not.toHaveBeenCalled()
+          render(<TerminalPane {...defaultProps} terminalId="term-2" />) // the kept answer: at once, no second worker
+          expect(H.webglAddons).toHaveLength(2)
+          expect(ProbeWorker.made).toHaveLength(1)
+        } finally {
+          spy.mockRestore()
+        }
+      })
+
+      it('stays on the DOM renderer when the answer is software', async () => {
+        render(<TerminalPane {...defaultProps} />)
+        ProbeWorker.made[0].answer('Google SwiftShader')
+        await answered()
+        expect(H.webglAddons).toHaveLength(0)
+        render(<TerminalPane {...defaultProps} terminalId="term-2" />)
+        expect(H.webglAddons).toHaveLength(0)
+      })
+
+      it('takes no lease for a pane closed before the answer', async () => {
+        const pane = render(<TerminalPane {...defaultProps} />)
+        pane.unmount()
+        ProbeWorker.made[0].answer('ANGLE (Apple M2)')
+        await answered()
+        expect(H.webglAddons).toHaveLength(0)
+      })
+
+      it('a hidden pane registers unseen when the answer comes, and leases once shown', async () => {
+        const pane = render(<TerminalPane {...defaultProps} isVisible={false} />)
+        ProbeWorker.made[0].answer('ANGLE (Apple M2)')
+        await answered()
+        expect(H.webglAddons).toHaveLength(0)
+        pane.rerender(<TerminalPane {...defaultProps} isVisible />)
+        expect(H.webglAddons).toHaveLength(1)
+      })
     })
 
     it('disposes the WebGL addon on context loss so xterm falls back to the DOM renderer', () => {

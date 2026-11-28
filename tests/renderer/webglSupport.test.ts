@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { forgetHardwareWebgl, hasHardwareWebgl, warmHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
+import { askHardwareWebgl, forgetHardwareWebgl, hardwareWebglNow, hasHardwareWebgl, probeRenderer, resetHardwareWebglForTests, warmHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 
 /**
  * Builds a fake WebGL2 context. `loseContext` is the assertion target for the leak fix:
@@ -22,7 +22,7 @@ function stubContext(gl: unknown) {
   return vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((() => gl) as any)
 }
 
-afterEach(() => { vi.restoreAllMocks(); forgetHardwareWebgl() })
+afterEach(() => { vi.restoreAllMocks(); resetHardwareWebglForTests() })
 
 describe('hasHardwareWebgl', () => {
   it('accepts a real GPU renderer', () => {
@@ -141,32 +141,135 @@ describe('hasHardwareWebgl', () => {
   })
 })
 
-// BUILDFLAKE, part two: keeping the answer does nothing for the page's FIRST pane, and with no terminal open (the
-// Lumopolis home first, then Build it) that first pane is the agent's, mounted as the map draws in software. So the
-// page asks once at start, while the GPU has nothing else to draw, and every pane after finds the answer kept.
-describe('warmHardwareWebgl', () => {
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); forgetHardwareWebgl() })
+// BUILDFLAKE, part two: keeping the answer did nothing for the page's first pane (Build it's agent terminal, with the
+// Lumopolis home opened first), and asking on the page's thread at start froze the launch instead (the command
+// palette missed its 5 s twice in 32 tries, soak 46174111555). So the app asks in a worker, off the main thread.
+class FakeWorker {
+  static made: FakeWorker[] = []
+  onmessage: ((e: MessageEvent) => void) | null = null
+  onerror: ((e: Event) => void) | null = null
+  terminate = vi.fn()
+  constructor() { FakeWorker.made.push(this) }
+  answer(data: unknown): void { this.onmessage?.({ data } as MessageEvent) }
+  fail(): void { this.onerror?.(new Event('error')) }
+}
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-  it('asks when the page is first idle, within a second, and a pane after asks nothing', () => {
-    const idle = vi.fn()
-    vi.stubGlobal('requestIdleCallback', idle)
-    const spy = stubContext(fakeGl({ renderer: 'Google SwiftShader' }).gl)
-    warmHardwareWebgl()
+describe('the probe worker', () => {
+  afterEach(() => { FakeWorker.made = [] })
+
+  it('warmHardwareWebgl asks the worker at once, keeps its answer, and makes no context on the page', async () => {
+    const spy = stubContext(fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl)
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    expect(FakeWorker.made).toHaveLength(1)
+    expect(hardwareWebglNow()).toBeNull() // still asking: no second worker
+    expect(FakeWorker.made).toHaveLength(1)
+    FakeWorker.made[0].answer('ANGLE (Apple M2)')
+    await flush()
+    expect(FakeWorker.made[0].terminate).toHaveBeenCalled()
+    expect(hardwareWebglNow()).toBe(true)
+    expect(await askHardwareWebgl()).toBe(true)
+    expect(FakeWorker.made).toHaveLength(1)
     expect(spy).not.toHaveBeenCalled()
-    expect(idle).toHaveBeenCalledWith(expect.any(Function), { timeout: 1000 })
-    idle.mock.calls[0][0]()
-    expect(spy).toHaveBeenCalledTimes(1)
-    expect(hasHardwareWebgl()).toBe(false)
-    expect(spy).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to a timer where there is no idle callback', () => {
-    vi.useFakeTimers()
-    vi.stubGlobal('requestIdleCallback', undefined)
+  it('a software answer is kept as false', async () => {
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    const asked = askHardwareWebgl()
+    FakeWorker.made[0].answer('Google SwiftShader')
+    expect(await asked).toBe(false)
+    expect(hardwareWebglNow()).toBe(false)
+  })
+
+  it('no context, a worker error, or a worker that cannot start is false and not kept', async () => {
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    const first = askHardwareWebgl()
+    FakeWorker.made[0].answer(null)
+    expect(await first).toBe(false)
+    expect(hardwareWebglNow()).toBeNull() // the null was not kept: asked again
+    expect(FakeWorker.made).toHaveLength(2)
+    FakeWorker.made[1].fail()
+    await flush()
+    expect(hardwareWebglNow()).toBeNull() // the error was not kept either: a third ask is under way
+    expect(FakeWorker.made).toHaveLength(3)
+    FakeWorker.made[2].answer('')
+    await flush()
+    expect(hardwareWebglNow()).toBe(true) // a hidden renderer counts as hardware
+    resetHardwareWebglForTests()
+    warmHardwareWebgl(class { constructor() { throw new Error('no workers here') } } as unknown as new () => Worker)
+    expect(await askHardwareWebgl()).toBe(false)
+  })
+
+  it('a worker whose terminate throws still answers', async () => {
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    FakeWorker.made[0].terminate.mockImplementation(() => { throw new Error('gone') })
+    FakeWorker.made[0].answer('NVIDIA')
+    expect(await askHardwareWebgl()).toBe(true)
+  })
+
+  it('an answer asked before a forget goes to its caller but is not kept', async () => {
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    const asked = askHardwareWebgl()
+    forgetHardwareWebgl()
+    FakeWorker.made[0].answer('NVIDIA')
+    expect(await asked).toBe(true)
+    expect(hardwareWebglNow()).toBeNull()
+    expect(FakeWorker.made).toHaveLength(2)
+  })
+
+  it("a canvas in the page losing its context drops the worker's answer too", async () => {
+    warmHardwareWebgl(FakeWorker as unknown as new () => Worker)
+    FakeWorker.made[0].answer('NVIDIA')
+    await flush()
+    const canvas = document.createElement('canvas')
+    document.body.appendChild(canvas)
+    canvas.dispatchEvent(new Event('webglcontextlost'))
+    canvas.remove()
+    expect(hardwareWebglNow()).toBeNull()
+  })
+
+  it('with no worker given, both asks probe on the page', async () => {
     const spy = stubContext(fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl)
-    warmHardwareWebgl()
-    expect(spy).not.toHaveBeenCalled()
-    vi.runAllTimers()
-    expect(spy).toHaveBeenCalledTimes(1)
+    expect(await askHardwareWebgl()).toBe(true)
+    forgetHardwareWebgl()
+    expect(hardwareWebglNow()).toBe(true)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('outside a page', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  it('is false with no document, and keeps nothing', () => {
+    vi.stubGlobal('document', undefined)
+    expect(hasHardwareWebgl()).toBe(false)
+    vi.unstubAllGlobals()
+    stubContext(fakeGl({ renderer: 'NVIDIA' }).gl)
+    expect(hasHardwareWebgl()).toBe(true)
+  })
+})
+
+describe('probeRenderer', () => {
+  it("names the renderer, '' when hidden, null with no context or a throw, and hands the context back", () => {
+    const { gl, loseContext } = fakeGl({ renderer: 'Apple M2' })
+    expect(probeRenderer(() => gl as never)).toBe('Apple M2')
+    expect(loseContext).toHaveBeenCalledTimes(1)
+    expect(probeRenderer(() => fakeGl({ noDebugExt: true }).gl as never)).toBe('')
+    expect(probeRenderer(() => null)).toBeNull()
+    expect(probeRenderer(() => { throw new Error('no') })).toBeNull()
+  })
+})
+
+describe('webglProbe.worker', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.resetModules() })
+
+  it('posts the renderer an OffscreenCanvas context names', async () => {
+    const { gl } = fakeGl({ renderer: 'Google SwiftShader' })
+    const getContext = vi.fn(() => gl)
+    vi.stubGlobal('OffscreenCanvas', class { getContext = getContext })
+    const post = vi.fn()
+    vi.stubGlobal('postMessage', post)
+    await import('../../src/renderer/src/lib/webglProbe.worker')
+    expect(getContext).toHaveBeenCalledWith('webgl2')
+    expect(post).toHaveBeenCalledWith('Google SwiftShader')
   })
 })
