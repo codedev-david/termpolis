@@ -20,6 +20,7 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { MAX_WEBGL_CONTEXTS, resetWebglBudget } from '../../src/renderer/src/lib/webglBudget'
+import { forgetHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 import { __setHomedirForTests } from '../../src/renderer/src/lib/platform'
 
 // ---------------------------------------------------------------------------
@@ -372,6 +373,8 @@ function setAgent(detectedAgent: any = null): void {
 }
 
 beforeEach(() => {
+  // The probe keeps its answer for the page; each test here stubs its own GPU, so each asks afresh.
+  forgetHardwareWebgl()
   // This suite drives the pane with a MOCK xterm whose write() never calls back, and asserts on write(data) with one
   // argument: the output throttle's call shape. It stays on that path (the kill switch's). The write scheduler, which
   // is the default and passes an ack callback, is tested against a REAL xterm in TerminalPaneScheduler.test.tsx.
@@ -522,6 +525,21 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
         render(<TerminalPane {...defaultProps} />)
         expect(H.webglAddons).toHaveLength(1)
         expect(H.term.loadAddon).toHaveBeenCalledWith(H.webglAddons[0])
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    // BUILDFLAKE: the probe is a context made on the main thread, and with the GPU busy it froze the page for
+    // seconds each time a pane mounted (Build it's agent terminal, right after its dialog closed).
+    it('probes the GPU once for the page, not at every pane mount', () => {
+      const spy = stubWebgl({ renderer: 'ANGLE (NVIDIA GeForce RTX 4090 Direct3D11)' })
+      try {
+        const first = render(<TerminalPane {...defaultProps} />)
+        first.unmount()
+        render(<TerminalPane {...defaultProps} terminalId="term-2" />)
+        expect(spy.mock.calls.filter(([type]) => type === 'webgl2')).toHaveLength(1)
+        expect(H.webglAddons).toHaveLength(2)
       } finally {
         spy.mockRestore()
       }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { hasHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
+import { forgetHardwareWebgl, hasHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 
 /**
  * Builds a fake WebGL2 context. `loseContext` is the assertion target for the leak fix:
@@ -22,7 +22,7 @@ function stubContext(gl: unknown) {
   return vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((() => gl) as any)
 }
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); forgetHardwareWebgl() })
 
 describe('hasHardwareWebgl', () => {
   it('accepts a real GPU renderer', () => {
@@ -84,12 +84,59 @@ describe('hasHardwareWebgl', () => {
     expect(hasHardwareWebgl()).toBe(true)
   })
 
-  it('does not leak a context per call across repeated probes', () => {
+  // BUILDFLAKE: every terminal pane probed at mount, and each probe is a context made on the main thread with a
+  // dozen round trips to the GPU process. With the GPU busy (software GL drawing the map) that was 2.5 to 4.6 s with
+  // the page frozen, right as Build it opened its agent's terminal. The answer holds for the page: one probe.
+  it('makes one context for the page: later probes answer from the first', () => {
     const { gl, loseContext } = fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' })
-    stubContext(gl)
-    hasHardwareWebgl()
-    hasHardwareWebgl()
-    hasHardwareWebgl()
-    expect(loseContext).toHaveBeenCalledTimes(3)
+    const spy = stubContext(gl)
+    expect(hasHardwareWebgl()).toBe(true)
+    expect(hasHardwareWebgl()).toBe(true)
+    expect(hasHardwareWebgl()).toBe(true)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(loseContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a software answer for the page too', () => {
+    const spy = stubContext(fakeGl({ renderer: 'Google SwiftShader' }).gl)
+    expect(hasHardwareWebgl()).toBe(false)
+    expect(hasHardwareWebgl()).toBe(false)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('probes again after forgetHardwareWebgl', () => {
+    const spy = stubContext(fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl)
+    expect(hasHardwareWebgl()).toBe(true)
+    spy.mockImplementation((() => fakeGl({ renderer: 'Google SwiftShader' }).gl) as any)
+    forgetHardwareWebgl()
+    expect(hasHardwareWebgl()).toBe(false)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  // A lost context anywhere in the page (a terminal's, the map's) can mean the GPU process restarted, perhaps in
+  // software, where the WebGL addon crashes: the next pane asks again.
+  it('probes again once any canvas in the page loses its context', () => {
+    const spy = stubContext(fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl)
+    expect(hasHardwareWebgl()).toBe(true)
+    const canvas = document.createElement('canvas')
+    document.body.appendChild(canvas)
+    try {
+      canvas.dispatchEvent(new Event('webglcontextlost'))
+    } finally {
+      canvas.remove()
+    }
+    spy.mockImplementation((() => fakeGl({ renderer: 'Google SwiftShader' }).gl) as any)
+    expect(hasHardwareWebgl()).toBe(false)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not keep an answer it got without a context: no WebGL2, or getContext throwing', () => {
+    const spy = stubContext(null)
+    expect(hasHardwareWebgl()).toBe(false)
+    spy.mockImplementation((() => { throw new Error('getContext blew up') }) as any)
+    expect(hasHardwareWebgl()).toBe(false)
+    spy.mockImplementation((() => fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl) as any)
+    expect(hasHardwareWebgl()).toBe(true)
+    expect(spy).toHaveBeenCalledTimes(3)
   })
 })

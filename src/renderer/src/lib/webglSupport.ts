@@ -7,15 +7,38 @@
  *
  * The probe context is explicitly released before returning. A browser allows only a small
  * number of live WebGL contexts (Chromium's limit is around 16) and silently evicts the
- * oldest when the cap is hit. This runs once per terminal pane, so a probe context merely
+ * oldest when the cap is hit. This ran once per terminal pane, so a probe context merely
  * dropped on the floor — alive until GC gets to it — meant opening and closing terminals
  * could push the contexts that real terminals were rendering with out of the cap. Those
  * panes then fall back to the DOM renderer mid-session, which reads as typing going
  * choppy, with nothing logged to explain it.
+ *
+ * The answer is kept for the page and the probe runs once. Each probe is a context made on the
+ * main thread plus a dozen synchronous round trips to the GPU process, and with the GPU busy
+ * (software GL drawing the map, macOS CI) one probe froze the page for 2.5 to 4.6 s: every
+ * terminal pane probed at mount, so opening an agent's terminal (Build it) stalled the page
+ * right after its dialog closed. A context lost anywhere in the page can mean the GPU process
+ * restarted, perhaps in software, so a lost context drops the answer and the next pane asks
+ * again. An answer got with no context at all (no WebGL2, getContext throwing) is not kept.
  */
+let known: boolean | null = null
+let lossWatched = false
+
+/** Drop the kept answer: the next call probes again. */
+export function forgetHardwareWebgl(): void {
+  known = null
+}
+
 export function hasHardwareWebgl(): boolean {
+  if (known !== null) return known
   try {
     if (typeof document === 'undefined') return false
+    if (!lossWatched) {
+      // webglcontextlost does not bubble; a capture listener on the document still sees it for
+      // every canvas in the page (the probe's own canvas is never in the page).
+      document.addEventListener('webglcontextlost', forgetHardwareWebgl, true)
+      lossWatched = true
+    }
     const canvas = document.createElement('canvas')
     const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null
     if (!gl) return false
@@ -25,7 +48,8 @@ export function hasHardwareWebgl(): boolean {
       // SwiftShader / llvmpipe / softpipe / ANGLE-software / Microsoft Basic Render are the
       // software rasterizers where the async crash happens. An unknown renderer (host with
       // no debug extension) counts as hardware, which is the behaviour that shipped.
-      return !/swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i.test(renderer)
+      known = !/swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i.test(renderer)
+      return known
     } finally {
       // Hand the context straight back rather than waiting for GC.
       try { gl.getExtension('WEBGL_lose_context')?.loseContext() } catch { /* nothing to release */ }

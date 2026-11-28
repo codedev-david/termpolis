@@ -274,6 +274,7 @@ beforeAll(() => {
 // Import after every mock is registered.
 import { TerminalPane } from '../../src/renderer/src/components/TerminalPane/TerminalPane'
 import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
+import { forgetHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 
 const defaultProps = {
   terminalId: 'term-1',
@@ -314,6 +315,8 @@ const mountScreen = (container: HTMLElement, rect?: Partial<DOMRect>): HTMLEleme
 
 describe('TerminalPane — defensive branches', () => {
   beforeEach(() => {
+    // The probe keeps its answer for the page; each test here stubs its own GPU, so each asks afresh.
+    forgetHardwareWebgl()
     // This suite drives the pane with a MOCK xterm whose write() never calls back, and asserts on write(data) with one
     // argument: the output throttle's call shape. It stays on that path (the kill switch's). The write scheduler, which
     // is the default and passes an ack callback, is tested against a REAL xterm in TerminalPaneScheduler.test.tsx.
