@@ -352,6 +352,26 @@ describe('cloneRepo', () => {
     expect(rename).not.toHaveBeenCalled()
   })
 
+  // A slow sign-in failure inside the deadline is told as the sign-in it is, as soon as git says so: git's answer at 11 s, of a
+  // 60 s deadline, surfaces within a second of it, and only git still running at the deadline is the timeout (Codex R3 MINOR,
+  // the bound worldGitHttps.test.ts had on the real git, kept here on a clock the test moves).
+  it.each([
+    [11_000, AUTH_MESSAGE],
+    [60_000, TIMEOUT_MESSAGE],
+  ])('git that answers a sign-in failure at %i ms of a 60 s deadline gives its message within a second', async (elapsed, expected) => {
+    let t = 0
+    const { deps } = mkDeps({
+      now: () => t,
+      timeoutMs: 60_000,
+      execFile: async () => {
+        t = elapsed
+        return { code: 1, stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toMatchObject({ ok: false, error: expected })
+    expect(t - elapsed).toBeLessThanOrEqual(1000)
+  })
+
   it('a shorter timeoutMs from the caller sets the deadline; without one it is the full 5 minutes', async () => {
     let t = 0
     const timeouts: number[] = []
