@@ -78,8 +78,14 @@ export const DESIGN_OPEN_FAILED = "Lumopolis couldn't open that design. Try agai
 export const DESIGN_SAVE_FAILED = "Lumopolis couldn't save the design. Try again."
 export const DESIGN_REPLACED = 'Lumopolis stopped that change for your newer one.'
 export const DESIGN_NOTHING_APPLIED = 'None of those changes could be applied, so Lumopolis made no design.'
-/** PENDING SIGN-OFF (DSN D2): a refine whose parts changed after its agent read them, or after it asked for a yes. */
+/** A refine whose parts changed after its agent read them, or after it asked for a yes (DSN D2; approved 2026-11-28). */
 export const DESIGN_CHANGED = "The design changed after your agent read it, so Lumopolis didn't make this change. Try again."
+/**
+ * An agent's world_propose that removes a district which still has buildings (DSN ruling, 2026-11-28). It fails closed:
+ * nothing waits on a pane that may not be open, and none of that change is saved, its other edits included.
+ */
+export const DESIGN_NEEDS_PERSON =
+  "Removing a district that has buildings needs the person's OK, so Lumopolis didn't make this change. Ask them to make it in the Change the design box."
 export const DEFAULT_DESIGN_TIMEOUT_MS = 90_000
 
 export const DESIGN_KEY_RE = /^design:([A-Za-z0-9][A-Za-z0-9._-]*)$/ // a leading letter or digit: never '..'
@@ -317,6 +323,12 @@ export function createDesigner(deps: DesignerDeps): Designer {
     return { patch, out }
   }
 
+  /** An agent never removes a district that still has buildings: only the person does, in the pane (DSN ruling). */
+  const refuseRemovals = (patch: DesignPatchResult): false => {
+    if (patch.removed.length > 0) throw new DesignFailure(DESIGN_NEEDS_PERSON)
+    return false
+  }
+
   const register = async (source: WorldSource, title: string): Promise<void> => {
     try {
       await deps.registry.upsert(source, title)
@@ -396,13 +408,14 @@ export function createDesigner(deps: DesignerDeps): Designer {
       const list = ops as DesignOp[]
       if ('key' in target) {
         const key = target.key
-        const { patch } = await designLock(key, () => mutate(key, list))
+        const { patch } = await designLock(key, () => mutate(key, list, undefined, refuseRemovals))
         return { key, applied: patch.applied, skipped: patch.skipped.length }
       }
       const id = deps.newId()
       const key = `design:${id}`
       const patch = applyDesignPatch(emptyDesignDoc(key, now()), list, layoutPlacer)
       if (patch.applied === 0) throw new DesignFailure(DESIGN_NOTHING_APPLIED)
+      refuseRemovals(patch)
       await save(patch.doc)
       const title = titleFor(`Plan for ${folderName(target.linkRoot)}`)
       await register({ kind: 'design', id, title, linkedRoot: target.linkRoot }, title)
