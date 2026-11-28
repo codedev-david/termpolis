@@ -149,6 +149,19 @@ describe('adoptAnnotationAliases', () => {
     expect(shown.d).toEqual([claim('z')])
     expect(shown['b-foo']).toBeUndefined()
   })
+  // holdb-codex-review round 2: one older key renamed a claim away from an id, and another older key holds the same claim under
+  // that id, shown (added there on its own). Adopting both keeps it shown under the id: only the key that renamed it hid it.
+  it('keeps a claim shown under an id when another older key shows it there, though one older key renamed it away', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('alias-a', 'foo', claim('the same note'))
+    await store.copyRenamed('alias-a', { foo: 'foo--a' })
+    await store.add('alias-b', 'foo', claim('the same note'))
+    expect(await adoptAnnotationAliases(dir, 'new-key', ['alias-a', 'alias-b'])).toEqual(['alias-a', 'alias-b'])
+    expect(await store.list('new-key')).toEqual({ foo: [claim('the same note')], 'foo--a': [claim('the same note')] })
+    // In the other order too.
+    expect(await adoptAnnotationAliases(dir, 'other-key', ['alias-b', 'alias-a'])).toEqual(['alias-b', 'alias-a'])
+    expect(await store.list('other-key')).toEqual({ foo: [claim('the same note')], 'foo--a': [claim('the same note')] })
+  })
   it('takes every older spelling: their items merged in the order given, a claim under two keys kept once, each item capped (R-M2)', async () => {
     const store = createAnnotationStore(dir)
     await store.add('git-bash', 'b1', claim('the billing door'))
