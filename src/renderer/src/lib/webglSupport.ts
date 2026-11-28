@@ -58,3 +58,15 @@ export function hasHardwareWebgl(): boolean {
     return false
   }
 }
+
+/**
+ * Ask once at the page's start, when it is first idle (within a second), while the GPU has nothing else to draw.
+ * Keeping the answer does nothing for the page's first pane, and with no terminal open (the Lumopolis home first,
+ * then Build it) that first pane is the agent's, mounted while the map draws in software: its probe froze the page
+ * for seconds (BUILDFLAKE). Every pane after the start finds the answer kept.
+ */
+export function warmHardwareWebgl(): void {
+  const ask = (): void => { hasHardwareWebgl() }
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(ask, { timeout: 1000 })
+  else setTimeout(ask, 0)
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { forgetHardwareWebgl, hasHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
+import { forgetHardwareWebgl, hasHardwareWebgl, warmHardwareWebgl } from '../../src/renderer/src/lib/webglSupport'
 
 /**
  * Builds a fake WebGL2 context. `loseContext` is the assertion target for the leak fix:
@@ -138,5 +138,35 @@ describe('hasHardwareWebgl', () => {
     spy.mockImplementation((() => fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl) as any)
     expect(hasHardwareWebgl()).toBe(true)
     expect(spy).toHaveBeenCalledTimes(3)
+  })
+})
+
+// BUILDFLAKE, part two: keeping the answer does nothing for the page's FIRST pane, and with no terminal open (the
+// Lumopolis home first, then Build it) that first pane is the agent's, mounted as the map draws in software. So the
+// page asks once at start, while the GPU has nothing else to draw, and every pane after finds the answer kept.
+describe('warmHardwareWebgl', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); forgetHardwareWebgl() })
+
+  it('asks when the page is first idle, within a second, and a pane after asks nothing', () => {
+    const idle = vi.fn()
+    vi.stubGlobal('requestIdleCallback', idle)
+    const spy = stubContext(fakeGl({ renderer: 'Google SwiftShader' }).gl)
+    warmHardwareWebgl()
+    expect(spy).not.toHaveBeenCalled()
+    expect(idle).toHaveBeenCalledWith(expect.any(Function), { timeout: 1000 })
+    idle.mock.calls[0][0]()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(hasHardwareWebgl()).toBe(false)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to a timer where there is no idle callback', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    const spy = stubContext(fakeGl({ renderer: 'NVIDIA GeForce RTX 4080' }).gl)
+    warmHardwareWebgl()
+    expect(spy).not.toHaveBeenCalled()
+    vi.runAllTimers()
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })

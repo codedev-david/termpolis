@@ -14,6 +14,7 @@ import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import App from './App'
 import { seedAutoDefault } from './lib/autoModel'
 import { applyRouterSettings } from './lib/messageRoute'
+import { warmHardwareWebgl } from './lib/webglSupport'
 
 // Termpolis runs only as its window's own page. A copy of it framed inside the page (the
 // permission e2e frames one, to show main refuses a subframe at the app's own URL) starts nothing:
@@ -49,4 +50,7 @@ function startApp(): void {
       </ErrorBoundary>
     </React.StrictMode>
   )
+  // The terminals' GPU check, asked once while the page is idle at start rather than at the first pane's mount, which
+  // may come while the map draws in software and the GPU has no time for it (lib/webglSupport.ts).
+  warmHardwareWebgl()
 }
