@@ -285,6 +285,7 @@ const world = vi.hoisted(() => ({
     compile: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
     relayout: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
     notifyChanged: vi.fn(),
+    noteTyping: vi.fn(),
     hasWorld: vi.fn(async (_root: string) => true),
     snapshotFromFiles: vi.fn(async (root: string) => ({ root, files: ['h.ts'], symbols: [], callEdges: [], fileImports: { 'h.ts': [] } }) as any),
     whenCompiled: vi.fn(async (_root: string) => {}),
@@ -4216,6 +4217,14 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(world.client.notifyChanged).not.toHaveBeenCalled() // not before the graph has the change
     release()
     await vi.waitFor(() => expect(world.client.notifyChanged).toHaveBeenCalledWith('/repos/x', ['a.ts']))
+  })
+
+  // TYPEFLAKE: the world compile runs in its own process, so main passes each keystroke on (the client throttles it).
+  it('each keystroke main notes is passed on to the world client', async () => {
+    const { noteTyping } = await import('../../src/main/typingQuiet')
+    world.client.noteTyping.mockClear()
+    noteTyping()
+    expect(world.client.noteTyping).toHaveBeenCalledTimes(1)
   })
 
   it('names userData, reads the labelling setting, and stamps the git head with a dirty flag', async () => {

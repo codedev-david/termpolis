@@ -46,6 +46,7 @@ import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoA
 import { resolveGitBin } from '../binPath'
 import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
 import { createWorldStore, WORLD_SAVE_FAILED, WorldSavedByNewerError, type WorldStore } from './worldStore'
+import { createGiveWay } from './typingGiveWay'
 import { validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
@@ -121,6 +122,10 @@ export interface WorldRunsResultMsg {
   head?: string | null
   age?: number
 }
+/** Someone typed in a terminal (main sends it at most every TYPING_NOTE_MS): the host's reads give way (typingGiveWay.ts). */
+export interface WorldTypingMsg {
+  kind: 'typing'
+}
 export type WorldHostRequest =
   | WorldInitMsg
   | WorldCallMsg
@@ -130,6 +135,7 @@ export type WorldHostRequest =
   | WorldRunsResultMsg
   | WorldSettingsMsg
   | WorldLabellingStoppedMsg
+  | WorldTypingMsg
 
 export interface WorldReadyMsg { kind: 'ready'; pid: number }
 export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -468,6 +474,8 @@ export interface WorldHostDeps {
   readSource?: (p: string) => Promise<string | null>
   glob?: CompileDeps['glob']
   now?: () => number
+  /** The rest between slices of reads while someone types (typingGiveWay.ts; default: a timer). */
+  sleep?: (ms: number) => Promise<void>
   /** The watcher recompile's debounce (default WATCH_RECOMPILE_MS). */
   debounceMs?: number
   /** How long one labelling call may run once main has started it (default LLM_TIMEOUT_MS). */
@@ -623,9 +631,16 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const createStore = deps.createStore ?? createWorldStore
   const createAnnotations = deps.createAnnotations ?? createAnnotationStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
-  const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
   const glob = deps.glob ?? ((root: string, patterns: string[], opts: { signal: AbortSignal }) => globFiles(root, patterns, undefined, opts.signal))
   const now = deps.now ?? Date.now
+  // Every source read (the snapshot's, the compile's, labelling's excerpts) waits its turn while someone types, so on
+  // a busy machine the compile leaves the keyboard's processes the CPU (TYPEFLAKE). Nobody typing: it goes at once.
+  const giveWay = createGiveWay({ now, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
+  const sourceRead = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
+  const readSource = async (p: string): Promise<string | null> => {
+    await giveWay.wait()
+    return sourceRead(p)
+  }
   const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
   const firstMapWait = deps.firstMapWaitMs ?? FIRST_MAP_WAIT_MS
   /**
@@ -1460,6 +1475,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         } catch (err) {
           post({ kind: 'init-error', error: outwardError(err) })
         }
+        return
+      }
+      if (msg.kind === 'typing') {
+        giveWay.typed()
         return
       }
       if (msg.kind === 'labelling-stopped') {

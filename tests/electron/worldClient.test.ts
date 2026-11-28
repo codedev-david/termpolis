@@ -14,7 +14,7 @@ vi.mock('electron', () => ({
 
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
-import { HOST_STOPPED_MESSAGE, createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
+import { HOST_STOPPED_MESSAGE, TYPING_NOTE_MS, createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
 import { createLlmGate, GATE_SETTLE_GRACE_MS, WORLD_LLM_HOST_LIMIT } from '../../src/main/world/llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS } from '../../src/main/world/label'
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
@@ -910,6 +910,31 @@ describe('createWorldClient', () => {
     // A port that throws (the host is going away) is swallowed: its exit restarts it with the new value.
     spawned[0].throwOnPost = true
     expect(() => client.applySettings()).not.toThrow()
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+
+  // TYPEFLAKE: the host's compile gives way while someone types (typingGiveWay.ts); main tells it at most every
+  // TYPING_NOTE_MS, so a fast typist costs the host one message a fifth of a second, never one per key.
+  it('noteTyping tells a live host someone is typing, at most every TYPING_NOTE_MS, and never starts one', async () => {
+    const { client, spawn, spawned } = setup()
+    client.noteTyping() // no host yet: nothing to tell, nothing spawned
+    expect(spawn).not.toHaveBeenCalled()
+    await client.compile(ROOT)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_000_000)
+    const typing = () => spawned[0].posted.filter((m) => (m as { kind: string }).kind === 'typing')
+    client.noteTyping()
+    expect(typing()).toEqual([{ kind: 'typing' }])
+    vi.setSystemTime(1_000_000 + TYPING_NOTE_MS - 1)
+    client.noteTyping()
+    expect(typing()).toHaveLength(1)
+    vi.setSystemTime(1_000_000 + TYPING_NOTE_MS)
+    client.noteTyping()
+    expect(typing()).toHaveLength(2)
+    // A port that throws (the host is going away) is swallowed.
+    spawned[0].throwOnPost = true
+    vi.setSystemTime(1_000_000 + 3 * TYPING_NOTE_MS)
+    expect(() => client.noteTyping()).not.toThrow()
     expect(spawn).toHaveBeenCalledTimes(1)
   })
 

@@ -19,10 +19,25 @@ export const QUIET_MAX_WAIT_MS = 2_000
 
 let lastTyping = Number.NEGATIVE_INFINITY
 const stats = { waits: 0, waitedMs: 0, capped: 0 }
+let forward: (() => void) | null = null
 
 /** Called from the terminal-write handler. O(1), allocation-free. */
 export function noteTyping(at: number = Date.now()): void {
   lastTyping = at
+  if (forward === null) return
+  try {
+    forward()
+  } catch {
+    // fails open: the keystroke is never held up by who is told of it
+  }
+}
+
+/**
+ * The one listener told of each keystroke, or null for none. Main's: the world client, which passes it on (throttled)
+ * to the world host, whose compile runs in its own process and gives way while someone types (TYPEFLAKE).
+ */
+export function onTypingNoted(fn: (() => void) | null): void {
+  forward = fn
 }
 
 /** Milliseconds since the last keystroke; Infinity when there has been none. */

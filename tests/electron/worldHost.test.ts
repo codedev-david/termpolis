@@ -16,6 +16,7 @@ import {
 import { commonDirArgs, lsFilesArgs, lsSubmoduleArgs, MAP_FILE_CAP, type RepoListing } from '../../src/main/repoFileList'
 import type { StageCache } from '../../src/main/world/stageCache'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
+import { GIVE_WAY_REST_MS, GIVE_WAY_SLICE_MS } from '../../src/main/world/typingGiveWay'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -2833,5 +2834,61 @@ describe('the staged compile in the host', () => {
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
     expect(h.last()).toMatchObject({ id: 1, ok: true })
     expect(h.store.saves).toHaveLength(1)
+  })
+})
+
+// TYPEFLAKE: on a small, busy machine the compile's reads and scans took close to a core while someone typed, and the
+// page's timers (a keystroke's echo with them) ran late. Main says when someone types; the host's source reads then go
+// in slices with rests between (typingGiveWay.ts). Nobody typing: no rest, no timer.
+describe('giving way to typing', () => {
+  it("while main says someone types, source reads go in slices with rests between; with nobody typing they go at once", async () => {
+    let t = 1_000_000
+    const sleeps: number[] = []
+    let wake: (() => void) | null = null
+    const read = vi.fn(async () => 'x')
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      const rs = deps.readSource as (p: string) => Promise<string | null>
+      await rs('/a')
+      t += GIVE_WAY_SLICE_MS
+      await rs('/b')
+      expect(sleeps).toEqual([])
+      await h.send({ kind: 'typing' } as WorldHostRequest)
+      await rs('/c')
+      t += GIVE_WAY_SLICE_MS
+      const d = rs('/d')
+      expect(sleeps).toEqual([GIVE_WAY_REST_MS])
+      expect(read).toHaveBeenCalledTimes(3)
+      ;(wake as unknown as () => void)()
+      expect(await d).toBe('x')
+      expect(read).toHaveBeenCalledTimes(4)
+      return doc(input.projectKey)
+    })
+    const h = harness({
+      compile,
+      readSource: read,
+      now: () => t,
+      sleep: (ms) => new Promise<void>((r) => { sleeps.push(ms); wake = r })
+    })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(h.last()).toMatchObject({ kind: 'result', id: 1, ok: true })
+    expect(compile).toHaveBeenCalledTimes(1)
+  })
+
+  it('a typing note before init is kept (it needs no state), and the snapshot reads give way too', async () => {
+    let t = 1_000_000
+    const sleeps: number[] = []
+    const h = harness({
+      readSource: async () => 'export const a = 1\n',
+      listFiles: async () => ['a.ts', 'b.ts', 'c.ts'],
+      now: () => (t += GIVE_WAY_SLICE_MS),
+      sleep: async (ms) => { sleeps.push(ms) }
+    })
+    await h.send({ kind: 'typing' } as WorldHostRequest)
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'snapshotFromFiles', args: ['/repo'] })
+    expect(h.last()).toMatchObject({ kind: 'result', id: 1, ok: true })
+    expect(sleeps.length).toBeGreaterThan(0)
+    expect(sleeps.every((ms) => ms === GIVE_WAY_REST_MS)).toBe(true)
   })
 })

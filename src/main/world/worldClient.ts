@@ -159,6 +159,12 @@ const normaliseFiles = (files: string[]): string[] =>
     .filter((f): f is string => typeof f === 'string' && f !== '')
     .map((f) => f.replace(/\\/g, '/').replace(/^\.\//, ''))
 
+/**
+ * At most one `typing` note to the host per this many ms: well inside the host's quiet period (GIVE_WAY_QUIET_MS,
+ * 500 ms), so a steady typist keeps it giving way, at one message a fifth of a second rather than one per key.
+ */
+export const TYPING_NOTE_MS = 200
+
 export function createWorldClient(
   spawn: () => WorldHostTransport = () => createWorldHostTransport(),
   opts: WorldClientOptions = {}
@@ -198,6 +204,8 @@ export function createWorldClient(
   let initWaiter: { resolve(): void; reject(e: Error): void } | null = null
   let disposed = false
   let seq = 0
+  /** When the host was last told someone is typing (noteTyping). */
+  let typingToldAt = Number.NEGATIVE_INFINITY
   const pending = new Map<number, Waiter>()
   /** projectKey → the root the renderer named, so pushes and labelling requests map back to a folder. */
   const roots = new Map<string, string>()
@@ -697,6 +705,23 @@ export function createWorldClient(
      * The world settings changed: tell a running host so its next compile or watcher recompile
      * honours them. Never starts a host (one that starts later reads the settings in its init).
      */
+    /**
+     * Someone typed in a terminal (typingQuiet's listener): a running host is told, at most every TYPING_NOTE_MS, so
+     * its compile's reads give way to the keyboard (typingGiveWay.ts, TYPEFLAKE). On the typing path: one clock read
+     * and, now and then, one message. Never starts a host.
+     */
+    noteTyping(): void {
+      const tr = current
+      if (!tr) return
+      const t = Date.now()
+      if (t - typingToldAt < TYPING_NOTE_MS) return
+      typingToldAt = t
+      try {
+        tr.postMessage({ kind: 'typing' })
+      } catch {
+        // the host is going away; the next one is told at the next keystroke
+      }
+    },
     applySettings(): void {
       // Labelling turned off: no waiting call may start, and a running one is answered null now.
       if (labelling() === false) cancelLlm(() => true)

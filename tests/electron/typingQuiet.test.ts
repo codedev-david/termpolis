@@ -111,3 +111,28 @@ describe('whenTypingQuiet', () => {
     expect(r.waitedMs).toBeLessThan(QUIET_MAX_WAIT_MS + QUIET_MS + 1)
   })
 })
+
+// TYPEFLAKE: the world compile runs in its own process; main passes each keystroke on (the world client throttles it).
+describe('onTypingNoted', () => {
+  it('tells its one listener of each keystroke, and fails open when the listener throws', async () => {
+    const { onTypingNoted } = await import('../../src/main/typingQuiet')
+    const seen: number[] = []
+    try {
+      onTypingNoted(() => seen.push(1))
+      noteTyping(5)
+      noteTyping(6)
+      expect(seen).toEqual([1, 1])
+      onTypingNoted(() => { throw new Error('host gone') })
+      noteTyping(7)
+      expect(msSinceTyping(10)).toBe(3)
+      // A new listener takes the old one's place.
+      onTypingNoted(() => seen.push(2))
+      noteTyping(8)
+      expect(seen).toEqual([1, 1, 2])
+    } finally {
+      onTypingNoted(null)
+    }
+    noteTyping(9)
+    expect(seen).toEqual([1, 1, 2])
+  })
+})

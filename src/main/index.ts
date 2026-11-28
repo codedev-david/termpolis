@@ -329,7 +329,7 @@ import { registerMemoryTraceSources } from './memoryTraceSources'
 import { setSafeStorage } from './secureKeyStore'
 import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
-import { noteTyping, whenTypingQuiet } from './typingQuiet'
+import { noteTyping, onTypingNoted, whenTypingQuiet } from './typingQuiet'
 import { sweepPause } from './sweepPause' // a code-graph sweep waits for the governor and for typing quiet
 import { runCodeIngest, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
@@ -2969,6 +2969,9 @@ const worldClient = createWorldClient(undefined, {
     return built
   },
 })
+// Each keystroke is passed on to a running world host (throttled there), whose compile runs in its own process and
+// gives way while someone types (typingGiveWay.ts, TYPEFLAKE): main's own background work already does (typingQuiet).
+onTypingNoted(() => worldClient.noteTyping())
 // The settings load off the main thread: once they land, a host that started on the defaults is told
 // (applySettings never starts one; a host started later reads them in its init).
 const tellWorldHostSettings = (): void => worldClient.applySettings()
