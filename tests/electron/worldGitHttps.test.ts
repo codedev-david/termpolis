@@ -155,7 +155,7 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     // a prompt would end only at its deadline, as TIMEOUT_MESSAGE with no sign-in offered, so this needs no clock
     // (HOLD-B #106: a 10 s wall-clock bound here failed on a loaded machine). An AUTH_MESSAGE however late is git's own
     // answer, never a prompt's: cloneRepo returns TIMEOUT_MESSAGE whenever its deadline ended the run (gitSource.ts,
-    // `if (timedOut)` before the failure is read). PENDING SIGN-OFF: the bound's removal (holdb-codex-review).
+    // `if (timedOut)` before the failure is read). The bound's removal (holdb-codex-review): approved 2026-11-27.
     await clearLog()
     const gone = { ...deps, env: envFor(helperConfig, { FAKE_HELPER_EMPTY: '1' }) }
     const r = await cloneRepo(server.url, undefined, gone, background)
